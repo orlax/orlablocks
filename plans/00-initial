@@ -1,0 +1,411 @@
+# Level Design Helper — Project Plan & Handoff
+
+> **For the agent reading this:** This document is a handoff from a planning conversation. Nothing has been built yet. Read it fully before proposing anything. Start with **Phase 0** (see Roadmap) and work with Orlando to finalize the format and palette before writing application code. Flag problems and disagreements directly — Orlando prefers honest, direct feedback over agreement.
+
+---
+
+## 1. What this is
+
+A tool for **ideating dungeon layouts** for Orlando's game, a **3D platformer structured like a Zelda game**: dungeons made of rooms with jumps, verticality, ability gates, secrets and one-way paths. The goal is to design both **individual rooms** and **the relationships between them**.
+
+Today Orlando does this in a general-purpose vector drawing program. This project replaces that with:
+
+1. A **local web authoring tool** where the human draws room shapes, drags palette items in, and leaves notes.
+2. A **text level format** that fully describes the design, readable by humans and LLMs.
+3. A **local server** that owns the design state and exposes it to the web client and, via **MCP**, to a Claude Code agent.
+4. An **agent workflow** (skills + context) so the agent can collaborate: propose room ideas, resolve notes, critique structure, and run validation checks.
+
+### Scope boundary
+
+This is an **ideation tool**, not a level editor for shipping. Designs that are good enough get **rebuilt from scratch in Unity**. Therefore:
+
+- Fidelity target is *idea-level*: plan view + elevations + heights on openings. No per-platform collision geometry.
+- The Unity handoff is a reference image + notes, not an importer (at least initially).
+- Validators need "roughly beyond a jump?" precision, not physics accuracy.
+
+### Inspiration
+
+[JohnHeibel/ClaudeAnimationBase](https://github.com/JohnHeibel/ClaudeAnimationBase) — an agent animates reliably because of three things working together, and this project copies that structure:
+
+| Animation kit | This project |
+|---|---|
+| A small named API (`clawd.js`, `core.js`) instead of raw primitives | A fixed **palette** of mechanics + typed **commands** |
+| `ANIMATION_GUIDE.md` with opinionated taste rules | A **design guide** + **intensity rubric** + reference rooms |
+| Renders contact sheets to check its own work | **Validators** + **map render** the agent runs on its proposals |
+
+---
+
+## 2. Objectives
+
+1. Draw dungeon layouts faster and more expressively than in a generic vector tool (polygons, circles, corridors, multiple elevations, notes).
+2. Let an LLM agent **ideate moment-to-moment challenge options** that use only the game's existing mechanics, and present them as comparable variants.
+3. Let the agent **verify structure** mechanically: reachability, ability gating, one-way flow, softlocks, where triggers belong.
+4. Keep one **shared, undoable history** of human and agent actions.
+5. Produce an output good enough to hand to Unity implementation.
+
+### Non-goals
+
+- The agent inventing new mechanics. The palette is fixed and enforced.
+- Judging *feel* (timing, camera, fun). That comes from playtesting grayboxes in Unity.
+- Shipping-quality geometry or an automatic Unity importer.
+
+---
+
+## 3. Decisions and rationale
+
+| Decision | Why |
+|---|---|
+| **Semantic YAML format**, not ASCII grids | LLMs make alignment/column errors editing ASCII maps. Named IDs + structure are robust to edit and easy to reason about. |
+| **Not SVG as the source file** | Semantics get buried in attributes; LLMs editing SVG path strings is error-prone. The web tool *renders* to SVG. SVG *import* from Orlando's existing drawings can be added later. |
+| **Shape primitives**: polygon, circle, path-with-width (corridors); arcs later | Rooms are not boxes. Storing a circle as a circle keeps it editable as one and legible to the model. |
+| **Openings anchor to walls** (edge index + position along edge + height), not absolute coordinates | Dragging a vertex keeps doors/windows attached. The agent can say "north wall" without doing geometry. |
+| **Elevation per space, height per opening** | It's a 3D platformer. Heights make ability requirements checkable (a window above jump reach needs telekinesis). Plan view + elevation layers is enough for ideation. |
+| **Topology separate from geometry** | LLMs reason well about graphs ("key before locked door") and poorly about precise geometry. |
+| **Typed gates referencing palette IDs** (`requires: ability:telekinesis`, `blocked_by: npc:emi`, `hidden`, `one_way`) | Enforces the fixed palette mechanically; enables validation. |
+| **Notes are first-class, distinct from game entities**, with anchor + status | Notes carry designer intent and act as work items the agent can pick up ("trigger goes here…"). |
+| **Palette, design guide and rubric are shared assets** | The web tool's drag-and-drop menu and the agent's allowed vocabulary must come from the same data so they never drift. |
+| **Command pattern for all edits** (human and agent) with one linear history | Clear joint undo/redo; the history shows who did what. |
+| **Transactions**: an agent proposal = one undo step | Undoing 40 micro-commands is useless. Also gives "reject proposal" for free. |
+| **Linear history first**, no selective undo | Selectively undoing an earlier agent change under later edits gets complicated fast. Proposals as variants cover most of that need. |
+| **Local server is the source of truth**; YAML is persistence + readable snapshot | Removes file-watch races between human and agent. |
+| **Agent connects via MCP** (not by editing files) | Commands become typed tools with schemas; invalid references are rejected before being written. Validators and render become tools; palette/guide become resources. |
+| **Small MCP tool surface**, batched commands | Every tool definition costs agent context; many granular tools make tool choice worse. |
+| **`get_level` returns the whole level (or a region)** | LLMs reason better from one compact document than from dozens of tiny queries. |
+| **Command logic in a core library**, called by the MCP server *and* a thin CLI | Keeps tests and scripts working without the server running. |
+| **Design judgment lives in skills/context**, not MCP | MCP carries tools, not taste. The guide, rubric and workflow stay editable as markdown. |
+| **Fallback: detect raw YAML edits and record them as one "raw edit" command** | The agent (or Orlando) may edit the file by hand anyway; history stays intact, just coarser. |
+
+### Honest assessment of the agent's role
+
+- **Good at:** breadth of combinations from a fixed palette; reasoning about a beat's purpose and pacing; consistency with dungeon structure and player abilities; fast variations on a chosen direction; critique when validators hand it data.
+- **Weak at:** feel and timing; precise 3D spatial reasoning (describes layouts that sound coherent but don't quite work); vague words like "medium intensity" unless defined; tends toward generic, overstuffed designs if unconstrained.
+- **So:** it is an idea generator and design sparring partner. Nothing it proposes ships without being grayboxed and played in Unity.
+
+---
+
+## 4. Architecture
+
+```
+┌────────────────────┐        WebSocket        ┌──────────────────────────────┐
+│  Web authoring UI  │ ◄─────────────────────► │         Local server         │
+│  (canvas, palette, │   commands / updates    │                              │
+│   notes, variants) │                         │  ┌────────────────────────┐  │
+└────────────────────┘                         │  │      Core library      │  │
+                                               │  │  - level model         │  │
+┌────────────────────┐          MCP            │  │  - command apply/undo  │  │
+│  Claude Code agent │ ◄─────────────────────► │  │  - history/transactions│  │
+│  + skills/context  │   tools / resources     │  │  - validators          │  │
+└────────────────────┘                         │  │  - map render          │  │
+                                               │  └────────────────────────┘  │
+┌────────────────────┐                         │              │               │
+│  Thin CLI (tests,  │ ───── calls core ─────► │     persists ▼               │
+│  scripts)          │                         │   level YAML + history log   │
+└────────────────────┘                         └──────────────────────────────┘
+
+Shared data (read by UI, server and agent): palette.yaml, design-guide.md, intensity-rubric.md, reference rooms
+```
+
+### Components
+
+1. **Web authoring tool** — draw polygons/circles/corridors, set elevations, place openings on walls, drag palette items, add/resolve notes, view elevation layers, compare proposal variants as overlays, undo/redo.
+2. **Level format** — YAML, spec below.
+3. **Palette & design rules** — shared data: mechanics with metrics, intensity rubric, design guide, reference rooms.
+4. **Server core** — commands, history, transactions, validators, render. Exposed via WebSocket (UI), MCP (agent), CLI (tests).
+5. **Agent skills & context** — how to approach design tasks, how to present options, when to validate.
+
+### Suggested stack (not decided — confirm with Orlando)
+
+TypeScript end to end: shared types between UI and server, a schema library (e.g. zod) for commands and the level format, the official MCP TypeScript SDK, SVG rendering in the UI and a headless render (e.g. SVG → PNG) for `render_map`. Orlando has a long frontend background, so this should be comfortable.
+
+---
+
+## 5. Level format (draft spec)
+
+Draft — expect changes during Phase 0.
+
+### Conventions
+
+- Plan coordinates `[x, y]` on the canvas. `elevation` is vertical height of a space's floor. Units: roughly meters, idea-level. **TODO: confirm units with Orlando.**
+- Polygon edges are indexed: edge `i` runs from vertex `i` to vertex `i+1` (last edge wraps to vertex 0).
+- The implicit space `outside` represents the exterior / anything not modeled.
+- Connections use `from` / `to`. Default is two-way; `one_way: true` means only `from → to`.
+- All mechanic references use palette IDs with a namespace prefix: `ability:`, `npc:`, `interact:`, `trigger:`, `hazard:`, etc.
+
+### Top-level sections
+
+- `meta` — dungeon name, version, notes about the file.
+- `spaces` — rooms, corridors, areas. Shape + elevation (+ optional ceiling, style, tags).
+- `connections` — doors, windows, trapdoors, stairs, ladders, drops. Anchor, direction, gates.
+- `entities` — placed palette items (triggers, enemies, interactables, keys…).
+- `notes` — designer annotations with anchor + status.
+- `proposals` — (possibly) variants not yet accepted; or these live in history. **Open question.**
+
+### Shapes
+
+```yaml
+shape: { polygon: [[x,y], [x,y], ...] }
+shape: { circle: { center: [x,y], r: 7 } }
+shape: { path: [[x,y], [x,y], ...], width: 2 }   # corridors
+```
+
+### Anchors
+
+```yaml
+anchor: { space: west_wing, edge: 3, t: 0.4, height: 3.5 }   # polygon: edge index, 0..1 along edge
+anchor: { space: east_wing, angle: 180, height: 0 }         # circle: degrees
+```
+
+### Full example — the three-room scenario
+
+Orlando's real design from the planning conversation:
+
+- The **main room** front door is blocked — EMI (a character) stands there — so the player must find another way in.
+- **Route A:** find an open window on the **west wing**; reaching it requires **Telekinesis**.
+- **Route B:** find a suspicious floor tile, pull it up, drop into an **underground storage** room, follow a corridor up into the **east wing**.
+- Both wings connect to the main room.
+- All three rooms connect to a large **interior garden** (a big green shape). The garden → wing doors are **one-way (garden to wing only)**, so the garden can only be entered from the **main room**.
+- A note in the garden: a trigger there should play the garden's title animation sequence.
+
+```yaml
+meta:
+  name: three-rooms-scenario
+  version: 0
+
+spaces:
+  main_room:
+    shape: { polygon: [[0,0],[20,0],[20,14],[0,14]] }
+    elevation: 0
+  west_wing:
+    shape: { polygon: [[-12,2],[0,2],[0,14],[-10,14],[-14,8]] }
+    elevation: 0
+  east_wing:
+    shape: { circle: { center: [28,7], r: 7 } }
+    elevation: 0
+  storage:
+    shape: { polygon: [[22,-6],[34,-6],[34,4],[22,4]] }
+    elevation: -4            # underground
+  storage_corridor:
+    shape: { path: [[34,-1],[40,-1],[40,7]], width: 2 }
+    elevation: [-4, 0]       # rises from storage level to ground level
+  interior_garden:
+    shape: { polygon: [[-14,14],[36,14],[38,28],[10,34],[-16,26]] }
+    elevation: 0
+    style: { fill: green }
+
+connections:
+  - id: main_front_door
+    from: outside
+    to: main_room
+    anchor: { space: main_room, edge: 0, t: 0.5 }
+    state: blocked
+    blocked_by: npc:emi
+
+  - id: west_window
+    from: outside
+    to: west_wing
+    kind: window
+    anchor: { space: west_wing, edge: 3, t: 0.4, height: 3.5 }
+    requires: [ability:telekinesis]
+
+  - id: loose_tile
+    from: outside
+    to: storage
+    kind: trapdoor
+    hidden: true
+    requires: [interact:pull]
+
+  - { id: storage_to_corridor, from: storage, to: storage_corridor }
+  - { id: corridor_to_east, from: storage_corridor, to: east_wing, kind: stairs }
+  - { id: west_to_main, from: west_wing, to: main_room }
+  - { id: east_to_main, from: east_wing, to: main_room }
+  - { id: main_to_garden, from: main_room, to: interior_garden }
+  - { id: garden_to_west, from: interior_garden, to: west_wing, one_way: true }
+  - { id: garden_to_east, from: interior_garden, to: east_wing, one_way: true }
+
+entities: []
+
+notes:
+  - id: n1
+    at: main_front_door
+    status: open
+    text: "EMI blocks this door so I need to find an alternative path"
+  - id: n2
+    in: interior_garden
+    status: open
+    text: "trigger goes here to play the interior garden title animation sequence"
+```
+
+---
+
+## 6. Palette (draft shape — values are placeholders)
+
+**Do not invent game data.** Every number and mechanic below is a placeholder to show structure. Orlando provides the real palette.
+
+```yaml
+player:
+  jump_height: TODO        # max vertical reach without abilities
+  jump_distance: TODO      # standing / running
+  # ...
+
+abilities:
+  telekinesis:
+    description: TODO
+    range: TODO
+    can_lift: TODO
+    acquired_in: TODO      # lets validators check progression
+
+npcs:
+  emi:
+    description: "Game character; can block passages"
+
+interactables:
+  pull:
+    description: "Pull up a loose floor tile / object"
+
+triggers:
+  cutscene:
+    description: "Plays an animation / title sequence on enter"
+
+connection_kinds: [door, window, trapdoor, stairs, ladder, drop]
+
+hazards: {}                # TODO
+enemies: {}                # TODO
+obstacles: {}              # TODO
+```
+
+### Intensity rubric (draft — Orlando calibrates)
+
+"Medium intensity" means nothing to the agent until defined. Proposed axes, each scored low / medium / high:
+
+- **Failure cost** — respawn nearby vs. redo the room vs. lose progress.
+- **Time pressure** — none / soft / hard.
+- **Simultaneous threats** — how many things demand attention at once.
+- **Precision required** — how exact movement/aim must be.
+
+Anchor the scale with **reference rooms** from the actual game: "medium = like rooms X and Y." **TODO: Orlando supplies reference rooms.**
+
+---
+
+## 7. Commands, history and proposals
+
+### Example commands
+
+```
+add_space        { id, shape, elevation, style?, tags? }
+update_space     { id, patch }
+remove_space     { id }
+add_connection   { id, from, to, kind?, anchor?, one_way?, requires?, hidden?, state?, blocked_by? }
+update_connection{ id, patch }
+remove_connection{ id }
+place_entity     { id, type, space, near?/position? }
+move_entity      { id, ... }
+remove_entity    { id }
+add_note         { id, at?/in?, text }
+resolve_note     { id, resolution? }
+```
+
+- Every command records **actor** (`human` / `agent`), timestamp, and **inverse** (for undo).
+- The server validates references: unknown spaces, unknown palette IDs, and malformed anchors are rejected with a clear error.
+- **Transactions** group commands into one undo step with a label, e.g. `"Proposal B: collapsing bridge"`.
+- **Proposals** are named variants (branch-like) the human can view as overlays, then accept or reject. **Open question:** do proposals live in the history as unapplied branches, or in a `proposals` section of the level file?
+- **Raw edit fallback:** if the YAML changes outside the command system, diff it and record a single `raw_edit` command.
+
+---
+
+## 8. MCP surface (keep it small)
+
+**Resources**
+- `palette` — the shared palette
+- `design-guide`, `intensity-rubric`, `reference-rooms`
+
+**Tools**
+- `get_level` — whole level YAML, or a named region/set of spaces
+- `apply_commands` — batch of commands as one transaction, with a label
+- `begin_proposal` / `commit_proposal` / `discard_proposal` — or fold into `apply_commands` with a `proposal` flag (decide during build)
+- `check_reachability` — reachable spaces from a start, given a set of abilities; reports gates, one-way flow, entry points per space
+- `check_structure` — softlocks, dead ends, unreachable spaces, hidden connections without a telegraph
+- `render_map` — PNG of the current level (optionally a floor / elevation layer, optionally with a proposal overlaid) so the model can look at its work
+- `list_notes` — open notes as work items
+
+---
+
+## 9. Validators — acceptance tests on the scenario
+
+Use the three-room example as the first test fixture. Expected results:
+
+1. Starting from `outside` with `ability:telekinesis`, both routes reach `interior_garden`.
+2. Without telekinesis, only Route B (loose tile → storage → corridor → east wing) reaches the main room and garden.
+3. `main_front_door` is reported as blocked by `npc:emi`.
+4. `interior_garden` has exactly one entry: `main_to_garden`. Every first entry into the garden passes through it → that threshold is the recommended location for note n2's cutscene trigger.
+5. `garden_to_west` and `garden_to_east` are reported as one-way exits (shortcuts back to the wings).
+6. `loose_tile` is flagged as a hidden connection; the check asks whether it has a telegraph (in the design, the tile looks "funny" — decide how a telegraph is represented in the format).
+7. Mutation test: make the garden → wing doors two-way. The validator should now report three entry points into the garden.
+8. Progression test (once `acquired_in` exists): if telekinesis is acquired after this dungeon, Route A is flagged as not yet available.
+
+---
+
+## 10. Agent workflow (content for skills / context)
+
+When asked to design or change something:
+
+1. **Read** the current level (`get_level`), the palette, the design guide and the rubric. Check open notes relevant to the area.
+2. **Use only palette IDs.** Never introduce a mechanic that isn't in the palette. If the design seems to need one, say so and stop — don't invent it.
+3. **Offer 3 structurally distinct options**, not one answer and not three flavors of the same idea. For each: what it asks of the player, its intensity score on each rubric axis, what it costs (time, frustration, complexity), and why it fits this spot in the dungeon.
+4. **Prefer restraint.** One well-used mechanic usually beats three. Avoid overstuffed rooms.
+5. **Apply each option as a proposal** (one transaction each), never directly overwriting accepted design.
+6. **Validate and render** each proposal. Fix or flag anything that breaks reachability, creates softlocks, or looks wrong in the render.
+7. **Report briefly**: the options, their trade-offs, validator results, and what you're unsure about (especially spatial or feel-related assumptions that need a graybox).
+8. **Respect notes**: treat open notes as intent. Resolve a note only when the human asks or accepts a proposal that addresses it.
+
+---
+
+## 11. Scenarios Orlando wants to run
+
+These are the target interactions. Use them to test the system end to end.
+
+1. **Encode a real design.** Orlando draws (or the agent encodes from description) the three-room scenario above. Validators confirm the intended structure.
+2. **Resolve a note.** "Handle n2." → Agent proposes a `trigger:cutscene` at the main room → garden threshold, explains why (only entry), validates.
+3. **Ideate a challenge room.** *"For this next room we need a challenge that slows the player down a little, medium intensity, before they get into the main room."* → Agent returns 3 distinct proposals using only palette mechanics, each scored on the rubric, applied as variants Orlando can compare on the canvas.
+4. **Iterate on a chosen variant.** "Take option B, make it shorter and more vertical." → New proposal derived from B.
+5. **Structural review.** "Check this dungeon for softlocks, dead ends and pacing problems." → Validator-backed report plus design critique.
+6. **Human draws, agent reviews.** Orlando sketches a new wing on the canvas; the agent comments on flow, gating and intensity relative to neighboring rooms.
+7. **Progression check.** "What changes if the player doesn't have telekinesis yet?" → Reachability diff.
+8. **Handoff.** A design is accepted → export a reference image per floor + the notes for Unity implementation.
+
+---
+
+## 12. Roadmap
+
+**Phase 0 — Format & palette by hand (with Orlando).**
+Finalize the level format spec and the palette file. Hand-encode the three-room scenario and at least one more real dungeon section. Hand-encoding real designs will surface format problems before any code exists. Draft the intensity rubric and get reference rooms from Orlando.
+
+**Phase 1 — Core library + CLI.**
+Level model with schema validation, commands with inverses, history and transactions, `check_reachability`. Thin CLI for tests. Acceptance tests from section 9.
+
+**Phase 2 — Headless MCP server.**
+Expose the core via MCP (tools + resources from section 8). Write the agent skill from section 10. Run scenarios 2, 3, 5 and 7 **with no web UI**. If the agent is useful at this stage, the canvas is worth building.
+
+**Phase 3 — `render_map` + `check_structure`.**
+The agent's "contact sheet": PNG render with floors and proposal overlays.
+
+**Phase 4 — Web authoring tool.**
+Canvas on the same server: draw shapes, wall-anchored openings, elevation layers, palette drag-and-drop, notes, proposal overlays, undo/redo via the shared history. Live updates when the agent acts.
+
+**Phase 5 — Unity handoff.**
+Export reference images per floor + notes. Revisit a graybox importer only if manual reconstruction becomes the bottleneck.
+
+**Later / maybe:** SVG import from existing drawings; arcs; side-section view; more validators (pacing metrics, backtracking distance).
+
+---
+
+## 13. Open questions
+
+- Units and axis naming (plan `[x, y]` vs. engine `x/z` with `y` up).
+- How entities are positioned inside a space: relative (`near: north_wall`) vs. coordinates vs. both.
+- How a **telegraph** for hidden connections is represented.
+- Whether proposals live in history branches or in the level file.
+- Whether notes are part of the undoable history (probably yes).
+- File layout: one file per dungeon, or per floor/room to reduce conflicts.
+- Elevation view UX: layer toggles only, or also a side-section view.
+- What exactly goes into the Unity handoff package.
+- How ceilings and multi-level single rooms (balconies, mezzanines) are expressed.
