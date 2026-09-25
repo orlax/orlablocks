@@ -1,0 +1,122 @@
+:root {
+  --bar-bg: rgba(30, 32, 38, 0.92);
+  --bar-text: #d8dbe2;
+  --muted: #8a8f9c;
+  --canvas: #f7f6f2;
+  --grid-minor: #e6e3db;
+  --grid-major: #cfcabe;
+  --human: #3d7be0;
+  --agent: #e0763d;
+  --draft: #3d7be0;
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root { height: 100%; }
+
+body {
+  margin: 0;
+  overflow: hidden;
+  background: var(--canvas);
+  font: 13px/1.4 system-ui, sans-serif;
+}
+
+.app { position: fixed; inset: 0; }
+
+svg.canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: crosshair;
+  touch-action: none;
+  user-select: none;
+}
+
+.grid line { vector-effect: non-scaling-stroke; stroke-width: 1px; }
+.grid line.minor { stroke: var(--grid-minor); }
+.grid line.major { stroke: var(--grid-major); }
+
+/* tool-bar: floating, centered at the bottom with a margin. */
+.dock {
+  position: fixed;
+  left: 16px;
+  right: 16px;
+  bottom: 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.tool-bar {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 12px;
+  max-width: 100%;
+  padding: 8px 14px;
+  border-radius: 12px;
+  background: var(--bar-bg);
+  color: var(--bar-text);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.25);
+  backdrop-filter: blur(6px);
+  pointer-events: auto;
+}
+
+.tool-bar .sep { width: 1px; height: 16px; background: rgba(255, 255, 255, 0.15); }
+.tool-bar .muted { color: var(--muted); }
+
+.tool-bar button {
+  background: transparent;
+  color: var(--bar-text);
+  border: 1px solid var(--muted);
+  border-radius: 6px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+.tool-bar button:hover:not(:disabled) { border-color: var(--bar-text); }
+.tool-bar button:disabled { opacity: 0.5; cursor: default; }
+
+/* Small fixed-width status label, top right. Monospace + fixed width so it never jitters. */
+.info-label {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  width: calc(24ch + 20px); /* 24ch of content + horizontal padding */
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--bar-bg);
+  color: var(--muted);
+  font: 11px/1.4 ui-monospace, monospace;
+  white-space: pre;
+  pointer-events: none;
+}
+.info-label .conn { color: #7fc98f; }
+.info-label .conn.offline { color: #e05555; }
+.info-label .dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  vertical-align: middle;
+}
+
+.legend { display: flex; gap: 10px; color: var(--muted); }
+.swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; }
+
+.error {
+  max-width: 640px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  background: #5a2626;
+  color: #ffd6d6;
+  white-space: pre-wrap;
+  pointer-events: auto;
+}

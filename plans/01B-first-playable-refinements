@@ -1,0 +1,82 @@
+# 01B — First Playable: Refinements
+
+> A running log of refinements made after `01-first-playable` reached its goal. The loop works: a human draws squares in the editor, and a Claude Code agent reads and draws squares over MCP, live. Each entry records what changed, why, and any decision it settled. New refinements go at the bottom.
+
+---
+
+## R1 — Full-window canvas and a floating bottom bar
+
+**Asked for:**
+- The canvas fills the whole window.
+- Resizing the window is handled.
+- Tools and state live in a floating bar at the bottom, with a margin.
+
+**What changed:**
+- **Full-window canvas.** The SVG fills the viewport (`position: fixed; inset: 0`), and the old top header is gone. Scale stays at 1 u = 20 px, and world `0,0` is the window's top-left corner.
+- **Resize.** The editor measures the window (a `resize` listener) and derives its visible world area from it: `width = innerWidth / 20`, `height = innerHeight / 20`. The grid re-renders to cover the new area. Squares don't move, because resizing changes only how much of the world you see, never the data.
+- **Floating bar.** The bar is centered at the bottom, 16 px from the edges, with a translucent dark pill, rounded corners and a shadow. It holds:
+  - the legend (human/agent colors) and the square count
+  - the drawing hint (drag to draw, Alt for free placement)
+  - the cursor readout in world units (it moved here from the corner overlay)
+  - the connection status and the Clear button
+
+  Errors show as a toast just above the bar. The bar wraps on narrow windows.
+- **The view follows the window.** The editor reports its visible area to the server (new WS message `set_view`) on connect and on every resize. `get_scene` therefore returns the area the human can actually see, so "draw 10 squares" lands on screen at any window size. Before this, `view` was a fixed 60×40 u that no longer matched a full-window canvas.
+
+**Decisions:**
+- `view` in the scene is now "last reported editor viewport", not a fixed drawing area. If several tabs are open, the last one to report wins. That's fine for a single-user tool, and we'll revisit it if it causes confusion. Setting the view is not an edit: it doesn't broadcast and won't enter undo history later.
+- The default view (60×40 u) only applies before any editor has connected.
+- The bar is drawn over the canvas and can hide the squares behind it. We accept this for now. Pan (a future phase) is the real fix.
+
+**Files:**
+- `src/web/App.tsx`: `useWindowView`, full-window SVG, and the dock/bar
+- `src/web/styles.css`: rewritten for the full-window layout and the floating bar
+- `src/shared/scene.types.ts`: `ViewSchema` and the `set_view` message
+- `src/server/scene.ts`: `setView`
+- `src/server/ws.ts`: handles `set_view`
+- `src/server/mcp.ts`: tool descriptions now describe `view` as the visible window
+- `CLAUDE.md`: updated `view` description
+
+**Verified:** typecheck, and unit tests (7, including `setView` not broadcasting). A scripted check showed a `set_view` over WS is reflected in MCP `get_scene`. Browser layout and resize are checked by hand in the browser.
+
+---
+
+## R2 — info-label, tool-bar, and a project glossary
+
+**Asked for:**
+- Move the coordinates and the connection status off the bottom bar into a small label at the top right, with a fixed width so it doesn't jitter.
+- Start a project glossary, beginning with **tool-bar** and **info-label**.
+
+**What changed:**
+- **info-label** (top right): shows a connection dot with `connected`/`offline`, and the cursor coordinates as `x   12.50 · y    4.00 u`. It uses monospace text and a fixed width (`24ch` plus padding), and each coordinate is padded to 7 characters with 2 decimals, so nothing moves as the numbers change. It ignores the pointer, so it never blocks drawing.
+- **tool-bar** (bottom center): now holds only the title, legend, square count, drawing hint and Clear. The CSS class was renamed from `.bar` to `.tool-bar` to match the glossary.
+- **`GLOSSARY.md`** at the repo root: defines the editor UI terms (canvas, grid, info-label, tool-bar), the scene and data terms (actor, scene, snap, square, view, world unit), and the system terms (server, MCP server/tools). `CLAUDE.md` points to it and asks agents to use and extend it.
+
+**Decisions:**
+- The glossary is one file at the repo root (not in `plans/`), because it describes the current project rather than one phase. Code names follow glossary terms (e.g. `.tool-bar`, `.info-label`).
+- Coordinates wider than 7 characters (beyond ±9999.99 u) would overflow the info-label. That's acceptable at current scales.
+
+**Files:** `src/web/App.tsx`, `src/web/styles.css`, `GLOSSARY.md`, `CLAUDE.md`.
+
+**Verified:** typecheck. Layout checked by hand in the browser.
+
+---
+
+## R3 — Squares become rects
+
+**Asked for:** the shape was meant to be a free rectangle ("rect"), not a square, so drawing can be freer. Update the MCP tool descriptions to match.
+
+**What changed:**
+- **Data:** `Square { x, y, size }` became `Rect { x, y, width, height }`. Both dimensions are required and must be > 0, with no default. Unlike a square's side, a rect has no obvious default shape. Scene field `squares` became `rects`, and IDs changed from `sq_N` to `rect_N`.
+- **MCP:** `draw_squares` became **`draw_rects`** with input `{ rects: [{ x, y, width, height }] }`. The descriptions of both tools now describe rects: axis-aligned, `x/y` top-left, `width/height` extent, "for a square pass equal width and height". The batch is still all-or-nothing, and errors still name the failing item (e.g. `rects[0].height`).
+- **WebSocket:** `add_squares` became `add_rects`.
+- **Editor:** dragging draws a rect from corner to corner in any direction. Holding **`Shift`** constrains it to a square, which is the usual vector-tool convention. `Alt` still turns off snap. The live label shows `W × H u`, and the hover title and the tool-bar count say "rects".
+
+**Decisions:**
+- This is a clean rename, not an addition. Squares aren't a separate shape type. The scene is in memory only, so there's no data to migrate.
+- `plans/01-first-playable` still says "squares". It's left as the historical record of that phase, and this entry supersedes it.
+- Existing Claude Code sessions have the old tool list cached. Restart the server, then reconnect with `/mcp` (or start a new session) to pick up `draw_rects`.
+
+**Files:** `src/shared/scene.types.ts`, `src/server/{scene,scene.test,ws,mcp}.ts`, `src/web/App.tsx`, `GLOSSARY.md`, `CLAUDE.md`.
+
+**Verified:** typecheck and unit tests (7, rewritten for rects, including "width and height are required"). A scripted MCP client showed the new `draw_rects` schema and descriptions, drew two rects, and got a clear error for a rect missing `height`.
