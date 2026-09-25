@@ -1,0 +1,245 @@
+# 01 — First Playable
+
+> **For the agent reading this:** Read `plans/00-initial` first for the long-term vision. This plan **replaces Phase 0 as the starting point**. Instead of designing the full level format up front, we build the thinnest end-to-end slice of the architecture (web editor ↔ local server ↔ MCP ↔ Claude Code) and grow the format out of it iteratively. Keep this phase small. If something here isn't needed for the goal below, leave it out.
+
+---
+
+## 1. Goal
+
+One demo, end to end:
+
+1. Orlando runs `npm run dev` and opens the editor in a browser.
+2. He can draw squares on the canvas by hand.
+3. He opens a new Claude Code CLI session in the repo folder. It connects to the **already running** MCP server with no manual setup beyond approving the project MCP server once.
+4. He asks: **"draw me 10 squares on a grid"**.
+5. The agent calls the MCP tools, and 10 squares show up in the open browser tab **live**, without a reload.
+6. He can ask "what's on the scene?" and the agent correctly describes the squares, including the ones he drew by hand.
+
+If this works, the architecture is proven: one server owns the state, and the human and the agent both edit it through the same code path.
+
+---
+
+## 2. Scope
+
+### In
+
+- **Editor:** a vector-style canvas with a reference grid behind it. Click-drag to draw a square. It snaps to the grid by default, and holding `Alt` places it freely. A live size label (e.g. `4.5 u`) shows while you drag, and the cursor position shows in a corner. Every square on the scene is rendered. A "Clear" button (a convenience for testing, not exposed to the agent).
+- **Server:** one Node process that holds the scene in memory and serves:
+  - the web editor,
+  - a WebSocket for the editor (commands in, scene updates out),
+  - an MCP endpoint (Streamable HTTP) for Claude Code.
+- **MCP tools:** `get_scene`, `draw_squares`.
+- **Harness:** `.mcp.json` at the repo root, a minimal `CLAUDE.md`, and one `npm run dev` command.
+
+### Out (deliberately deferred)
+
+- YAML format, palette, notes, connections, elevations, and any shape other than a square.
+- Persistence. The scene lives in memory, so restarting the server clears it.
+- Undo/redo, history, transactions, proposals.
+- Selecting, moving, resizing or deleting individual squares.
+- Validators, `render_map`, skills, the design guide.
+- Multiple scenes or files.
+
+---
+
+## 3. Key decision: MCP over HTTP, not stdio
+
+This is the one choice in this phase that really matters.
+
+The usual Claude Code MCP setup is **stdio**: Claude Code starts the server as a child process. That would give every Claude session **its own process with its own scene**, separate from the one the browser is talking to. The agent would draw into a scene nobody can see.
+
+So the MCP server runs **inside the same long-lived process** as the web server, exposed over **Streamable HTTP** at `http://localhost:<port>/mcp`. Claude Code connects to it as a remote server:
+
+```json
+// .mcp.json
+{
+  "mcpServers": {
+    "dungeon-designer": {
+      "type": "http",
+      "url": "http://localhost:5170/mcp"
+    }
+  }
+}
+```
+
+This matches `00-initial` §4 ("local server is the source of truth").
+
+**Consequence:** the server has to be running *before* Claude Code starts, otherwise the MCP server shows as failed. You can reconnect from `/mcp` inside Claude Code. `CLAUDE.md` should say this.
+
+---
+
+## 4. Stack
+
+TypeScript end to end, as `00-initial` suggests.
+
+| Piece | Choice | Why |
+|---|---|---|
+| Runtime | Node 22+, `tsx` for running TS directly | No build step for the server in dev |
+| HTTP + WS | `express` + `ws` | Boring and well documented |
+| MCP | `@modelcontextprotocol/sdk` (Streamable HTTP transport, **stateless** mode) | Official SDK. Stateless means no session bookkeeping, and every tool call reads the one shared scene |
+| Schemas | `zod` | Shared by MCP tool input schemas and WS message validation |
+| Editor | Vite + React, rendering **SVG** | The UI will grow panels (palette, notes, variants), and SVG matches the "UI renders to SVG" decision |
+| Dev serving | Vite in **middleware mode** inside the server | One process, one port, one command |
+| Tests | `vitest` | Only for the scene core in this phase |
+
+**Confirmed:** React for the editor. Port `5170`.
+
+---
+
+## 5. Scene model (v0)
+
+Deliberately tiny. This is the seed of the level format, not the format itself.
+
+```ts
+type Actor = "human" | "agent";
+
+type Square = {
+  id: string;        // server-assigned, e.g. "sq_1"
+  x: number;         // world units, top-left corner; any finite number
+  y: number;         // world units, +y points down (screen convention)
+  size: number;      // side length in world units, > 0
+  createdBy: Actor;
+};
+
+type Scene = {
+  view: { x: number; y: number; width: number; height: number };  // area the editor shows, e.g. 0,0 → 60×40
+  squares: Square[];
+};
+```
+
+- **Coordinates are continuous world units, not grid cells.** This is a vector drawing, not a tile map. `00-initial` treats a unit as "roughly a meter", so a unit here is abstract but meant to become meters.
+- **The grid is only a measuring and snapping aid.** It is drawn every 1 unit, with a stronger line every 5. It isn't part of the data, and squares can sit anywhere, including off the grid.
+- **Screen scale is a view concern.** At default zoom, 1 unit = 20 px. We store world units and never pixels, so zoom (coming later) doesn't change the data. The editor displays sizes in units.
+- Snapping rounds to 0.5 units. Values from the agent are kept as given, but rounded to 2 decimals so the scene stays readable.
+- `createdBy` is the smallest possible seed of the "actor on every command" idea from `00-initial` §7. The editor draws agent squares in a different color, which makes the demo visibly prove who did what.
+- The canvas is unbounded, so there's no bounds check. The only validation is finite numbers and `size > 0`. Overlaps are allowed. `view` tells the agent which area Orlando can currently see. Squares outside it are valid but off-screen, since there's no pan/zoom yet.
+
+### One code path for edits
+
+```
+scene.ts
+  getScene(): Scene
+  addSquares(input: {x, y, size}[], actor): Square[]   // validates all, applies all-or-nothing
+  clear(actor): void
+  onChange(listener)                                   // server broadcasts to WS clients
+```
+
+Both the WebSocket handler and the MCP tool call `addSquares`. This is the embryo of the command layer. Keep it as a plain module with no server dependencies, so it can later become the core library (Phase 1 of `00-initial`).
+
+---
+
+## 6. MCP surface
+
+### `get_scene`
+
+- Input: none.
+- Output: the scene as JSON text (view + all squares).
+
+### `draw_squares`
+
+- Input: `{ squares: [{ x, y, size? }] }`. `size` defaults to 1. It takes a **batch**, so "draw 10 squares" is one call (following the "small surface, batched commands" rule in `00-initial`).
+- Behavior: validate everything first. If any square is malformed, reject the whole batch with an error that says which item failed and why (e.g. `squares[3]: size must be > 0, got -2`). Otherwise add them all.
+- Output: the created squares with their IDs, plus the new total count.
+
+Tool descriptions should state the coordinate convention (world units, `x`/`y` = top-left corner, +y down) and the default view, so the agent doesn't have to guess. `get_scene` also returns the current `view`.
+
+---
+
+## 7. Editor ↔ server protocol
+
+JSON over one WebSocket at `/ws`.
+
+```
+server → client   { type: "scene", scene }                      // on connect and after every change
+client → server   { type: "add_squares", squares: [{x,y,size}] }
+client → server   { type: "clear" }
+```
+
+The server sends the full scene on every change. It's tiny, and the client stays dumb: no diffing, no optimistic updates. The client re-renders whatever the server says. Revisit this when scenes get big.
+
+Validate incoming messages with the same zod schemas.
+
+---
+
+## 8. Harness
+
+- **`.mcp.json`** (committed): the HTTP server entry from §3.
+- **`CLAUDE.md`** (committed, short):
+  - What the project is (one line) and a pointer to `plans/`.
+  - "Start the server with `npm run dev` before starting Claude Code. If the `dungeon-designer` MCP server shows as failed, start it and use `/mcp` to reconnect."
+  - "To change the scene, use the `dungeon-designer` MCP tools. Don't edit files to draw."
+- **`npm run dev`**: starts the single server process and prints the editor URL.
+- On first launch, Claude Code asks you to approve the project-scoped MCP server. That's expected.
+
+No skills yet. Design judgment comes in later phases.
+
+---
+
+## 9. Suggested file layout
+
+```
+package.json
+tsconfig.json
+.mcp.json
+CLAUDE.md
+src/
+  shared/
+    scene.types.ts      # Square, Scene, zod schemas (shared by server + web)
+  server/
+    scene.ts            # in-memory scene + addSquares/clear/onChange (pure, testable)
+    scene.test.ts
+    ws.ts               # WebSocket handler
+    mcp.ts              # MCP server + tools, mounted at /mcp
+    main.ts             # express app, Vite middleware, wires it all together
+  web/
+    index.html
+    main.tsx
+    App.tsx             # reference grid + squares SVG, drag-to-draw with snap, size label, Clear button
+    useScene.ts         # WS connection -> current scene
+```
+
+A single package for now. Split into workspaces only when a second consumer (e.g. the CLI) shows up.
+
+---
+
+## 10. Build steps
+
+1. **Scaffold:** package.json, TS config, deps, `npm run dev` serving a blank page through Vite middleware.
+2. **Scene core + tests:** `scene.ts` with input validation, all-or-nothing batches, rounding to 2 decimals, and change events. Unit tests for valid batch, invalid-item rejection (nothing applied), default size, and non-integer coordinates.
+3. **WebSocket + editor:** render the reference grid and squares from server state. Drag-to-draw (snapped, `Alt` for free) sends `add_squares`. Two browser tabs stay in sync.
+4. **MCP endpoint:** mount Streamable HTTP at `/mcp` with `get_scene` and `draw_squares`. Check with the MCP Inspector (`npx @modelcontextprotocol/inspector`) before involving Claude Code.
+5. **Harness:** `.mcp.json` and `CLAUDE.md`. Start a fresh Claude Code session and run the acceptance test.
+
+---
+
+## 11. Acceptance test
+
+With the server running and the editor open:
+
+1. Draw 2–3 squares by hand. They appear in the human color.
+2. In a fresh `claude` session in the repo folder, run `/mcp` → `dungeon-designer` is connected and shows 2 tools.
+3. Ask *"draw me 10 squares on a grid"* → the agent makes one `draw_squares` call, and 10 squares appear in the browser live in the agent color.
+4. Ask *"what's on the scene?"* → the agent calls `get_scene` and reports 12–13 squares, telling the human-drawn ones apart from its own.
+5. Ask for a batch where one square has size `-2` → the tool rejects it with a clear error, and the agent relays it or corrects it. Nothing partial gets applied.
+6. Ask *"draw a 3.5-unit square at 10.25, 4"* → it appears at exactly that position and size, off the grid lines.
+7. Open a second browser tab → it shows the same scene.
+
+---
+
+## 12. What this sets up for next time
+
+Candidate next phases, to pick once this one works:
+
+- **Persistence + a readable file:** save the scene to disk. That's where the YAML-vs-JSON question from `00-initial` §3 gets decided for real.
+- **Undo/redo + history:** turn `addSquares` into real commands with inverses and actors, and let an agent batch be one undo step.
+- **More shapes:** polygons and circles, then spaces with IDs, which starts the actual level format from `00-initial` §5.
+- **Pan/zoom** in the editor, so the unbounded canvas is actually navigable.
+- **Selection / move / delete** in the editor, plus matching MCP tools. This will test how small the tool surface can stay.
+
+## 13. Decisions
+
+None open for this phase. Settled:
+
+- Editor uses React. Port is `5170`.
+- World units are an abstract `u` for now: 1 u = 20 px at default zoom. We rename them once the palette brings real jump metrics.
+- Snap is 0.5 u. The default view is 60×40 u, starting at 0,0.
