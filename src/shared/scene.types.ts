@@ -2,13 +2,21 @@ import { z } from "zod";
 
 export type Actor = "human" | "agent";
 
-/** World units (u). At default zoom 1 u = 20 px; the data never stores pixels. */
-export type Rect = {
-  id: string;
-  x: number; // top-left corner, +x right
-  y: number; // top-left corner, +y down
+/** A room is hollow (floor and walls, no ceiling); a volume is solid (something you stand on or bump into). */
+export type BoxKind = "room" | "volume";
+
+/**
+ * Meters, y up. A box stands on the ground (y = 0): its footprint is on the x/z plane with `x, z` at the
+ * min corner, `width` along +x and `depth` along +z, and it rises to `height`.
+ */
+export type Box = {
+  id: string; // server-assigned, per kind: "room_1", "volume_1", ...
+  kind: BoxKind;
+  x: number;
+  z: number;
   width: number; // > 0
-  height: number; // > 0
+  depth: number; // > 0
+  height: number; // >= MIN_HEIGHT
   createdBy: Actor;
 };
 
@@ -24,7 +32,7 @@ export type View = {
 
 export type Scene = {
   view: View;
-  rects: Rect[];
+  boxes: Box[];
 };
 
 export const DEFAULT_VIEW: View = {
@@ -32,15 +40,28 @@ export const DEFAULT_VIEW: View = {
   yaw: 45,
   bounds: { x: -30, z: -20, width: 60, depth: 40 },
 };
+/** Ground snap for footprints. */
 export const SNAP = 0.5;
+/** Vertical snap for heights, and the smallest height a box can have. */
+export const HEIGHT_SNAP = 0.05;
+export const MIN_HEIGHT = HEIGHT_SNAP;
+export const DEFAULT_HEIGHT: Record<BoxKind, number> = { room: 3, volume: 0.25 };
 
-export const RectInputSchema = z.object({
-  x: z.number().describe("Top-left x in world units"),
-  y: z.number().describe("Top-left y in world units (+y is down)"),
-  width: z.number().positive().describe("Width in world units, > 0"),
-  height: z.number().positive().describe("Height in world units, > 0"),
+export const BoxKindSchema = z.enum(["room", "volume"]);
+
+export const BoxInputSchema = z.object({
+  kind: BoxKindSchema.describe("room = hollow (floor + walls, no ceiling); volume = solid"),
+  x: z.number().describe("Footprint min-corner x, meters"),
+  z: z.number().describe("Footprint min-corner z, meters"),
+  width: z.number().positive().describe("Extent along +x, meters, > 0"),
+  depth: z.number().positive().describe("Extent along +z, meters, > 0"),
+  height: z
+    .number()
+    .min(MIN_HEIGHT)
+    .optional()
+    .describe(`Meters, >= ${MIN_HEIGHT}. Defaults to ${DEFAULT_HEIGHT.room} for a room, ${DEFAULT_HEIGHT.volume} for a volume`),
 });
-export type RectInput = z.input<typeof RectInputSchema>;
+export type BoxInput = z.input<typeof BoxInputSchema>;
 
 export const ViewSchema = z.object({
   focus: z.object({ x: z.number(), z: z.number() }),
@@ -49,7 +70,7 @@ export const ViewSchema = z.object({
 });
 
 export const ClientMessageSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("add_rects"), rects: z.array(RectInputSchema).min(1) }),
+  z.object({ type: z.literal("add_boxes"), boxes: z.array(BoxInputSchema).min(1) }),
   z.object({ type: z.literal("clear") }),
   z.object({ type: z.literal("set_view"), view: ViewSchema }),
 ]);

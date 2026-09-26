@@ -11,8 +11,8 @@ An ideation tool for dungeon layouts: a local web editor, a local server that ow
 
 ## Working with the scene
 
-- To read or change the scene, use the `dungeon-designer` MCP tools (`get_scene`, `draw_rects`). Don't edit files to draw.
-- Coordinates are world units (`u` = meters), not pixels. The editor is a 3D view of the ground plane (x/z, y up) seen from a fixed pitch, rotating only by yaw. During phase 02 rects still exist and lie flat on the ground: rect `x` → ground x, rect `y` → ground z.
+- To read or change the scene, use the `dungeon-designer` MCP tools (`get_scene`, `draw_boxes`). Don't edit files to draw.
+- Coordinates are world units (`u` = meters), not pixels. The world is 3D with y up and the ground at y = 0. The scene holds **boxes**: a room (hollow) or a volume (solid) standing on the ground, with its footprint `x, z` at the min corner, `width` along +x, `depth` along +z, and a `height`. IDs are per kind (`room_1`, `volume_1`). The editor is a 3D view seen from a fixed pitch, rotating only by yaw.
 - The scene's `view` is what the editor currently shows: `focus` (ground point at the screen center), `yaw` (degrees) and `bounds` (the axis-aligned box around the visible ground). Before a browser connects it's focus 0,0, yaw 45, bounds -30..30 × -20..20.
 - The scene is in memory only, so restarting the server clears it.
 

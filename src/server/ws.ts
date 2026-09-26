@@ -34,7 +34,7 @@ export function attachWebSocket(httpServer: Server, store: SceneStore) {
 
       try {
         const msg = parsed.data;
-        if (msg.type === "add_rects") store.addRects(msg.rects, "human");
+        if (msg.type === "add_boxes") store.drawBoxes(msg.boxes, "human");
         else if (msg.type === "clear") store.clear();
         else if (msg.type === "set_view") store.setView(msg.view);
       } catch (err) {

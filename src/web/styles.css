@@ -3,9 +3,6 @@
   --bar-text: #d8dbe2;
   --muted: #8a8f9c;
   --canvas: #f7f6f2;
-  --human: #3d7be0;
-  --agent: #e0763d;
-  --draft: #3d7be0;
 }
 
 * { box-sizing: border-box; }
@@ -30,6 +27,19 @@ body {
   user-select: none;
 }
 .viewport.panning { cursor: grabbing; }
+.viewport.drawing { cursor: crosshair; }
+
+/* Live footprint size next to the cursor while drawing. */
+.draft-label {
+  position: absolute;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--bar-bg);
+  color: var(--bar-text);
+  font: 11px/1.4 ui-monospace, monospace;
+  white-space: nowrap;
+  pointer-events: none;
+}
 
 /* tool-bar: floating, centered at the bottom with a margin. */
 .dock {
@@ -104,8 +114,6 @@ body {
   vertical-align: middle;
 }
 
-.legend { display: flex; gap: 10px; color: var(--muted); }
-.swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; }
 
 .error {
   max-width: 640px;

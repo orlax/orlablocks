@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useRef, useState, type PointerEvent, type RefObject } from "react";
+import { useEffect, useRef, useState, type PointerEvent, type RefObject } from "react";
 import { Canvas, invalidate, useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
-import type { Actor, Rect, View } from "../shared/scene.types";
+import { DEFAULT_HEIGHT, SNAP, type Box, type BoxInput, type BoxKind, type View } from "../shared/scene.types";
+import { BoxMesh } from "./BoxMesh";
 import {
   cameraPosition,
   DEFAULT_CAMERA,
@@ -17,17 +18,35 @@ import {
   type GroundPoint,
 } from "./camera";
 import { Grid } from "./Grid";
+import { Lighting } from "./Lighting";
 
-/** Same colors as `--human` / `--agent` in styles.css. */
-const ACTOR_COLOR: Record<Actor, string> = { human: "#3d7be0", agent: "#e0763d" };
 const BACKGROUND = "#f7f6f2";
 const VIEW_REPORT_MS = 100;
 
 type YawKey = "left" | "right";
 const YAW_KEYS: Record<string, YawKey> = { a: "left", arrowleft: "left", d: "right", arrowright: "right" };
 
+export type Tool = "hand" | BoxKind;
+
+type Footprint = { x: number; z: number; width: number; depth: number };
+
+const snap = (n: number) => Math.round(n / SNAP) * SNAP;
+const round2 = (n: number) => Math.round(n * 100) / 100;
+
+/** Footprint spanning `start` to `end` in any drag direction; `square` constrains it to the larger side. */
+function footprintFrom(start: GroundPoint, end: GroundPoint, square: boolean): Footprint {
+  const dx = end.x - start.x;
+  const dz = end.z - start.z;
+  const side = Math.max(Math.abs(dx), Math.abs(dz));
+  const width = square ? side : Math.abs(dx);
+  const depth = square ? side : Math.abs(dz);
+  return { x: dx < 0 ? start.x - width : start.x, z: dz < 0 ? start.z - depth : start.z, width, depth };
+}
+
 type Props = {
-  rects: Rect[];
+  tool: Tool;
+  boxes: Box[];
+  onDrawBox: (box: BoxInput) => void;
   onCursor: (point: GroundPoint | null) => void;
   onViewChange: (view: View) => void;
 };
@@ -36,40 +55,80 @@ type Props = {
  * The 3D view. The camera state lives in a ref, not React state: it changes every frame while panning or
  * rotating, and the three.js side reads it in `useFrame`. Only the reported `view` goes back to React, throttled.
  */
-export function Viewport({ rects, onCursor, onViewChange }: Props) {
+export function Viewport({ tool, boxes, onDrawBox, onCursor, onViewChange }: Props) {
   const cam = useRef<CameraState>({ ...DEFAULT_CAMERA });
   const wrap = useRef<HTMLDivElement>(null);
   const yawKeys = useRef(new Set<YawKey>());
-  const drag = useRef<{ pointerId: number; grabbed: GroundPoint } | null>(null);
+  const pan = useRef<{ pointerId: number; grabbed: GroundPoint } | null>(null);
+  const drawing = useRef<{ pointerId: number; kind: BoxKind; start: GroundPoint } | null>(null);
   const [panning, setPanning] = useState(false);
+  const [draft, setDraft] = useState<(Footprint & { kind: BoxKind; sx: number; sy: number }) | null>(null);
 
   const local = (e: { clientX: number; clientY: number }) => {
     const r = wrap.current!.getBoundingClientRect();
     return { sx: e.clientX - r.left, sy: e.clientY - r.top, size: { width: r.width, height: r.height } };
   };
 
-  // Hand tool: drag anywhere to pan. The grabbed ground point stays under the cursor.
-  const onPointerDown = (e: PointerEvent) => {
-    if (e.button !== 0 && e.button !== 1) return;
-    e.currentTarget.setPointerCapture(e.pointerId);
+  /** Ground point under the pointer, snapped to 0.5 m unless Alt is held. */
+  const groundAt = (e: PointerEvent) => {
     const { sx, sy, size } = local(e);
-    drag.current = { pointerId: e.pointerId, grabbed: screenToGround(cam.current, size, sx, sy) };
-    setPanning(true);
+    const g = screenToGround(cam.current, size, sx, sy);
+    return { sx, sy, point: e.altKey ? g : { x: snap(g.x), z: snap(g.z) } };
+  };
+
+  const cancelDrawing = () => {
+    drawing.current = null;
+    setDraft(null);
+  };
+
+  // Switching tools mid-drag drops the unfinished footprint.
+  useEffect(cancelDrawing, [tool]);
+
+  // Hand tool (or middle button in any tool): drag to pan, the grabbed ground point stays under the cursor.
+  // Room / volume tool: drag a footprint on the ground.
+  const onPointerDown = (e: PointerEvent) => {
+    const panButton = e.button === 1 || (e.button === 0 && tool === "hand");
+    const drawButton = e.button === 0 && tool !== "hand";
+    if (!panButton && !drawButton) return;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    if (panButton) {
+      const { sx, sy, size } = local(e);
+      pan.current = { pointerId: e.pointerId, grabbed: screenToGround(cam.current, size, sx, sy) };
+      setPanning(true);
+    } else if (tool !== "hand") {
+      const { sx, sy, point } = groundAt(e);
+      drawing.current = { pointerId: e.pointerId, kind: tool, start: point };
+      setDraft({ kind: tool, ...point, width: 0, depth: 0, sx, sy });
+    }
   };
 
   const onPointerMove = (e: PointerEvent) => {
     const { sx, sy, size } = local(e);
-    if (drag.current?.pointerId === e.pointerId) {
-      cam.current = panTo(cam.current, size, drag.current.grabbed, sx, sy);
+    if (pan.current?.pointerId === e.pointerId) {
+      cam.current = panTo(cam.current, size, pan.current.grabbed, sx, sy);
       invalidate();
+    }
+    const d = drawing.current;
+    if (d?.pointerId === e.pointerId) {
+      const { point } = groundAt(e);
+      setDraft({ kind: d.kind, ...footprintFrom(d.start, point, e.shiftKey), sx, sy });
     }
     onCursor(screenToGround(cam.current, size, sx, sy));
   };
 
   const onPointerUp = (e: PointerEvent) => {
-    if (drag.current?.pointerId !== e.pointerId) return;
-    drag.current = null;
-    setPanning(false);
+    if (pan.current?.pointerId === e.pointerId) {
+      pan.current = null;
+      setPanning(false);
+    }
+    const d = drawing.current;
+    if (d?.pointerId === e.pointerId) {
+      const f = footprintFrom(d.start, groundAt(e).point, e.shiftKey);
+      if (round2(f.width) > 0 && round2(f.depth) > 0) {
+        onDrawBox({ kind: d.kind, x: round2(f.x), z: round2(f.z), width: round2(f.width), depth: round2(f.depth) });
+      }
+      cancelDrawing();
+    }
   };
 
   // Wheel zoom around the focus point. A native listener, because React's wheel listener is passive
@@ -89,6 +148,7 @@ export function Viewport({ rects, onCursor, onViewChange }: Props) {
   // Yaw while A/D or ←/→ is held. The rig integrates it per frame.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") cancelDrawing();
       const key = YAW_KEYS[e.key.toLowerCase()];
       if (!key || e.metaKey || e.ctrlKey || e.altKey) return;
       e.preventDefault();
@@ -115,7 +175,7 @@ export function Viewport({ rects, onCursor, onViewChange }: Props) {
   return (
     <div
       ref={wrap}
-      className={panning ? "viewport panning" : "viewport"}
+      className={`viewport ${panning ? "panning" : tool === "hand" ? "" : "drawing"}`}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
@@ -123,19 +183,46 @@ export function Viewport({ rects, onCursor, onViewChange }: Props) {
       onPointerLeave={() => onCursor(null)}
     >
       <Canvas
-        flat
+        shadows="percentage"
+        // Neutral tone mapping lets sunlit near-white surfaces roll off instead of clipping. The background
+        // and the grid shader aren't tone mapped, so they keep their exact colors.
+        onCreated={({ gl }) => {
+          gl.toneMapping = THREE.NeutralToneMapping;
+        }}
         frameloop="demand"
         camera={{ position: [start.x, start.y, start.z], fov: FOV_DEG, near: 0.5, far: MAX_DISTANCE * 4 }}
       >
         <color attach="background" args={[BACKGROUND]} />
         <CameraRig cam={cam} yawKeys={yawKeys} onViewChange={onViewChange} />
+        <Lighting cam={cam} />
         <Grid cam={cam} />
         <OriginAxes />
-        {rects.map((r) => (
-          <RectTile key={r.id} rect={r} />
-        ))}
+        <Boxes boxes={boxes} draft={draft} />
       </Canvas>
+      {draft && (draft.width > 0 || draft.depth > 0) && (
+        <div className="draft-label" style={{ left: draft.sx + 14, top: draft.sy + 14 }}>
+          {round2(draft.width)} × {round2(draft.depth)} m
+        </div>
+      )}
     </div>
+  );
+}
+
+/**
+ * The scene's boxes plus the draft. With frameloop="demand", r3f redraws when objects are added or changed
+ * but not when they're removed (Clear, a cancelled draft), so request a frame after every change.
+ */
+function Boxes({ boxes, draft }: { boxes: Box[]; draft: (Footprint & { kind: BoxKind }) | null }) {
+  useEffect(() => invalidate(), [boxes, draft]);
+  return (
+    <>
+      {boxes.map((b) => (
+        <BoxMesh key={b.id} {...b} />
+      ))}
+      {draft && draft.width > 0 && draft.depth > 0 && (
+        <BoxMesh {...draft} height={DEFAULT_HEIGHT[draft.kind]} draft />
+      )}
+    </>
   );
 }
 
@@ -199,35 +286,6 @@ function OriginAxes() {
         <boxGeometry args={[THICK, THICK, LENGTH]} />
         <meshBasicMaterial color="#3d6fd0" />
       </mesh>
-    </group>
-  );
-}
-
-/** Transitional (02.1): a rect lies flat on the ground, with rect x → ground x and rect y → ground z. */
-function RectTile({ rect }: { rect: Rect }) {
-  const { x, y: z, width, height: depth } = rect;
-  const color = ACTOR_COLOR[rect.createdBy];
-  const outline = useMemo(
-    () =>
-      new THREE.BufferGeometry().setFromPoints([
-        new THREE.Vector3(x, 0.01, z),
-        new THREE.Vector3(x + width, 0.01, z),
-        new THREE.Vector3(x + width, 0.01, z + depth),
-        new THREE.Vector3(x, 0.01, z + depth),
-      ]),
-    [x, z, width, depth],
-  );
-  useEffect(() => () => outline.dispose(), [outline]);
-
-  return (
-    <group>
-      <mesh position={[x + width / 2, 0.005, z + depth / 2]} rotation-x={-Math.PI / 2}>
-        <planeGeometry args={[width, depth]} />
-        <meshBasicMaterial color={color} transparent opacity={0.35} depthWrite={false} side={THREE.DoubleSide} />
-      </mesh>
-      <lineLoop geometry={outline} renderOrder={1}>
-        <lineBasicMaterial color={color} />
-      </lineLoop>
     </group>
   );
 }

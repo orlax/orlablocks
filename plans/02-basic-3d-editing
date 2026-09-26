@@ -346,7 +346,7 @@ Settled:
 
 ## 13. Progress
 
-### 02.1 — 3D view and hand tool (done, pending browser check)
+### 02.1 — 3D view and hand tool (done)
 
 - The SVG canvas is replaced by react-three-fiber with a camera at a fixed 35° pitch (starts at yaw 45° with the focus at the origin, about 20 px/m at the focus), a shader grid on the ground and the hand tool (drag to pan, left or middle button; wheel or pinch to zoom toward the focus; A/D and ←/→ for yaw at 90°/s).
 - Rects render as flat tiles on the ground (rect y → ground z). `draw_rects` is unchanged apart from its description.
@@ -355,3 +355,16 @@ Settled:
 - **Guess to confirm by feel:** A/← orbits the camera to its left (yaw goes down), D/→ to its right.
 - Human drawing is paused until 02.2 brings the Room and Volume tools.
 - **Refinement after the browser check:** the orthographic camera looked wrong at some yaw angles, so it's now a **perspective camera with a narrow 30° vertical field of view** (a long lens: mild perspective). Zoom moves the camera toward the focus point instead of changing an orthographic scale. The origin axes are now 0.15 m thick bars instead of 1 px lines. This supersedes "orthographic" in §2, §8 and §12.
+
+### 02.2 — Rooms and volumes (done, pending browser check)
+
+- `Box { id, kind, x, z, width, depth, height, createdBy }` replaces `Rect`, with per-kind IDs that are never reused (not even after Clear). Missing heights default to 3 m (room) or 0.25 m (volume). Heights below 0.05 m are rejected.
+- The Room (`R`) and Volume (`V`) tools draw a footprint on the ground with a live draft box and a `W × D m` label next to the cursor. `Shift` gives a square, `Alt` turns off snap, and `Esc` or switching tools cancels. `H` goes back to the hand tool. The middle button pans in every tool.
+- Rooms render with a faint floor and translucent walls, no ceiling. Volumes are solid, with fixed per-face shading instead of lights, so the sides read as sides at any yaw. Both have outlined edges in the actor color.
+- MCP: `draw_boxes` replaces `draw_rects`. WS: `add_boxes` replaces `add_rects`. Rects are gone.
+- **Fix:** with `frameloop="demand"`, r3f doesn't redraw when objects are only removed, so Clear left the old boxes on screen until the next pan or zoom. The viewport now requests a frame whenever the boxes or the draft change. Undo in 02.3 depends on this.
+- **Refinement: graybox look.** The view now reads like a grayboxed game level instead of colored diagrams:
+  - Gray matte (Lambert) materials lit by a hemisphere light and a sun that casts soft shadows. The sun and its shadow camera follow the focus point and cover the visible ground (radius clamped to 20–120 m). A transparent ground plane catches the shadows.
+  - Room walls are **0.2 m thick, centered on the footprint edge**, so two rooms sharing an edge read as one wall. It's rendering only: the data still stores the footprint, which is the wall centerline. A room narrower than one wall thickness renders as a solid block.
+  - Rooms get a thin floor slab (it hides the grid inside the room). Volumes are solid blocks in a slightly darker, cooler gray. Edges are outlined subtly.
+  - **Actor colors are no longer shown** (supersedes "actor keeps its color coding" in §8). `createdBy` is still in the data and in `get_scene`. The draft stays translucent blue so it reads as not placed yet.  - **Second pass, after a reference image:** the grays were too dark. Materials are now warm near-white with a **world-aligned 1 m tile texture** on every face (lines on whole meters, so tiles line up across boxes and with the ground grid). The lights are brighter, and **Neutral tone mapping** rolls off sunlit whites instead of clipping them (the background and the grid shader aren't tone mapped). Shadows are a bit stronger and outlines fainter.
