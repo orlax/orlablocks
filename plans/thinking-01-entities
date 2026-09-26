@@ -1,0 +1,37 @@
+so there are two kind of things I see right now:
+- we have level geometry, that is the rooms and volumes we have right now
+    that we can expand with more things, at least one more cilynder primitive.
+    and a free form bezier editing for free form shapes I guess (this can cover more complext form rooms)
+    maybe I should be able to turn a simple shape into a freeform like I do on vector tools
+
+
+other quality of life is 
+- moving with alt key to duplicate the current object. 
+- then alt + J to just keep doing that duplication? like in the same direction from the original so I can quickly stamp a bunch of things 
+- "array" tool so I can:
+    take one object and duplicate it in certain posicions
+        like across a circle
+        on a grid or single row
+        stacking 
+        add noisse to the distribution
+- be able to "reflect" things across x and y axis would be good too.
+
+then as scenes become more complex we need to thing back to the Agent, the scene description will need to start being sumarized in some way so the explanation about it is more semantic and the agent can zoom in where it needs only?
+
+
+what about entities? like non-shapes
+
+- would be cool to have a "human" to put as reference could be like the stick figures (where do we source the model)
+- a placeholder for "enemy" could be cool but we can just use a "pawn" then and just change pawn sizes and colors to signify things.
+- we need also at minimun:
+    - doors
+    - windows
+    - holes on the ground of rooms
+
+- we need "flags" wich can be literal flags with certain color and at least some initials written on then 
+so that if certain area needs TK I can drop the TK flag in there. 
+- we need just "notes" so that I can drop free text notes somewhere. 
+
+- "prefabs" so you can duplicate instances and then edit multiple things at once (again we dont want a 3d modelling tool or just replicate unity.)
+
+
