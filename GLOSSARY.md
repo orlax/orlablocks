@@ -18,6 +18,7 @@ Shared vocabulary for this project, for humans and agents alike. Use these names
 - **marquee**: the rectangle you drag on empty ground with the Select tool to select every node it touches (from 03).
 - **origin axes**: a marker at the world origin, with +x as a red bar, +y as a green bar and +z as a blue bar (the gizmo's colors), for orientation while rotating.
 - **outliner**: the tree panel listing nodes by name, used to select, rename, group and reorder (from 03).
+- **scale handles**: the 8 small white squares on the corners and edge midpoints of a single selected box's top face, turned with the box. Dragging one resizes the box in its own axes with the opposite side fixed: `Shift` keeps the aspect ratio, `Alt` scales from the center, `Cmd/Ctrl` turns off snap (from 03).
 - **select tool**: `V`, click to select (`Shift` for multi), drag a node to move it, drag empty ground for a marquee (from 03).
 - **selection**: the boxes currently selected in the editor, highlighted with a blue tint and outline and described in the contextual bar. The Select tool selects on click, `Esc` deselects, `Delete` removes the selection, and drawing never changes it (from 03). It's also reported to the server as **selection (scene)**.
 - **tool-bar**: the floating bar at the bottom center, with a margin from the window edges. It holds the big icon tool buttons (Select, Hand, Box, with the shortcut letter in the corner), Undo, Redo and Clear icon buttons, the room and volume counts, and a hint for the current tool (from 03).

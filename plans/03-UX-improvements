@@ -379,3 +379,14 @@ Adopted as recommended (say if any should change):
 - Live labels: `x 4.50 · z 2.00` (the selection's center), `y 3.00 m` (its bottom), `h 3.25 m`. One drag sends one `update_nodes` on release (one undo step), and the result stays on screen until the server's scene confirms it. `Esc` mid-drag cancels only the drag (a capture-phase listener that stops the app's Esc deselect), as it does for a draft. So do switching tools, holding Space, and a dragged box disappearing.
 - Cursors: `move` over and while dragging the body or the x / z arrows, `ns-resize` for y and height.
 - **Tests:** bounds (rotated, several boxes), elevation targets and snapping, hit testing of each part, x-arrow drag (snap, off-axis), body drag (grab point, Shift lock), y drag onto a room top, height drag (min 0.05 m), multi-box moves, effective changes. 72 tests pass.
+
+### 03.4 — Scale: 8 footprint handles (done)
+
+- The height handle already landed in 03.3 (the yellow cube), so this increment is the **8 scale handles**: small white squares with a dark rim on the top face's corners and edge midpoints, turned with the box, a constant size on screen and drawn over everything. They light up blue on hover. Single box only.
+- Dragging one projects the cursor onto the top face's plane, in the **box's own frame** (`boxAxes` / `scaleHandlePoint` in `gizmo.ts`), so they already work on rotated boxes, ahead of 03.5. The grab offset is kept, so the handle doesn't jump.
+- The opposite side stays fixed, and the center moves by half the change. `Alt` scales around the center. `Shift` keeps the aspect ratio: a corner follows whichever side grows more, and an edge scales the other side around the center (as in Figma).
+- **Snap** is relative, as with moves: each side moves in 0.5 m steps from where it was (`Alt`: 0.5 m per side), so boxes on the grid stay on it. A side never goes below 0.05 m, and when snapping it stops at the smallest size on its 0.5 m lattice. `Cmd/Ctrl` turns snapping off.
+- Live label `6.00 × 4.00 m`. One drag is one `update_nodes` (x, z, width, depth), so one undo step.
+- The cursor over or dragging a scale handle is the resize cursor matching the direction that handle points on screen (`ns`, `ew`, `nwse`, `nesw`), so it's right at any yaw and rotation.
+- Handle priority: the height cube wins, otherwise the nearest handle (scale or arrow) within 10 px.
+- **Tests:** handle positions (including rotated), hit testing, corner, edge, `Alt`, `Shift` (corner and edge), a rotated box, and the minimum size with and without snap. 80 tests pass.

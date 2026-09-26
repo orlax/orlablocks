@@ -34,6 +34,9 @@ import {
   effectiveChanges,
   gizmoAnchor,
   hitGizmo,
+  isScalePart,
+  SCALE_PARTS,
+  scaleCursor,
   selectionBounds,
   startBodyDrag,
   startHandleDrag,
@@ -135,13 +138,15 @@ export function Viewport({ tool, boxes, selection, nextKind, onSelect, onDrawBox
   const override = drag?.active ? drag.patches : pending;
   const shown = override ? boxes.map((b) => (override[b.id] ? { ...b, ...override[b.id] } : b)) : boxes;
 
-  // The transform gizmo: on the selection, in the Select tool only. Height is for a single box.
+  // The transform gizmo: on the selection, in the Select tool only. Height and scale are for a single box.
   const selectedBoxes = tool === "select" ? shown.filter((b) => selection.includes(b.id)) : [];
+  const single = selectedBoxes.length === 1 ? selectedBoxes[0] : undefined;
   const gizmo =
     selectedBoxes.length > 0
       ? {
           anchor: gizmoAnchor(selectionBounds(selectedBoxes)),
-          parts: (selectedBoxes.length === 1 ? ["x", "y", "z", "height"] : ["x", "y", "z"]) as GizmoPart[],
+          parts: (single ? ["x", "y", "z", "height", ...SCALE_PARTS] : ["x", "y", "z"]) as GizmoPart[],
+          box: single,
         }
       : null;
 
@@ -159,7 +164,7 @@ export function Viewport({ tool, boxes, selection, nextKind, onSelect, onDrawBox
 
   const pickAt = (sx: number, sy: number, size: Size) => pickBox(screenRay(cam.current, size, sx, sy), shown);
   const gizmoAt = (sx: number, sy: number, size: Size) =>
-    gizmo ? hitGizmo(cam.current, size, sx, sy, gizmo.anchor, gizmo.parts) : null;
+    gizmo ? hitGizmo(cam.current, size, sx, sy, gizmo.anchor, gizmo.parts, gizmo.box) : null;
 
   const cancelDrawing = () => {
     drawing.current = null;
@@ -229,7 +234,7 @@ export function Viewport({ tool, boxes, selection, nextKind, onSelect, onDrawBox
     if (drag?.pointerId === e.pointerId) {
       if (!drag.active && Math.hypot(sx - drag.sx0, sy - drag.sy0) < CLICK_PX) return;
       const others = boxes.filter((b) => !drag.ids.includes(b.id));
-      const { patches, label } = dragUpdate(drag, cam.current, size, sx, sy, { shift: e.shiftKey, snap: !noSnap(e) }, others);
+      const { patches, label } = dragUpdate(drag, cam.current, size, sx, sy, { shift: e.shiftKey, alt: e.altKey, snap: !noSnap(e) }, others);
       setDrag({ ...drag, active: true, patches, label, sx, sy });
       setHoveredId(null);
       return;
@@ -339,10 +344,15 @@ export function Viewport({ tool, boxes, selection, nextKind, onSelect, onDrawBox
 
   const start = cameraPosition(cam.current);
   const activePart = drag?.active ? drag.part : hotPart;
+  // A scale handle's cursor follows its direction on screen; the box is the one being dragged, else the selected one.
+  const scaleBox = drag?.active ? drag.origin[0] : gizmo?.box;
+  const size = wrap.current ? { width: wrap.current.clientWidth, height: wrap.current.clientHeight } : null;
   const cursorClass =
-    activePart === "y" || activePart === "height"
-      ? "resizing"
-      : activePart
+    activePart && isScalePart(activePart) && scaleBox && size
+      ? `resize-${scaleCursor(cam.current, size, scaleBox, activePart)}`
+      : activePart === "y" || activePart === "height"
+        ? "resizing"
+        : activePart
         ? "moving"
         : panning
           ? "panning"
@@ -385,7 +395,13 @@ export function Viewport({ tool, boxes, selection, nextKind, onSelect, onDrawBox
         <OriginAxes />
         <Boxes boxes={shown} draft={draft} selection={selection} hoveredId={hoveredId} />
         {gizmo && (
-          <TransformGizmo anchor={gizmo.anchor} parts={gizmo.parts} hot={activePart === "body" ? null : activePart} cam={cam} />
+          <TransformGizmo
+            anchor={gizmo.anchor}
+            parts={gizmo.parts}
+            box={gizmo.box}
+            hot={activePart === "body" ? null : activePart}
+            cam={cam}
+          />
         )}
       </Canvas>
       {draft && (draft.width > 0 || draft.depth > 0) && (

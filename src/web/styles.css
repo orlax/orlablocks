@@ -28,6 +28,10 @@ body {
 }
 .viewport.selecting { cursor: default; }
 .viewport.moving { cursor: move; }
+.viewport.resize-ns { cursor: ns-resize; }
+.viewport.resize-ew { cursor: ew-resize; }
+.viewport.resize-nwse { cursor: nwse-resize; }
+.viewport.resize-nesw { cursor: nesw-resize; }
 .viewport.panning { cursor: grabbing; }
 .viewport.drawing { cursor: crosshair; }
 .viewport.resizing { cursor: ns-resize; }

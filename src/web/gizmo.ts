@@ -7,7 +7,10 @@ import { paramOnLine, screenToPlane, worldToScreen, type CameraState, type Size,
  */
 
 export type Bounds = { minX: number; maxX: number; minY: number; maxY: number; minZ: number; maxZ: number };
-export type GizmoPart = "x" | "y" | "z" | "height";
+type Sign = -1 | 0 | 1;
+/** A footprint scale handle on the top face, by its side in the box's local frame: `scale:1:-1` is the +x, -z corner. */
+export type ScalePart = `scale:${Sign}:${Sign}`;
+export type GizmoPart = "x" | "y" | "z" | "height" | ScalePart;
 export type DragPart = GizmoPart | "body";
 
 /** The gizmo keeps a roughly constant size on screen: its world size grows with the camera distance. */
@@ -18,8 +21,26 @@ export const gizmoScale = (cam: CameraState) => cam.distance * SCALE_PER_METER_O
 export const ARROW = { start: 0.55, length: 2.3, tip: 0.45 };
 /** Size of the height handle (a small cube on the top center), in gizmo units. */
 export const HEIGHT_HANDLE = 0.32;
+/** Size of a scale handle, in gizmo units. */
+export const SCALE_HANDLE = 0.24;
 /** How close (px) the pointer must be to a handle to grab it. */
 export const HANDLE_HIT_PX = 10;
+/** The smallest width or depth scaling can leave. */
+export const MIN_SIZE = 0.05;
+
+/** The 4 corners, then the 4 edge midpoints. */
+export const SCALE_PARTS: ScalePart[] = [
+  "scale:-1:-1",
+  "scale:1:-1",
+  "scale:1:1",
+  "scale:-1:1",
+  "scale:0:-1",
+  "scale:1:0",
+  "scale:0:1",
+  "scale:-1:0",
+];
+export const isScalePart = (part: string): part is ScalePart => part.startsWith("scale:");
+const signs = (part: ScalePart) => part.split(":").slice(1).map(Number) as [Sign, Sign];
 /** When raising, the bottom snaps to box tops and the ground within this many meters. */
 export const ELEVATION_SNAP_RANGE = 0.25;
 
@@ -31,6 +52,48 @@ export const AXES: Record<"x" | "y" | "z", Vec3> = {
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 const snapTo = (n: number, step: number) => Math.round(n / step) * step;
+
+/**
+ * The box's local axes on the ground, in world x/z: `ex` along its width, `ez` along its depth. A counterclockwise
+ * (seen from above) turn about +y, as three.js does it.
+ */
+export function boxAxes(box: Box) {
+  const a = (box.rotation * Math.PI) / 180;
+  return { ex: { x: Math.cos(a), z: -Math.sin(a) }, ez: { x: Math.sin(a), z: Math.cos(a) } };
+}
+
+/** A world ground point in the box's frame (origin at its center, axes along width and depth). */
+function toBoxLocal(box: Box, p: { x: number; z: number }) {
+  const { ex, ez } = boxAxes(box);
+  const dx = p.x - box.x;
+  const dz = p.z - box.z;
+  return { x: dx * ex.x + dz * ex.z, z: dx * ez.x + dz * ez.z };
+}
+
+/** A point in the box's frame back in world x/z. */
+function fromBoxLocal(box: Box, l: { x: number; z: number }) {
+  const { ex, ez } = boxAxes(box);
+  return { x: box.x + l.x * ex.x + l.z * ez.x, z: box.z + l.x * ex.z + l.z * ez.z };
+}
+
+/** Where a scale handle sits: on the top face's corner or edge midpoint. */
+export function scaleHandlePoint(box: Box, part: ScalePart): Vec3 {
+  const [sx, sz] = signs(part);
+  const p = fromBoxLocal(box, { x: (sx * box.width) / 2, z: (sz * box.depth) / 2 });
+  return { x: p.x, y: box.y + box.height, z: p.z };
+}
+
+/**
+ * The resize cursor for a scale handle, from the direction it points on screen (center → handle), so it stays
+ * right at any yaw and rotation.
+ */
+export function scaleCursor(cam: CameraState, size: Size, box: Box, part: ScalePart): "ns" | "ew" | "nwse" | "nesw" {
+  const c = worldToScreen(cam, size, { x: box.x, y: box.y + box.height, z: box.z });
+  const h = worldToScreen(cam, size, scaleHandlePoint(box, part));
+  if (!c || !h) return "nwse";
+  const deg = ((Math.atan2(h.sy - c.sy, h.sx - c.sx) * 180) / Math.PI + 180) % 180; // 0..180, screen y down
+  return deg < 22.5 || deg >= 157.5 ? "ew" : deg < 67.5 ? "nwse" : deg < 112.5 ? "ns" : "nesw";
+}
 
 /** The axis-aligned bounds of a box's (possibly rotated) footprint. */
 export function footprintBounds(box: Box): { minX: number; maxX: number; minZ: number; maxZ: number } {
@@ -71,14 +134,32 @@ function segmentDistance(px: number, py: number, a: { sx: number; sy: number }, 
   return Math.hypot(px - (a.sx + dx * t), py - (a.sy + dy * t));
 }
 
-/** Which of `parts` is under the cursor, or null. The height handle wins over the arrows around it. */
-export function hitGizmo(cam: CameraState, size: Size, sx: number, sy: number, anchor: Vec3, parts: GizmoPart[]): GizmoPart | null {
+/**
+ * Which of `parts` is under the cursor, or null. The height handle wins over everything around it, otherwise the
+ * nearest handle wins. Scale handles need the (single) selected `box`.
+ */
+export function hitGizmo(
+  cam: CameraState,
+  size: Size,
+  sx: number,
+  sy: number,
+  anchor: Vec3,
+  parts: GizmoPart[],
+  box?: Box,
+): GizmoPart | null {
   const scale = gizmoScale(cam);
   if (parts.includes("height")) {
     const p = worldToScreen(cam, size, add(anchor, AXES.y, (HEIGHT_HANDLE / 2) * scale));
     if (p && Math.hypot(p.sx - sx, p.sy - sy) <= HANDLE_HIT_PX) return "height";
   }
   let best: { part: GizmoPart; d: number } | null = null;
+  if (box) {
+    for (const part of parts.filter(isScalePart)) {
+      const p = worldToScreen(cam, size, scaleHandlePoint(box, part));
+      const d = p ? Math.hypot(p.sx - sx, p.sy - sy) : Infinity;
+      if (d <= HANDLE_HIT_PX && (!best || d < best.d)) best = { part, d };
+    }
+  }
   for (const axis of ["x", "y", "z"] as const) {
     if (!parts.includes(axis)) continue;
     const a = worldToScreen(cam, size, add(anchor, AXES[axis], ARROW.start * scale));
@@ -118,11 +199,20 @@ export function snapElevation(raw: number, targets: number[], snap: boolean): nu
  */
 export type GizmoDrag = { part: DragPart; origin: Box[]; bounds: Bounds; grab: Vec3 | number };
 
-export type DragModifiers = { shift: boolean; snap: boolean };
+export type DragModifiers = { shift: boolean; alt: boolean; snap: boolean };
 
-/** Starts a drag on a handle: remembers where along its line the cursor is. */
+/**
+ * Starts a drag on a handle: remembers where along its line the cursor is, or for a scale handle how far the
+ * cursor is from the handle (in the box's frame, on the top face's plane), so the handle doesn't jump.
+ */
 export function startHandleDrag(cam: CameraState, size: Size, sx: number, sy: number, part: GizmoPart, origin: Box[]): GizmoDrag {
   const bounds = selectionBounds(origin);
+  if (isScalePart(part)) {
+    const box = origin[0];
+    const [hx, hz] = signs(part);
+    const l = toBoxLocal(box, screenToPlane(cam, size, sx, sy, box.y + box.height));
+    return { part, origin, bounds, grab: { x: l.x - (hx * box.width) / 2, y: 0, z: l.z - (hz * box.depth) / 2 } };
+  }
   const axis = part === "height" ? AXES.y : AXES[part];
   return { part, origin, bounds, grab: paramOnLine(cam, size, sx, sy, gizmoAnchor(bounds), axis) };
 }
@@ -146,6 +236,8 @@ export function dragUpdate(
   const { part, origin, bounds } = drag;
   const anchor = gizmoAnchor(bounds);
   const patches: Record<string, BoxPatch> = {};
+
+  if (isScalePart(part)) return scaleUpdate(drag, part, cam, size, sx, sy, mods);
 
   if (part === "height") {
     const box = origin[0];
@@ -186,6 +278,67 @@ export function dragUpdate(
   }
   for (const box of origin) patches[box.id] = { x: round2(box.x + dx), z: round2(box.z + dz) };
   return { patches, label: `x ${(anchor.x + dx).toFixed(2)} · z ${(anchor.z + dz).toFixed(2)}` };
+}
+
+/**
+ * A new size along one axis, snapped as a change from the original (`step` per side, so boxes on the grid stay
+ * on it) and never below MIN_SIZE (the smallest size on the snap lattice, when snapping).
+ */
+function snapSize(raw: number, original: number, step: number, snap: boolean): number {
+  if (!snap) return Math.max(MIN_SIZE, raw);
+  const v = original + snapTo(raw - original, step);
+  return v >= MIN_SIZE ? v : original - Math.floor((original - MIN_SIZE) / step) * step;
+}
+
+/**
+ * A scale handle drag, in the box's frame on the top face. The opposite side stays fixed (`Alt`: the center
+ * does). `Shift` keeps the aspect ratio: a corner follows whichever side grows more, and an edge scales the other
+ * side around the center.
+ */
+function scaleUpdate(
+  drag: GizmoDrag,
+  part: ScalePart,
+  cam: CameraState,
+  size: Size,
+  sx: number,
+  sy: number,
+  mods: DragModifiers,
+): { patches: Record<string, BoxPatch>; label: string } {
+  const box = drag.origin[0];
+  const grab = drag.grab as Vec3;
+  const [hx, hz] = signs(part);
+  const l = toBoxLocal(box, screenToPlane(cam, size, sx, sy, box.y + box.height));
+  // Where the dragged handle should be, in the box's frame.
+  const tx = l.x - grab.x;
+  const tz = l.z - grab.z;
+  const step = mods.alt ? 2 * SNAP : SNAP;
+  const raw = (sign: Sign, target: number, original: number) =>
+    sign === 0 ? original : mods.alt ? 2 * sign * target : sign * target + original / 2;
+
+  let width = raw(hx, tx, box.width);
+  let depth = raw(hz, tz, box.depth);
+  if (mods.shift) {
+    // The side that drives the scale: the handle's axis for an edge, the one that grew more for a corner.
+    const byWidth = hz === 0 || (hx !== 0 && width / box.width >= depth / box.depth);
+    const driven = byWidth ? snapSize(width, box.width, step, mods.snap) : snapSize(depth, box.depth, step, mods.snap);
+    let f = byWidth ? driven / box.width : driven / box.depth;
+    f = Math.max(f, MIN_SIZE / box.width, MIN_SIZE / box.depth);
+    width = box.width * f;
+    depth = box.depth * f;
+  } else {
+    width = hx === 0 ? box.width : snapSize(width, box.width, step, mods.snap);
+    depth = hz === 0 ? box.depth : snapSize(depth, box.depth, step, mods.snap);
+  }
+  width = round2(width);
+  depth = round2(depth);
+
+  // The fixed side stays put, so the center moves by half the change (not at all from the center).
+  const shift = (sign: Sign, next: number, original: number) => (mods.alt || sign === 0 ? 0 : (sign * (next - original)) / 2);
+  const c = fromBoxLocal(box, { x: shift(hx, width, box.width), z: shift(hz, depth, box.depth) });
+  return {
+    patches: { [box.id]: { x: round2(c.x), z: round2(c.z), width, depth } },
+    label: `${width.toFixed(2)} × ${depth.toFixed(2)} m`,
+  };
 }
 
 /** Only the patches that actually change something, as `update_nodes` changes. */

@@ -10,6 +10,8 @@ import {
   gizmoAnchor,
   gizmoScale,
   hitGizmo,
+  SCALE_PARTS,
+  scaleHandlePoint,
   selectionBounds,
   snapElevation,
   startBodyDrag,
@@ -34,7 +36,7 @@ const box = (patch: Partial<Box>): Box => ({
   ...patch,
 });
 const screen = (p: Vec3) => worldToScreen(cam, size, p)!;
-const snapOn = { shift: false, snap: true };
+const snapOn = { shift: false, alt: false, snap: true };
 
 describe("bounds", () => {
   it("covers a rotated footprint", () => {
@@ -113,7 +115,7 @@ describe("dragUpdate", () => {
     const drag = startBodyDrag([a], grab);
     const end = screen({ x: grab.x + 2, y: grab.y, z: grab.z + 0.5 });
     expect(dragUpdate(drag, cam, size, end.sx, end.sy, snapOn, []).patches).toEqual({ box_1: { x: 3, z: 1.5 } });
-    expect(dragUpdate(drag, cam, size, end.sx, end.sy, { shift: true, snap: true }, []).patches).toEqual({
+    expect(dragUpdate(drag, cam, size, end.sx, end.sy, { shift: true, alt: false, snap: true }, []).patches).toEqual({
       box_1: { x: 3, z: 1 },
     });
   });
@@ -148,6 +150,69 @@ describe("dragUpdate", () => {
       box_1: { x: 0, z: 3 },
       box_2: { x: 4, z: 0 },
     });
+  });
+});
+
+describe("scale handles", () => {
+  // Footprint x 0..2, z 0..2, top at y 1.
+  const a = box({ x: 1, z: 1 });
+  const plain = { shift: false, alt: false, snap: true };
+  /** Drags `part` of `b` from its handle to the world ground point `to` on the top face's plane. */
+  const scale = (b: Box, part: (typeof SCALE_PARTS)[number], to: { x: number; z: number }, mods = plain) => {
+    const from = screen(scaleHandlePoint(b, part));
+    const drag = startHandleDrag(cam, size, from.sx, from.sy, part, [b]);
+    const end = screen({ x: to.x, y: b.y + b.height, z: to.z });
+    return dragUpdate(drag, cam, size, end.sx, end.sy, mods, []);
+  };
+
+  it("sit on the top face's corners and edge midpoints, turned with the box", () => {
+    expect(scaleHandlePoint(a, "scale:1:1")).toEqual({ x: 2, y: 1, z: 2 });
+    expect(scaleHandlePoint(a, "scale:-1:0")).toEqual({ x: 0, y: 1, z: 1 });
+    const turned = scaleHandlePoint(box({ width: 4, depth: 2, rotation: 90 }), "scale:1:0");
+    expect(turned.x).toBeCloseTo(0);
+    expect(turned.z).toBeCloseTo(-2);
+  });
+
+  it("are found by hitGizmo, given the box", () => {
+    const p = screen(scaleHandlePoint(a, "scale:1:-1"));
+    const anchor = { x: 1, y: 1, z: 1 };
+    expect(hitGizmo(cam, size, p.sx, p.sy, anchor, ["x", "y", "z", "height", ...SCALE_PARTS], a)).toBe("scale:1:-1");
+  });
+
+  it("a corner resizes with the opposite corner fixed, in 0.5 m steps", () => {
+    const { patches, label } = scale(a, "scale:1:1", { x: 3.2, z: 3.6 });
+    expect(patches).toEqual({ box_1: { x: 1.5, z: 1.75, width: 3, depth: 3.5 } });
+    expect(label).toBe("3.00 × 3.50 m");
+  });
+
+  it("an edge moves one side only", () => {
+    expect(scale(a, "scale:-1:0", { x: -1.1, z: 5 }).patches).toEqual({ box_1: { x: 0.5, z: 1, width: 3, depth: 2 } });
+  });
+
+  it("Alt scales around the center, 0.5 m per side", () => {
+    expect(scale(a, "scale:1:0", { x: 3.2, z: 1 }, { ...plain, alt: true }).patches).toEqual({
+      box_1: { x: 1, z: 1, width: 4, depth: 2 },
+    });
+  });
+
+  it("Shift keeps the aspect ratio: a corner follows the side that grows more, an edge scales around the center", () => {
+    const shift = { ...plain, shift: true };
+    expect(scale(a, "scale:1:1", { x: 4.1, z: 2.5 }, shift).patches).toEqual({ box_1: { x: 2, z: 2, width: 4, depth: 4 } });
+    expect(scale(a, "scale:1:0", { x: 4.1, z: 1 }, shift).patches).toEqual({ box_1: { x: 2, z: 1, width: 4, depth: 4 } });
+  });
+
+  it("works in the box's own axes when it's rotated", () => {
+    // Turned 90°: its width runs along world -z, so its +x edge is at z = -2.
+    const turned = box({ x: 0, z: 0, width: 4, depth: 2, rotation: 90 });
+    const { patches } = scale(turned, "scale:1:0", { x: 0.7, z: -3 });
+    expect(patches.box_1).toMatchObject({ width: 5, depth: 2 });
+    expect(patches.box_1.x).toBeCloseTo(0);
+    expect(patches.box_1.z).toBeCloseTo(-0.5);
+  });
+
+  it("never shrinks a side below the smallest size on the snap lattice", () => {
+    expect(scale(a, "scale:1:0", { x: -10, z: 1 }).patches.box_1).toMatchObject({ width: 0.5, x: 0.25 });
+    expect(scale(a, "scale:1:0", { x: -10, z: 1 }, { ...plain, snap: false }).patches.box_1).toMatchObject({ width: 0.05 });
   });
 });
 
