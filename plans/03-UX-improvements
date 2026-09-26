@@ -353,3 +353,18 @@ Adopted as recommended (say if any should change):
 - Picking runs the slab test in each box's local frame (the ray is rotated and translated into it), with the box spanning `y..y + height`.
 - **Tests:** patch inverse (only the patched fields), name add/remove undo, all fields updated and undone, labels, empty name, validation (unknown ID, duplicate, empty change, bad size, bad color, unknown field), no-op updates, remove and its undo keeping IDs and positions, selection filtering and pruning, and picking of raised and rotated boxes. 60 tests pass.
 - **Scripted check (port 5171):** `/mcp` lists the 4 tools. The agent drew a named room and a raised, rotated, blue volume. A WS client selected the volume and changed its height, and `get_scene` showed that selection and height. A bad color and an unknown `parent` field were rejected with the failing path. `remove_nodes`, undo and a WS delete all behaved as expected.
+
+### 03.2 — Tool-bar v2 and contextual bar (done)
+
+- Tools are **Select (`V`, the default), Hand (`H`), Box (`B`)**. Holding `Space` switches to the hand while held (the tool-bar shows Hand as active meanwhile), and switching tools or pressing Space mid-drag cancels an unfinished draw or height drag. `R` does nothing now.
+- **Select** until 03.3 / 03.6: a click selects the box under the cursor (empty ground deselects), hover outlines what a click would pick, and dragging pans. **Hand** only pans. The middle button pans in every tool.
+- The height gizmo shows and works **in the Select tool only**, with one box selected. `Cmd/Ctrl` makes it free (was `Alt`).
+- **Box tool modifiers:** `Shift` square, `Alt` from the center, `Cmd/Ctrl` no snap. The viewport suppresses the context menu, so Ctrl+drag on a Mac works.
+- **Auto-select after drawing is gone**, and so are `requestId` and the `created` reply.
+- **Tool-bar** (`src/web/ToolBar.tsx`): 3em Lucide icon buttons with the shortcut letter in the corner, small Undo / Redo / Clear icon buttons, counts and the hint. The "Dungeon Designer" title is gone to keep the bar compact.
+- **Contextual bar** above the tool-bar: a Room / Volume toggle (`square-dashed` / `square`) and the 10 swatches.
+  - Box tool: sets the next box's kind and color (React state, so it's remembered while the tab is open) and says "next box".
+  - Select tool, with a selection: the toggle shows and changes a single box's kind, and is disabled for several. A swatch recolors every selected box in one `update_nodes` call (one undo step). The swatch is highlighted when all selected boxes share a color. It also shows the read-only numbers (`lobby (box_3) · 6 × 4 × 3 m · y 0 · 0°`, or `3 selected`).
+- The editor's selection is already an array of IDs, so 03.6 only needs to add ways to select several.
+- Keyboard shortcuts ignore keys typed into text fields (ready for renaming in 03.8).
+- **Pastel tuning** is left for Orlando's browser pass. The values are still the §3.1 starting values in `PALETTE`.

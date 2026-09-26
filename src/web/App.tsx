@@ -1,36 +1,38 @@
 import { useEffect, useRef, useState } from "react";
-import { DEFAULT_VIEW, type View } from "../shared/scene.types";
+import { DEFAULT_COLOR, DEFAULT_VIEW, type Box, type BoxColor, type BoxKind, type View } from "../shared/scene.types";
 import type { GroundPoint } from "./camera";
+import { ContextualBar, TOOLS, ToolBar } from "./ToolBar";
 import { useScene } from "./useScene";
 import { Viewport, type Tool } from "./Viewport";
 
 /** Fixed-width number (e.g. "  12.50", " -3.00") so the info-label never jitters. */
 const coord = (n?: number) => (n === undefined ? "–".padStart(7) : n.toFixed(2).padStart(7));
 
-const MOD = /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl+";
+/** Keys typed into a text field aren't shortcuts. */
+const typing = (e: KeyboardEvent) => e.target instanceof HTMLElement && e.target.matches("input, textarea, [contenteditable]");
 
-const TOOLS: { tool: Tool; label: string; key: string }[] = [
-  { tool: "hand", label: "Hand", key: "h" },
-  { tool: "room", label: "Room", key: "r" },
-  { tool: "volume", label: "Volume", key: "v" },
-];
-
-const HINTS: Record<Tool, string> = {
-  hand: "click to select · Delete to remove · drag to pan · scroll to zoom · A/D or ←/→ to rotate",
-  room: "drag on the ground to draw a room · Shift for square · Alt for free · Esc to cancel",
-  volume: "drag on the ground to draw a volume · Shift for square · Alt for free · Esc to cancel",
-};
+/** `lobby (box_3) · 6 × 4 × 3 m · y 0 · 0°` */
+const describe = (b: Box) =>
+  `${b.name ? `${b.name} (${b.id})` : b.id} · ${b.width} × ${b.depth} × ${b.height} m · y ${b.y} · ${b.rotation}°`;
 
 export function App() {
-  const { scene, history, lastCreated, connected, error, send } = useScene();
+  const { scene, history, connected, error, send } = useScene();
   const [view, setView] = useState<View>(DEFAULT_VIEW);
   const [cursor, setCursor] = useState<GroundPoint | null>(null);
-  const [tool, setTool] = useState<Tool>("hand");
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const pendingDraw = useRef<string | null>(null);
+  const [tool, setTool] = useState<Tool>("select");
+  // Holding Space switches to the hand for as long as it's held.
+  const [spaceHand, setSpaceHand] = useState(false);
+  const [selection, setSelection] = useState<string[]>([]);
+  // The next box's style in the Box tool, remembered while the tab is open.
+  const [nextKind, setNextKind] = useState<BoxKind>("room");
+  const [nextColor, setNextColor] = useState<BoxColor>(DEFAULT_COLOR);
   // The key handler is installed once; it reads the current selection from here.
-  const selectedRef = useRef(selectedId);
-  selectedRef.current = selectedId;
+  const selectionRef = useRef(selection);
+  selectionRef.current = selection;
+
+  const activeTool: Tool = spaceHand ? "hand" : tool;
+  const boxes = scene?.boxes ?? [];
+  const selected = boxes.filter((b) => selection.includes(b.id));
 
   // Tell the server what's visible so the agent's get_scene knows where to draw.
   useEffect(() => {
@@ -38,62 +40,72 @@ export function App() {
   }, [connected, view, send]);
 
   // Tell the server what's selected so the agent knows what "this" means. The last tab to change it wins.
+  const selectionKey = selection.join(",");
   useEffect(() => {
-    if (connected) send({ type: "set_selection", ids: selectedId ? [selectedId] : [] });
-  }, [connected, selectedId, send]);
+    if (connected) send({ type: "set_selection", ids: selectionKey ? selectionKey.split(",") : [] });
+  }, [connected, selectionKey, send]);
 
-  // H / R / V pick a tool. Cmd/Ctrl+Z undoes, Cmd/Ctrl+Shift+Z (or Ctrl+Y) redoes. Delete / Backspace removes the selection.
+  // Drop selected boxes that go away (undo, Clear, the agent, another tab).
+  useEffect(() => {
+    if (!scene) return;
+    const ids = new Set(scene.boxes.map((b) => b.id));
+    setSelection((sel) => (sel.every((id) => ids.has(id)) ? sel : sel.filter((id) => ids.has(id))));
+  }, [scene]);
+
+  // V / H / B pick a tool, Space holds the hand. Cmd/Ctrl+Z undoes, Cmd/Ctrl+Shift+Z (or Ctrl+Y) redoes.
+  // Delete / Backspace removes the selection, Esc deselects.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      if (typing(e)) return;
       const key = e.key.toLowerCase();
       if ((e.metaKey || e.ctrlKey) && !e.altKey && (key === "z" || key === "y")) {
         e.preventDefault();
         send({ type: key === "y" || e.shiftKey ? "redo" : "undo" });
         return;
       }
-      if (e.metaKey || e.ctrlKey || e.altKey) return;
-      if (e.key === "Escape") setSelectedId(null);
-      if ((e.key === "Delete" || e.key === "Backspace") && selectedRef.current) {
+      if (e.key === " ") {
+        // Also keeps a focused button from being pressed by Space.
         e.preventDefault();
-        send({ type: "remove_nodes", ids: [selectedRef.current] });
+        if (!e.repeat) setSpaceHand(true);
+        return;
+      }
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key === "Escape") setSelection([]);
+      if ((e.key === "Delete" || e.key === "Backspace") && selectionRef.current.length > 0) {
+        e.preventDefault();
+        send({ type: "remove_nodes", ids: selectionRef.current });
       }
       const match = TOOLS.find((t) => t.key === key);
       if (match) setTool(match.tool);
     };
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.key !== " ") return;
+      e.preventDefault();
+      setSpaceHand(false);
+    };
+    const onBlur = () => setSpaceHand(false);
     window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", onBlur);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", onBlur);
+    };
   }, [send]);
 
-  const boxes = scene?.boxes ?? [];
-  const rooms = boxes.filter((b) => b.kind === "room").length;
-  const volumes = boxes.length - rooms;
-  const selected = boxes.find((b) => b.id === selectedId) ?? null;
-
-  // Select the box we just drew, once the server says which ID it got.
-  useEffect(() => {
-    if (lastCreated && lastCreated.requestId === pendingDraw.current) {
-      pendingDraw.current = null;
-      setSelectedId(lastCreated.ids[0] ?? null);
-    }
-  }, [lastCreated]);
-
-  // Drop the selection when its box goes away (undo, Clear, another tab).
-  useEffect(() => {
-    if (selectedId && scene && !scene.boxes.some((b) => b.id === selectedId)) setSelectedId(null);
-  }, [scene, selectedId]);
+  const single = selected.length === 1 ? selected[0] : null;
+  const sharedColor = selected.length > 0 && selected.every((b) => b.color === selected[0].color) ? selected[0].color : null;
 
   return (
     <div className="app">
       <Viewport
-        tool={tool}
+        tool={activeTool}
         boxes={boxes}
-        selectedId={selectedId}
-        onSelect={setSelectedId}
-        onDrawBox={(box) => {
-          const requestId = crypto.randomUUID();
-          pendingDraw.current = requestId;
-          send({ type: "add_boxes", requestId, boxes: [box] });
-        }}
+        selection={selection}
+        nextKind={nextKind}
+        onSelect={setSelection}
+        onDrawBox={(box) => send({ type: "add_boxes", boxes: [{ ...box, color: nextColor }] })}
         onChangeHeight={(id, height) => send({ type: "update_nodes", changes: [{ id, height }] })}
         onCursor={setCursor}
         onViewChange={setView}
@@ -112,48 +124,32 @@ export function App() {
 
       <div className="dock">
         {error && <div className="error">{error}</div>}
-        <div className="tool-bar">
-          <strong>Dungeon Designer</strong>
-          <span className="sep" />
-          {TOOLS.map((t) => (
-            <button
-              key={t.tool}
-              className={t.tool === tool ? "tool active" : "tool"}
-              title={`${t.label} (${t.key.toUpperCase()})`}
-              onClick={() => setTool(t.tool)}
-            >
-              {t.label}
-            </button>
-          ))}
-          <span className="sep" />
-          <button
-            onClick={() => send({ type: "undo" })}
-            disabled={!connected || !history.canUndo}
-            title={history.undoLabel ? `Undo: ${history.undoLabel} (${MOD}Z)` : "Nothing to undo"}
+        {tool === "box" && (
+          <ContextualBar kind={nextKind} onKind={setNextKind} color={nextColor} onColor={setNextColor}>
+            next box
+          </ContextualBar>
+        )}
+        {tool === "select" && selected.length > 0 && (
+          <ContextualBar
+            kind={single?.kind ?? null}
+            kindDisabled={!single}
+            onKind={(kind) => single && send({ type: "update_nodes", changes: [{ id: single.id, kind }] })}
+            color={sharedColor}
+            onColor={(color) => send({ type: "update_nodes", changes: selected.map((b) => ({ id: b.id, color })) })}
           >
-            Undo
-          </button>
-          <button
-            onClick={() => send({ type: "redo" })}
-            disabled={!connected || !history.canRedo}
-            title={history.redoLabel ? `Redo: ${history.redoLabel} (${MOD}⇧Z)` : "Nothing to redo"}
-          >
-            Redo
-          </button>
-          <span className="sep" />
-          <span className="muted">{scene ? `${rooms} rooms · ${volumes} volumes` : "—"}</span>
-          {selected && (
-            <span className="selected-info">
-              {selected.name ? `${selected.name} (${selected.id})` : selected.id} · {selected.width} × {selected.depth} ×{" "}
-              {selected.height} m · y {selected.y} · {selected.rotation}°
-            </span>
-          )}
-          <span className="sep" />
-          <span className="muted">{HINTS[tool]}</span>
-          <button onClick={() => send({ type: "clear" })} disabled={!connected}>
-            Clear
-          </button>
-        </div>
+            {single ? describe(single) : `${selected.length} selected`}
+          </ContextualBar>
+        )}
+        <ToolBar
+          tool={activeTool}
+          onTool={setTool}
+          boxes={scene?.boxes ?? null}
+          history={history}
+          connected={connected}
+          onUndo={() => send({ type: "undo" })}
+          onRedo={() => send({ type: "redo" })}
+          onClear={() => send({ type: "clear" })}
+        />
       </div>
     </div>
   );

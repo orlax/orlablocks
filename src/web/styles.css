@@ -18,7 +18,7 @@ body {
 
 .app { position: fixed; inset: 0; }
 
-/* The 3D view fills the window. The hand tool pans on drag. */
+/* The 3D view fills the window. The hand tool pans on drag, the Select tool picks, the Box tool draws. */
 .viewport {
   position: absolute;
   inset: 0;
@@ -26,6 +26,7 @@ body {
   touch-action: none;
   user-select: none;
 }
+.viewport.selecting { cursor: default; }
 .viewport.panning { cursor: grabbing; }
 .viewport.drawing { cursor: crosshair; }
 .viewport.resizing { cursor: ns-resize; }
@@ -55,14 +56,14 @@ body {
   pointer-events: none;
 }
 
-.tool-bar {
+.tool-bar,
+.contextual-bar {
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   max-width: 100%;
-  padding: 8px 14px;
   border-radius: 12px;
   background: var(--bar-bg);
   color: var(--bar-text);
@@ -70,22 +71,59 @@ body {
   backdrop-filter: blur(6px);
   pointer-events: auto;
 }
+.tool-bar { padding: 8px 14px 8px 8px; }
+.contextual-bar { padding: 6px 12px 6px 6px; border-radius: 10px; }
 
-.tool-bar .sep { width: 1px; height: 16px; background: rgba(255, 255, 255, 0.15); }
+.sep { width: 1px; height: 20px; background: rgba(255, 255, 255, 0.15); }
 .tool-bar .muted { color: var(--muted); }
-.tool-bar .selected-info { color: #8fb4f2; font-variant-numeric: tabular-nums; }
+.tool-bar .hint { max-width: 46ch; font-size: 12px; }
+.contextual-bar .info { color: #8fb4f2; font-variant-numeric: tabular-nums; white-space: nowrap; }
 
-.tool-bar button {
+.tool-bar button,
+.contextual-bar button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   background: transparent;
   color: var(--bar-text);
-  border: 1px solid var(--muted);
-  border-radius: 6px;
-  padding: 3px 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 0;
   cursor: pointer;
 }
-.tool-bar button:hover:not(:disabled) { border-color: var(--bar-text); }
-.tool-bar button:disabled { opacity: 0.5; cursor: default; }
-.tool-bar button.tool.active { background: rgba(255, 255, 255, 0.14); border-color: var(--bar-text); }
+.tool-bar button:hover:not(:disabled),
+.contextual-bar button:hover:not(:disabled) { background: rgba(255, 255, 255, 0.08); }
+.tool-bar button:disabled,
+.contextual-bar button:disabled { opacity: 0.4; cursor: default; }
+
+/* Big square tool buttons with the shortcut letter in the bottom-right corner. */
+.tool-bar button.tool { position: relative; width: 3em; height: 3em; font-size: 14px; }
+.tool-bar button.tool.active { background: rgba(255, 255, 255, 0.16); border-color: rgba(255, 255, 255, 0.35); }
+.tool-bar button.tool .key {
+  position: absolute;
+  right: 4px;
+  bottom: 2px;
+  font: 9px/1 ui-monospace, monospace;
+  color: var(--muted);
+}
+.tool-bar button.icon { width: 30px; height: 30px; }
+
+/* Room / Volume toggle. */
+.segmented { display: flex; gap: 2px; padding: 2px; border-radius: 8px; background: rgba(255, 255, 255, 0.06); }
+.segmented button { width: 30px; height: 28px; }
+.segmented button.active { background: rgba(255, 255, 255, 0.18); }
+
+/* Palette swatches. */
+.swatches { display: flex; gap: 5px; }
+.contextual-bar button.swatch {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 1px solid rgba(0, 0, 0, 0.35);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.15);
+}
+.contextual-bar button.swatch:hover { transform: scale(1.12); }
+.contextual-bar button.swatch.active { outline: 2px solid #8fb4f2; outline-offset: 2px; }
 
 /* Small fixed-width status label, top right. Monospace + fixed width so it never jitters. */
 .info-label {

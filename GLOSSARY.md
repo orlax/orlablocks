@@ -4,7 +4,7 @@ Shared vocabulary for this project, for humans and agents alike. Use these names
 
 ## Editor UI
 
-- **box tool**: `B`, draws boxes on the ground with the kind and color from the contextual bar. Drawing never changes the selection. Replaces the separate room and volume tools (from 03).
+- **box tool**: `B`, drags boxes on the ground with the kind and color from the contextual bar. `Shift` makes the footprint square, `Alt` draws from the center, and `Cmd/Ctrl` turns off snap. Drawing never changes the selection, and the tool stays Box. Replaces the separate room and volume tools (from 03).
 - **camera**: the 3D perspective camera with a narrow (30°) field of view, so perspective stays mild (from 02). Its pitch is fixed, it orbits the focus point with yaw only, and zoom moves it toward the focus point.
 - **canvas**: the full-window 3D drawing surface (the viewport). It fills the whole browser window.
 - **contextual bar**: the bar that floats just above the tool-bar. In the Box tool it sets the next box's kind and color. In the Select tool it edits the selection: kind for a single box, color for all selected boxes, plus read-only numbers (from 03).
@@ -12,16 +12,15 @@ Shared vocabulary for this project, for humans and agents alike. Use these names
 - **focus point**: the ground point under the center of the screen. The camera orbits it and pans move it (from 02).
 - **graybox**: the look of the view: warm near-white matte materials with a 1 m tile texture, a sun with soft shadows and faint outlines, like a blocked-out game level.
 - **grid**: the reference lines on the ground plane: a line every 1 m and a stronger one every 5 m, fading out away from the focus point. It's a measuring and snapping aid only and is never part of the scene data.
-- **hand tool**: drag to pan, scroll to zoom toward the focus point, click without dragging to select a box (from 02).
-- **height gizmo**: the blue handle (stem and cone) on top of the selected box, drawn over everything. Dragging it changes the box's height in 0.05 m steps (`Alt` for free), with a live `h … m` label. It works in every tool, and one drag is one undo step.
+- **hand tool**: `H`, navigation only: drag to pan and scroll to zoom toward the focus point. Holding `Space` switches to it temporarily from any tool (from 03; in 02 it also selected).
+- **height gizmo**: the blue handle (stem and cone) on top of the selected box, drawn over everything. Dragging it changes the box's height in 0.05 m steps (`Cmd/Ctrl` for free), with a live `h … m` label. It shows in the Select tool only, and one drag is one undo step. The transform gizmo replaces it in 03.3.
 - **info-label**: the small fixed-width label at the top right. It shows the connection state, the cursor's ground position (x · z) and the camera yaw. It has a fixed width and fixed-width text so it never jitters.
 - **marquee**: the rectangle you drag on empty ground with the Select tool to select every node it touches (from 03).
 - **origin axes**: a marker at the world origin, with +x as a red bar and +z as a blue bar, for orientation while rotating.
 - **outliner**: the tree panel listing nodes by name, used to select, rename, group and reorder (from 03).
-- **room tool / volume tool**: drag on the ground to draw a room or a volume at its default height. `Shift` makes the footprint square, and `Alt` turns off snap.
 - **select tool**: `V`, click to select (`Shift` for multi), drag a node to move it, drag empty ground for a marquee (from 03).
-- **selection**: the box currently selected in the editor, highlighted with a blue tint and outline and shown in the tool-bar. A click in the hand tool selects, a new box is selected right after drawing, and `Esc` deselects (02 behavior: in 03 the select tool selects and drawing no longer selects). It's editor-local; from 03 its IDs are also reported as **selection (scene)**.
-- **tool-bar**: the floating bar at the bottom center, with a margin from the window edges. It holds the tools (Hand, Room, Volume) and scene-level state (legend, room and volume counts, a hint for the current tool, Clear).
+- **selection**: the boxes currently selected in the editor, highlighted with a blue tint and outline and described in the contextual bar. The Select tool selects on click, `Esc` deselects, `Delete` removes the selection, and drawing never changes it (from 03). It's also reported to the server as **selection (scene)**.
+- **tool-bar**: the floating bar at the bottom center, with a margin from the window edges. It holds the big icon tool buttons (Select, Hand, Box, with the shortcut letter in the corner), Undo, Redo and Clear icon buttons, the room and volume counts, and a hint for the current tool (from 03).
 - **transform gizmo**: the handles on the selection, in the Select tool only: body drag and x/z arrows to move, a y arrow to raise, 8 footprint handles and a height handle to scale, a rotate handle (from 03). Replaces the height gizmo.
 - **yaw**: rotation of the camera around the vertical axis through the focus point. It's the only rotation the camera has (A/D or ←/→).
 
@@ -41,7 +40,7 @@ Shared vocabulary for this project, for humans and agents alike. Use these names
 - **rotation**: a box's turn around the vertical axis through its center, in degrees, counterclockwise seen from above. 0 = grid-aligned (from 03).
 - **scene**: the full design state the server owns: the `view` plus all boxes. The editor and the agent both read and edit the same scene.
 - **selection (scene)**: the IDs of the selected nodes, reported in `scene.selection` so the agent knows what "this" means. Last tab wins, not undoable (from 03).
-- **snap**: rounding a drawn footprint to the nearest 0.5 m. On by default, and holding `Alt` while drawing turns it off.
+- **snap**: rounding a drawn footprint to the nearest 0.5 m. On by default, and holding `Cmd/Ctrl` while drawing turns it off (from 03; `Alt` in 02).
 - **snap (vertical)**: rounding heights to the nearest 0.05 m. It's also the minimum height (from 02).
 - **view**: what the editor currently shows: the focus point, the yaw and `bounds`, the axis-aligned box around the visible ground. The editor reports it to the server so the agent knows where to draw.
 - **volume**: a solid box, something you stand on or bump into. Default height 0.25 m.

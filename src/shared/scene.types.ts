@@ -139,8 +139,7 @@ export const ViewSchema = z.object({
 });
 
 export const ClientMessageSchema = z.discriminatedUnion("type", [
-  // `requestId` lets the editor select the boxes it just drew: the server answers with `created`.
-  z.object({ type: z.literal("add_boxes"), requestId: z.string().optional(), boxes: z.array(BoxInputSchema).min(1) }),
+  z.object({ type: z.literal("add_boxes"), boxes: z.array(BoxInputSchema).min(1) }),
   z.object({ type: z.literal("update_nodes"), changes: z.array(NodeUpdateSchema).min(1) }),
   z.object({ type: z.literal("remove_nodes"), ids: z.array(z.string()).min(1) }),
   z.object({ type: z.literal("set_selection"), ids: z.array(z.string()) }),
@@ -153,5 +152,4 @@ export type ClientMessage = z.input<typeof ClientMessageSchema>;
 
 export type ServerMessage =
   | { type: "scene"; scene: Scene; history: HistorySummary }
-  | { type: "created"; requestId: string; ids: string[] }
   | { type: "error"; message: string };
