@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { DEFAULT_COLOR, DEFAULT_VIEW, type Box, type BoxColor, type BoxKind, type View } from "../shared/scene.types";
 import type { GroundPoint } from "./camera";
-import { ContextualBar, TOOLS, ToolBar } from "./ToolBar";
+import { ContextualBar, HINTS, TOOLS, ToolBar } from "./ToolBar";
 import { useScene } from "./useScene";
 import { Viewport, type Tool } from "./Viewport";
 
@@ -29,10 +29,14 @@ export function App() {
   // The key handler is installed once; it reads the current selection from here.
   const selectionRef = useRef(selection);
   selectionRef.current = selection;
+  const boxesRef = useRef<Box[]>([]);
+  boxesRef.current = scene?.boxes ?? [];
 
   const activeTool: Tool = spaceHand ? "hand" : tool;
   const boxes = scene?.boxes ?? [];
   const selected = boxes.filter((b) => selection.includes(b.id));
+  const rooms = boxes.filter((b) => b.kind === "room").length;
+  const volumes = boxes.length - rooms;
 
   // Tell the server what's visible so the agent's get_scene knows where to draw.
   useEffect(() => {
@@ -53,7 +57,7 @@ export function App() {
   }, [scene]);
 
   // V / H / B pick a tool, Space holds the hand. Cmd/Ctrl+Z undoes, Cmd/Ctrl+Shift+Z (or Ctrl+Y) redoes.
-  // Delete / Backspace removes the selection, Esc deselects.
+  // Cmd/Ctrl+A selects everything, Delete / Backspace removes the selection, Esc deselects.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (typing(e)) return;
@@ -61,6 +65,11 @@ export function App() {
       if ((e.metaKey || e.ctrlKey) && !e.altKey && (key === "z" || key === "y")) {
         e.preventDefault();
         send({ type: key === "y" || e.shiftKey ? "redo" : "undo" });
+        return;
+      }
+      if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && key === "a") {
+        e.preventDefault();
+        setSelection(boxesRef.current.map((b) => b.id));
         return;
       }
       if (e.key === " ") {
@@ -120,6 +129,10 @@ export function App() {
           x {coord(cursor?.x)} · z {coord(cursor?.z)} m
         </span>
         <span className="coords">yaw {`${Math.round(view.yaw)}°`.padStart(4)}</span>
+        <span className="sep" />
+        <span className="counts">{scene ? `${rooms} rooms · ${volumes} volumes` : "—"}</span>
+        <span className="sep" />
+        <span className="hint">{HINTS[activeTool]}</span>
       </div>
 
       <div className="dock">
@@ -143,7 +156,6 @@ export function App() {
         <ToolBar
           tool={activeTool}
           onTool={setTool}
-          boxes={scene?.boxes ?? null}
           history={history}
           connected={connected}
           onUndo={() => send({ type: "undo" })}

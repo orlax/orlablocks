@@ -40,6 +40,14 @@ body {
 .viewport.drawing { cursor: crosshair; }
 .viewport.resizing { cursor: ns-resize; }
 
+/* The Select tool's marquee. */
+.marquee {
+  position: absolute;
+  border: 1px solid #3d7be0;
+  background: rgba(61, 123, 224, 0.12);
+  pointer-events: none;
+}
+
 /* Live footprint size next to the cursor while drawing. */
 .draft-label {
   position: absolute;
@@ -84,8 +92,6 @@ body {
 .contextual-bar { padding: 6px 12px 6px 6px; border-radius: 10px; }
 
 .sep { width: 1px; height: 20px; background: rgba(255, 255, 255, 0.15); }
-.tool-bar .muted { color: var(--muted); }
-.tool-bar .hint { max-width: 46ch; font-size: 12px; }
 .contextual-bar .info { color: #8fb4f2; font-variant-numeric: tabular-nums; white-space: nowrap; }
 
 .tool-bar button,
@@ -134,22 +140,33 @@ body {
 .contextual-bar button.swatch:hover { transform: scale(1.12); }
 .contextual-bar button.swatch.active { outline: 2px solid #8fb4f2; outline-offset: 2px; }
 
-/* Small fixed-width status label, top right. Monospace + fixed width so it never jitters. */
+/* Status row across the top: connection, cursor, yaw, counts and the current tool's hint. The numbers are
+   monospace with fixed widths so they never jitter. */
 .info-label {
   position: fixed;
   top: 12px;
+  left: 12px;
   right: 12px;
-  width: calc(24ch + 20px); /* 24ch of content + horizontal padding */
   display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 6px 10px;
+  align-items: center;
+  gap: 14px;
+  padding: 6px 12px;
   border-radius: 8px;
   background: var(--bar-bg);
   color: var(--muted);
   font: 11px/1.4 ui-monospace, monospace;
   white-space: pre;
   pointer-events: none;
+}
+.info-label .sep { height: 12px; }
+.info-label .counts { color: var(--bar-text); }
+.info-label .hint {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font: 12px/1.4 system-ui, sans-serif;
+  text-align: right;
 }
 .info-label .conn { color: #7fc98f; }
 .info-label .conn.offline { color: #e05555; }

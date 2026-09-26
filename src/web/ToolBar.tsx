@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { Box as BoxIcon, Hand, MousePointer2, Redo2, Square, SquareDashed, Trash2, Undo2, type LucideIcon } from "lucide-react";
-import { BOX_COLORS, PALETTE, type Box, type BoxColor, type BoxKind, type HistorySummary } from "../shared/scene.types";
+import { BOX_COLORS, PALETTE, type BoxColor, type BoxKind, type HistorySummary } from "../shared/scene.types";
 import type { Tool } from "./Viewport";
 
 export const MOD = /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl+";
@@ -11,8 +11,9 @@ export const TOOLS: { tool: Tool; label: string; key: string; icon: LucideIcon }
   { tool: "box", label: "Box", key: "b", icon: BoxIcon },
 ];
 
-const HINTS: Record<Tool, string> = {
-  select: `click to select · drag a box to move it (Shift: one axis, ${MOD}: no snap) · Delete to remove · Space to pan`,
+/** What each tool does and its modifiers, shown in the info-label. */
+export const HINTS: Record<Tool, string> = {
+  select: `click to select (Shift adds) · drag a box to move it · drag empty ground to marquee · ${MOD}A all · Space to pan`,
   hand: "drag to pan · scroll to zoom · A/D or ←/→ to rotate",
   box: `drag to draw · Shift square · Alt from center · ${MOD} no snap · Esc to cancel`,
 };
@@ -22,11 +23,10 @@ const KINDS: { kind: BoxKind; label: string; icon: LucideIcon }[] = [
   { kind: "volume", label: "Volume (solid)", icon: Square },
 ];
 
-/** The floating bar at the bottom: tools, undo / redo / clear, counts and the current tool's hint. */
+/** The floating bar at the bottom: the tools, then undo / redo / clear. */
 export function ToolBar({
   tool,
   onTool,
-  boxes,
   history,
   connected,
   onUndo,
@@ -35,15 +35,12 @@ export function ToolBar({
 }: {
   tool: Tool;
   onTool: (tool: Tool) => void;
-  boxes: Box[] | null;
   history: HistorySummary;
   connected: boolean;
   onUndo: () => void;
   onRedo: () => void;
   onClear: () => void;
 }) {
-  const rooms = boxes?.filter((b) => b.kind === "room").length ?? 0;
-  const volumes = (boxes?.length ?? 0) - rooms;
   return (
     <div className="tool-bar">
       {TOOLS.map(({ tool: t, label, key, icon: Icon }) => (
@@ -71,10 +68,6 @@ export function ToolBar({
         title={history.redoLabel ? `Redo: ${history.redoLabel} (${MOD}⇧Z)` : "Nothing to redo"}
       />
       <IconButton icon={Trash2} onClick={onClear} disabled={!connected} title="Clear the scene" />
-      <span className="sep" />
-      <span className="muted">{boxes ? `${rooms} rooms · ${volumes} volumes` : "—"}</span>
-      <span className="sep" />
-      <span className="muted hint">{HINTS[tool]}</span>
     </div>
   );
 }

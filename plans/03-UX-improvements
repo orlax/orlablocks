@@ -400,3 +400,13 @@ Adopted as recommended (say if any should change):
 - A curved-arrow SVG cursor over and while dragging the handle (CSS has no rotate cursor), falling back to a crosshair.
 - Scale handles already worked on rotated boxes (03.4). The gizmo's rounding no longer produces `-0`.
 - **Tests:** handle placement (including turned with the box), hit testing, single-box snapping (up and down, free), and a multi-box turn around the bounds' center. 84 tests pass.
+
+### 03.6 — Multi-selection (done)
+
+- **Shift-click:** pressing an unselected box with `Shift` adds it to the selection, and a drag right away moves all of them. Shift-clicking a selected box (no drag) removes it. A plain click on a box still selects just that box, even inside a multi-selection, while a drag on any selected box moves them all.
+- **Marquee:** dragging empty ground with the Select tool draws a blue rectangle and selects, live, every box it touches **on screen**. The test is exact (`src/web/marquee.ts`): a box is convex, so its screen outline is the convex hull of its 8 projected corners (room walls included), checked against the rect with a separating-axis test. `Shift` adds to the selection it started from. `Esc` mid-marquee restores that selection. A click on empty ground deselects (not with `Shift`).
+- **The Select tool no longer pans on drag:** `Space` or the middle button pan in every tool (per §5, "from 03.6 it draws a marquee").
+- **`Cmd/Ctrl+A`** selects every box.
+- The gizmo, delete and recolor already worked on the selection (03.3–03.5): a multi-selection gets the move arrows, the y arrow and the rotate handle on its combined bounds, with no height or scale handles. Delete removes all of it and a swatch recolors all of it, each as one undo step. The contextual bar says `N selected` and disables the kind toggle.
+- **Tests:** convex hull, polygon vs rect (containment, partial overlap, and a rect in the bounding box's corner that misses the shape), marquee hits in scene order, and rotation. 89 tests pass.
+- **Refinement after the browser check:** the tool-bar now holds only controls (the tools, then Undo / Redo / Clear). The room and volume counts and the current tool's hint moved to the **info-label**, which is now a single full-width row across the top: connection · cursor x · z · yaw · counts · the hint, right-aligned and truncated with an ellipsis if the window is narrow.

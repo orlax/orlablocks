@@ -77,7 +77,7 @@ function toBoxLocal(box: Box, p: { x: number; z: number }) {
 }
 
 /** A point in the box's frame back in world x/z. */
-function fromBoxLocal(box: Box, l: { x: number; z: number }) {
+export function fromBoxLocal(box: Box, l: { x: number; z: number }) {
   const { ex, ez } = boxAxes(box);
   return { x: box.x + l.x * ex.x + l.z * ez.x, z: box.z + l.x * ex.z + l.z * ez.z };
 }

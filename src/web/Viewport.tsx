@@ -45,6 +45,7 @@ import {
 } from "./gizmo";
 import { Grid } from "./Grid";
 import { Lighting } from "./Lighting";
+import { marqueeHits, rectFrom, type ScreenPoint } from "./marquee";
 import { pickBox, pickHit } from "./pick";
 import { TransformGizmo } from "./TransformGizmo";
 
@@ -63,12 +64,12 @@ type Footprint = { x: number; z: number; width: number; depth: number };
 
 /**
  * A gizmo drag in progress. A body drag only becomes `active` once the pointer moves past CLICK_PX: until then
- * it's a click, which selects `clickId` alone. Handle drags are active right away.
+ * it's a click, which sets the selection to `clickSelection` on release. Handle drags are active right away.
  */
 type Drag = GizmoDrag & {
   pointerId: number;
   ids: string[];
-  clickId?: string;
+  clickSelection?: string[];
   sx0: number;
   sy0: number;
   active: boolean;
@@ -121,7 +122,7 @@ export function Viewport({ tool, boxes, selection, nextKind, onSelect, onDrawBox
   const cam = useRef<CameraState>({ ...DEFAULT_CAMERA });
   const wrap = useRef<HTMLDivElement>(null);
   const yawKeys = useRef(new Set<YawKey>());
-  const pan = useRef<{ pointerId: number; grabbed: GroundPoint; clickable: boolean; sx: number; sy: number } | null>(null);
+  const pan = useRef<{ pointerId: number; grabbed: GroundPoint; sx: number; sy: number } | null>(null);
   const drawing = useRef<{ pointerId: number; kind: BoxKind; start: GroundPoint } | null>(null);
   const [panning, setPanning] = useState(false);
   const [draft, setDraft] = useState<(Footprint & { kind: BoxKind; sx: number; sy: number }) | null>(null);
@@ -130,9 +131,23 @@ export function Viewport({ tool, boxes, selection, nextKind, onSelect, onDrawBox
   const [drag, setDrag] = useState<Drag | null>(null);
   // After releasing a drag, keep showing its result until the server's scene arrives (no flicker back).
   const [pending, setPending] = useState<Record<string, BoxPatch> | null>(null);
-  // The Esc listener is installed once; it reads the current drag from here.
+  // The marquee: dragging empty ground in the Select tool. It becomes `active` past CLICK_PX (before that it's a
+  // click, which deselects). `base` is the selection it started from, restored by Esc and added to with Shift.
+  const [marquee, setMarquee] = useState<{
+    pointerId: number;
+    start: ScreenPoint;
+    end: ScreenPoint;
+    additive: boolean;
+    base: string[];
+    active: boolean;
+  } | null>(null);
+  // The Esc listener is installed once; it reads the current drag and marquee from here.
   const dragRef = useRef(drag);
   dragRef.current = drag;
+  const marqueeRef = useRef(marquee);
+  marqueeRef.current = marquee;
+  const onSelectRef = useRef(onSelect);
+  onSelectRef.current = onSelect;
 
   // What's on screen: the server's boxes, with the drag in progress (or just released) applied locally.
   const override = drag?.active ? drag.patches : pending;
@@ -173,10 +188,12 @@ export function Viewport({ tool, boxes, selection, nextKind, onSelect, onDrawBox
     setDraft(null);
   };
 
-  // Switching tools (or holding Space) mid-drag drops the unfinished footprint or gizmo drag.
+  // Switching tools (or holding Space) mid-drag drops the unfinished footprint, gizmo drag or marquee (keeping
+  // whatever the marquee has selected so far).
   useEffect(() => {
     cancelDrawing();
     setDrag(null);
+    setMarquee(null);
   }, [tool]);
 
   // A new scene from the server: the released drag is now real, and a drag whose boxes vanished (undo, Clear,
@@ -186,15 +203,17 @@ export function Viewport({ tool, boxes, selection, nextKind, onSelect, onDrawBox
     setDrag((d) => (d && d.ids.every((id) => boxes.some((b) => b.id === id)) ? d : null));
   }, [boxes]);
 
-  const startDrag = (e: PointerEvent, gizmoDrag: GizmoDrag, extra: { active: boolean; clickId?: string }) => {
+  const startDrag = (e: PointerEvent, gizmoDrag: GizmoDrag, extra: { active: boolean; clickSelection?: string[] }) => {
     const { sx, sy } = local(e);
     e.currentTarget.setPointerCapture(e.pointerId);
     const ids = gizmoDrag.origin.map((b) => b.id);
     setDrag({ ...gizmoDrag, ...extra, pointerId: e.pointerId, ids, sx0: sx, sy0: sy, patches: {}, label: "", sx, sy });
   };
 
-  // Select tool: a gizmo handle drags it; pressing a box selects it (unless it's already selected) and dragging
-  // moves the selection; a click on empty ground deselects, and dragging there pans (until 03.6's marquee).
+  // Select tool: a gizmo handle drags it. Pressing a box selects it (unless it's already selected) and dragging
+  // moves the selection; a click selects just that box. With Shift, pressing an unselected box adds it (and a drag
+  // moves them all), and clicking a selected one removes it. Empty ground: a drag draws a marquee, a click
+  // deselects (Shift keeps the selection).
   // Hand tool (or middle button in any tool): drag to pan, the grabbed ground point stays under the cursor.
   // Box tool: drag a footprint on the ground.
   const onPointerDown = (e: PointerEvent) => {
@@ -207,12 +226,25 @@ export function Viewport({ tool, boxes, selection, nextKind, onSelect, onDrawBox
       }
       const hit = pickHit(screenRay(cam.current, size, sx, sy), shown);
       if (hit) {
-        const ids = selection.includes(hit.id) ? selection : [hit.id];
-        if (!selection.includes(hit.id)) onSelect(ids);
+        const wasSelected = selection.includes(hit.id);
+        let ids: string[];
+        let clickSelection: string[];
+        if (e.shiftKey) {
+          ids = wasSelected ? selection : [...selection, hit.id];
+          clickSelection = wasSelected ? selection.filter((id) => id !== hit.id) : ids;
+        } else {
+          ids = wasSelected ? selection : [hit.id];
+          clickSelection = [hit.id];
+        }
+        if (!wasSelected) onSelect(ids);
         const origin = shown.filter((b) => ids.includes(b.id));
-        startDrag(e, startBodyDrag(origin, hit.point), { active: false, clickId: hit.id });
+        startDrag(e, startBodyDrag(origin, hit.point), { active: false, clickSelection });
         return;
       }
+      e.currentTarget.setPointerCapture(e.pointerId);
+      const start = { sx, sy };
+      setMarquee({ pointerId: e.pointerId, start, end: start, additive: e.shiftKey, base: selection, active: false });
+      return;
     }
     const panButton = e.button === 1 || (e.button === 0 && tool !== "box");
     const drawButton = e.button === 0 && tool === "box";
@@ -220,7 +252,7 @@ export function Viewport({ tool, boxes, selection, nextKind, onSelect, onDrawBox
     e.currentTarget.setPointerCapture(e.pointerId);
     if (panButton) {
       const grabbed = screenToGround(cam.current, size, sx, sy);
-      pan.current = { pointerId: e.pointerId, grabbed, clickable: e.button === 0 && tool === "select", sx, sy };
+      pan.current = { pointerId: e.pointerId, grabbed, sx, sy };
       setPanning(true);
     } else {
       const { point } = groundAt(e);
@@ -236,9 +268,21 @@ export function Viewport({ tool, boxes, selection, nextKind, onSelect, onDrawBox
     if (drag?.pointerId === e.pointerId) {
       if (!drag.active && Math.hypot(sx - drag.sx0, sy - drag.sy0) < CLICK_PX) return;
       const others = boxes.filter((b) => !drag.ids.includes(b.id));
-      const { patches, label } = dragUpdate(drag, cam.current, size, sx, sy, { shift: e.shiftKey, alt: e.altKey, snap: !noSnap(e) }, others);
+      const mods = { shift: e.shiftKey, alt: e.altKey, snap: !noSnap(e) };
+      const { patches, label } = dragUpdate(drag, cam.current, size, sx, sy, mods, others);
       setDrag({ ...drag, active: true, patches, label, sx, sy });
       setHoveredId(null);
+      return;
+    }
+    if (marquee?.pointerId === e.pointerId) {
+      const end = { sx, sy };
+      const active = marquee.active || Math.hypot(sx - marquee.start.sx, sy - marquee.start.sy) >= CLICK_PX;
+      if (active) {
+        // The selection follows the marquee live.
+        const hits = marqueeHits(cam.current, size, shown, rectFrom(marquee.start, end));
+        onSelect(marquee.additive ? [...marquee.base, ...hits.filter((id) => !marquee.base.includes(id))] : hits);
+      }
+      setMarquee({ ...marquee, end, active });
       return;
     }
     if (pan.current?.pointerId === e.pointerId) {
@@ -259,7 +303,6 @@ export function Viewport({ tool, boxes, selection, nextKind, onSelect, onDrawBox
   };
 
   const onPointerUp = (e: PointerEvent) => {
-    const { sx, sy, size } = local(e);
     if (drag?.pointerId === e.pointerId) {
       if (drag.active) {
         const changes = effectiveChanges(drag.origin, drag.patches);
@@ -267,21 +310,21 @@ export function Viewport({ tool, boxes, selection, nextKind, onSelect, onDrawBox
           onUpdate(changes);
           setPending(drag.patches);
         }
-      } else if (drag.clickId) {
-        // A click on a box (no drag) selects just that box.
-        onSelect([drag.clickId]);
+      } else if (drag.clickSelection) {
+        onSelect(drag.clickSelection);
       }
       setDrag(null);
       return;
     }
-    const p = pan.current;
-    if (p?.pointerId === e.pointerId) {
+    if (marquee?.pointerId === e.pointerId) {
+      // A click on empty ground deselects, unless Shift is held.
+      if (!marquee.active && !marquee.additive) onSelect([]);
+      setMarquee(null);
+      return;
+    }
+    if (pan.current?.pointerId === e.pointerId) {
       pan.current = null;
       setPanning(false);
-      if (p.clickable && Math.hypot(sx - p.sx, sy - p.sy) < CLICK_PX) {
-        const id = pickAt(sx, sy, size);
-        onSelect(id ? [id] : []);
-      }
     }
     const d = drawing.current;
     if (d?.pointerId === e.pointerId) {
@@ -293,14 +336,17 @@ export function Viewport({ tool, boxes, selection, nextKind, onSelect, onDrawBox
     }
   };
 
-  // Esc mid-drag cancels the drag or the draft and nothing else: this runs in the capture phase, before the
-  // app's Esc (deselect), and stops it.
+  // Esc mid-drag cancels the drag, the draft or the marquee (restoring the selection it started from) and nothing
+  // else: this runs in the capture phase, before the app's Esc (deselect), and stops it.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key !== "Escape" || (!dragRef.current?.active && !drawing.current)) return;
+      const m = marqueeRef.current;
+      if (e.key !== "Escape" || (!dragRef.current?.active && !drawing.current && !m?.active)) return;
       e.stopImmediatePropagation();
       cancelDrawing();
       setDrag(null);
+      if (m?.active) onSelectRef.current(m.base);
+      setMarquee(null);
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
@@ -406,6 +452,17 @@ export function Viewport({ tool, boxes, selection, nextKind, onSelect, onDrawBox
         <div className="draft-label" style={{ left: draft.sx + 14, top: draft.sy + 14 }}>
           {round2(draft.width)} × {round2(draft.depth)} m
         </div>
+      )}
+      {marquee?.active && (
+        <div
+          className="marquee"
+          style={{
+            left: Math.min(marquee.start.sx, marquee.end.sx),
+            top: Math.min(marquee.start.sy, marquee.end.sy),
+            width: Math.abs(marquee.end.sx - marquee.start.sx),
+            height: Math.abs(marquee.end.sy - marquee.start.sy),
+          }}
+        />
       )}
       {drag?.active && (
         <div className="draft-label" style={{ left: drag.sx + 14, top: drag.sy + 14 }}>
