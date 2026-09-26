@@ -6,6 +6,7 @@ import {
   HEIGHT_SNAP,
   MIN_HEIGHT,
   SNAP,
+  DEFAULT_COLOR,
   type Box,
   type BoxInput,
   type BoxKind,
@@ -45,6 +46,7 @@ const YAW_KEYS: Record<string, YawKey> = { a: "left", arrowleft: "left", d: "rig
 
 export type Tool = "hand" | BoxKind;
 
+/** A drawn footprint on the ground, by its center (like a box). */
 type Footprint = { x: number; z: number; width: number; depth: number };
 type HeightDrag = { pointerId: number; id: string; grabOffset: number; height: number; sx: number; sy: number };
 
@@ -58,7 +60,7 @@ function footprintFrom(start: GroundPoint, end: GroundPoint, square: boolean): F
   const side = Math.max(Math.abs(dx), Math.abs(dz));
   const width = square ? side : Math.abs(dx);
   const depth = square ? side : Math.abs(dz);
-  return { x: dx < 0 ? start.x - width : start.x, z: dz < 0 ? start.z - depth : start.z, width, depth };
+  return { x: start.x + (dx < 0 ? -width : width) / 2, z: start.z + (dz < 0 ? -depth : depth) / 2, width, depth };
 }
 
 type Props = {
@@ -138,9 +140,8 @@ export function Viewport({ tool, boxes, selectedId, onSelect, onDrawBox, onChang
     const { sx, sy, size } = local(e);
     if (e.button === 0 && selected && onHandle(sx, sy, size)) {
       e.currentTarget.setPointerCapture(e.pointerId);
-      const x = selected.x + selected.width / 2;
-      const z = selected.z + selected.depth / 2;
-      const grabOffset = heightOnVertical(cam.current, size, sx, sy, x, z) - selected.height;
+      const top = selected.y + selected.height;
+      const grabOffset = heightOnVertical(cam.current, size, sx, sy, selected.x, selected.z) - top;
       setHeightDrag({ pointerId: e.pointerId, id: selected.id, grabOffset, height: selected.height, sx, sy });
       return;
     }
@@ -165,7 +166,7 @@ export function Viewport({ tool, boxes, selectedId, onSelect, onDrawBox, onChang
 
     if (heightDrag?.pointerId === e.pointerId) {
       const box = boxes.find((b) => b.id === heightDrag.id)!;
-      const raw = heightOnVertical(cam.current, size, sx, sy, box.x + box.width / 2, box.z + box.depth / 2) - heightDrag.grabOffset;
+      const raw = heightOnVertical(cam.current, size, sx, sy, box.x, box.z) - heightDrag.grabOffset - box.y;
       const snapped = e.altKey ? raw : Math.round(raw / HEIGHT_SNAP) * HEIGHT_SNAP;
       setHeightDrag({ ...heightDrag, height: round2(Math.max(MIN_HEIGHT, snapped)), sx, sy });
       return;
@@ -331,7 +332,7 @@ function Boxes({
         />
       ))}
       {draft && draft.width > 0 && draft.depth > 0 && (
-        <BoxMesh {...draft} height={DEFAULT_HEIGHT[draft.kind]} draft />
+        <BoxMesh {...draft} y={0} rotation={0} color={DEFAULT_COLOR} height={DEFAULT_HEIGHT[draft.kind]} draft />
       )}
     </>
   );

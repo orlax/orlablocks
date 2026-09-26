@@ -336,3 +336,20 @@ Adopted as recommended (say if any should change):
 14. When raising, snap to box tops and the ground within about 0.25 m.
 15. Rotation snaps to **15°**.
 16. Delete / `remove_nodes` is in scope.
+
+---
+
+## 13. Progress
+
+### 03.1 — Node model v2 (done)
+
+- `Box` is now `{ id, type: "box", name?, kind, x, z, y, width, depth, height, rotation, color, createdBy }`, with `x, z` at the footprint **center** and `box_N` IDs from one counter that only goes up. New boxes default to `y` 0, rotation 0, `almost-white`, no name. Rotation is normalized to 0..360 and every number is kept to 2 decimals. The palette (§3.1) lives in `src/shared/scene.types.ts` as `PALETTE`.
+- The `update` op carries a **patch** of any editable fields. Its inverse stores the previous value of only the patched fields, and a name set on an unnamed box undoes to no `name` key at all.
+- Store: `updateNodes` (any of name, kind, x, z, y, width, depth, height, rotation, color; an empty name removes the name; fields that don't change are dropped, and nothing is recorded if nothing changes), `removeNodes` (unknown or repeated IDs reject the batch) and `setSelection` (unknown IDs dropped, not broadcast). Removed boxes also drop out of `scene.selection`. Labels name the kind of edit when it's the same for every change (`Move box_1, box_2`, `Agent: recolor box_3`) and say `Edit` otherwise. Deletes are labeled `Delete box_3`.
+- Schemas are strict: an unknown field (for example `parent` before 03.7) is an error, not silently dropped.
+- MCP: `update_nodes` replaces `update_boxes` (removed, not aliased), plus the new `remove_nodes`. The conventions text now covers the center-based footprint, `y` and stacking, the rotation direction, wall thickness, the palette keys, names, IDs and `selection`. WS: `update_nodes`, `remove_nodes` and `set_selection`.
+- Editor: it reports its selection (`set_selection`) whenever it changes or the socket (re)connects. `Delete` / `Backspace` removes the selected box. The tool-bar shows `name (box_3) · 6 × 4 × 3 m · y 0 · 0°`. Drawing sends center-based footprints. The height gizmo sits on `y + height` and sends `update_nodes`.
+- Rendering: each box's group is placed at its center and elevation and rotated about y, with its geometry built around the center. Materials come from the box's palette color (cached per color), and room floors are 6% darker. Tile UVs are box-aligned: an unrotated box is offset by its world position, so its tiles still line up with the ground grid and with stacked boxes, and a rotated box's tiles start at its corner. The old fixed wall, floor and volume tones are gone.
+- Picking runs the slab test in each box's local frame (the ray is rotated and translated into it), with the box spanning `y..y + height`.
+- **Tests:** patch inverse (only the patched fields), name add/remove undo, all fields updated and undone, labels, empty name, validation (unknown ID, duplicate, empty change, bad size, bad color, unknown field), no-op updates, remove and its undo keeping IDs and positions, selection filtering and pruning, and picking of raised and rotated boxes. 60 tests pass.
+- **Scripted check (port 5171):** `/mcp` lists the 4 tools. The agent drew a named room and a raised, rotated, blue volume. A WS client selected the volume and changed its height, and `get_scene` showed that selection and height. A bad color and an unknown `parent` field were rejected with the failing path. `remove_nodes`, undo and a WS delete all behaved as expected.

@@ -1,4 +1,4 @@
-import type { Actor, Box, HistorySummary } from "../shared/scene.types";
+import type { Actor, Box, BoxPatch, HistorySummary } from "../shared/scene.types";
 
 /**
  * The command layer: ops, their inverses, and one linear history shared by the human and the agent.
@@ -9,7 +9,7 @@ import type { Actor, Box, HistorySummary } from "../shared/scene.types";
 export type Op =
   | { op: "add"; boxes: Box[]; indices?: number[] } // `indices`: restore removed boxes at their original positions
   | { op: "remove"; ids: string[] }
-  | { op: "update"; changes: { id: string; height: number }[] }; // grows to x/z/width/depth later
+  | { op: "update"; changes: { id: string; patch: BoxPatch }[] }; // a key set to undefined removes that field (e.g. name)
 
 /** One user-level action and one undo step. */
 export type HistoryEntry = {
@@ -40,8 +40,8 @@ export function applyOp(boxes: Box[], op: Op): Box[] {
       return boxes.filter((b) => !ids.has(b.id));
     }
     case "update": {
-      const heights = new Map(op.changes.map((c) => [c.id, c.height]));
-      return boxes.map((b) => (heights.has(b.id) ? { ...b, height: heights.get(b.id)! } : b));
+      const patches = new Map(op.changes.map((c) => [c.id, c.patch]));
+      return boxes.map((b) => (patches.has(b.id) ? withPatch(b, patches.get(b.id)!) : b));
     }
   }
 }
@@ -64,11 +64,21 @@ export function invertOp(boxes: Box[], op: Op): Op {
         changes: op.changes.map((c) => {
           const box = byId.get(c.id);
           if (!box) throw new Error(`update: unknown box ${c.id}`);
-          return { id: c.id, height: box.height };
+          // The previous value of every patched field (undefined for a field the box didn't have).
+          const previous: Record<string, unknown> = {};
+          for (const key of Object.keys(c.patch)) previous[key] = box[key as keyof BoxPatch];
+          return { id: c.id, patch: previous as BoxPatch };
         }),
       };
     }
   }
+}
+
+/** The box with `patch` applied; optional fields set to undefined are dropped rather than kept as undefined. */
+function withPatch(box: Box, patch: BoxPatch): Box {
+  const next = { ...box, ...patch };
+  for (const key of Object.keys(patch) as (keyof BoxPatch)[]) if (next[key] === undefined) delete next[key];
+  return next;
 }
 
 /** Applies ops in order and returns the new state plus the inverse, ready to undo. */

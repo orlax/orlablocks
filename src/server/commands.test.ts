@@ -4,12 +4,16 @@ import { applyOp, createHistory, runOps, type HistoryEntry, type Op } from "./co
 
 const box = (id: string): Box => ({
   id,
+  type: "box",
   kind: id.startsWith("room") ? "room" : "volume",
   x: 0,
   z: 0,
+  y: 0,
   width: 1,
   depth: 1,
   height: 1,
+  rotation: 0,
+  color: "almost-white",
   createdBy: "human",
 });
 
@@ -43,12 +47,27 @@ describe("ops", () => {
     expect(inverse.reduce(applyOp, boxes)).toEqual(start);
   });
 
-  it("update's inverse restores the previous heights", () => {
+  it("update's inverse restores the previous values of the patched fields only", () => {
     const start = [box("room_1"), box("volume_1")];
-    const { boxes, inverse } = runOps(start, [{ op: "update", changes: [{ id: "volume_1", height: 2.5 }] }]);
-    expect(boxes.map((b) => b.height)).toEqual([1, 2.5]);
+    const { boxes, inverse } = runOps(start, [
+      { op: "update", changes: [{ id: "volume_1", patch: { height: 2.5, rotation: 30, color: "blue" } }] },
+    ]);
+    expect(boxes[1]).toMatchObject({ height: 2.5, rotation: 30, color: "blue", x: 0 });
+    expect(inverse).toEqual([{ op: "update", changes: [{ id: "volume_1", patch: { height: 1, rotation: 0, color: "almost-white" } }] }]);
     expect(inverse.reduce(applyOp, boxes)).toEqual(start);
-    expect(() => runOps(start, [{ op: "update", changes: [{ id: "room_9", height: 1 }] }])).toThrow(/room_9/);
+    expect(() => runOps(start, [{ op: "update", changes: [{ id: "room_9", patch: { height: 1 } }] }])).toThrow(/room_9/);
+  });
+
+  it("naming a box undoes to no name at all, and removing a name undoes to the old one", () => {
+    const start = [box("room_1")];
+    const named = runOps(start, [{ op: "update", changes: [{ id: "room_1", patch: { name: "lobby" } }] }]);
+    expect(named.boxes[0].name).toBe("lobby");
+    const undone = named.inverse.reduce(applyOp, named.boxes);
+    expect("name" in undone[0]).toBe(false);
+
+    const cleared = runOps(named.boxes, [{ op: "update", changes: [{ id: "room_1", patch: { name: undefined } }] }]);
+    expect("name" in cleared.boxes[0]).toBe(false);
+    expect(cleared.inverse.reduce(applyOp, cleared.boxes)[0].name).toBe("lobby");
   });
 
   it("rejects removing an unknown box", () => {

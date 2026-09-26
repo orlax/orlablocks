@@ -16,7 +16,7 @@ const TOOLS: { tool: Tool; label: string; key: string }[] = [
 ];
 
 const HINTS: Record<Tool, string> = {
-  hand: "click to select · drag to pan · scroll to zoom · A/D or ←/→ to rotate",
+  hand: "click to select · Delete to remove · drag to pan · scroll to zoom · A/D or ←/→ to rotate",
   room: "drag on the ground to draw a room · Shift for square · Alt for free · Esc to cancel",
   volume: "drag on the ground to draw a volume · Shift for square · Alt for free · Esc to cancel",
 };
@@ -28,13 +28,21 @@ export function App() {
   const [tool, setTool] = useState<Tool>("hand");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const pendingDraw = useRef<string | null>(null);
+  // The key handler is installed once; it reads the current selection from here.
+  const selectedRef = useRef(selectedId);
+  selectedRef.current = selectedId;
 
   // Tell the server what's visible so the agent's get_scene knows where to draw.
   useEffect(() => {
     if (connected) send({ type: "set_view", view });
   }, [connected, view, send]);
 
-  // H / R / V pick a tool. Cmd/Ctrl+Z undoes, Cmd/Ctrl+Shift+Z (or Ctrl+Y) redoes.
+  // Tell the server what's selected so the agent knows what "this" means. The last tab to change it wins.
+  useEffect(() => {
+    if (connected) send({ type: "set_selection", ids: selectedId ? [selectedId] : [] });
+  }, [connected, selectedId, send]);
+
+  // H / R / V pick a tool. Cmd/Ctrl+Z undoes, Cmd/Ctrl+Shift+Z (or Ctrl+Y) redoes. Delete / Backspace removes the selection.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       const key = e.key.toLowerCase();
@@ -45,6 +53,10 @@ export function App() {
       }
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (e.key === "Escape") setSelectedId(null);
+      if ((e.key === "Delete" || e.key === "Backspace") && selectedRef.current) {
+        e.preventDefault();
+        send({ type: "remove_nodes", ids: [selectedRef.current] });
+      }
       const match = TOOLS.find((t) => t.key === key);
       if (match) setTool(match.tool);
     };
@@ -82,7 +94,7 @@ export function App() {
           pendingDraw.current = requestId;
           send({ type: "add_boxes", requestId, boxes: [box] });
         }}
-        onChangeHeight={(id, height) => send({ type: "update_boxes", changes: [{ id, height }] })}
+        onChangeHeight={(id, height) => send({ type: "update_nodes", changes: [{ id, height }] })}
         onCursor={setCursor}
         onViewChange={setView}
       />
@@ -132,7 +144,8 @@ export function App() {
           <span className="muted">{scene ? `${rooms} rooms · ${volumes} volumes` : "—"}</span>
           {selected && (
             <span className="selected-info">
-              {selected.id} · {selected.width} × {selected.depth} m · h {selected.height} m
+              {selected.name ? `${selected.name} (${selected.id})` : selected.id} · {selected.width} × {selected.depth} ×{" "}
+              {selected.height} m · y {selected.y} · {selected.rotation}°
             </span>
           )}
           <span className="sep" />

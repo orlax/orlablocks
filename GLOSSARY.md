@@ -28,7 +28,7 @@ Shared vocabulary for this project, for humans and agents alike. Use these names
 ## Scene and data
 
 - **actor**: who made a change, either `human` (the editor) or `agent` (MCP). Stored on each box as `createdBy`. Not shown in the view since the graybox look.
-- **box**: a footprint on the ground plus a height: `{ id, kind, x, z, width, depth, height, createdBy }` in meters, with `x, z` at the footprint's min corner. Its kind is either **room** or **volume**, and its ID is per kind (`room_1`, `volume_1`).
+- **box**: a footprint plus a height: `{ id, type: "box", name?, kind, x, z, y, width, depth, height, rotation, color, createdBy }` in meters. `x, z` is the footprint's **center** (from 03, it was the min corner in 02), `width` and `depth` run along the box's own axes, and it rises from `y` to `y + height`. Its kind is either **room** or **volume** and can change. Its ID is `box_N`, never reused (from 03, it was per kind in 02).
 - **command**: one user-level edit and one undo step. It's made of ops, records its actor, and stores its inverse (from 02).
 - **elevation (`y`)**: the height of a box's bottom above the ground, in meters. 0 = on the ground; negative is below ground (from 03).
 - **group**: a node that contains other nodes (via their `parent`). It has no position of its own: its bounds come from its boxes, and moving it moves them all as one command (from 03).
@@ -50,5 +50,5 @@ Shared vocabulary for this project, for humans and agents alike. Use these names
 
 ## System
 
-- **MCP server / tools**: the `/mcp` endpoint Claude Code connects to. Current tools: `get_scene`, `draw_boxes`, `update_boxes`.
+- **MCP server / tools**: the `/mcp` endpoint Claude Code connects to. Current tools: `get_scene`, `draw_boxes`, `update_nodes`, `remove_nodes`.
 - **server**: the single local process (`npm run dev`) that owns the scene and serves the editor, the WebSocket (`/ws`) and MCP (`/mcp`).

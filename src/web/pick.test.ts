@@ -6,8 +6,10 @@ import { pickBox } from "./pick";
 const size = { width: 1200, height: 800 };
 const cam: CameraState = { ...DEFAULT_CAMERA, yaw: 30, distance: 60 };
 
-const room: Box = { id: "room_1", kind: "room", x: 0, z: 0, width: 10, depth: 8, height: 3, createdBy: "human" };
-const volume: Box = { id: "volume_1", kind: "volume", x: 4, z: 3, width: 2, depth: 2, height: 1, createdBy: "human" };
+const base = { type: "box", y: 0, rotation: 0, color: "almost-white", createdBy: "human" } as const;
+// Footprints by center: the room spans x 0..10, z 0..8; the volume x 4..6, z 3..5.
+const room: Box = { ...base, id: "room_1", kind: "room", x: 5, z: 4, width: 10, depth: 8, height: 3 };
+const volume: Box = { ...base, id: "volume_1", kind: "volume", x: 5, z: 4, width: 2, depth: 2, height: 1 };
 
 /** The ray through the screen position of a world point. */
 const rayAt = (p: Vec3) => {
@@ -33,8 +35,20 @@ describe("pickBox", () => {
   });
 
   it("picks the nearer of two volumes along the same ray", () => {
-    const tall: Box = { ...volume, id: "volume_2", x: 4, z: 3, height: 5 };
+    const tall: Box = { ...volume, id: "volume_2", height: 5 };
     expect(pickBox(rayAt({ x: 5, y: 1, z: 4 }), [volume, tall])).toBe("volume_2");
+  });
+
+  it("honors elevation: a raised box is hit above the ground, not at it", () => {
+    const raised: Box = { ...volume, x: 20, z: 20, y: 3 };
+    expect(pickBox(rayAt({ x: 20, y: 3.5, z: 20 }), [raised])).toBe("volume_1");
+    expect(pickBox(rayAt({ x: 20, y: 0.5, z: 20 }), [raised])).toBeNull();
+  });
+
+  it("honors rotation: a long box turned 90° covers z, not x", () => {
+    const long: Box = { ...volume, x: 20, z: 20, width: 10, depth: 1, rotation: 90 };
+    expect(pickBox(rayAt({ x: 20, y: 1, z: 24 }), [long])).toBe("volume_1");
+    expect(pickBox(rayAt({ x: 24, y: 1, z: 20 }), [long])).toBeNull();
   });
 });
 

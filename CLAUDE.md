@@ -11,9 +11,10 @@ An ideation tool for dungeon layouts: a local web editor, a local server that ow
 
 ## Working with the scene
 
-- To read or change the scene, use the `dungeon-designer` MCP tools (`get_scene`, `draw_boxes`, `update_boxes`). Don't edit files to draw.
-- Coordinates are world units (`u` = meters), not pixels. The world is 3D with y up and the ground at y = 0. The scene holds **boxes**: a room (hollow) or a volume (solid) standing on the ground, with its footprint `x, z` at the min corner, `width` along +x, `depth` along +z, and a `height`. IDs are per kind (`room_1`, `volume_1`) and are how `update_boxes` refers to a box. Every tool call is one step in the undo history the human shares with the agent. The editor is a 3D view seen from a fixed pitch, rotating only by yaw.
-- The scene's `view` is what the editor currently shows: `focus` (ground point at the screen center), `yaw` (degrees) and `bounds` (the axis-aligned box around the visible ground). Before a browser connects it's focus 0,0, yaw 45, bounds -30..30 × -20..20.
+- To read or change the scene, use the `dungeon-designer` MCP tools (`get_scene`, `draw_boxes`, `update_nodes`, `remove_nodes`). Don't edit files to draw.
+- Coordinates are world units (`u` = meters), not pixels. The world is 3D with y up and the ground at y = 0. The scene holds **boxes**: a room (hollow) or a volume (solid). A box's footprint is **centered** at `x, z`, with `width` along its local x and `depth` along its local z. It rises from its elevation `y` (its bottom: 0 = on the ground, negative = below) to `y + height`. `rotation` is in degrees around the vertical axis through the center, counterclockwise seen from above. `color` is a palette key, and `name` is an optional, non-unique label. IDs are `box_1`, `box_2`, ..., never reused, and they're how the other tools refer to a box. Every tool call is one step in the undo history the human shares with the agent. The editor is a 3D view seen from a fixed pitch, rotating only by yaw.
+- `scene.selection` lists the IDs the human has selected in the editor, so "this" means those boxes.
+- The scene's `view` is what the editor currently shows: `focus` (ground point at the screen center), `yaw` (degrees) and `bounds` (the axis-aligned box around the visible ground, `x, z` at its min corner). Before a browser connects it's focus 0,0, yaw 45, bounds -30..30 × -20..20.
 - The scene is in memory only, so restarting the server clears it.
 
 ## Code layout

@@ -1,24 +1,43 @@
 import { WALL_THICKNESS, type Box } from "../shared/scene.types";
 import type { Vec3 } from "./camera";
 
+type Ray = { origin: Vec3; dir: Vec3 };
+
 /**
- * Which box a ray hits first. Boxes are axis-aligned, so this is a slab test per box, no three.js needed.
- * Rooms are hollow: a ray that enters through the open top, inside the walls, hits the floor or an inner
- * wall instead (approximated by where it leaves the room's box), so a volume inside the room wins.
+ * Which box a ray hits first. A slab test per box in the box's local frame (the ray is rotated into it), no
+ * three.js needed. Rooms are hollow: a ray that enters through the open top, inside the walls, hits the floor or
+ * an inner wall instead (approximated by where it leaves the room's box), so a volume inside the room wins.
  */
-export function pickBox(ray: { origin: Vec3; dir: Vec3 }, boxes: Box[]): string | null {
+export function pickBox(ray: Ray, boxes: Box[]): string | null {
   let best: { id: string; t: number } | null = null;
   for (const box of boxes) {
-    const t = hitDistance(ray, box);
+    const t = hitDistance(toLocal(ray, box), box);
     if (t !== null && (!best || t < best.t)) best = { id: box.id, t };
   }
   return best?.id ?? null;
 }
 
-function hitDistance({ origin, dir }: { origin: Vec3; dir: Vec3 }, box: Box): number | null {
+/**
+ * The ray in the box's frame: origin at the footprint center (y stays world y), axes along width and depth.
+ * A rigid transform, so distances along the ray are unchanged.
+ */
+function toLocal({ origin, dir }: Ray, box: Box): Ray {
+  const a = (box.rotation * Math.PI) / 180;
+  const cos = Math.cos(a);
+  const sin = Math.sin(a);
+  // Inverse of a counterclockwise (seen from above) turn about +y.
+  const rot = (x: number, z: number) => ({ x: x * cos - z * sin, z: x * sin + z * cos });
+  const o = rot(origin.x - box.x, origin.z - box.z);
+  const d = rot(dir.x, dir.z);
+  return { origin: { x: o.x, y: origin.y, z: o.z }, dir: { x: d.x, y: dir.y, z: d.z } };
+}
+
+function hitDistance({ origin, dir }: Ray, box: Box): number | null {
   const pad = box.kind === "room" ? WALL_THICKNESS / 2 : 0;
-  const min = { x: box.x - pad, y: 0, z: box.z - pad };
-  const max = { x: box.x + box.width + pad, y: box.height, z: box.z + box.depth + pad };
+  const hw = box.width / 2;
+  const hd = box.depth / 2;
+  const min = { x: -hw - pad, y: box.y, z: -hd - pad };
+  const max = { x: hw + pad, y: box.y + box.height, z: hd + pad };
 
   let tEnter = -Infinity;
   let tExit = Infinity;
@@ -44,8 +63,7 @@ function hitDistance({ origin, dir }: { origin: Vec3; dir: Vec3 }, box: Box): nu
   if (box.kind === "room" && enterAxis === "y" && dir.y < 0) {
     const px = origin.x + dir.x * tEnter;
     const pz = origin.z + dir.z * tEnter;
-    const inside =
-      px > box.x + pad && px < box.x + box.width - pad && pz > box.z + pad && pz < box.z + box.depth - pad;
+    const inside = Math.abs(px) < hw - pad && Math.abs(pz) < hd - pad;
     if (inside) return tExit;
   }
   return Math.max(tEnter, 0);

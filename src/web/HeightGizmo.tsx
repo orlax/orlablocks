@@ -18,7 +18,7 @@ export const gizmoScale = (cam: CameraState) => cam.distance * SCALE_PER_METER_O
 
 /** The world point you grab: above the top center of the box. */
 export function handlePoint(box: Box, cam: CameraState): Vec3 {
-  return { x: box.x + box.width / 2, y: box.height + HANDLE_OFFSET * gizmoScale(cam), z: box.z + box.depth / 2 };
+  return { x: box.x, y: box.y + box.height + HANDLE_OFFSET * gizmoScale(cam), z: box.z };
 }
 
 const stemGeometry = new THREE.CylinderGeometry(0.04, 0.04, 0.5, 8).translate(0, 0.25, 0);
@@ -34,7 +34,7 @@ export function HeightGizmo({ box, cam, hot }: { box: Box; cam: RefObject<Camera
   useFrame(() => {
     const g = group.current;
     if (!g) return;
-    g.position.set(box.x + box.width / 2, box.height, box.z + box.depth / 2);
+    g.position.set(box.x, box.y + box.height, box.z);
     g.scale.setScalar(gizmoScale(cam.current));
   });
 

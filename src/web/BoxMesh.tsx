@@ -1,20 +1,25 @@
 import { useEffect, useMemo } from "react";
 import * as THREE from "three";
-import { WALL_THICKNESS, type BoxKind } from "../shared/scene.types";
+import { PALETTE, WALL_THICKNESS, type BoxColor, type BoxKind } from "../shared/scene.types";
 
 type Props = {
   kind: BoxKind;
-  x: number;
+  x: number; // footprint center
   z: number;
+  y: number; // bottom
   width: number;
   depth: number;
   height: number;
+  rotation: number; // degrees, counterclockwise seen from above
+  color: BoxColor;
   /** The live preview while drawing: translucent blue, so it reads as not-yet-placed. */
   draft?: boolean;
   highlight?: "hover" | "selected";
 };
 
-const FLOOR_THICKNESS = 0.04; // a thin slab just above the ground, so it hides the grid inside the room
+const FLOOR_THICKNESS = 0.04; // a thin slab just above the box's bottom, so it hides the grid inside the room
+/** Room floors are a slightly darker shade of the room's color. */
+const FLOOR_SHADE = 0.94;
 
 /** A white 1 m tile with thin gray borders: the classic prototype texture. Lines land on whole meters. */
 function tileTexture() {
@@ -39,27 +44,11 @@ function tileTexture() {
 
 const SELECT_COLOR = "#3d7be0";
 
-// Graybox materials, shared by every box: warm near-white, matte, tiled every meter.
-let materials: ReturnType<typeof createMaterials> | null = null;
-function createMaterials() {
-  const tiles = tileTexture();
-  const wall = new THREE.MeshLambertMaterial({ color: "#f3f0ea", map: tiles });
-  const floor = new THREE.MeshLambertMaterial({ color: "#e6e2da", map: tiles });
-  const volume = new THREE.MeshLambertMaterial({ color: "#ece9e3", map: tiles });
-  // Selected: the same materials with a faint blue glow.
-  const selected = (m: THREE.MeshLambertMaterial) => {
-    const c = m.clone();
-    c.emissive.set(SELECT_COLOR);
-    c.emissiveIntensity = 0.22;
-    return c;
-  };
+// Graybox materials: matte, tiled every meter, in the box's palette color. Shared per color, made on first use.
+let shared: ReturnType<typeof createShared> | null = null;
+function createShared() {
   return {
-    wall,
-    floor,
-    volume,
-    wallSelected: selected(wall),
-    floorSelected: selected(floor),
-    volumeSelected: selected(volume),
+    tiles: tileTexture(),
     edge: new THREE.LineBasicMaterial({ color: "#8a857b", transparent: true, opacity: 0.3 }),
     edgeHover: new THREE.LineBasicMaterial({ color: SELECT_COLOR, transparent: true, opacity: 0.6 }),
     edgeSelected: new THREE.LineBasicMaterial({ color: SELECT_COLOR }),
@@ -67,19 +56,40 @@ function createMaterials() {
     draftEdge: new THREE.LineBasicMaterial({ color: "#3d7be0" }),
   };
 }
-const getMaterials = () => (materials ??= createMaterials());
+const getShared = () => (shared ??= createShared());
+
+type ColorMaterials = Record<"body" | "floor" | "bodySelected" | "floorSelected", THREE.MeshLambertMaterial>;
+const byColor = new Map<BoxColor, ColorMaterials>();
+function colorMaterials(color: BoxColor): ColorMaterials {
+  let m = byColor.get(color);
+  if (m) return m;
+  const map = getShared().tiles;
+  const body = new THREE.MeshLambertMaterial({ color: PALETTE[color], map });
+  const floor = new THREE.MeshLambertMaterial({ color: new THREE.Color(PALETTE[color]).multiplyScalar(FLOOR_SHADE), map });
+  // Selected: the same materials with a faint blue glow.
+  const selected = (base: THREE.MeshLambertMaterial) => {
+    const c = base.clone();
+    c.emissive.set(SELECT_COLOR);
+    c.emissiveIntensity = 0.22;
+    return c;
+  };
+  m = { body, floor, bodySelected: selected(body), floorSelected: selected(floor) };
+  byColor.set(color, m);
+  return m;
+}
 
 /**
- * World-aligned UVs (1 unit = 1 m), picked per face from its dominant normal axis, so the tile grid
- * lines up across faces and across boxes. `ox, oz` is the geometry's world offset.
+ * Box-aligned UVs (1 unit = 1 m), picked per face from its dominant normal axis in the box's local frame, so tiles
+ * follow the box's edges. `ox, oy, oz` offsets them: with the box's world position for an unrotated box (its tiles
+ * line up with the ground grid and with other boxes), with its half size for a rotated one (tiles start at a corner).
  */
-function applyWorldUVs(geometry: THREE.BufferGeometry, ox: number, oz: number) {
+function applyBoxUVs(geometry: THREE.BufferGeometry, ox: number, oy: number, oz: number) {
   const pos = geometry.getAttribute("position");
   const nrm = geometry.getAttribute("normal");
   const uv = new Float32Array(pos.count * 2);
   for (let i = 0; i < pos.count; i++) {
     const x = pos.getX(i) + ox;
-    const y = pos.getY(i);
+    const y = pos.getY(i) + oy;
     const z = pos.getZ(i) + oz;
     const nx = Math.abs(nrm.getX(i));
     const ny = Math.abs(nrm.getY(i));
@@ -95,7 +105,7 @@ function applyWorldUVs(geometry: THREE.BufferGeometry, ox: number, oz: number) {
 /**
  * A ring of walls around the footprint, extruded up to `height`. Built as a rectangle with a rectangular hole
  * so it's one mesh with clean edges (no seams at the corners). Local coordinates: origin at the footprint's
- * min corner on the ground.
+ * center, on the box's bottom.
  */
 function wallGeometry(width: number, depth: number, height: number) {
   const half = WALL_THICKNESS / 2;
@@ -119,6 +129,7 @@ function wallGeometry(width: number, depth: number, height: number) {
   }
   const geometry = new THREE.ExtrudeGeometry(outer, { depth: height, bevelEnabled: false });
   geometry.rotateX(-Math.PI / 2);
+  geometry.translate(-width / 2, 0, -depth / 2);
   return geometry;
 }
 
@@ -126,22 +137,25 @@ function wallGeometry(width: number, depth: number, height: number) {
  * Graybox rendering. A room is a floor slab plus thick walls, with no ceiling, so you see in from above.
  * A volume is a solid block. Both cast and receive shadows and have faint outlined edges.
  */
-export function BoxMesh({ kind, x, z, width, depth, height, draft = false, highlight }: Props) {
+export function BoxMesh({ kind, x, z, y, width, depth, height, rotation, color, draft = false, highlight }: Props) {
+  // UV offset: see applyBoxUVs.
+  const [ox, oz] = rotation === 0 ? [x, z] : [width / 2, depth / 2];
+
   const solid = useMemo(() => {
     if (kind === "volume") {
       const g = new THREE.BoxGeometry(width, height, depth);
-      g.translate(width / 2, height / 2, depth / 2);
-      return applyWorldUVs(g, x, z);
+      g.translate(0, height / 2, 0);
+      return applyBoxUVs(g, ox, y, oz);
     }
-    return applyWorldUVs(wallGeometry(width, depth, height), x, z);
-  }, [kind, x, z, width, depth, height]);
+    return applyBoxUVs(wallGeometry(width, depth, height), ox, y, oz);
+  }, [kind, ox, y, oz, width, depth, height]);
 
   const floor = useMemo(() => {
     if (kind !== "room") return null;
     const g = new THREE.BoxGeometry(width, FLOOR_THICKNESS, depth);
-    g.translate(width / 2, FLOOR_THICKNESS / 2, depth / 2);
-    return applyWorldUVs(g, x, z);
-  }, [kind, x, z, width, depth]);
+    g.translate(0, FLOOR_THICKNESS / 2, 0);
+    return applyBoxUVs(g, ox, y, oz);
+  }, [kind, ox, y, oz, width, depth]);
 
   const edges = useMemo(() => new THREE.EdgesGeometry(solid, 15), [solid]);
 
@@ -149,18 +163,15 @@ export function BoxMesh({ kind, x, z, width, depth, height, draft = false, highl
   useEffect(() => () => floor?.dispose(), [floor]);
   useEffect(() => () => edges.dispose(), [edges]);
 
-  const m = getMaterials();
+  const s = getShared();
+  const c = colorMaterials(color);
   const sel = highlight === "selected";
-  const bodyMaterial = draft
-    ? m.draft
-    : kind === "room"
-      ? sel ? m.wallSelected : m.wall
-      : sel ? m.volumeSelected : m.volume;
-  const floorMaterial = draft ? m.draft : sel ? m.floorSelected : m.floor;
-  const edgeMaterial = draft ? m.draftEdge : sel ? m.edgeSelected : highlight === "hover" ? m.edgeHover : m.edge;
+  const bodyMaterial = draft ? s.draft : sel ? c.bodySelected : c.body;
+  const floorMaterial = draft ? s.draft : sel ? c.floorSelected : c.floor;
+  const edgeMaterial = draft ? s.draftEdge : sel ? s.edgeSelected : highlight === "hover" ? s.edgeHover : s.edge;
 
   return (
-    <group position={[x, 0, z]}>
+    <group position={[x, y, z]} rotation={[0, (rotation * Math.PI) / 180, 0]}>
       <mesh geometry={solid} material={bodyMaterial} castShadow={!draft} receiveShadow={!draft} />
       {floor && <mesh geometry={floor} material={floorMaterial} receiveShadow={!draft} />}
       <lineSegments geometry={edges} material={edgeMaterial} renderOrder={1} />
