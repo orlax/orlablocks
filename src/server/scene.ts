@@ -7,13 +7,21 @@ import {
   type Box,
   type BoxInput,
   type BoxKind,
+  type HistorySummary,
   type Scene,
   type View,
 } from "../shared/scene.types";
+import { createHistory, runOps, type HistoryEntry, type Op } from "./commands";
 
 export class SceneError extends Error {}
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
+
+/** "Draw room_3", or for the agent "Agent: draw room_4, volume_2" / "Agent: draw 5 boxes". */
+function drawLabel(boxes: Box[], actor: Actor): string {
+  const what = boxes.length <= 3 ? boxes.map((b) => b.id).join(", ") : `${boxes.length} boxes`;
+  return actor === "agent" ? `Agent: draw ${what}` : `Draw ${what}`;
+}
 
 export function createSceneStore() {
   const scene: Scene = { view: { ...DEFAULT_VIEW }, boxes: [] };
@@ -21,11 +29,25 @@ export function createSceneStore() {
   // Per-kind counters that only go up, so IDs are never reused.
   const nextId: Record<BoxKind, number> = { room: 1, volume: 1 };
 
+  const history = createHistory();
+
   const emit = () => listeners.forEach((l) => l(scene));
+
+  /** The single path for edits: apply ops, record one undo step, broadcast. */
+  const commit = (label: string, actor: Actor, ops: Op[]) => {
+    const { boxes, inverse } = runOps(scene.boxes, ops);
+    scene.boxes = boxes;
+    history.push({ label, actor, at: Date.now(), ops, inverse });
+    emit();
+  };
 
   return {
     getScene(): Scene {
       return scene;
+    },
+
+    getHistory(): HistorySummary {
+      return history.summary();
     },
 
     /** Validates every input first; applies all or nothing. Missing heights get the kind's default. */
@@ -51,8 +73,7 @@ export function createSceneStore() {
       if (errors.length > 0) throw new SceneError(`Nothing was drawn.\n${errors.join("\n")}`);
 
       const created: Box[] = valid.map((b) => ({ id: `${b!.kind}_${nextId[b!.kind]++}`, ...b!, createdBy: actor }));
-      scene.boxes.push(...created);
-      emit();
+      commit(drawLabel(created, actor), actor, [{ op: "add", boxes: created }]);
       return created;
     },
 
@@ -66,9 +87,27 @@ export function createSceneStore() {
       };
     },
 
-    clear(): void {
-      scene.boxes = [];
+    /** Removes every box as one undoable step. Clearing an empty scene records nothing. */
+    clear(actor: Actor): void {
+      if (scene.boxes.length === 0) return;
+      commit("Clear", actor, [{ op: "remove", ids: scene.boxes.map((b) => b.id) }]);
+    },
+
+    /** Reverts the latest step, whoever made it. Returns it, or null if there was nothing to undo. */
+    undo(): HistoryEntry | null {
+      const result = history.undo(scene.boxes);
+      if (!result) return null;
+      scene.boxes = result.boxes;
       emit();
+      return result.entry;
+    },
+
+    redo(): HistoryEntry | null {
+      const result = history.redo(scene.boxes);
+      if (!result) return null;
+      scene.boxes = result.boxes;
+      emit();
+      return result.entry;
     },
 
     onChange(listener: (scene: Scene) => void): () => void {

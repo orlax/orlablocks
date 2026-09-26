@@ -356,7 +356,7 @@ Settled:
 - Human drawing is paused until 02.2 brings the Room and Volume tools.
 - **Refinement after the browser check:** the orthographic camera looked wrong at some yaw angles, so it's now a **perspective camera with a narrow 30° vertical field of view** (a long lens: mild perspective). Zoom moves the camera toward the focus point instead of changing an orthographic scale. The origin axes are now 0.15 m thick bars instead of 1 px lines. This supersedes "orthographic" in §2, §8 and §12.
 
-### 02.2 — Rooms and volumes (done, pending browser check)
+### 02.2 — Rooms and volumes (done)
 
 - `Box { id, kind, x, z, width, depth, height, createdBy }` replaces `Rect`, with per-kind IDs that are never reused (not even after Clear). Missing heights default to 3 m (room) or 0.25 m (volume). Heights below 0.05 m are rejected.
 - The Room (`R`) and Volume (`V`) tools draw a footprint on the ground with a live draft box and a `W × D m` label next to the cursor. `Shift` gives a square, `Alt` turns off snap, and `Esc` or switching tools cancels. `H` goes back to the hand tool. The middle button pans in every tool.
@@ -368,3 +368,11 @@ Settled:
   - Room walls are **0.2 m thick, centered on the footprint edge**, so two rooms sharing an edge read as one wall. It's rendering only: the data still stores the footprint, which is the wall centerline. A room narrower than one wall thickness renders as a solid block.
   - Rooms get a thin floor slab (it hides the grid inside the room). Volumes are solid blocks in a slightly darker, cooler gray. Edges are outlined subtly.
   - **Actor colors are no longer shown** (supersedes "actor keeps its color coding" in §8). `createdBy` is still in the data and in `get_scene`. The draft stays translucent blue so it reads as not placed yet.  - **Second pass, after a reference image:** the grays were too dark. Materials are now warm near-white with a **world-aligned 1 m tile texture** on every face (lines on whole meters, so tiles line up across boxes and with the ground grid). The lights are brighter, and **Neutral tone mapping** rolls off sunlit whites instead of clipping them (the background and the grid shader aren't tone mapped). Shadows are a bit stronger and outlines fainter.
+
+### 02.3 — Command history and undo (done)
+
+- `src/server/commands.ts`: `add` / `remove` ops with inverses (a removed box comes back at its original position), `runOps`, and a linear history capped at 200 entries. The store's `commit` is now the single path for edits: apply, record one entry, broadcast.
+- Drawing (one entry per call, labeled `Draw room_3` or `Agent: draw room_4, volume_2`) and Clear (`Clear`, not recorded when the scene is already empty) go through it. Undo reverts the latest entry whoever made it, and redo brings boxes back with their IDs. A rejected batch records nothing.
+- WS: `undo` / `redo` messages, and every `scene` message carries a `history` summary (can undo/redo, labels).
+- Editor: Undo / Redo buttons in the tool-bar (disabled when unavailable, tooltip shows the label), `Cmd/Ctrl+Z`, `Cmd/Ctrl+Shift+Z` and `Ctrl+Y`.
+- The `draw_boxes` description tells the agent each call is one undo step for the human.

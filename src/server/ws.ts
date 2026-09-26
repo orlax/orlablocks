@@ -15,12 +15,15 @@ export function attachWebSocket(httpServer: Server, store: SceneStore) {
 
   const send = (ws: WebSocket, msg: ServerMessage) => ws.send(JSON.stringify(msg));
 
-  store.onChange((scene) => {
-    for (const client of wss.clients) send(client, { type: "scene", scene });
+  const sceneMessage = (): ServerMessage => ({ type: "scene", scene: store.getScene(), history: store.getHistory() });
+
+  store.onChange(() => {
+    const msg = sceneMessage();
+    for (const client of wss.clients) send(client, msg);
   });
 
   wss.on("connection", (ws) => {
-    send(ws, { type: "scene", scene: store.getScene() });
+    send(ws, sceneMessage());
 
     ws.on("message", (raw) => {
       let data: unknown;
@@ -35,7 +38,9 @@ export function attachWebSocket(httpServer: Server, store: SceneStore) {
       try {
         const msg = parsed.data;
         if (msg.type === "add_boxes") store.drawBoxes(msg.boxes, "human");
-        else if (msg.type === "clear") store.clear();
+        else if (msg.type === "clear") store.clear("human");
+        else if (msg.type === "undo") store.undo();
+        else if (msg.type === "redo") store.redo();
         else if (msg.type === "set_view") store.setView(msg.view);
       } catch (err) {
         if (!(err instanceof SceneError)) throw err;

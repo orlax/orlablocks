@@ -35,6 +35,9 @@ export type Scene = {
   boxes: Box[];
 };
 
+/** What the editor needs to show Undo / Redo: whether each is possible, and the label of the step it would revert. */
+export type HistorySummary = { canUndo: boolean; canRedo: boolean; undoLabel?: string; redoLabel?: string };
+
 export const DEFAULT_VIEW: View = {
   focus: { x: 0, z: 0 },
   yaw: 45,
@@ -72,10 +75,12 @@ export const ViewSchema = z.object({
 export const ClientMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("add_boxes"), boxes: z.array(BoxInputSchema).min(1) }),
   z.object({ type: z.literal("clear") }),
+  z.object({ type: z.literal("undo") }),
+  z.object({ type: z.literal("redo") }),
   z.object({ type: z.literal("set_view"), view: ViewSchema }),
 ]);
 export type ClientMessage = z.input<typeof ClientMessageSchema>;
 
 export type ServerMessage =
-  | { type: "scene"; scene: Scene }
+  | { type: "scene"; scene: Scene; history: HistorySummary }
   | { type: "error"; message: string };

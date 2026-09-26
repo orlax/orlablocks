@@ -19,6 +19,7 @@ An ideation tool for dungeon layouts: a local web editor, a local server that ow
 ## Code layout
 
 - `src/shared/`: types and zod schemas shared by the server and the editor.
-- `src/server/scene.ts`: the scene store. It's the single code path for edits, used by both the WebSocket and MCP.
+- `src/server/scene.ts`: the scene store. It's the single code path for edits, used by both the WebSocket and MCP. Every edit goes through `commit` as one undoable command.
+- `src/server/commands.ts`: ops, their inverses and the shared linear history (pure, no server dependencies).
 - `src/server/{ws,mcp,main}.ts`: transports and wiring.
 - `src/web/`: the React + three.js (react-three-fiber) editor. `camera.ts` holds the pure camera math.

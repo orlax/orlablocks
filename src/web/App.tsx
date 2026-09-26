@@ -7,6 +7,8 @@ import { Viewport, type Tool } from "./Viewport";
 /** Fixed-width number (e.g. "  12.50", " -3.00") so the info-label never jitters. */
 const coord = (n?: number) => (n === undefined ? "–".padStart(7) : n.toFixed(2).padStart(7));
 
+const MOD = /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl+";
+
 const TOOLS: { tool: Tool; label: string; key: string }[] = [
   { tool: "hand", label: "Hand", key: "h" },
   { tool: "room", label: "Room", key: "r" },
@@ -20,7 +22,7 @@ const HINTS: Record<Tool, string> = {
 };
 
 export function App() {
-  const { scene, connected, error, send } = useScene();
+  const { scene, history, connected, error, send } = useScene();
   const [view, setView] = useState<View>(DEFAULT_VIEW);
   const [cursor, setCursor] = useState<GroundPoint | null>(null);
   const [tool, setTool] = useState<Tool>("hand");
@@ -30,16 +32,22 @@ export function App() {
     if (connected) send({ type: "set_view", view });
   }, [connected, view, send]);
 
-  // H / R / V pick a tool.
+  // H / R / V pick a tool. Cmd/Ctrl+Z undoes, Cmd/Ctrl+Shift+Z (or Ctrl+Y) redoes.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      const key = e.key.toLowerCase();
+      if ((e.metaKey || e.ctrlKey) && !e.altKey && (key === "z" || key === "y")) {
+        e.preventDefault();
+        send({ type: key === "y" || e.shiftKey ? "redo" : "undo" });
+        return;
+      }
       if (e.metaKey || e.ctrlKey || e.altKey) return;
-      const match = TOOLS.find((t) => t.key === e.key.toLowerCase());
+      const match = TOOLS.find((t) => t.key === key);
       if (match) setTool(match.tool);
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
+  }, [send]);
 
   const boxes = scene?.boxes ?? [];
   const rooms = boxes.filter((b) => b.kind === "room").length;
@@ -81,6 +89,21 @@ export function App() {
               {t.label}
             </button>
           ))}
+          <span className="sep" />
+          <button
+            onClick={() => send({ type: "undo" })}
+            disabled={!connected || !history.canUndo}
+            title={history.undoLabel ? `Undo: ${history.undoLabel} (${MOD}Z)` : "Nothing to undo"}
+          >
+            Undo
+          </button>
+          <button
+            onClick={() => send({ type: "redo" })}
+            disabled={!connected || !history.canRedo}
+            title={history.redoLabel ? `Redo: ${history.redoLabel} (${MOD}⇧Z)` : "Nothing to redo"}
+          >
+            Redo
+          </button>
           <span className="sep" />
           <span className="muted">{scene ? `${rooms} rooms · ${volumes} volumes` : "—"}</span>
           <span className="sep" />

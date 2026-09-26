@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { ClientMessage, Scene, ServerMessage } from "../shared/scene.types";
+import type { ClientMessage, HistorySummary, Scene, ServerMessage } from "../shared/scene.types";
+
+const NO_HISTORY: HistorySummary = { canUndo: false, canRedo: false };
 
 /** Server is the source of truth: we render whatever scene it last sent. */
 export function useScene() {
   const [scene, setScene] = useState<Scene | null>(null);
+  const [history, setHistory] = useState<HistorySummary>(NO_HISTORY);
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -24,6 +27,7 @@ export function useScene() {
         const msg = JSON.parse(event.data) as ServerMessage;
         if (msg.type === "scene") {
           setScene(msg.scene);
+          setHistory(msg.history);
           setError(null);
         } else if (msg.type === "error") {
           setError(msg.message);
@@ -44,5 +48,5 @@ export function useScene() {
     if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
   }, []);
 
-  return { scene, connected, error, send };
+  return { scene, history, connected, error, send };
 }

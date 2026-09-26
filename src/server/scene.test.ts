@@ -98,9 +98,86 @@ describe("scene store", () => {
   it("clears the scene without reusing IDs", () => {
     const store = createSceneStore();
     store.drawBoxes([{ kind: "room", x: 0, z: 0, width: 1, depth: 1 }], "human");
-    store.clear();
+    store.clear("human");
     expect(store.getScene().boxes).toHaveLength(0);
     const [next] = store.drawBoxes([{ kind: "room", x: 0, z: 0, width: 1, depth: 1 }], "human");
     expect(next.id).toBe("room_2");
+  });
+});
+
+describe("scene store history", () => {
+  const room = (x: number) => ({ kind: "room" as const, x, z: 0, width: 4, depth: 4 });
+  const ids = (store: ReturnType<typeof createSceneStore>) => store.getScene().boxes.map((b) => b.id);
+
+  it("undoes and redoes a draw, keeping the same IDs", () => {
+    const store = createSceneStore();
+    store.drawBoxes([room(0)], "human");
+    store.drawBoxes([room(5)], "human");
+    expect(store.getHistory()).toMatchObject({ canUndo: true, canRedo: false, undoLabel: "Draw room_2" });
+
+    expect(store.undo()?.label).toBe("Draw room_2");
+    expect(ids(store)).toEqual(["room_1"]);
+    expect(store.redo()?.label).toBe("Draw room_2");
+    expect(ids(store)).toEqual(["room_1", "room_2"]);
+  });
+
+  it("an agent batch is one undo step, labeled as the agent's", () => {
+    const store = createSceneStore();
+    store.drawBoxes([room(0)], "human");
+    store.drawBoxes([room(5), room(10), { kind: "volume", x: 1, z: 1, width: 1, depth: 1 }], "agent");
+    expect(store.getHistory().undoLabel).toBe("Agent: draw room_2, room_3, volume_1");
+    store.undo();
+    expect(ids(store)).toEqual(["room_1"]);
+  });
+
+  it("undo reverts the latest step whoever made it", () => {
+    const store = createSceneStore();
+    store.drawBoxes([room(0)], "agent");
+    store.drawBoxes([room(5)], "human");
+    store.undo();
+    expect(ids(store)).toEqual(["room_1"]);
+  });
+
+  it("Clear is undoable and restores boxes in their original order", () => {
+    const store = createSceneStore();
+    store.drawBoxes([room(0), room(5)], "agent");
+    store.drawBoxes([{ kind: "volume", x: 1, z: 1, width: 1, depth: 1 }], "human");
+    store.clear("human");
+    expect(store.getHistory().undoLabel).toBe("Clear");
+    store.undo();
+    expect(ids(store)).toEqual(["room_1", "room_2", "volume_1"]);
+  });
+
+  it("clearing an empty scene records nothing", () => {
+    const store = createSceneStore();
+    store.clear("human");
+    expect(store.getHistory().canUndo).toBe(false);
+  });
+
+  it("a new edit clears redo, and new IDs never reuse undone ones", () => {
+    const store = createSceneStore();
+    store.drawBoxes([room(0)], "human");
+    store.undo();
+    store.drawBoxes([room(5)], "human");
+    expect(store.getHistory().canRedo).toBe(false);
+    expect(ids(store)).toEqual(["room_2"]);
+  });
+
+  it("a rejected batch adds no step", () => {
+    const store = createSceneStore();
+    expect(() => store.drawBoxes([{ kind: "room", x: 0, z: 0, width: -1, depth: 1 }], "agent")).toThrow(SceneError);
+    expect(store.getHistory().canUndo).toBe(false);
+  });
+
+  it("undo and redo notify listeners, and do nothing when there's nothing to do", () => {
+    const store = createSceneStore();
+    const listener = vi.fn();
+    store.onChange(listener);
+    expect(store.undo()).toBeNull();
+    expect(listener).not.toHaveBeenCalled();
+    store.drawBoxes([room(0)], "human");
+    store.undo();
+    store.redo();
+    expect(listener).toHaveBeenCalledTimes(3);
   });
 });

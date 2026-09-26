@@ -38,6 +38,7 @@ function buildServer(store: SceneStore) {
       description:
         `Add one or more boxes (rooms and/or volumes) to the scene in a single batch; they appear live in the editor. ` +
         `Omit height to use the kind's default. ` +
+        `Each call is one step in the shared undo history, so the human can undo the whole batch at once. ` +
         `The batch is all-or-nothing: if any box is invalid, nothing is drawn and the error says which one. ${CONVENTIONS}`,
       inputSchema: { boxes: z.array(BoxInputSchema).min(1) },
     },
