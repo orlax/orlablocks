@@ -8,7 +8,7 @@ import { createSceneStore } from "./scene";
 import { attachWebSocket } from "./ws";
 
 const HOST = "127.0.0.1";
-const PORT = 5170;
+const PORT = Number(process.env.PORT ?? 5170);
 
 const store = createSceneStore();
 

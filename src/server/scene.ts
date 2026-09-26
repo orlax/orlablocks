@@ -53,7 +53,12 @@ export function createSceneStore() {
 
     /** The area the editor window currently shows (last reporting tab wins). Not an edit, so no broadcast. */
     setView(view: View): void {
-      scene.view = { x: round2(view.x), y: round2(view.y), width: round2(view.width), height: round2(view.height) };
+      const { focus, yaw, bounds } = view;
+      scene.view = {
+        focus: { x: round2(focus.x), z: round2(focus.z) },
+        yaw: round2(yaw),
+        bounds: { x: round2(bounds.x), z: round2(bounds.z), width: round2(bounds.width), depth: round2(bounds.depth) },
+      };
     },
 
     clear(): void {

@@ -6,9 +6,12 @@ import { RectInputSchema } from "../shared/scene.types";
 import type { SceneStore } from "./scene";
 
 const COORDS =
-  "Coordinates are continuous world units (u), not pixels or grid cells; decimals are allowed and kept to 2 places. " +
-  "A rect is axis-aligned: x/y is its top-left corner (+x right, +y down), width/height its extent. " +
-  "The scene's `view` is the area currently visible in the editor window (it follows the window size; 1 u = 20 px); " +
+  "Coordinates are continuous world units (u = meters), not pixels or grid cells; decimals are allowed and kept to 2 places. " +
+  "The editor is a 3D view of the ground plane (x/z, y up). Rects lie flat on the ground: rect x maps to ground x and " +
+  "rect y maps to ground z; x/y is the corner with the smallest x and z, width runs along +x and height along +z. " +
+  "The scene's `view` is what the editor window currently shows: `focus` is the ground point at the screen center, " +
+  "`yaw` the camera rotation in degrees, and `bounds` (x, z, width, depth) the axis-aligned area around the visible ground. " +
+  "The visible ground is a rotated quad, so keep drawings near `focus` and well inside `bounds` to be sure they are on screen; " +
   "rects outside it are valid but off-screen.";
 
 function buildServer(store: SceneStore) {

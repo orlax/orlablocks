@@ -61,8 +61,12 @@ describe("scene store", () => {
     const store = createSceneStore();
     const listener = vi.fn();
     store.onChange(listener);
-    store.setView({ x: 0, y: 0, width: 72.333, height: 45 });
-    expect(store.getScene().view).toEqual({ x: 0, y: 0, width: 72.33, height: 45 });
+    store.setView({ focus: { x: 1.005, z: -2 }, yaw: 45.678, bounds: { x: -30, z: -20, width: 72.333, depth: 45 } });
+    expect(store.getScene().view).toEqual({
+      focus: { x: 1, z: -2 },
+      yaw: 45.68,
+      bounds: { x: -30, z: -20, width: 72.33, depth: 45 },
+    });
     expect(listener).not.toHaveBeenCalled();
   });
 

@@ -341,3 +341,17 @@ Settled:
 - **No agent undo** in 02. The agent fixes its own mistakes with `update_boxes`, and undo is the human's.
 - **`get_scene` doesn't include history** in 02.
 - **No persistence** in 02. It comes in a later phase.
+
+---
+
+## 13. Progress
+
+### 02.1 — 3D view and hand tool (done, pending browser check)
+
+- The SVG canvas is replaced by react-three-fiber with a camera at a fixed 35° pitch (starts at yaw 45° with the focus at the origin, about 20 px/m at the focus), a shader grid on the ground and the hand tool (drag to pan, left or middle button; wheel or pinch to zoom toward the focus; A/D and ←/→ for yaw at 90°/s).
+- Rects render as flat tiles on the ground (rect y → ground z). `draw_rects` is unchanged apart from its description.
+- `view` is now `{ focus, yaw, bounds }`. The editor reports it at most every 100 ms while the camera moves.
+- **Extras, not in the plan:** an **origin axes** marker (+x red, +z blue) and a yaw readout in the info-label, both for orientation while rotating. The canvas renders on demand (`frameloop="demand"`), so it's idle when nothing moves. `PORT` env var for a second server instance in scripted checks.
+- **Guess to confirm by feel:** A/← orbits the camera to its left (yaw goes down), D/→ to its right.
+- Human drawing is paused until 02.2 brings the Room and Volume tools.
+- **Refinement after the browser check:** the orthographic camera looked wrong at some yaw angles, so it's now a **perspective camera with a narrow 30° vertical field of view** (a long lens: mild perspective). Zoom moves the camera toward the focus point instead of changing an orthographic scale. The origin axes are now 0.15 m thick bars instead of 1 px lines. This supersedes "orthographic" in §2, §8 and §12.

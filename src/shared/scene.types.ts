@@ -12,15 +12,26 @@ export type Rect = {
   createdBy: Actor;
 };
 
-export type View = { x: number; y: number; width: number; height: number };
+/**
+ * What the editor currently shows. The camera looks down at the ground (x/z plane, y up) at a fixed pitch,
+ * so the visible ground is a rotated quad; `bounds` is the axis-aligned box around it.
+ */
+export type View = {
+  focus: { x: number; z: number }; // ground point under the screen center
+  yaw: number; // degrees, 0..360
+  bounds: { x: number; z: number; width: number; depth: number };
+};
 
 export type Scene = {
   view: View;
   rects: Rect[];
 };
 
-export const DEFAULT_VIEW: View = { x: 0, y: 0, width: 60, height: 40 };
-export const PX_PER_UNIT = 20;
+export const DEFAULT_VIEW: View = {
+  focus: { x: 0, z: 0 },
+  yaw: 45,
+  bounds: { x: -30, z: -20, width: 60, depth: 40 },
+};
 export const SNAP = 0.5;
 
 export const RectInputSchema = z.object({
@@ -32,10 +43,9 @@ export const RectInputSchema = z.object({
 export type RectInput = z.input<typeof RectInputSchema>;
 
 export const ViewSchema = z.object({
-  x: z.number(),
-  y: z.number(),
-  width: z.number().positive(),
-  height: z.number().positive(),
+  focus: z.object({ x: z.number(), z: z.number() }),
+  yaw: z.number(),
+  bounds: z.object({ x: z.number(), z: z.number(), width: z.number().positive(), depth: z.number().positive() }),
 });
 
 export const ClientMessageSchema = z.discriminatedUnion("type", [

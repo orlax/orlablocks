@@ -3,8 +3,6 @@
   --bar-text: #d8dbe2;
   --muted: #8a8f9c;
   --canvas: #f7f6f2;
-  --grid-minor: #e6e3db;
-  --grid-major: #cfcabe;
   --human: #3d7be0;
   --agent: #e0763d;
   --draft: #3d7be0;
@@ -23,18 +21,15 @@ body {
 
 .app { position: fixed; inset: 0; }
 
-svg.canvas {
-  display: block;
-  width: 100%;
-  height: 100%;
-  cursor: crosshair;
+/* The 3D view fills the window. The hand tool pans on drag. */
+.viewport {
+  position: absolute;
+  inset: 0;
+  cursor: grab;
   touch-action: none;
   user-select: none;
 }
-
-.grid line { vector-effect: non-scaling-stroke; stroke-width: 1px; }
-.grid line.minor { stroke: var(--grid-minor); }
-.grid line.major { stroke: var(--grid-major); }
+.viewport.panning { cursor: grabbing; }
 
 /* tool-bar: floating, centered at the bottom with a margin. */
 .dock {
@@ -78,6 +73,7 @@ svg.canvas {
 }
 .tool-bar button:hover:not(:disabled) { border-color: var(--bar-text); }
 .tool-bar button:disabled { opacity: 0.5; cursor: default; }
+.tool-bar button.tool.active { background: rgba(255, 255, 255, 0.14); border-color: var(--bar-text); }
 
 /* Small fixed-width status label, top right. Monospace + fixed width so it never jitters. */
 .info-label {
