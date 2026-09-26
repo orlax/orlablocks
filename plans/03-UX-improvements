@@ -1,0 +1,338 @@
+# 03 — UX Improvements
+
+> **For the agent reading this:** Read `plans/02-basic-3d-editing` first (especially §13, Progress): it describes the editor as it exists today. This phase makes boxes fully editable with **vector-editor-style transform gizmos** (move, raise, scale, rotate), rebuilds the **tool-bar** with icons and a **contextual bar**, and ends with **multi-selection, groups and an outliner**. Every node gets a **name**, so the human and the agent can talk about "the lobby". Persistence is deliberately left for `04`. The work is split into small increments (§10). Each one ends with the human ↔ agent loop still working and a browser checklist for Orlando. `GLOSSARY.md` already has this phase's terms (marked "from 03"). As increments land, update the entries that still describe 02 behavior: hand tool, room tool / volume tool, height gizmo and selection. Log progress in a §13 at the end of this file, as 02 did.
+
+---
+
+## 1. Goal
+
+One demo, end to end:
+
+1. Orlando picks the **Box tool** (`B`). A **contextual bar** appears above the tool-bar with **Room / Volume** and the **color swatches**. He picks Volume + blue and draws a few boxes in a row. Drawing never changes the selection, so he just keeps drawing.
+2. With the **Select tool** (`V`) he clicks one and drags it to a new spot, drags its **red arrow** to slide it along x only, and drags its **green arrow** to lift it until it **snaps onto the top of a room**.
+3. He drags a **corner handle** to resize it (`Shift` keeps the proportions, `Alt` resizes from the center), drags the **top handle** to make it taller, and drags the **rotate handle** to turn it in 15° steps.
+4. He shift-clicks two more boxes, picks yellow, and all three turn yellow. He presses `Cmd+G` and names the group **"lobby"** in the **outliner**.
+5. He tells the agent *"move the lobby 6 m east and add a pillar in its center"*. The agent moves the whole group with **one** call, then draws the pillar into it. Everything shows up live, and every step is one undo.
+6. He selects a box and asks *"make this twice as tall"*. The agent knows what "this" is, because it can see the selection.
+
+---
+
+## 2. Scope
+
+### In
+
+- **Node model:** boxes gain elevation (`y`), rotation around the vertical axis, a color from a fixed palette and a `name`. Kind can change. Later increments add **groups** as nodes in the same flat list.
+- **Delete** (`Delete` / `Backspace`, `remove_nodes` over MCP).
+- **Transform gizmo** on the selection: move on the ground plane or along x/z, raise/lower with snapping onto other boxes, scale (8 footprint handles plus height), rotate.
+- **Tool-bar v2:** big icon tools with the shortcut letter, and a contextual bar (kind + color).
+- **Multi-selection:** shift-click and marquee.
+- **Groups:** `Cmd+G` / `Cmd+Shift+G`, click selects the group, double-click enters it.
+- **Outliner:** a tree list panel for names and structure.
+- **The agent sees the selection,** and can move, rotate and group nodes with relative commands.
+
+### Out (deliberately deferred)
+
+- Persistence (plan `04`).
+- Copy / paste / duplicate, visibility and lock toggles.
+- Rotation around x or z (tilted boxes), and non-box shapes.
+- Scaling several boxes at once. Multi-selection gets move, raise and rotate only.
+- A numeric inspector (typing exact values). The contextual bar shows the numbers read-only.
+- Camera below the ground (negative `y` is valid data, but the camera stays above ground for now).
+- Doors, windows, holes, stairs. Undo from the agent.
+
+---
+
+## 3. Node model
+
+One **flat list** of nodes. Order in the list is the order in the outliner. Groups are added in 03.7. Until then every node is a box.
+
+```ts
+type BoxColor = "white" | "almost-white" | "gray" | "blue" | "yellow" | "orange" | "red" | "green" | "brown" | "black";
+
+type NodeBase = {
+  id: string;        // "box_1", "group_1", ... never reused. IDs are for storage and references
+  name?: string;     // for people and the agent: "lobby", "north pillar". Not unique, optional (the UI shows the ID when empty)
+  parent?: string;   // ID of the group it belongs to; none = top level (03.7)
+  createdBy: Actor;
+};
+
+type Box = NodeBase & {
+  type: "box";
+  kind: BoxKind;     // "room" (hollow) | "volume" (solid), can change after creation
+  x: number;         // footprint CENTER, meters (was the min corner in 02)
+  z: number;
+  y: number;         // elevation of the box's bottom, meters. 0 = on the ground. May be negative (below ground)
+  width: number;     // along the box's local x (world +x when rotation = 0), > 0
+  depth: number;     // along the box's local z, > 0
+  height: number;    // >= 0.05
+  rotation: number;  // degrees around the vertical axis through the center, 0..360. 0 = grid-aligned
+  color: BoxColor;   // default "almost-white"
+};
+
+type Group = NodeBase & { type: "group" };   // 03.7: no position of its own
+
+type Scene = { view: View; selection: string[]; nodes: Node[] };  // `boxes` becomes `nodes` in 03.7
+```
+
+- **Why the center:** once boxes rotate, "the min corner" stops meaning anything simple. With center + size + rotation, rotating never moves the box, and the agent never needs trigonometry to place a rotated box.
+- **Rotation direction:** positive rotation turns the box counterclockwise **seen from above** (a right-handed turn about +y, three.js's convention). Unity's convention is the opposite; that's for the Unity handoff to handle.
+- **Defaults** for new boxes (human or agent): `y = 0`, `rotation = 0`, `color = "almost-white"` (closest to today's look), no name, and the default heights from 02 (room 3 m, volume 0.25 m).
+- **Negative `y`** is valid (a basement). The ground grid is drawn as lines only, so boxes below it stay visible from above.
+
+### 3.1 Palette
+
+The keys are the contract (`draw_boxes` / `update_nodes` take them). The hex values can be tuned freely. The three neutrals are Orlando's exact values. The pastel colors are starting values to tune in the browser.
+
+| Key | Hex | Note |
+|---|---|---|
+| `white` | `#ffffff` | true white |
+| `almost-white` | `#ededed` | still in the gray range. **The default**, closest to today's look |
+| `gray` | `#c4c4c4` | what Orlando calls "gray" |
+| `blue` | `#b9d0ee` | pastel, to tune |
+| `yellow` | `#f3e3a3` | pastel, to tune |
+| `orange` | `#f4c69c` | pastel, to tune |
+| `red` | `#eeaaa4` | pastel, to tune |
+| `green` | `#bddcb2` | pastel, to tune |
+| `brown` | `#cdb49b` | pastel, to tune |
+| `black` | `#5d5c5a` | a soft charcoal, so shading and tile lines still read |
+
+- **The hex is the material's base color, not the final pixel.** The sun, the sky light and tone mapping (02.2) change how a color reads on screen. When tuning, check that `white`, `almost-white` and `gray` stay clearly distinct on a sunlit top face *and* on a shaded side. Adjust the lighting first if they don't, so the neutrals keep Orlando's values.
+- Room floors use a slightly darker shade of the room's color, as today.
+- **Today's material colors go away.** Walls `#f3f0ea`, floor `#e6e2da` and volumes `#ece9e3` all become the box's palette color.
+
+### 3.2 Groups (03.7): containers, Figma-style
+
+- **A group has no position, size or rotation of its own.** Every box keeps its **world** coordinates. A group's bounds are derived from its descendants. This keeps every coordinate absolute, which the agent reasons about well. Nested transforms are where LLMs make mistakes.
+- **Groups are for organizing:** "lobby" holds the main room, and later its doors, windows and the volumes inside it. They're also a **unit of action**: move, raise, rotate or delete the group, and it applies to all its descendants in **one command**, for the human and the agent alike.
+- **Rotating a group** rotates each descendant's center around the group's center, and adds the angle to each box's rotation. This is only possible to compute simply because rotation is vertical-axis only.
+- **Nested groups** are allowed. **Deleting** a group deletes its descendants, and ungrouping keeps them. A group left **empty** disappears. Grouping, ungrouping and moving a node into another group are ordinary ops (change `parent`, add or remove a group node), so they undo like everything else.
+- The save format in 04 stores the same flat list, with `parent` and `name`.
+
+---
+
+## 4. Modifier keys (a change from 02)
+
+To match vector-editor muscle memory:
+
+| Key while dragging | Draw a box | Move | Scale | Rotate |
+|---|---|---|---|---|
+| **Shift** | square footprint | lock to the dominant world axis | keep aspect ratio | — |
+| **Alt** | draw from the center | — | scale from the center | — |
+| **Cmd / Ctrl** | no snap | no snap | no snap | free angle |
+
+Snap is on by default: 0.5 m on the ground, 0.05 m vertically, **15°** for rotation. "Free" moves from `Alt` (in 02) to `Cmd/Ctrl`. On a click, `Shift` adds or removes a node from the selection.
+
+---
+
+## 5. Tools, tool-bar and contextual bar
+
+### Tools
+
+| Tool | Key | What it does |
+|---|---|---|
+| **Select** | `V` | Click a node to select it, `Shift`-click to add or remove. Press on a node and drag to move it right away. Click empty ground to deselect. Until 03.6, dragging empty ground pans. From 03.6, it draws a marquee. |
+| **Hand** | `H` | Navigation only: drag to pan. It no longer selects. Holding `Space` in any tool temporarily switches to the hand. |
+| **Box** | `B` | Drag on the ground to draw a box. Kind and color come from the contextual bar. **Drawing never changes the selection**, and the tool stays Box, so you can draw several boxes in a row. To edit one, switch to Select. |
+
+- In every tool: the middle button pans, scroll zooms, and `A/D` / `←/→` rotate the view.
+- **The transform gizmo shows and works only in the Select tool.** In the Hand and Box tools the selection stays highlighted, but its handles are hidden, so a drag never grabs a handle by accident. This replaces 02's height gizmo, which worked in every tool.
+- **02's auto-select after drawing is removed.** So is the `requestId` / `created` round trip that only existed to support it.
+- `R` no longer picks Room, and `V` now means Select (kind lives in the contextual bar).
+
+### Tool-bar v2 (bottom center, the same floating dark pill)
+
+- **Tool buttons:** big square icon buttons, **3em**, with the shortcut letter small in the bottom-right corner. The active tool is highlighted.
+- Then smaller icon buttons for Undo, Redo and Clear, the counts, and the hint for the current tool.
+
+### Contextual bar (floats just above the tool-bar)
+
+It shows in the **Box tool**, and in the **Select tool** when something is selected. What it controls depends on the tool, so it's never ambiguous:
+
+- **Box tool: the style of the next box.** A Room / Volume toggle (icons `square-dashed` / `square`) and the palette swatches. The choice is remembered while the tab is open. An existing selection is not affected.
+- **Select tool: the selection.**
+  - **Kind:** with **one box** selected, the toggle shows and changes that box's kind. With **several nodes** selected, or a group, it's disabled, because changing kind is a single-item operation.
+  - **Color:** clicking a swatch recolors **every selected box** (a group counts as all its boxes), as one undo step. The swatch of a single box's color is highlighted.
+  - **Read-only numbers:** `box_3 · 6 × 4 × 3 m · y 0 · 0°` for one box, `3 selected` for several.
+
+### Icons
+
+**[Lucide](https://lucide.dev)** (`lucide-react`, ISC license, tree-shaken):
+- Select `mouse-pointer-2`, Hand `hand`, Box `box`;
+- Room `square-dashed`, Volume `square`;
+- Undo / Redo `undo-2` / `redo-2`, Clear `trash-2`.
+
+---
+
+## 6. Transform gizmo
+
+It shows on the **selection** (one box, several nodes, or a group), **in the Select tool only**. It's drawn over everything at a constant size on screen, and uses the axis colors **x red, y green, z blue** (the origin axes gain a green y bar). **All gizmo code works on "the selection"**, not on one box, from 03.3 on, so multi-selection in 03.6 needs no rewrite.
+
+| Part | Where | Drag does |
+|---|---|---|
+| **Body** | any selected box | move on the horizontal plane (the grabbed point stays under the cursor). `Shift` locks to the dominant world axis. |
+| **X / Z arrows** | from the top center, along world x (red) and world z (blue) | move along that axis only |
+| **Y arrow** | green, up from the top center | raise / lower (`y`) |
+| **Height handle** | a square on the center of the top face | `height`, with the bottom fixed. Single box only. |
+| **8 scale handles** | the corners and edge midpoints of the **top face**, in the box's rotated frame | resize in the box's local axes, with the opposite side fixed. `Shift` keeps the aspect ratio, `Alt` scales from the center. Single box only. |
+| **Rotate handle** | a curved-arrow handle just outside one top corner | rotate around the vertical axis through the center (of the box, or of the selection's bounds), 15° steps |
+
+- **Top face:** from our fixed-pitch camera, the top face is always visible, while the base is often hidden by walls. Scale handles project the cursor onto the horizontal plane at the top face's height.
+- **Axes:** move arrows follow the **world** axes (like the grid and the agent's coordinates). Scale follows the **box's** axes, as in vector editors.
+- **Snap when raising:** `y` snaps to 0.05 m steps, and also to the **top of any box under the moving selection** and to the ground (0), when within about 0.25 m. Stacking becomes one drag. `Cmd/Ctrl` turns all snapping off.
+- **Live label** next to the cursor on every drag: `x 4.50 · z 2.00`, `y 3.00 m`, `6.0 × 4.0 m`, `h 3.25 m`, `30°`.
+- **One drag = one undo step.** It's previewed locally and sends one update on release, as the 02 height gizmo does. `Esc` cancels. If a node disappears mid-drag, the drag is cancelled.
+- **Picking with rotation:** the slab test runs in the box's local frame (the ray is rotated into it).
+- **Rendering with rotation:** the box's group is rotated, and the tile UVs become box-aligned, so tiles follow the box's edges. Unrotated boxes still line up with the ground grid.
+
+---
+
+## 7. Selection, groups and the outliner (03.6–03.8)
+
+- **Multi-select:** `Shift`-click toggles. Dragging on empty ground with the Select tool draws a **marquee** that selects every top-level node it touches (on screen). `Shift` adds to the selection. `Cmd/Ctrl+A` selects all, `Esc` deselects.
+- **Groups in the view:**
+  - clicking any box in a group selects the **outermost group**;
+  - **double-click** enters the group and selects the box (or subgroup) under the cursor;
+  - `Esc` or clicking outside leaves the group.
+- **Shortcuts:** `Cmd/Ctrl+G` groups the selection, `Cmd/Ctrl+Shift+G` ungroups.
+- **Outliner:** a collapsible panel on the left with the node tree, showing each node's name (or its ID when unnamed) and a room / volume / group icon.
+  - Click selects (synced with the view, `Shift` / `Cmd` for multi).
+  - Double-click renames.
+  - Drag moves a node into a group or reorders it.
+  - Selected nodes are highlighted, and hovering a row highlights the node in the view.
+- **The agent sees the selection:** `scene.selection` lists the selected node IDs (last tab to change it wins, like `view`). It's not an edit, isn't undoable and doesn't broadcast. It's reported from 03.1.
+
+---
+
+## 8. MCP surface
+
+| Tool | From | Input |
+|---|---|---|
+| `get_scene` | now | — returns `view`, `selection` and all nodes (groups from 03.7, with each node's `parent`) |
+| `draw_boxes` | 03.1 | `{ boxes: [{ kind, x, z, width, depth, height?, y?, rotation?, color?, name?, parent? }] }` (`parent` from 03.7) |
+| `update_nodes` | 03.1 (replaces `update_boxes`) | `{ changes: [{ id, ...any of x, y, z, width, depth, height, rotation, color, kind, name, parent }] }`. `parent` from 03.7; groups accept only `name` and `parent`. |
+| `remove_nodes` | 03.1 | `{ ids }`. Removing a group removes its descendants. |
+| `move_nodes` | 03.7 | `{ ids, dx?, dy?, dz? }`: a relative move of boxes and whole groups |
+| `rotate_nodes` | 03.7 | `{ ids, degrees }`: around the center of the given nodes' combined bounds |
+| `group_nodes` | 03.7 | `{ ids, name? }` → the new group's ID |
+| `ungroup` | 03.7 | `{ ids }` |
+
+- **Relative moves are the agent's main tool for groups.** "Move the lobby 6 m east" is one `move_nodes` call, not a rewrite of every child's absolute coordinates, which is exactly where an LLM would slip.
+- The agent resolves names ("the lobby") to IDs from `get_scene`. Tools only take IDs, so there's never any ambiguity.
+- Every call is one undo step. All-or-nothing validation, with errors that name the failing item, as today.
+- The conventions text in the tool descriptions is rewritten for: the center-based footprint, `y`, the rotation direction, the palette keys, names, groups and the selection. **After 03.1 the agent's old mental model (min corner, `room_N`) is wrong:** restart the server and reconnect with `/mcp`.
+
+---
+
+## 9. Editor ↔ server protocol
+
+```
+client → server  { type: "add_boxes", boxes: [BoxInput] }                        // requestId dropped (03.2)
+client → server  { type: "update_nodes", changes: [{ id, ...patch }] }
+client → server  { type: "remove_nodes", ids }
+client → server  { type: "set_selection", ids }                                  // not an edit, like set_view
+client → server  { type: "move_nodes" | "rotate_nodes" | "group_nodes" | "ungroup", ... }   // 03.7
+                 (undo / redo / clear / set_view unchanged)
+server → client  scene (+ history), error                                         // `created` dropped (03.2)
+```
+
+---
+
+## 10. Increments
+
+Each increment is verified (typecheck, tests, a scripted check on a spare port, and Orlando's browser checklist) before the next one starts.
+
+### 03.1 — Node model v2 (data first, agent-visible)
+
+- Center-based `x/z`, plus `y`, `rotation`, `color` (the full palette in §3.1), `name`, and `box_N` IDs.
+- The general `update` patch op with its inverse.
+- `update_nodes` and `remove_nodes` over MCP and WS.
+- `Delete` / `Backspace` removes the selection.
+- `set_selection`, and `scene.selection` in `get_scene`.
+- Rendering and picking honor `y`, `rotation` and `color` (box-aligned tile UVs).
+- MCP descriptions rewritten.
+- **Check:** the agent can already stack, rotate, color, name and delete boxes, and can see what's selected. The 02 tools and height gizmo keep working. All boxes render in their palette color, so the default `almost-white` replaces today's tones.
+
+### 03.2 — Tool-bar v2 and contextual bar
+
+- `lucide-react`. Tools become Select / Hand / Box (`V` / `H` / `B`), with `Space` for a temporary hand.
+- Big icon buttons with the shortcut letter in the corner.
+- The contextual bar: in the Box tool it sets the next box's kind and color; in the Select tool it edits the selection (kind for a single box only, color for all selected boxes).
+- New modifier keys for drawing (`Alt` draws from the center, `Cmd/Ctrl` turns off snap).
+- Remove the auto-select after drawing, and the `requestId` / `created` round trip. The height gizmo shows only in the Select tool until 03.3 replaces it.
+- Tune the pastel palette values in the browser.
+
+### 03.3 — Move: body drag, x/z arrows, y arrow
+
+- Gizmo infrastructure built on the selection.
+- Select-tool body drag with `Shift` axis lock, and the x/z arrows.
+- The y arrow with snapping to box tops and the ground.
+- Live labels, one update per drag.
+
+### 03.4 — Scale: 8 footprint handles and the height handle
+
+- Corner and edge handles in the box's local frame (`Shift` keeps aspect ratio, `Alt` scales from the center).
+- The 02 height gizmo becomes the top-face height handle in the new style.
+
+### 03.5 — Rotate
+
+- The rotate handle: 15° snap, `Cmd/Ctrl` for a free angle, live angle label.
+- Scale handles keep working on rotated boxes.
+
+### 03.6 — Multi-selection
+
+- `Shift`-click, marquee, `Cmd/Ctrl+A`.
+- The gizmo on the selection's combined bounds: move, raise, rotate around the center (no scale).
+- Delete and recolor act on all selected nodes.
+
+### 03.7 — Groups
+
+- Group nodes and `parent`, with `scene.boxes` becoming `scene.nodes`.
+- `Cmd/Ctrl+G` / `Cmd/Ctrl+Shift+G`. Click selects the outermost group, double-click enters it.
+- Group move / raise / rotate / delete as one command. Empty groups disappear.
+- MCP `move_nodes`, `rotate_nodes`, `group_nodes`, `ungroup`, and `parent` in `draw_boxes` / `update_nodes`.
+
+### 03.8 — Outliner
+
+- The tree panel: names, icons, click / multi-select synced with the view, double-click to rename, drag to regroup or reorder, hover highlight.
+
+---
+
+## 11. Acceptance test (end of phase)
+
+1. `B`: the contextual bar appears. Pick Volume + blue and draw three boxes in a row. They're blue, the selection doesn't change, and the tool stays Box.
+2. `V`: click a box (the gizmo appears) and drag it by its body. It follows the cursor. With `Shift` it only moves along x or z. The red and blue arrows move it along one axis.
+3. Drag the green arrow up over a 3 m room: the box snaps to y = 3, standing on the wall top. `Cmd/Ctrl` lets it go anywhere.
+4. Corner handle: the footprint resizes with the opposite corner fixed. `Shift` keeps the proportions and `Alt` resizes around the center. The edge handle moves one side only. The top handle changes the height.
+5. Rotate handle: the box turns in 15° steps around its center. Its scale handles now resize along its rotated sides.
+6. In Select, pick a room and click yellow: it turns yellow. Click Volume: it becomes solid. With two boxes selected, the kind toggle is disabled, but a color click recolors both. Switch to Box: the bar now shows the next box's style, and changing it leaves the selection alone.
+   `white`, `almost-white` and `gray` are clearly distinct, on sunlit and shaded faces alike.
+7. Marquee-select three boxes, `Cmd+G`, and rename the group "lobby" in the outliner. Clicking any of its boxes selects the group, and double-clicking selects the single box. Dragging moves the whole group.
+8. `Delete` removes the selection, and `⌘Z` brings it back with the same IDs. Every drag and every change above is exactly one undo step, and `Esc` mid-drag cancels.
+9. Agent: *"move the lobby 6 m east"* is one `move_nodes` call. *"Add a pillar in its center"* is a `draw_boxes` call with `parent` set to the lobby. Select a box and ask *"make this twice as tall"*: the agent reads `selection` and calls `update_nodes`.
+10. A second tab shows the same scene and undo state. `/mcp` lists the 8 tools from §8.
+
+---
+
+## 12. Decisions
+
+Settled with Orlando:
+
+1. **Footprint `x/z` is the center**, not the min corner.
+2. **Kind-neutral IDs (`box_N`, `group_N`).** IDs are for storage and references, and **every node can have a `name`** for people and the agent.
+3. **Modifier keys:** `Shift` for proportions / axis lock, `Alt` for from-center, `Cmd/Ctrl` for no snap.
+4. **Tools: Select (`V`), Hand (`H`), Box (`B`).** The hand is navigation only. **Drawing never changes the selection**, and the tool stays Box, so you can draw many boxes in a row. The transform gizmo lives in the Select tool only.
+5. **Icons:** Lucide. Room is `square-dashed` (hollow), Volume is `square` (solid).
+6. **Contextual bar:** in the Box tool it sets the next box's style. In the Select tool it edits the selection: kind for one box only (disabled with a multi-selection), color for every selected box.
+7. **Negative `y` is allowed.** The camera stays above ground for now.
+8. **Flat node list** with `parent` references. Groups are **containers with no transform of their own** (Figma-style), and a **unit of action** for moves, including for the agent (`move_nodes`).
+9. **The agent sees the selection** (`scene.selection`).
+10. **Multi-selection, groups and the outliner** are the last increments of this phase (03.6–03.8).
+11. **Group interaction follows vector editors:** click selects the outermost group, double-click enters, `Cmd+G` / `Cmd+Shift+G`. No multi-scale.
+12. **Palette:** the neutrals are Orlando's (`white` `#ffffff`, `almost-white` `#ededed`, `gray` `#c4c4c4`), and the default color is `almost-white`. The pastels are starting values to tune.
+
+Adopted as recommended (say if any should change):
+
+13. Move arrows follow the **world** axes; scale follows the **box's** axes.
+14. When raising, snap to box tops and the ground within about 0.25 m.
+15. Rotation snaps to **15°**.
+16. Delete / `remove_nodes` is in scope.
