@@ -1,6 +1,6 @@
 # Dungeon Designer
 
-An ideation tool for dungeon layouts: a local web editor, a local server that owns the scene, and an MCP server so Claude Code can read and edit the same scene. See `plans/` for the vision (`00-initial`) and the current phase (`01-first-playable`, refinements logged in `01B-first-playable-refinements`). Use the terms in `GLOSSARY.md` when naming things, and add new terms there.
+An ideation tool for dungeon layouts: a local web editor, a local server that owns the scene, and an MCP server so Claude Code can read and edit the same scene. See `plans/` for the vision (`00-initial`), the finished phases (`01-first-playable` with `01B-first-playable-refinements`, `02-basic-3d-editing`) and the current one (`03-UX-improvements`). Each phase plan logs its progress in a final Progress section. Use the terms in `GLOSSARY.md` when naming things, and add new terms there.
 
 ## Running
 
