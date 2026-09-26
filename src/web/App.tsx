@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { DEFAULT_COLOR, DEFAULT_VIEW, type Box, type BoxColor, type BoxKind, type SceneNode, type View } from "../shared/scene.types";
 import { boxesUnder, childrenOf, isBox, isGroup } from "../shared/tree";
 import type { GroundPoint } from "./camera";
+import { typingInField } from "./keys";
+import { Outliner } from "./Outliner";
 import { ContextualBar, HINTS, TOOLS, ToolBar } from "./ToolBar";
 import { useScene } from "./useScene";
 import { Viewport, type Tool } from "./Viewport";
@@ -9,8 +11,6 @@ import { Viewport, type Tool } from "./Viewport";
 /** Fixed-width number (e.g. "  12.50", " -3.00") so the info-label never jitters. */
 const coord = (n?: number) => (n === undefined ? "–".padStart(7) : n.toFixed(2).padStart(7));
 
-/** Keys typed into a text field aren't shortcuts. */
-const typing = (e: KeyboardEvent) => e.target instanceof HTMLElement && e.target.matches("input, textarea, [contenteditable]");
 
 /** `lobby (group_1)` or just `box_3`. */
 const title = (n: SceneNode) => (n.name ? `${n.name} (${n.id})` : n.id);
@@ -29,6 +29,8 @@ export function App() {
   const [selection, setSelection] = useState<string[]>([]);
   // The group entered with a double-click (null = the top level).
   const [context, setContext] = useState<string | null>(null);
+  // The node under the cursor in the outliner, highlighted in the view.
+  const [outlinerHover, setOutlinerHover] = useState<string | null>(null);
   // The next box's style in the Box tool, remembered while the tab is open.
   const [nextKind, setNextKind] = useState<BoxKind>("room");
   const [nextColor, setNextColor] = useState<BoxColor>(DEFAULT_COLOR);
@@ -83,7 +85,7 @@ export function App() {
   // it, Delete / Backspace removes it, Esc deselects and leaves an entered group.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (typing(e)) return;
+      if (typingInField(e)) return;
       const key = e.key.toLowerCase();
       const { nodes, selection, context } = state.current;
       const mod = (e.metaKey || e.ctrlKey) && !e.altKey;
@@ -132,7 +134,7 @@ export function App() {
       if (match) setTool(match.tool);
     };
     const onKeyUp = (e: KeyboardEvent) => {
-      if (e.key !== " ") return;
+      if (e.key !== " " || typingInField(e)) return;
       e.preventDefault();
       setSpaceHand(false);
     };
@@ -167,12 +169,25 @@ export function App() {
         selection={selection}
         context={context}
         onContext={setContext}
+        outsideHover={outlinerHover}
         nextKind={nextKind}
         onSelect={setSelection}
         onDrawBox={(box) => send({ type: "add_boxes", boxes: [{ ...box, color: nextColor }] })}
         onUpdate={(changes) => send({ type: "update_nodes", changes })}
         onCursor={setCursor}
         onViewChange={setView}
+      />
+
+      <Outliner
+        nodes={nodes}
+        selection={selection}
+        onSelect={(ids, ctx) => {
+          setSelection(ids);
+          setContext(ctx);
+        }}
+        onHover={setOutlinerHover}
+        onRename={(id, name) => send({ type: "update_nodes", changes: [{ id, name }] })}
+        onPlace={(ids, parent, before) => send({ type: "place_nodes", ids, parent, before })}
       />
 
       <div className="info-label">

@@ -175,6 +175,12 @@ export const GroupNodesSchema = z.strictObject({
   name: field.name.optional(),
 });
 export const UngroupSchema = z.strictObject({ ids: IdsSchema.describe("IDs of groups to dissolve; their contents stay") });
+/** The outliner's drag and drop: put nodes in `parent` (null = top level), just before sibling `before` (null = last). */
+export const PlaceNodesSchema = z.strictObject({
+  ids: IdsSchema,
+  parent: z.string().nullable(),
+  before: z.string().nullable(),
+});
 
 export const ViewSchema = z.object({
   focus: z.object({ x: z.number(), z: z.number() }),
@@ -190,6 +196,7 @@ export const ClientMessageSchema = z.discriminatedUnion("type", [
   RotateNodesSchema.extend({ type: z.literal("rotate_nodes") }),
   GroupNodesSchema.extend({ type: z.literal("group_nodes") }),
   UngroupSchema.extend({ type: z.literal("ungroup") }),
+  PlaceNodesSchema.extend({ type: z.literal("place_nodes") }),
   z.object({ type: z.literal("set_selection"), ids: z.array(z.string()) }),
   z.object({ type: z.literal("clear") }),
   z.object({ type: z.literal("undo") }),

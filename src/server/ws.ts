@@ -48,6 +48,7 @@ export function attachWebSocket(httpServer: Server, store: SceneStore) {
         else if (msg.type === "rotate_nodes") store.rotateNodes(withoutType(msg), "human");
         else if (msg.type === "group_nodes") store.groupNodes(withoutType(msg), "human");
         else if (msg.type === "ungroup") store.ungroup(withoutType(msg), "human");
+        else if (msg.type === "place_nodes") store.placeNodes(withoutType(msg), "human");
         else if (msg.type === "clear") store.clear("human");
         else if (msg.type === "undo") store.undo();
         else if (msg.type === "redo") store.redo();

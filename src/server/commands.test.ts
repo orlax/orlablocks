@@ -70,6 +70,14 @@ describe("ops", () => {
     expect(cleared.inverse.reduce(applyOp, cleared.nodes)[0].name).toBe("lobby");
   });
 
+  it("order sets the list order, and its inverse restores the old one", () => {
+    const start = ["room_1", "room_2", "volume_1"].map(box);
+    const { nodes, inverse } = runOps(start, [{ op: "order", ids: ["volume_1", "room_1", "room_2"] }]);
+    expect(nodes.map((n) => n.id)).toEqual(["volume_1", "room_1", "room_2"]);
+    expect(inverse.reduce(applyOp, nodes)).toEqual(start);
+    expect(() => runOps(start, [{ op: "order", ids: ["room_1"] }])).toThrow(/every node/);
+  });
+
   it("rejects removing an unknown box", () => {
     expect(() => runOps([box("room_1")], [{ op: "remove", ids: ["room_9"] }])).toThrow(/room_9/);
   });

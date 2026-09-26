@@ -9,6 +9,7 @@ import {
   MIN_HEIGHT,
   MoveNodesSchema,
   NodeUpdateSchema,
+  PlaceNodesSchema,
   RotateNodesSchema,
   UngroupSchema,
   type Actor,
@@ -373,6 +374,53 @@ export function createSceneStore() {
         { op: "remove", ids },
       ]);
       return freed.map((n) => n.id);
+    },
+
+    /**
+     * The outliner's drag and drop, as one step: puts nodes (keeping their list order) inside `parent` (null = the
+     * top level), just before its child `before` (null = after its last child). A group can't go inside itself.
+     */
+    placeNodes(input: z.input<typeof PlaceNodesSchema>, actor: Actor): void {
+      const { ids, parent, before } = parse(PlaceNodesSchema, input, "Nothing was moved.");
+      const errors: string[] = [];
+      checkIds("ids", ids, errors);
+      const target = parent ?? undefined;
+      if (target !== undefined) {
+        const e = parentError(target);
+        if (e) errors.push(`parent: ${e}`);
+        else {
+          ids.forEach((id, i) => {
+            if (subtreeIds(scene.nodes, id).has(target)) errors.push(`ids[${i}]: "${target}" is inside "${id}"`);
+          });
+        }
+      }
+      if (before !== null) {
+        const b = byId().get(before);
+        if (!b) errors.push(`before: no node "${before}"`);
+        else if (ids.includes(before)) errors.push(`before: "${before}" is one of the nodes being moved`);
+        else if (b.parent !== target) errors.push(`before: "${before}" isn't in ${parent ?? "the top level"}`);
+      }
+      failIf(errors, "Nothing was moved.");
+
+      const moving = new Set(ids);
+      const rest = scene.nodes.filter((n) => !moving.has(n.id));
+      const movers = scene.nodes.filter((n) => moving.has(n.id));
+      let at = rest.length;
+      if (before !== null) at = rest.findIndex((n) => n.id === before);
+      else if (target !== undefined) {
+        // Right after the last node inside the group (so they come last among its children).
+        const inside = subtreeIds(scene.nodes, target);
+        at = rest.reduce((last, n, i) => (inside.has(n.id) ? i + 1 : last), 0);
+      }
+      const order = [...rest.slice(0, at), ...movers, ...rest.slice(at)].map((n) => n.id);
+
+      const reparent = movers.filter((n) => n.parent !== target);
+      const ops: Op[] = [];
+      if (reparent.length > 0) ops.push({ op: "update", changes: reparent.map((n) => ({ id: n.id, patch: { parent: target } })) });
+      if (order.some((id, i) => scene.nodes[i].id !== id)) ops.push({ op: "order", ids: order });
+      if (ops.length === 0) return;
+      const where = reparent.length > 0 ? `${listIds(ids)} into ${parent ?? "the top level"}` : listIds(ids);
+      commit(label(reparent.length > 0 ? "move" : "reorder", where, actor), actor, ops);
     },
 
     /** What the editor currently shows (last reporting tab wins). Not an edit, so no broadcast. */

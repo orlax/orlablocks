@@ -140,6 +140,83 @@ body {
 .contextual-bar button.swatch:hover { transform: scale(1.12); }
 .contextual-bar button.swatch.active { outline: 2px solid #8fb4f2; outline-offset: 2px; }
 
+/* The outliner: a collapsible tree panel on the left, below the info-label. */
+.outliner {
+  position: fixed;
+  top: 52px;
+  left: 12px;
+  width: 240px;
+  max-height: calc(100vh - 170px);
+  display: flex;
+  flex-direction: column;
+  border-radius: 10px;
+  background: var(--bar-bg);
+  color: var(--bar-text);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.25);
+  backdrop-filter: blur(6px);
+  user-select: none;
+}
+.outliner.closed { width: auto; }
+.outliner-header { display: flex; align-items: center; padding-right: 6px; }
+.outliner-toggle {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  border: 0;
+  background: transparent;
+  color: var(--bar-text);
+  font: 600 12px/1.4 system-ui, sans-serif;
+  cursor: pointer;
+}
+.outliner-toggle .muted { color: var(--muted); font-weight: 400; margin-left: auto; padding-left: 8px; }
+.outliner-action {
+  display: inline-flex;
+  padding: 3px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.outliner-action:hover { background: rgba(255, 255, 255, 0.08); color: var(--bar-text); }
+.outliner-rows { overflow-y: auto; padding: 0 4px 6px; min-height: 24px; }
+.outliner-rows.drop-end { box-shadow: inset 0 -2px 0 #8fb4f2; }
+.outliner-empty { padding: 4px 8px 6px; color: var(--muted); font-size: 12px; }
+.outliner-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding-right: 8px;
+  border-radius: 5px;
+  font-size: 12px;
+  cursor: default;
+  white-space: nowrap;
+}
+.outliner-row:hover { background: rgba(255, 255, 255, 0.07); }
+.outliner-row.selected { background: rgba(61, 123, 224, 0.45); }
+.outliner-row.drop-before { box-shadow: inset 0 2px 0 #8fb4f2; }
+.outliner-row.drop-after { box-shadow: inset 0 -2px 0 #8fb4f2; }
+.outliner-row.drop-into { background: rgba(143, 180, 242, 0.3); outline: 1px solid #8fb4f2; }
+.outliner-row .chevron { display: inline-flex; width: 12px; flex: none; color: var(--muted); cursor: pointer; }
+.outliner-row .icon { flex: none; color: var(--muted); }
+.outliner-row .label { overflow: hidden; text-overflow: ellipsis; }
+.outliner-row .id { margin-left: auto; padding-left: 8px; color: var(--muted); font: 10px/1 ui-monospace, monospace; }
+.outliner-row input {
+  flex: 1;
+  min-width: 0;
+  height: 20px;
+  padding: 0 4px;
+  border: 1px solid #8fb4f2;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.3);
+  color: var(--bar-text);
+  font: inherit;
+  outline: none;
+}
+
 /* Status row across the top: connection, cursor, yaw, counts and the current tool's hint. The numbers are
    monospace with fixed widths so they never jitter. */
 .info-label {

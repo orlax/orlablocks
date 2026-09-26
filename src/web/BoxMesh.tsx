@@ -43,6 +43,8 @@ function tileTexture() {
 }
 
 const SELECT_COLOR = "#3d7be0";
+/** Hover (what a click would select): a yellow tint, the same kind of overlay as the selection's blue. */
+const HOVER_COLOR = "#f5c518";
 
 // Graybox materials: matte, tiled every meter, in the box's palette color. Shared per color, made on first use.
 let shared: ReturnType<typeof createShared> | null = null;
@@ -50,7 +52,7 @@ function createShared() {
   return {
     tiles: tileTexture(),
     edge: new THREE.LineBasicMaterial({ color: "#8a857b", transparent: true, opacity: 0.3 }),
-    edgeHover: new THREE.LineBasicMaterial({ color: SELECT_COLOR, transparent: true, opacity: 0.6 }),
+    edgeHover: new THREE.LineBasicMaterial({ color: HOVER_COLOR }),
     edgeSelected: new THREE.LineBasicMaterial({ color: SELECT_COLOR }),
     draft: new THREE.MeshLambertMaterial({ color: "#3d7be0", transparent: true, opacity: 0.35, depthWrite: false }),
     draftEdge: new THREE.LineBasicMaterial({ color: "#3d7be0" }),
@@ -58,7 +60,10 @@ function createShared() {
 }
 const getShared = () => (shared ??= createShared());
 
-type ColorMaterials = Record<"body" | "floor" | "bodySelected" | "floorSelected", THREE.MeshLambertMaterial>;
+type ColorMaterials = Record<
+  "body" | "floor" | "bodySelected" | "floorSelected" | "bodyHover" | "floorHover",
+  THREE.MeshLambertMaterial
+>;
 const byColor = new Map<BoxColor, ColorMaterials>();
 function colorMaterials(color: BoxColor): ColorMaterials {
   let m = byColor.get(color);
@@ -66,14 +71,21 @@ function colorMaterials(color: BoxColor): ColorMaterials {
   const map = getShared().tiles;
   const body = new THREE.MeshLambertMaterial({ color: PALETTE[color], map });
   const floor = new THREE.MeshLambertMaterial({ color: new THREE.Color(PALETTE[color]).multiplyScalar(FLOOR_SHADE), map });
-  // Selected: the same materials with a faint blue glow.
-  const selected = (base: THREE.MeshLambertMaterial) => {
+  // Selected and hovered: the same materials with a faint glow (blue, or yellow a bit stronger to read as much).
+  const tinted = (base: THREE.MeshLambertMaterial, color: string, intensity: number) => {
     const c = base.clone();
-    c.emissive.set(SELECT_COLOR);
-    c.emissiveIntensity = 0.22;
+    c.emissive.set(color);
+    c.emissiveIntensity = intensity;
     return c;
   };
-  m = { body, floor, bodySelected: selected(body), floorSelected: selected(floor) };
+  m = {
+    body,
+    floor,
+    bodySelected: tinted(body, SELECT_COLOR, 0.22),
+    floorSelected: tinted(floor, SELECT_COLOR, 0.22),
+    bodyHover: tinted(body, HOVER_COLOR, 0.3),
+    floorHover: tinted(floor, HOVER_COLOR, 0.3),
+  };
   byColor.set(color, m);
   return m;
 }
@@ -166,9 +178,10 @@ export function BoxMesh({ kind, x, z, y, width, depth, height, rotation, color, 
   const s = getShared();
   const c = colorMaterials(color);
   const sel = highlight === "selected";
-  const bodyMaterial = draft ? s.draft : sel ? c.bodySelected : c.body;
-  const floorMaterial = draft ? s.draft : sel ? c.floorSelected : c.floor;
-  const edgeMaterial = draft ? s.draftEdge : sel ? s.edgeSelected : highlight === "hover" ? s.edgeHover : s.edge;
+  const hover = highlight === "hover";
+  const bodyMaterial = draft ? s.draft : sel ? c.bodySelected : hover ? c.bodyHover : c.body;
+  const floorMaterial = draft ? s.draft : sel ? c.floorSelected : hover ? c.floorHover : c.floor;
+  const edgeMaterial = draft ? s.draftEdge : sel ? s.edgeSelected : hover ? s.edgeHover : s.edge;
 
   return (
     <group position={[x, y, z]} rotation={[0, (rotation * Math.PI) / 180, 0]}>

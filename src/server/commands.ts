@@ -9,7 +9,8 @@ import type { Actor, HistorySummary, NodePatch, SceneNode } from "../shared/scen
 export type Op =
   | { op: "add"; nodes: SceneNode[]; indices?: number[] } // `indices`: where to insert them (restores removed nodes in place)
   | { op: "remove"; ids: string[] }
-  | { op: "update"; changes: { id: string; patch: NodePatch }[] }; // a key set to undefined removes that field (e.g. name)
+  | { op: "update"; changes: { id: string; patch: NodePatch }[] } // a key set to undefined removes that field (e.g. name)
+  | { op: "order"; ids: string[] }; // every node's ID, in the new list order
 
 /** One user-level action and one undo step. */
 export type HistoryEntry = {
@@ -43,6 +44,10 @@ export function applyOp(nodes: SceneNode[], op: Op): SceneNode[] {
       const patches = new Map(op.changes.map((c) => [c.id, c.patch]));
       return nodes.map((n) => (patches.has(n.id) ? withPatch(n, patches.get(n.id)!) : n));
     }
+    case "order": {
+      const byId = new Map(nodes.map((n) => [n.id, n]));
+      return op.ids.map((id) => byId.get(id)!);
+    }
   }
 }
 
@@ -70,6 +75,11 @@ export function invertOp(nodes: SceneNode[], op: Op): Op {
           return { id: c.id, patch: previous as NodePatch };
         }),
       };
+    }
+    case "order": {
+      const ids = new Set(op.ids);
+      if (ids.size !== nodes.length || nodes.some((n) => !ids.has(n.id))) throw new Error("order: must list every node once");
+      return { op: "order", ids: nodes.map((n) => n.id) };
     }
   }
 }

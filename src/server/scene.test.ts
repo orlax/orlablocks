@@ -477,3 +477,51 @@ describe("scene store groups", () => {
     expect(store.getScene().selection).toEqual(["box_3"]);
   });
 });
+
+describe("scene store placing (outliner drag and drop)", () => {
+  /** box_1..box_4 at the top level; group_1 holds box_2 and box_3. */
+  const setup = () => {
+    const store = createSceneStore();
+    store.drawBoxes([0, 1, 2, 3].map((x) => ({ kind: "volume" as const, x, z: 0, width: 1, depth: 1 })), "human");
+    store.groupNodes({ ids: ["box_2", "box_3"] }, "human");
+    return store;
+  };
+  const tree = (store: ReturnType<typeof createSceneStore>) =>
+    store.getScene().nodes.map((n) => (n.parent ? `${n.id}<${n.parent}` : n.id));
+
+  it("reorders siblings as one undoable step", () => {
+    const store = setup();
+    store.placeNodes({ ids: ["box_4"], parent: null, before: "box_1" }, "human");
+    expect(tree(store)).toEqual(["box_4", "box_1", "group_1", "box_2<group_1", "box_3<group_1"]);
+    expect(store.getHistory().undoLabel).toBe("Reorder box_4");
+    store.undo();
+    expect(tree(store)).toEqual(["box_1", "group_1", "box_2<group_1", "box_3<group_1", "box_4"]);
+  });
+
+  it("moves nodes into a group, last among its children, or before a child", () => {
+    const store = setup();
+    store.placeNodes({ ids: ["box_1"], parent: "group_1", before: null }, "human");
+    expect(tree(store)).toEqual(["group_1", "box_2<group_1", "box_3<group_1", "box_1<group_1", "box_4"]);
+    expect(store.getHistory().undoLabel).toBe("Move box_1 into group_1");
+    store.placeNodes({ ids: ["box_4"], parent: "group_1", before: "box_2" }, "human");
+    expect(tree(store)).toEqual(["group_1", "box_4<group_1", "box_2<group_1", "box_3<group_1", "box_1<group_1"]);
+  });
+
+  it("moving a group's last nodes out removes the group in the same step", () => {
+    const store = setup();
+    store.placeNodes({ ids: ["box_2", "box_3"], parent: null, before: null }, "human");
+    expect(tree(store)).toEqual(["box_1", "box_4", "box_2", "box_3"]);
+    store.undo();
+    expect(tree(store)).toEqual(["box_1", "group_1", "box_2<group_1", "box_3<group_1", "box_4"]);
+  });
+
+  it("rejects a group inside itself and a `before` from another parent, and records nothing for a no-op", () => {
+    const store = setup();
+    store.groupNodes({ ids: ["group_1"] }, "human"); // group_2 holds group_1
+    expect(() => store.placeNodes({ ids: ["group_2"], parent: "group_1", before: null }, "human")).toThrow(/is inside "group_2"/);
+    expect(() => store.placeNodes({ ids: ["box_1"], parent: "group_1", before: "box_4" }, "human")).toThrow(/isn't in group_1/);
+    const label = store.getHistory().undoLabel;
+    store.placeNodes({ ids: ["box_2"], parent: "group_1", before: "box_3" }, "human");
+    expect(store.getHistory().undoLabel).toBe(label);
+  });
+});

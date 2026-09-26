@@ -46,6 +46,7 @@ import {
   type GizmoPart,
 } from "./gizmo";
 import { Grid } from "./Grid";
+import { typingInField } from "./keys";
 import { Lighting } from "./Lighting";
 import { marqueeHits, rectFrom, type ScreenPoint } from "./marquee";
 import { pickBox, pickHit } from "./pick";
@@ -110,6 +111,8 @@ type Props = {
   /** The group the user has entered with a double-click (null = the top level): clicks select its children. */
   context: string | null;
   onContext: (id: string | null) => void;
+  /** A node hovered outside the view (an outliner row): its boxes get the hover highlight too. */
+  outsideHover: string | null;
   /** The kind the Box tool draws (its draft is previewed at that kind's default height). */
   nextKind: BoxKind;
   onSelect: (ids: string[]) => void;
@@ -130,6 +133,7 @@ export function Viewport({
   selection,
   context,
   onContext,
+  outsideHover,
   nextKind,
   onSelect,
   onDrawBox,
@@ -400,6 +404,7 @@ export function Viewport({
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       const m = marqueeRef.current;
+      if (typingInField(e)) return;
       if (e.key !== "Escape" || (!dragRef.current?.active && !drawing.current && !m?.active)) return;
       e.stopImmediatePropagation();
       cancelDrawing();
@@ -425,11 +430,12 @@ export function Viewport({
     return () => el.removeEventListener("wheel", onWheel);
   }, []);
 
-  // Yaw while A/D or ←/→ is held. The rig integrates it per frame.
+  // Yaw while A/D or ←/→ is held. The rig integrates it per frame. Key-up always counts, so a key released while
+  // typing still stops the turn.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       const key = YAW_KEYS[e.key.toLowerCase()];
-      if (!key || e.metaKey || e.ctrlKey || e.altKey) return;
+      if (!key || e.metaKey || e.ctrlKey || e.altKey || typingInField(e)) return;
       e.preventDefault();
       yawKeys.current.add(key);
       invalidate();
@@ -501,7 +507,7 @@ export function Viewport({
           boxes={shown}
           draft={draft}
           selected={new Set(boxesUnder(nodes, selection).map((b) => b.id))}
-          hovered={new Set(hoveredId ? boxesUnder(nodes, [hoveredId]).map((b) => b.id) : [])}
+          hovered={new Set(boxesUnder(nodes, [hoveredId, outsideHover].filter((id) => id !== null)).map((b) => b.id))}
         />
         {gizmo && (
           <TransformGizmo
