@@ -1,4 +1,5 @@
 import { HEIGHT_SNAP, MIN_HEIGHT, SNAP, type Box, type BoxPatch } from "../shared/scene.types";
+import { boundsOf, boxAxes, footprintBounds, fromBoxLocal, normalizeDeg, rotateAround, round2, toBoxLocal, type Bounds } from "../shared/geometry";
 import { paramOnLine, screenToPlane, worldToScreen, type CameraState, type Size, type Vec3 } from "./camera";
 
 /**
@@ -6,7 +7,6 @@ import { paramOnLine, screenToPlane, worldToScreen, type CameraState, type Size,
  * Everything works on "the selection" (one or more boxes), so multi-selection needs no rewrite.
  */
 
-export type Bounds = { minX: number; maxX: number; minY: number; maxY: number; minZ: number; maxZ: number };
 type Sign = -1 | 0 | 1;
 /** A footprint scale handle on the top face, by its side in the box's local frame: `scale:1:-1` is the +x, -z corner. */
 export type ScalePart = `scale:${Sign}:${Sign}`;
@@ -55,32 +55,7 @@ export const AXES: Record<"x" | "y" | "z", Vec3> = {
   z: { x: 0, y: 0, z: 1 },
 };
 
-/** 2 decimals, and never -0 (so labels and patches read "0"). */
-const round2 = (n: number) => Math.round(n * 100) / 100 + 0;
 const snapTo = (n: number, step: number) => Math.round(n / step) * step;
-
-/**
- * The box's local axes on the ground, in world x/z: `ex` along its width, `ez` along its depth. A counterclockwise
- * (seen from above) turn about +y, as three.js does it.
- */
-export function boxAxes(box: Box) {
-  const a = (box.rotation * Math.PI) / 180;
-  return { ex: { x: Math.cos(a), z: -Math.sin(a) }, ez: { x: Math.sin(a), z: Math.cos(a) } };
-}
-
-/** A world ground point in the box's frame (origin at its center, axes along width and depth). */
-function toBoxLocal(box: Box, p: { x: number; z: number }) {
-  const { ex, ez } = boxAxes(box);
-  const dx = p.x - box.x;
-  const dz = p.z - box.z;
-  return { x: dx * ex.x + dz * ex.z, z: dx * ez.x + dz * ez.z };
-}
-
-/** A point in the box's frame back in world x/z. */
-export function fromBoxLocal(box: Box, l: { x: number; z: number }) {
-  const { ex, ez } = boxAxes(box);
-  return { x: box.x + l.x * ex.x + l.z * ez.x, z: box.z + l.x * ex.z + l.z * ez.z };
-}
 
 /** Where a scale handle sits: on the top face's corner or edge midpoint. */
 export function scaleHandlePoint(box: Box, part: ScalePart): Vec3 {
@@ -115,39 +90,13 @@ export function rotateHandlePlacement(boxes: Box[], scale: number): { point: Vec
     const out = { x: -(ex.x + ez.x) / Math.SQRT2, z: -(ex.z + ez.z) / Math.SQRT2 };
     return { point: { x: corner.x + out.x * offset, y: corner.y, z: corner.z + out.z * offset }, inward: { x: -out.x, z: -out.z } };
   }
-  const b = selectionBounds(boxes);
+  const b = boundsOf(boxes);
   const d = offset / Math.SQRT2;
   return { point: { x: b.minX - d, y: b.maxY, z: b.minZ - d }, inward: { x: Math.SQRT1_2, z: Math.SQRT1_2 } };
 }
 
 /** The angle of a ground vector in degrees, counterclockwise seen from above (the rotation convention). */
 const angleOf = (x: number, z: number) => (Math.atan2(-z, x) * 180) / Math.PI;
-const normalizeDeg = (deg: number) => ((deg % 360) + 360) % 360;
-
-/** The axis-aligned bounds of a box's (possibly rotated) footprint. */
-export function footprintBounds(box: Box): { minX: number; maxX: number; minZ: number; maxZ: number } {
-  const a = (box.rotation * Math.PI) / 180;
-  const cos = Math.abs(Math.cos(a));
-  const sin = Math.abs(Math.sin(a));
-  const hx = (box.width * cos + box.depth * sin) / 2;
-  const hz = (box.width * sin + box.depth * cos) / 2;
-  return { minX: box.x - hx, maxX: box.x + hx, minZ: box.z - hz, maxZ: box.z + hz };
-}
-
-/** The axis-aligned box around all of `boxes` (at least one). */
-export function selectionBounds(boxes: Box[]): Bounds {
-  const b: Bounds = { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity, minZ: Infinity, maxZ: -Infinity };
-  for (const box of boxes) {
-    const f = footprintBounds(box);
-    b.minX = Math.min(b.minX, f.minX);
-    b.maxX = Math.max(b.maxX, f.maxX);
-    b.minZ = Math.min(b.minZ, f.minZ);
-    b.maxZ = Math.max(b.maxZ, f.maxZ);
-    b.minY = Math.min(b.minY, box.y);
-    b.maxY = Math.max(b.maxY, box.y + box.height);
-  }
-  return b;
-}
 
 /** Where the gizmo sits: the top center of the bounds. */
 export const gizmoAnchor = (b: Bounds): Vec3 => ({ x: (b.minX + b.maxX) / 2, y: b.maxY, z: (b.minZ + b.maxZ) / 2 });
@@ -246,7 +195,7 @@ export type DragModifiers = { shift: boolean; alt: boolean; snap: boolean };
  * cursor is from the handle (in the box's frame, on the top face's plane), so the handle doesn't jump.
  */
 export function startHandleDrag(cam: CameraState, size: Size, sx: number, sy: number, part: GizmoPart, origin: Box[]): GizmoDrag {
-  const bounds = selectionBounds(origin);
+  const bounds = boundsOf(origin);
   if (part === "rotate") {
     // The cursor's angle around the pivot (the selection's center), on the plane of its top.
     const p = screenToPlane(cam, size, sx, sy, bounds.maxY);
@@ -264,7 +213,7 @@ export function startHandleDrag(cam: CameraState, size: Size, sx: number, sy: nu
 }
 
 /** Starts a body drag at the point where the cursor hit a box. */
-export const startBodyDrag = (origin: Box[], grab: Vec3): GizmoDrag => ({ part: "body", origin, bounds: selectionBounds(origin), grab });
+export const startBodyDrag = (origin: Box[], grab: Vec3): GizmoDrag => ({ part: "body", origin, bounds: boundsOf(origin), grab });
 
 /**
  * The boxes' changes for the cursor at (sx, sy), plus the live label. `others` are the boxes not being dragged
@@ -294,19 +243,7 @@ export function dragUpdate(
     if (mods.snap) {
       delta = single ? snapTo(single.rotation + delta, ROTATE_SNAP) - single.rotation : snapTo(delta, ROTATE_SNAP);
     }
-    const a = (delta * Math.PI) / 180;
-    const cos = Math.cos(a);
-    const sin = Math.sin(a);
-    for (const box of origin) {
-      // Each center turns around the pivot (the same counterclockwise-from-above turn as the rotation itself).
-      const dx = box.x - anchor.x;
-      const dz = box.z - anchor.z;
-      patches[box.id] = {
-        x: round2(anchor.x + dx * cos + dz * sin),
-        z: round2(anchor.z - dx * sin + dz * cos),
-        rotation: round2(normalizeDeg(box.rotation + delta)) % 360,
-      };
-    }
+    Object.assign(patches, rotateAround(origin, anchor, delta));
     const label = single ? `${patches[single.id].rotation}°` : `${delta >= 0 ? "+" : ""}${round2(delta)}°`;
     return { patches, label };
   }

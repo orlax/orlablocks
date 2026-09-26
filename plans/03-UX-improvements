@@ -410,3 +410,26 @@ Adopted as recommended (say if any should change):
 - The gizmo, delete and recolor already worked on the selection (03.3–03.5): a multi-selection gets the move arrows, the y arrow and the rotate handle on its combined bounds, with no height or scale handles. Delete removes all of it and a swatch recolors all of it, each as one undo step. The contextual bar says `N selected` and disables the kind toggle.
 - **Tests:** convex hull, polygon vs rect (containment, partial overlap, and a rect in the bounding box's corner that misses the shape), marquee hits in scene order, and rotation. 89 tests pass.
 - **Refinement after the browser check:** the tool-bar now holds only controls (the tools, then Undo / Redo / Clear). The room and volume counts and the current tool's hint moved to the **info-label**, which is now a single full-width row across the top: connection · cursor x · z · yaw · counts · the hint, right-aligned and truncated with an ellipsis if the window is narrow.
+
+### 03.7 — Groups (done)
+
+- **Data:** `scene.boxes` became **`scene.nodes`**, one flat list of `Box | Group` (`SceneNode` in code, since `Node` is the DOM's). Groups are `{ id: "group_N", type: "group", name?, parent?, createdBy }`, and boxes gained `parent?`. Box and group IDs have separate counters and are never reused.
+- **Shared modules:** `src/shared/geometry.ts` (bounds, box frames, `rotateAround`, now used by both the server and the gizmo) and `src/shared/tree.ts` (children, subtrees, `boxesUnder`, `ancestry`, `selectableAt`, `commonParent`).
+- **Ops** are generic over nodes (`add` / `remove` / `update` with a `NodePatch`, where `parent` undefined means top level). **`commit` removes groups the command left empty, inside the same step**, so deleting or moving out a group's last node takes the group with it, and undo brings both back.
+- **Store:**
+  - `groupNodes`: the new group is inserted where the first member was, inside the deepest group that held all members. Members whose ancestor is also listed stay inside it.
+  - `ungroup`: contents move up to the nearest surviving ancestor, so nested groups can be dissolved together.
+  - `moveNodes` (relative) and `rotateNodes` (around the center of the combined bounds) act on every box under the given nodes.
+  - `removeNodes` takes whole subtrees.
+  - `updateNodes`: groups accept only `name` and `parent`. A `null` or empty parent means top level. Parents are validated (must exist, must be a group, no cycles).
+- **MCP:** 8 tools (`move_nodes`, `rotate_nodes`, `group_nodes`, `ungroup` added, `parent` on `draw_boxes` and `update_nodes`). `get_scene` adds each group's derived `bounds` (center x/z, bottom y, width, depth, height), so "a pillar in the lobby's center" needs no arithmetic over children. The conventions text explains groups, and the server version is 0.0.4. **Restart the server and reconnect with `/mcp`.**
+- **WS:** `move_nodes`, `rotate_nodes`, `group_nodes` and `ungroup`. Editor drags still send one `update_nodes` for all affected boxes (one step).
+- **Editor:**
+  - A click resolves the picked box to the node at the current level: the **outermost group** at the top level.
+  - **Double-click** enters the group under the cursor one level and selects its child there. Inside an **entered group**, clicks, the marquee and `Cmd/Ctrl+A` act on its children. Clicking a box outside it, clicking empty ground or `Esc` leaves it. The contextual bar shows `in lobby › …`.
+  - A selected or hovered group highlights all its boxes. The gizmo, drags, recolor and delete act on every box inside the selection. Height and scale handles show only for a single selected box, not a group. The contextual bar shows `lobby (group_1) · 3 boxes`.
+  - **`Cmd/Ctrl+G`** groups the selection and selects the new group (the editor recognizes it in the next scene, so no reply message is needed). **`Cmd/Ctrl+Shift+G`** ungroups the selected groups and selects what they held.
+  - The info-label counts groups too.
+- **Tests:** tree helpers, and store groups (insert position and undo, nesting, relative move, rotation around bounds, delete with contents, empty-group removal on delete and on reparent, ungroup including nested, draw into a group, parent validation and cycles, group-only fields, selection pruning). 103 tests pass.
+- **Fix after the first browser try:** `Cmd+G` failed with `Unrecognized key: "type"`. The WS handler passed the whole message (envelope `type` included) to the store's strict schemas. It now strips `type` for `move_nodes`, `rotate_nodes`, `group_nodes` and `ungroup`, and all four were checked over the WebSocket too.
+- **Scripted check (port 5171):** `/mcp` lists the 8 tools. The agent drew three boxes, grouped them as "lobby", moved the group 6 m east with one `move_nodes` call, drew a pillar into the group at `bounds` center, and rotated the group 90° (every child orbited the center). Bad calls (a group height, ungrouping a box) were rejected with clear errors.

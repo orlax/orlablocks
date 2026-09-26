@@ -1,15 +1,15 @@
-import type { Actor, Box, BoxPatch, HistorySummary } from "../shared/scene.types";
+import type { Actor, HistorySummary, NodePatch, SceneNode } from "../shared/scene.types";
 
 /**
  * The command layer: ops, their inverses, and one linear history shared by the human and the agent.
  * Pure (no server dependencies) so it's unit-testable and can grow into the core library.
  */
 
-/** The smallest reversible change to the scene's boxes. */
+/** The smallest reversible change to the scene's nodes (boxes and groups). */
 export type Op =
-  | { op: "add"; boxes: Box[]; indices?: number[] } // `indices`: restore removed boxes at their original positions
+  | { op: "add"; nodes: SceneNode[]; indices?: number[] } // `indices`: where to insert them (restores removed nodes in place)
   | { op: "remove"; ids: string[] }
-  | { op: "update"; changes: { id: string; patch: BoxPatch }[] }; // a key set to undefined removes that field (e.g. name)
+  | { op: "update"; changes: { id: string; patch: NodePatch }[] }; // a key set to undefined removes that field (e.g. name)
 
 /** One user-level action and one undo step. */
 export type HistoryEntry = {
@@ -22,74 +22,74 @@ export type HistoryEntry = {
 
 export const HISTORY_LIMIT = 200;
 
-/** Returns a new list; never mutates `boxes`. */
-export function applyOp(boxes: Box[], op: Op): Box[] {
+/** Returns a new list; never mutates `nodes`. */
+export function applyOp(nodes: SceneNode[], op: Op): SceneNode[] {
   switch (op.op) {
     case "add": {
-      if (!op.indices) return [...boxes, ...op.boxes];
-      // Insert in ascending index order so each box lands exactly where it was.
-      const next = [...boxes];
-      op.boxes
-        .map((box, i) => ({ box, index: op.indices![i] }))
+      if (!op.indices) return [...nodes, ...op.nodes];
+      // Insert in ascending index order so each node lands exactly where it was.
+      const next = [...nodes];
+      op.nodes
+        .map((node, i) => ({ node, index: op.indices![i] }))
         .sort((a, b) => a.index - b.index)
-        .forEach(({ box, index }) => next.splice(index, 0, box));
+        .forEach(({ node, index }) => next.splice(index, 0, node));
       return next;
     }
     case "remove": {
       const ids = new Set(op.ids);
-      return boxes.filter((b) => !ids.has(b.id));
+      return nodes.filter((n) => !ids.has(n.id));
     }
     case "update": {
       const patches = new Map(op.changes.map((c) => [c.id, c.patch]));
-      return boxes.map((b) => (patches.has(b.id) ? withPatch(b, patches.get(b.id)!) : b));
+      return nodes.map((n) => (patches.has(n.id) ? withPatch(n, patches.get(n.id)!) : n));
     }
   }
 }
 
 /** The op that undoes `op`, computed against the state *before* `op` is applied. */
-export function invertOp(boxes: Box[], op: Op): Op {
+export function invertOp(nodes: SceneNode[], op: Op): Op {
   switch (op.op) {
     case "add":
-      return { op: "remove", ids: op.boxes.map((b) => b.id) };
+      return { op: "remove", ids: op.nodes.map((n) => n.id) };
     case "remove": {
       const ids = new Set(op.ids);
-      const removed = boxes.flatMap((box, index) => (ids.has(box.id) ? [{ box, index }] : []));
-      if (removed.length !== ids.size) throw new Error(`remove: unknown box in ${op.ids.join(", ")}`);
-      return { op: "add", boxes: removed.map((r) => r.box), indices: removed.map((r) => r.index) };
+      const removed = nodes.flatMap((node, index) => (ids.has(node.id) ? [{ node, index }] : []));
+      if (removed.length !== ids.size) throw new Error(`remove: unknown node in ${op.ids.join(", ")}`);
+      return { op: "add", nodes: removed.map((r) => r.node), indices: removed.map((r) => r.index) };
     }
     case "update": {
-      const byId = new Map(boxes.map((b) => [b.id, b]));
+      const byId = new Map(nodes.map((n) => [n.id, n]));
       return {
         op: "update",
         changes: op.changes.map((c) => {
-          const box = byId.get(c.id);
-          if (!box) throw new Error(`update: unknown box ${c.id}`);
-          // The previous value of every patched field (undefined for a field the box didn't have).
+          const node = byId.get(c.id);
+          if (!node) throw new Error(`update: unknown node ${c.id}`);
+          // The previous value of every patched field (undefined for a field the node didn't have).
           const previous: Record<string, unknown> = {};
-          for (const key of Object.keys(c.patch)) previous[key] = box[key as keyof BoxPatch];
-          return { id: c.id, patch: previous as BoxPatch };
+          for (const key of Object.keys(c.patch)) previous[key] = (node as Record<string, unknown>)[key];
+          return { id: c.id, patch: previous as NodePatch };
         }),
       };
     }
   }
 }
 
-/** The box with `patch` applied; optional fields set to undefined are dropped rather than kept as undefined. */
-function withPatch(box: Box, patch: BoxPatch): Box {
-  const next = { ...box, ...patch };
-  for (const key of Object.keys(patch) as (keyof BoxPatch)[]) if (next[key] === undefined) delete next[key];
-  return next;
+/** The node with `patch` applied; optional fields set to undefined are dropped rather than kept as undefined. */
+function withPatch(node: SceneNode, patch: NodePatch): SceneNode {
+  const next: Record<string, unknown> = { ...node, ...patch };
+  for (const key of Object.keys(patch)) if (next[key] === undefined) delete next[key];
+  return next as SceneNode;
 }
 
 /** Applies ops in order and returns the new state plus the inverse, ready to undo. */
-export function runOps(boxes: Box[], ops: Op[]): { boxes: Box[]; inverse: Op[] } {
+export function runOps(nodes: SceneNode[], ops: Op[]): { nodes: SceneNode[]; inverse: Op[] } {
   const inverse: Op[] = [];
-  let current = boxes;
+  let current = nodes;
   for (const op of ops) {
     inverse.unshift(invertOp(current, op));
     current = applyOp(current, op);
   }
-  return { boxes: current, inverse };
+  return { nodes: current, inverse };
 }
 
 export function createHistory(limit = HISTORY_LIMIT) {
@@ -105,18 +105,18 @@ export function createHistory(limit = HISTORY_LIMIT) {
     },
 
     /** Reverts the latest entry, whoever made it. */
-    undo(boxes: Box[]): { boxes: Box[]; entry: HistoryEntry } | null {
+    undo(nodes: SceneNode[]): { nodes: SceneNode[]; entry: HistoryEntry } | null {
       const entry = undoStack.pop();
       if (!entry) return null;
       redoStack.push(entry);
-      return { boxes: entry.inverse.reduce(applyOp, boxes), entry };
+      return { nodes: entry.inverse.reduce(applyOp, nodes), entry };
     },
 
-    redo(boxes: Box[]): { boxes: Box[]; entry: HistoryEntry } | null {
+    redo(nodes: SceneNode[]): { nodes: SceneNode[]; entry: HistoryEntry } | null {
       const entry = redoStack.pop();
       if (!entry) return null;
       undoStack.push(entry);
-      return { boxes: entry.ops.reduce(applyOp, boxes), entry };
+      return { nodes: entry.ops.reduce(applyOp, nodes), entry };
     },
 
     summary(): HistorySummary {

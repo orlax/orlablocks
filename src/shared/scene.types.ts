@@ -35,6 +35,7 @@ export type Box = {
   id: string; // server-assigned, "box_1", "box_2", ... never reused
   type: "box";
   name?: string; // for people and the agent ("lobby"); not unique
+  parent?: string; // the group it's in; none = top level
   kind: BoxKind;
   x: number;
   z: number;
@@ -47,8 +48,26 @@ export type Box = {
   createdBy: Actor;
 };
 
-/** The fields an update can change. */
+/**
+ * A group: a container with no position, size or rotation of its own (Figma-style). Its boxes keep their world
+ * coordinates, and its bounds are derived from them. A unit of action: moving or deleting it acts on everything
+ * inside, as one step.
+ */
+export type Group = {
+  id: string; // server-assigned, "group_1", ... never reused
+  type: "group";
+  name?: string;
+  parent?: string;
+  createdBy: Actor;
+};
+
+/** Anything in the scene's flat list. (Not `Node`, which is the DOM's.) */
+export type SceneNode = Box | Group;
+
+/** The box fields an edit can change. */
 export type BoxPatch = Partial<Pick<Box, "name" | "kind" | "x" | "z" | "y" | "width" | "depth" | "height" | "rotation" | "color">>;
+/** What an update op can change on any node: box fields (boxes only), `name` and `parent`. */
+export type NodePatch = BoxPatch & { parent?: string };
 
 /**
  * What the editor currently shows. The camera looks down at the ground (x/z plane, y up) at a fixed pitch,
@@ -62,9 +81,10 @@ export type View = {
 
 export type Scene = {
   view: View;
-  /** IDs of the boxes selected in the editor (last tab to change it wins). Not an edit, not undoable. */
+  /** IDs of the nodes selected in the editor (last tab to change it wins). Not an edit, not undoable. */
   selection: string[];
-  boxes: Box[];
+  /** Boxes and groups, one flat list; `parent` makes the tree, and the order is the order among siblings. */
+  nodes: SceneNode[];
 };
 
 /** What the editor needs to show Undo / Redo: whether each is possible, and the label of the step it would revert. */
@@ -98,6 +118,7 @@ const field = {
   rotation: z.number().describe("Degrees around the vertical axis through the center, counterclockwise seen from above"),
   color: BoxColorSchema.describe(`Palette key: ${BOX_COLORS.join(", ")}`),
   name: z.string().describe('A label for people, e.g. "lobby". Not unique'),
+  parent: z.string().describe("ID of the group to put it in, e.g. group_1"),
 };
 
 export const BoxInputSchema = z.strictObject({
@@ -113,12 +134,13 @@ export const BoxInputSchema = z.strictObject({
   rotation: field.rotation.optional().describe("Degrees, counterclockwise seen from above. Defaults to 0 (grid-aligned)"),
   color: field.color.optional().describe(`Palette key: ${BOX_COLORS.join(", ")}. Defaults to ${DEFAULT_COLOR}`),
   name: field.name.optional(),
+  parent: field.parent.optional().describe("ID of the group to put it in, e.g. group_1. Omit for the top level"),
 });
 export type BoxInput = z.input<typeof BoxInputSchema>;
 
-/** A change to an existing box, by ID: any of its editable fields. */
+/** A change to an existing node, by ID: any of a box's editable fields; for a group only `name` and `parent`. */
 export const NodeUpdateSchema = z.strictObject({
-  id: z.string().describe("ID of an existing box, e.g. box_3"),
+  id: z.string().describe("ID of an existing node, e.g. box_3 or group_1"),
   kind: field.kind.optional(),
   x: field.x.optional(),
   z: field.z.optional(),
@@ -129,8 +151,30 @@ export const NodeUpdateSchema = z.strictObject({
   rotation: field.rotation.optional(),
   color: field.color.optional(),
   name: field.name.optional().describe('A label for people, e.g. "lobby". Not unique. An empty string removes it'),
+  parent: field.parent
+    .nullable()
+    .optional()
+    .describe("ID of the group to move it into, e.g. group_1; null moves it to the top level"),
 });
 export type NodeUpdate = z.input<typeof NodeUpdateSchema>;
+
+const IdsSchema = z.array(z.string()).min(1);
+
+export const MoveNodesSchema = z.strictObject({
+  ids: IdsSchema.describe("IDs of boxes and/or groups; a group moves everything in it"),
+  dx: z.number().optional().describe("Meters along +x (east), default 0"),
+  dy: z.number().optional().describe("Meters up, default 0"),
+  dz: z.number().optional().describe("Meters along +z, default 0"),
+});
+export const RotateNodesSchema = z.strictObject({
+  ids: IdsSchema.describe("IDs of boxes and/or groups; a group turns everything in it"),
+  degrees: z.number().describe("Counterclockwise seen from above, around the center of the nodes' combined bounds"),
+});
+export const GroupNodesSchema = z.strictObject({
+  ids: IdsSchema.describe("IDs of the boxes and/or groups to put in a new group"),
+  name: field.name.optional(),
+});
+export const UngroupSchema = z.strictObject({ ids: IdsSchema.describe("IDs of groups to dissolve; their contents stay") });
 
 export const ViewSchema = z.object({
   focus: z.object({ x: z.number(), z: z.number() }),
@@ -141,7 +185,11 @@ export const ViewSchema = z.object({
 export const ClientMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("add_boxes"), boxes: z.array(BoxInputSchema).min(1) }),
   z.object({ type: z.literal("update_nodes"), changes: z.array(NodeUpdateSchema).min(1) }),
-  z.object({ type: z.literal("remove_nodes"), ids: z.array(z.string()).min(1) }),
+  z.object({ type: z.literal("remove_nodes"), ids: IdsSchema }),
+  MoveNodesSchema.extend({ type: z.literal("move_nodes") }),
+  RotateNodesSchema.extend({ type: z.literal("rotate_nodes") }),
+  GroupNodesSchema.extend({ type: z.literal("group_nodes") }),
+  UngroupSchema.extend({ type: z.literal("ungroup") }),
   z.object({ type: z.literal("set_selection"), ids: z.array(z.string()) }),
   z.object({ type: z.literal("clear") }),
   z.object({ type: z.literal("undo") }),

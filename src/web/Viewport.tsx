@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type PointerEvent, type RefObject } from "react";
+import { useEffect, useRef, useState, type MouseEvent, type PointerEvent, type RefObject } from "react";
 import { Canvas, invalidate, useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
 import {
@@ -10,8 +10,11 @@ import {
   type BoxKind,
   type BoxPatch,
   type NodeUpdate,
+  type SceneNode,
   type View,
 } from "../shared/scene.types";
+import { boundsOf } from "../shared/geometry";
+import { boxesUnder, isBox, selectableAt } from "../shared/tree";
 import { BoxMesh } from "./BoxMesh";
 import {
   cameraPosition,
@@ -37,7 +40,6 @@ import {
   isScalePart,
   SCALE_PARTS,
   scaleCursor,
-  selectionBounds,
   startBodyDrag,
   startHandleDrag,
   type GizmoDrag,
@@ -102,8 +104,12 @@ const noSnap = (e: { metaKey: boolean; ctrlKey: boolean }) => e.metaKey || e.ctr
 
 type Props = {
   tool: Tool;
-  boxes: Box[];
+  nodes: SceneNode[];
+  /** Node IDs (boxes and groups). A group stands for every box in it. */
   selection: string[];
+  /** The group the user has entered with a double-click (null = the top level): clicks select its children. */
+  context: string | null;
+  onContext: (id: string | null) => void;
   /** The kind the Box tool draws (its draft is previewed at that kind's default height). */
   nextKind: BoxKind;
   onSelect: (ids: string[]) => void;
@@ -118,7 +124,19 @@ type Props = {
  * The 3D view. The camera state lives in a ref, not React state: it changes every frame while panning or
  * rotating, and the three.js side reads it in `useFrame`. Only the reported `view` goes back to React, throttled.
  */
-export function Viewport({ tool, boxes, selection, nextKind, onSelect, onDrawBox, onUpdate, onCursor, onViewChange }: Props) {
+export function Viewport({
+  tool,
+  nodes,
+  selection,
+  context,
+  onContext,
+  nextKind,
+  onSelect,
+  onDrawBox,
+  onUpdate,
+  onCursor,
+  onViewChange,
+}: Props) {
   const cam = useRef<CameraState>({ ...DEFAULT_CAMERA });
   const wrap = useRef<HTMLDivElement>(null);
   const yawKeys = useRef(new Set<YawKey>());
@@ -149,18 +167,25 @@ export function Viewport({ tool, boxes, selection, nextKind, onSelect, onDrawBox
   const onSelectRef = useRef(onSelect);
   onSelectRef.current = onSelect;
 
+  const boxes = nodes.filter(isBox);
   // What's on screen: the server's boxes, with the drag in progress (or just released) applied locally.
   const override = drag?.active ? drag.patches : pending;
   const shown = override ? boxes.map((b) => (override[b.id] ? { ...b, ...override[b.id] } : b)) : boxes;
+  /** The boxes (as shown) in or under the given nodes. */
+  const shownUnder = (ids: string[]) => {
+    const under = new Set(boxesUnder(nodes, ids).map((b) => b.id));
+    return shown.filter((b) => under.has(b.id));
+  };
 
-  // The transform gizmo: on the selection, in the Select tool only. Height and scale are for a single box; move
-  // and rotate work on any selection.
-  const selectedBoxes = tool === "select" ? shown.filter((b) => selection.includes(b.id)) : [];
-  const single = selectedBoxes.length === 1 ? selectedBoxes[0] : undefined;
+  // The transform gizmo: on the selection, in the Select tool only. Height and scale are for a single box (not a
+  // group); move and rotate work on any selection.
+  const selectedBoxes = tool === "select" ? shownUnder(selection) : [];
+  const single =
+    selection.length === 1 && selectedBoxes.length === 1 && selectedBoxes[0].id === selection[0] ? selectedBoxes[0] : undefined;
   const gizmo =
     selectedBoxes.length > 0
       ? {
-          anchor: gizmoAnchor(selectionBounds(selectedBoxes)),
+          anchor: gizmoAnchor(boundsOf(selectedBoxes)),
           parts: (single ? ["x", "y", "z", "rotate", "height", ...SCALE_PARTS] : ["x", "y", "z", "rotate"]) as GizmoPart[],
           boxes: selectedBoxes,
           box: single,
@@ -179,7 +204,18 @@ export function Viewport({ tool, boxes, selection, nextKind, onSelect, onDrawBox
     return { sx, sy, point: noSnap(e) ? g : { x: snap(g.x), z: snap(g.z) } };
   };
 
-  const pickAt = (sx: number, sy: number, size: Size) => pickBox(screenRay(cam.current, size, sx, sy), shown);
+  /**
+   * What a click on box `id` selects: the node at the current level (the outermost group, or inside the entered
+   * group its child). `leaves` says the box is outside the entered group, so the click leaves it.
+   */
+  const resolve = (id: string) => {
+    const inside = context === null ? null : selectableAt(nodes, id, context);
+    return inside !== null ? { id: inside, leaves: false } : { id: selectableAt(nodes, id, null) ?? id, leaves: context !== null };
+  };
+  const pickAt = (sx: number, sy: number, size: Size) => {
+    const id = pickBox(screenRay(cam.current, size, sx, sy), shown);
+    return id === null ? null : resolve(id).id;
+  };
   const gizmoAt = (sx: number, sy: number, size: Size) =>
     gizmo ? hitGizmo(cam.current, size, sx, sy, gizmo.anchor, gizmo.parts, gizmo.boxes) : null;
 
@@ -226,19 +262,21 @@ export function Viewport({ tool, boxes, selection, nextKind, onSelect, onDrawBox
       }
       const hit = pickHit(screenRay(cam.current, size, sx, sy), shown);
       if (hit) {
-        const wasSelected = selection.includes(hit.id);
+        const { id: target, leaves } = resolve(hit.id);
+        if (leaves) onContext(null);
+        const current = leaves ? [] : selection;
+        const wasSelected = current.includes(target);
         let ids: string[];
         let clickSelection: string[];
         if (e.shiftKey) {
-          ids = wasSelected ? selection : [...selection, hit.id];
-          clickSelection = wasSelected ? selection.filter((id) => id !== hit.id) : ids;
+          ids = wasSelected ? current : [...current, target];
+          clickSelection = wasSelected ? current.filter((id) => id !== target) : ids;
         } else {
-          ids = wasSelected ? selection : [hit.id];
-          clickSelection = [hit.id];
+          ids = wasSelected ? current : [target];
+          clickSelection = [target];
         }
         if (!wasSelected) onSelect(ids);
-        const origin = shown.filter((b) => ids.includes(b.id));
-        startDrag(e, startBodyDrag(origin, hit.point), { active: false, clickSelection });
+        startDrag(e, startBodyDrag(shownUnder(ids), hit.point), { active: false, clickSelection });
         return;
       }
       e.currentTarget.setPointerCapture(e.pointerId);
@@ -279,7 +317,12 @@ export function Viewport({ tool, boxes, selection, nextKind, onSelect, onDrawBox
       const active = marquee.active || Math.hypot(sx - marquee.start.sx, sy - marquee.start.sy) >= CLICK_PX;
       if (active) {
         // The selection follows the marquee live.
-        const hits = marqueeHits(cam.current, size, shown, rectFrom(marquee.start, end));
+        // Boxes resolve to the nodes at the current level; inside a group, boxes outside it don't count.
+        const hits: string[] = [];
+        for (const id of marqueeHits(cam.current, size, shown, rectFrom(marquee.start, end))) {
+          const r = resolve(id);
+          if (!r.leaves && !hits.includes(r.id)) hits.push(r.id);
+        }
         onSelect(marquee.additive ? [...marquee.base, ...hits.filter((id) => !marquee.base.includes(id))] : hits);
       }
       setMarquee({ ...marquee, end, active });
@@ -317,8 +360,11 @@ export function Viewport({ tool, boxes, selection, nextKind, onSelect, onDrawBox
       return;
     }
     if (marquee?.pointerId === e.pointerId) {
-      // A click on empty ground deselects, unless Shift is held.
-      if (!marquee.active && !marquee.additive) onSelect([]);
+      // A click on empty ground deselects and leaves the entered group, unless Shift is held.
+      if (!marquee.active && !marquee.additive) {
+        onSelect([]);
+        onContext(null);
+      }
       setMarquee(null);
       return;
     }
@@ -334,6 +380,19 @@ export function Viewport({ tool, boxes, selection, nextKind, onSelect, onDrawBox
       }
       cancelDrawing();
     }
+  };
+
+  // Double-click in the Select tool enters the group under the cursor one level and selects its child there
+  // (the box itself, or a subgroup).
+  const onDoubleClick = (e: MouseEvent) => {
+    if (tool !== "select") return;
+    const { sx, sy, size } = local(e);
+    const id = pickBox(screenRay(cam.current, size, sx, sy), shown);
+    if (id === null) return;
+    const target = resolve(id).id;
+    if (target === id) return; // already the box itself
+    onContext(target);
+    onSelect([selectableAt(nodes, id, target) ?? id]);
   };
 
   // Esc mid-drag cancels the drag, the draft or the marquee (restoring the selection it started from) and nothing
@@ -414,6 +473,7 @@ export function Viewport({ tool, boxes, selection, nextKind, onSelect, onDrawBox
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerUp}
+      onDoubleClick={onDoubleClick}
       // Ctrl+click on a Mac opens the context menu; Ctrl is the no-snap modifier here.
       onContextMenu={(e) => e.preventDefault()}
       onPointerLeave={() => {
@@ -437,7 +497,12 @@ export function Viewport({ tool, boxes, selection, nextKind, onSelect, onDrawBox
         <Lighting cam={cam} />
         <Grid cam={cam} />
         <OriginAxes />
-        <Boxes boxes={shown} draft={draft} selection={selection} hoveredId={hoveredId} />
+        <Boxes
+          boxes={shown}
+          draft={draft}
+          selected={new Set(boxesUnder(nodes, selection).map((b) => b.id))}
+          hovered={new Set(hoveredId ? boxesUnder(nodes, [hoveredId]).map((b) => b.id) : [])}
+        />
         {gizmo && (
           <TransformGizmo
             anchor={gizmo.anchor}
@@ -480,22 +545,25 @@ export function Viewport({ tool, boxes, selection, nextKind, onSelect, onDrawBox
 function Boxes({
   boxes,
   draft,
-  selection,
-  hoveredId,
+  selected,
+  hovered,
 }: {
   boxes: Box[];
   draft: (Footprint & { kind: BoxKind }) | null;
-  selection: string[];
-  hoveredId: string | null;
+  /** Box IDs to highlight: in the selection (or in a selected group), and under the cursor. */
+  selected: Set<string>;
+  hovered: Set<string>;
 }) {
-  useEffect(() => invalidate(), [boxes, draft, selection, hoveredId]);
+  const selectedKey = [...selected].join(",");
+  const hoveredKey = [...hovered].join(",");
+  useEffect(() => invalidate(), [boxes, draft, selectedKey, hoveredKey]);
   return (
     <>
       {boxes.map((b) => (
         <BoxMesh
           key={b.id}
           {...b}
-          highlight={selection.includes(b.id) ? "selected" : b.id === hoveredId ? "hover" : undefined}
+          highlight={selected.has(b.id) ? "selected" : hovered.has(b.id) ? "hover" : undefined}
         />
       ))}
       {draft && draft.width > 0 && draft.depth > 0 && (

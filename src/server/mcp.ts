@@ -2,20 +2,28 @@ import type { Express } from "express";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
+import { boundsOf, round2 } from "../shared/geometry";
 import {
   BOX_COLORS,
   BoxInputSchema,
   DEFAULT_COLOR,
   DEFAULT_HEIGHT,
+  GroupNodesSchema,
   MIN_HEIGHT,
+  MoveNodesSchema,
   NodeUpdateSchema,
+  RotateNodesSchema,
+  UngroupSchema,
   WALL_THICKNESS,
+  type Scene,
 } from "../shared/scene.types";
+import { boxesUnder, isGroup } from "../shared/tree";
 import type { SceneStore } from "./scene";
 
 const CONVENTIONS =
   "Units are meters; decimals are allowed and kept to 2 places. The world is 3D with y up and the ground at y = 0. " +
-  "The scene is a list of boxes. A box's footprint is CENTERED at (x, z), with `width` along the box's local x and " +
+  "The scene is a flat list of nodes: boxes and groups. " +
+  "A box's footprint is CENTERED at (x, z), with `width` along the box's local x and " +
   "`depth` along its local z. It rises from its elevation `y` (its bottom: 0 = on the ground, negative = below ground) " +
   "to y + height, so to stack box B on box A, set B.y = A.y + A.height. " +
   "`rotation` turns a box around the vertical axis through its center, in degrees, counterclockwise seen from above " +
@@ -24,9 +32,13 @@ const CONVENTIONS =
   `walls are ${WALL_THICKNESS} m thick, centered on the footprint edge, so rooms that share an edge share a wall) ` +
   `or a volume (solid, e.g. a platform or pillar; default height ${DEFAULT_HEIGHT.volume} m). Minimum height is ${MIN_HEIGHT} m. ` +
   `\`color\` is a palette key: ${BOX_COLORS.join(", ")} (default ${DEFAULT_COLOR}). ` +
-  "Each box has a server-assigned ID (box_1, box_2, ..., never reused), an optional `name` for people " +
+  "A group (type: group) is a container with NO position of its own: its boxes keep absolute world coordinates, " +
+  "and a node is in a group when its `parent` is that group's ID (groups can nest). get_scene adds each group's " +
+  "derived `bounds` (center x/z, bottom y, width, depth, height, axis-aligned) for reference. Groups are a unit of " +
+  "action: move_nodes, rotate_nodes and remove_nodes on a group act on everything in it. A group left empty disappears. " +
+  "Every node has a server-assigned ID (box_1, group_1, ..., never reused), an optional `name` for people " +
   '("lobby"; not unique, tools always take IDs, so resolve names to IDs with get_scene), and records who created it (human or agent). ' +
-  "The scene's `selection` lists the IDs of the boxes the human has selected in the editor: when they say " +
+  "The scene's `selection` lists the IDs of the nodes the human has selected in the editor: when they say " +
   '"this" or "these", they mean the selection. ' +
   "The scene's `view` is what the editor window currently shows: `focus` is the ground point at the screen center, " +
   "`yaw` the camera rotation in degrees, and `bounds` (x, z, width, depth; x/z is its min corner) the axis-aligned area around the visible ground. " +
@@ -36,16 +48,38 @@ const CONVENTIONS =
 
 const json = (value: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }] });
 
+/** The scene for the agent: each group gets its derived bounds (center x/z, bottom y, sizes). */
+function describeScene(scene: Scene) {
+  return {
+    ...scene,
+    nodes: scene.nodes.map((n) => {
+      if (!isGroup(n)) return n;
+      const boxes = boxesUnder(scene.nodes, [n.id]);
+      if (boxes.length === 0) return n;
+      const b = boundsOf(boxes);
+      const bounds = {
+        x: round2((b.minX + b.maxX) / 2),
+        z: round2((b.minZ + b.maxZ) / 2),
+        y: round2(b.minY),
+        width: round2(b.maxX - b.minX),
+        depth: round2(b.maxZ - b.minZ),
+        height: round2(b.maxY - b.minY),
+      };
+      return { ...n, bounds };
+    }),
+  };
+}
+
 function buildServer(store: SceneStore) {
-  const server = new McpServer({ name: "dungeon-designer", version: "0.0.3" });
+  const server = new McpServer({ name: "dungeon-designer", version: "0.0.4" });
 
   server.registerTool(
     "get_scene",
     {
       title: "Get scene",
-      description: `Return the current scene as JSON: the visible view, the editor's selection and every box. ${CONVENTIONS}`,
+      description: `Return the current scene as JSON: the visible view, the editor's selection and every node (boxes and groups). ${CONVENTIONS}`,
     },
-    async () => json(store.getScene()),
+    async () => json(describeScene(store.getScene())),
   );
 
   server.registerTool(
@@ -54,16 +88,18 @@ function buildServer(store: SceneStore) {
       title: "Draw boxes",
       description:
         `Add one or more boxes (rooms and/or volumes) to the scene in a single batch; they appear live in the editor. ` +
-        `Only kind, x, z, width and depth are required; the rest have defaults (the kind's height, y 0, rotation 0, color ${DEFAULT_COLOR}, no name). ` +
+        `Only kind, x, z, width and depth are required; the rest have defaults (the kind's height, y 0, rotation 0, color ${DEFAULT_COLOR}, no name, top level). ` +
+        `Set \`parent\` to a group's ID to draw straight into that group. ` +
         `The batch is all-or-nothing: if any box is invalid, nothing is drawn and the error says which one. ${CONVENTIONS}`,
       inputSchema: { boxes: z.array(BoxInputSchema).min(1) },
     },
     async ({ boxes }) => {
       const created = store.drawBoxes(boxes, "agent");
-      const all = store.getScene().boxes;
+      const all = store.getScene().nodes;
       const totals = {
-        rooms: all.filter((b) => b.kind === "room").length,
-        volumes: all.filter((b) => b.kind === "volume").length,
+        rooms: all.filter((n) => n.type === "box" && n.kind === "room").length,
+        volumes: all.filter((n) => n.type === "box" && n.kind === "volume").length,
+        groups: all.filter(isGroup).length,
       };
       return json({ created, totals });
     },
@@ -74,9 +110,10 @@ function buildServer(store: SceneStore) {
     {
       title: "Update nodes",
       description:
-        `Change existing boxes by ID in a single batch; changes appear live in the editor. ` +
-        `Each change gives an id plus any of: name, kind, x, z, y, width, depth, height, rotation, color. ` +
-        `Values are absolute (x: 4 moves the center to x = 4). An empty name removes the name. ` +
+        `Change existing nodes by ID in a single batch; changes appear live in the editor. ` +
+        `A box takes any of: name, parent, kind, x, z, y, width, depth, height, rotation, color. A group takes only name and parent. ` +
+        `Values are absolute (x: 4 moves the center to x = 4); to shift boxes or whole groups by an offset, use move_nodes instead. ` +
+        `An empty name removes the name; parent null moves a node to the top level. ` +
         `The batch is all-or-nothing: an unknown ID or an invalid value rejects it and nothing changes. ${CONVENTIONS}`,
       inputSchema: { changes: z.array(NodeUpdateSchema).min(1) },
     },
@@ -88,14 +125,60 @@ function buildServer(store: SceneStore) {
     {
       title: "Remove nodes",
       description:
-        `Delete boxes by ID in a single batch; they disappear live in the editor, and the human can undo it. ` +
-        `The batch is all-or-nothing: an unknown ID rejects it and nothing is removed. ${CONVENTIONS}`,
-      inputSchema: { ids: z.array(z.string()).min(1).describe("IDs of existing boxes, e.g. box_3") },
+        `Delete nodes by ID in a single batch; a group is deleted with everything in it. They disappear live in the editor, ` +
+        `and the human can undo it. All-or-nothing: an unknown ID rejects it and nothing is removed. ${CONVENTIONS}`,
+      inputSchema: { ids: z.array(z.string()).min(1).describe("IDs of existing nodes, e.g. box_3 or group_1") },
     },
     async ({ ids }) => {
       store.removeNodes(ids, "agent");
-      return json({ removed: ids, remaining: store.getScene().boxes.length });
+      return json({ removed: ids, remaining: store.getScene().nodes.length });
     },
+  );
+
+  server.registerTool(
+    "move_nodes",
+    {
+      title: "Move nodes",
+      description:
+        `Shift boxes and/or whole groups by a relative offset (dx, dy, dz in meters; +x is east). ` +
+        `This is the way to move a group: one call moves everything in it, keeping its layout. ${CONVENTIONS}`,
+      inputSchema: MoveNodesSchema.shape,
+    },
+    async (input) => json({ moved: store.moveNodes(input, "agent") }),
+  );
+
+  server.registerTool(
+    "rotate_nodes",
+    {
+      title: "Rotate nodes",
+      description:
+        `Turn boxes and/or whole groups by \`degrees\` (counterclockwise seen from above) around the vertical axis through ` +
+        `the center of their combined bounds: every box's center orbits that point and its rotation grows by the same angle. ${CONVENTIONS}`,
+      inputSchema: RotateNodesSchema.shape,
+    },
+    async (input) => json({ rotated: store.rotateNodes(input, "agent") }),
+  );
+
+  server.registerTool(
+    "group_nodes",
+    {
+      title: "Group nodes",
+      description:
+        `Put boxes and/or groups in a new group, optionally named. The group is created inside the deepest group that ` +
+        `held them all. Returns the new group (use its ID with move_nodes, rotate_nodes, or as a parent in draw_boxes). ${CONVENTIONS}`,
+      inputSchema: GroupNodesSchema.shape,
+    },
+    async (input) => json({ group: store.groupNodes(input, "agent") }),
+  );
+
+  server.registerTool(
+    "ungroup",
+    {
+      title: "Ungroup",
+      description: `Dissolve groups; their contents stay where they are and move up to the group's parent. ${CONVENTIONS}`,
+      inputSchema: UngroupSchema.shape,
+    },
+    async (input) => json({ freed: store.ungroup(input, "agent") }),
   );
 
   return server;

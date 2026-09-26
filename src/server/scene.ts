@@ -1,41 +1,48 @@
+import type { z } from "zod";
+import { boundsOf, normalizeDeg, rotateAround, round2 } from "../shared/geometry";
 import {
   BoxInputSchema,
   DEFAULT_COLOR,
   DEFAULT_HEIGHT,
   DEFAULT_VIEW,
+  GroupNodesSchema,
   MIN_HEIGHT,
+  MoveNodesSchema,
   NodeUpdateSchema,
+  RotateNodesSchema,
+  UngroupSchema,
   type Actor,
   type Box,
   type BoxInput,
   type BoxPatch,
+  type Group,
   type HistorySummary,
+  type NodePatch,
   type NodeUpdate,
   type Scene,
+  type SceneNode,
   type View,
 } from "../shared/scene.types";
-import { createHistory, runOps, type HistoryEntry, type Op } from "./commands";
+import { ancestry, boxesUnder, commonParent, isGroup, subtreeIds } from "../shared/tree";
+import { applyOp, createHistory, invertOp, runOps, type HistoryEntry, type Op } from "./commands";
 
 export class SceneError extends Error {}
 
-const round2 = (n: number) => Math.round(n * 100) / 100;
 /** Degrees in 0..360, 2 decimals. */
-const normalizeRotation = (deg: number) => {
-  const r = round2(((deg % 360) + 360) % 360);
-  return r === 360 ? 0 : r;
-};
+const normalizeRotation = (deg: number) => round2(normalizeDeg(deg)) % 360;
 
-/** "box_3", "box_4, box_5" or "5 boxes". */
-const listIds = (ids: string[]) => (ids.length <= 3 ? ids.join(", ") : `${ids.length} boxes`);
+/** "box_3", "box_4, group_1" or "5 nodes". */
+const listIds = (ids: string[], plural = "nodes") => (ids.length <= 3 ? ids.join(", ") : `${ids.length} ${plural}`);
 
 /** "Draw box_3", or for the agent "Agent: draw box_4, box_5". Same shape for every label. */
-function label(verb: string, ids: string[], actor: Actor): string {
-  const text = `${verb} ${listIds(ids)}`;
+function label(verb: string, what: string, actor: Actor): string {
+  const text = `${verb} ${what}`;
   return actor === "agent" ? `Agent: ${text}` : text.charAt(0).toUpperCase() + text.slice(1);
 }
 
-const FIELD_VERBS: Record<keyof BoxPatch, string> = {
+const FIELD_VERBS: Record<keyof NodePatch, string> = {
   name: "rename",
+  parent: "regroup",
   kind: "change kind of",
   x: "move",
   z: "move",
@@ -48,8 +55,8 @@ const FIELD_VERBS: Record<keyof BoxPatch, string> = {
 };
 
 /** One verb when every change is the same kind of edit ("move", "recolor"), "edit" otherwise. */
-function updateVerb(patches: BoxPatch[]): string {
-  const verbs = new Set(patches.flatMap((p) => Object.keys(p).map((k) => FIELD_VERBS[k as keyof BoxPatch])));
+function updateVerb(patches: NodePatch[]): string {
+  const verbs = new Set(patches.flatMap((p) => Object.keys(p).map((k) => FIELD_VERBS[k as keyof NodePatch])));
   return verbs.size === 1 ? [...verbs][0] : "edit";
 }
 
@@ -58,27 +65,71 @@ function issueLines(prefix: string, issues: { path: PropertyKey[]; message: stri
   return issues.map((issue) => `${prefix}.${issue.path.map(String).join(".") || "(item)"}: ${issue.message}`);
 }
 
+/** Parses with a zod schema or throws a SceneError listing every issue. */
+function parse<T extends z.ZodType>(schema: T, input: unknown, failure: string): z.output<T> {
+  const result = schema.safeParse(input);
+  if (!result.success) throw new SceneError(`${failure}\n${issueLines("", result.error.issues).map((l) => l.slice(1)).join("\n")}`);
+  return result.data;
+}
+
 export function createSceneStore() {
-  const scene: Scene = { view: { ...DEFAULT_VIEW }, selection: [], boxes: [] };
+  const scene: Scene = { view: { ...DEFAULT_VIEW }, selection: [], nodes: [] };
   const listeners = new Set<(scene: Scene) => void>();
-  // Only goes up, so IDs are never reused.
-  let nextId = 1;
+  // Only go up, so IDs are never reused.
+  const nextId = { box: 1, group: 1 };
 
   const history = createHistory();
 
-  /** After every change to the boxes: drop selected IDs that no longer exist, then broadcast. */
+  const byId = () => new Map(scene.nodes.map((n) => [n.id, n]));
+
+  /** After every change to the nodes: drop selected IDs that no longer exist, then broadcast. */
   const emit = () => {
-    const ids = new Set(scene.boxes.map((b) => b.id));
+    const ids = new Set(scene.nodes.map((n) => n.id));
     scene.selection = scene.selection.filter((id) => ids.has(id));
     listeners.forEach((l) => l(scene));
   };
 
-  /** The single path for edits: apply ops, record one undo step, broadcast. */
+  /**
+   * The single path for edits: apply ops, record one undo step, broadcast. Groups the ops leave empty are removed
+   * as part of the same step (a group never outlives its contents).
+   */
   const commit = (label: string, actor: Actor, ops: Op[]) => {
-    const { boxes, inverse } = runOps(scene.boxes, ops);
-    scene.boxes = boxes;
-    history.push({ label, actor, at: Date.now(), ops, inverse });
+    const all = [...ops];
+    let { nodes, inverse } = runOps(scene.nodes, ops);
+    for (;;) {
+      const empty = nodes.filter((n) => isGroup(n) && !nodes.some((c) => c.parent === n.id)).map((n) => n.id);
+      if (empty.length === 0) break;
+      const prune: Op = { op: "remove", ids: empty };
+      inverse = [invertOp(nodes, prune), ...inverse];
+      nodes = applyOp(nodes, prune);
+      all.push(prune);
+    }
+    scene.nodes = nodes;
+    history.push({ label, actor, at: Date.now(), ops: all, inverse });
     emit();
+  };
+
+  /** Errors for IDs that don't exist or repeat. `prefix` is e.g. "ids". */
+  const checkIds = (prefix: string, ids: string[], errors: string[]) => {
+    const nodes = byId();
+    const seen = new Set<string>();
+    ids.forEach((id, i) => {
+      if (!nodes.has(id)) errors.push(`${prefix}[${i}]: no node "${id}"`);
+      if (seen.has(id)) errors.push(`${prefix}[${i}]: "${id}" appears more than once`);
+      seen.add(id);
+    });
+  };
+
+  const failIf = (errors: string[], what: string) => {
+    if (errors.length > 0) throw new SceneError(`${what}\n${errors.join("\n")}`);
+  };
+
+  /** An error message if `parent` can't hold nodes (unknown, or not a group), else null. */
+  const parentError = (parent: string) => {
+    const node = byId().get(parent);
+    if (!node) return `no group "${parent}"`;
+    if (!isGroup(node)) return `"${parent}" is a box, not a group`;
+    return null;
   };
 
   /** Reports sizes that fall out of range once rounded to 2 decimals. */
@@ -89,6 +140,14 @@ export function createSceneStore() {
       errors.push(`${prefix}.height: ${r.height} rounds below ${MIN_HEIGHT} at 2 decimals`);
     }
   };
+
+  /** Box patches that change something, as update changes. */
+  const effectiveBoxChanges = (boxes: Box[], patches: Record<string, BoxPatch>) =>
+    boxes.flatMap((box) => {
+      const patch = patches[box.id];
+      const changed = patch && (Object.keys(patch) as (keyof BoxPatch)[]).some((k) => patch[k] !== box[k]);
+      return changed ? [{ id: box.id, patch }] : [];
+    });
 
   return {
     getScene(): Scene {
@@ -101,7 +160,7 @@ export function createSceneStore() {
 
     /**
      * Validates every input first; applies all or nothing. Missing fields get their defaults: the kind's height,
-     * y 0, rotation 0, the default color, no name.
+     * y 0, rotation 0, the default color, no name, the top level.
      */
     drawBoxes(inputs: BoxInput[], actor: Actor): Box[] {
       if (inputs.length === 0) throw new SceneError("boxes: at least one box is required");
@@ -116,10 +175,15 @@ export function createSceneStore() {
         const d = result.data;
         const height = d.height ?? DEFAULT_HEIGHT[d.kind];
         checkSizes(`boxes[${i}]`, { width: d.width, depth: d.depth, height }, errors);
+        if (d.parent !== undefined) {
+          const e = parentError(d.parent);
+          if (e) errors.push(`boxes[${i}].parent: ${e}`);
+        }
         const name = d.name?.trim();
         return {
           type: "box" as const,
           ...(name ? { name } : {}),
+          ...(d.parent !== undefined ? { parent: d.parent } : {}),
           kind: d.kind,
           x: round2(d.x),
           z: round2(d.z),
@@ -131,22 +195,24 @@ export function createSceneStore() {
           color: d.color ?? DEFAULT_COLOR,
         };
       });
-      if (errors.length > 0) throw new SceneError(`Nothing was drawn.\n${errors.join("\n")}`);
+      failIf(errors, "Nothing was drawn.");
 
-      const created: Box[] = valid.map((b) => ({ id: `box_${nextId++}`, ...b!, createdBy: actor }));
-      commit(label("draw", created.map((b) => b.id), actor), actor, [{ op: "add", boxes: created }]);
+      const created: Box[] = valid.map((b) => ({ id: `box_${nextId.box++}`, ...b!, createdBy: actor }));
+      const ids = created.map((b) => b.id);
+      commit(label("draw", listIds(ids, "boxes"), actor), actor, [{ op: "add", nodes: created }]);
       return created;
     },
 
     /**
-     * Changes existing boxes by ID: any of name, kind, x, z, y, width, depth, height, rotation, color.
-     * Validates every change first; applies all or nothing. Fields that don't actually change are dropped, and if
-     * nothing is left no step is recorded. An empty name removes the name.
+     * Changes existing nodes by ID. A box takes any of name, parent, kind, x, z, y, width, depth, height, rotation,
+     * color; a group takes only name and parent. Validates every change first; applies all or nothing. Fields that
+     * don't actually change are dropped, and if nothing is left no step is recorded. An empty name removes the name,
+     * and a null (or empty) parent moves the node to the top level.
      */
-    updateNodes(changes: NodeUpdate[], actor: Actor): Box[] {
+    updateNodes(changes: NodeUpdate[], actor: Actor): SceneNode[] {
       if (changes.length === 0) throw new SceneError("changes: at least one change is required");
 
-      const byId = new Map(scene.boxes.map((b) => [b.id, b]));
+      const nodes = byId();
       const seen = new Set<string>();
       const errors: string[] = [];
       const valid = changes.map((change, i) => {
@@ -156,15 +222,24 @@ export function createSceneStore() {
           return null;
         }
         const { id, ...fields } = result.data;
-        const box = byId.get(id);
-        if (!box) errors.push(`changes[${i}].id: no box "${id}"`);
+        const node = nodes.get(id);
+        if (!node) errors.push(`changes[${i}].id: no node "${id}"`);
         if (seen.has(id)) errors.push(`changes[${i}].id: "${id}" appears more than once`);
         seen.add(id);
         if (Object.keys(fields).length === 0) errors.push(`changes[${i}]: nothing to change`);
+        if (node && isGroup(node)) {
+          const boxOnly = Object.keys(fields).filter((k) => k !== "name" && k !== "parent");
+          if (boxOnly.length > 0) errors.push(`changes[${i}]: "${id}" is a group; only name and parent can change (not ${boxOnly.join(", ")})`);
+        }
         checkSizes(`changes[${i}]`, fields, errors);
-        if (!box) return null;
+        const parent = fields.parent === null || fields.parent === "" ? undefined : fields.parent;
+        if (parent !== undefined) {
+          const e = parentError(parent);
+          if (e) errors.push(`changes[${i}].parent: ${e}`);
+        }
+        if (!node) return null;
 
-        const patch: BoxPatch = {};
+        const patch: NodePatch = {};
         for (const key of ["x", "z", "y", "width", "depth", "height"] as const) {
           if (fields[key] !== undefined) patch[key] = round2(fields[key]);
         }
@@ -172,38 +247,132 @@ export function createSceneStore() {
         if (fields.kind !== undefined) patch.kind = fields.kind;
         if (fields.color !== undefined) patch.color = fields.color;
         if (fields.name !== undefined) patch.name = fields.name.trim() || undefined;
+        if (fields.parent !== undefined) patch.parent = parent;
 
-        // Keep only what differs from the box as it is.
-        const effective: BoxPatch = {};
-        for (const key of Object.keys(patch) as (keyof BoxPatch)[]) {
-          if (patch[key] !== box[key]) (effective as Record<string, unknown>)[key] = patch[key];
+        // Keep only what differs from the node as it is.
+        const effective: NodePatch = {};
+        for (const key of Object.keys(patch) as (keyof NodePatch)[]) {
+          if (patch[key] !== (node as Record<string, unknown>)[key]) (effective as Record<string, unknown>)[key] = patch[key];
         }
-        return { id, patch: effective };
+        return { id, patch: effective, index: i };
       });
-      if (errors.length > 0) throw new SceneError(`Nothing was changed.\n${errors.join("\n")}`);
+      failIf(errors, "Nothing was changed.");
 
-      const effective = valid.filter((c) => Object.keys(c!.patch).length > 0) as { id: string; patch: BoxPatch }[];
+      // No node may end up inside itself.
+      const next = runOps(scene.nodes, [{ op: "update", changes: valid.map((c) => ({ id: c!.id, patch: c!.patch })) }]).nodes;
+      for (const c of valid) {
+        if (c!.patch.parent !== undefined && isCycle(next, c!.id)) {
+          errors.push(`changes[${c!.index}].parent: "${c!.patch.parent}" is inside "${c!.id}"`);
+        }
+      }
+      failIf(errors, "Nothing was changed.");
+
+      const effective = valid.filter((c) => Object.keys(c!.patch).length > 0).map((c) => ({ id: c!.id, patch: c!.patch }));
       if (effective.length > 0) {
         const verb = updateVerb(effective.map((c) => c.patch));
-        commit(label(verb, effective.map((c) => c.id), actor), actor, [{ op: "update", changes: effective }]);
+        commit(label(verb, listIds(effective.map((c) => c.id)), actor), actor, [{ op: "update", changes: effective }]);
       }
       const ids = new Set(valid.map((c) => c!.id));
-      return scene.boxes.filter((b) => ids.has(b.id));
+      return scene.nodes.filter((n) => ids.has(n.id));
     },
 
-    /** Removes boxes by ID as one undoable step. An unknown or repeated ID rejects the whole batch. */
+    /** Removes nodes by ID as one undoable step; a group takes everything in it. Unknown or repeated IDs reject all. */
     removeNodes(ids: string[], actor: Actor): void {
       if (ids.length === 0) throw new SceneError("ids: at least one ID is required");
-      const existing = new Set(scene.boxes.map((b) => b.id));
-      const seen = new Set<string>();
       const errors: string[] = [];
+      checkIds("ids", ids, errors);
+      failIf(errors, "Nothing was removed.");
+      const all = new Set(ids.flatMap((id) => [...subtreeIds(scene.nodes, id)]));
+      const remove = scene.nodes.filter((n) => all.has(n.id)).map((n) => n.id);
+      commit(label("delete", listIds(ids), actor), actor, [{ op: "remove", ids: remove }]);
+    },
+
+    /** Moves boxes and whole groups by a relative offset, as one step. Returns the boxes that moved. */
+    moveNodes(input: z.input<typeof MoveNodesSchema>, actor: Actor): Box[] {
+      const { ids, dx = 0, dy = 0, dz = 0 } = parse(MoveNodesSchema, input, "Nothing was moved.");
+      const errors: string[] = [];
+      checkIds("ids", ids, errors);
+      failIf(errors, "Nothing was moved.");
+      const boxes = boxesUnder(scene.nodes, ids);
+      const patches = Object.fromEntries(
+        boxes.map((b) => [b.id, { x: round2(b.x + dx), y: round2(b.y + dy), z: round2(b.z + dz) }]),
+      );
+      const changes = effectiveBoxChanges(boxes, patches);
+      if (changes.length > 0) commit(label("move", listIds(ids), actor), actor, [{ op: "update", changes }]);
+      const moved = new Set(boxes.map((b) => b.id));
+      return scene.nodes.filter((n): n is Box => moved.has(n.id));
+    },
+
+    /**
+     * Turns boxes and whole groups around the vertical axis through the center of their combined bounds, as one
+     * step: each center orbits it and the angle is added to each rotation. Returns the boxes that turned.
+     */
+    rotateNodes(input: z.input<typeof RotateNodesSchema>, actor: Actor): Box[] {
+      const { ids, degrees } = parse(RotateNodesSchema, input, "Nothing was rotated.");
+      const errors: string[] = [];
+      checkIds("ids", ids, errors);
+      failIf(errors, "Nothing was rotated.");
+      const boxes = boxesUnder(scene.nodes, ids);
+      const b = boundsOf(boxes);
+      const patches = rotateAround(boxes, { x: (b.minX + b.maxX) / 2, z: (b.minZ + b.maxZ) / 2 }, degrees);
+      const changes = effectiveBoxChanges(boxes, patches);
+      if (changes.length > 0) commit(label("rotate", listIds(ids), actor), actor, [{ op: "update", changes }]);
+      const turned = new Set(boxes.map((b) => b.id));
+      return scene.nodes.filter((n): n is Box => turned.has(n.id));
+    },
+
+    /**
+     * Puts nodes in a new group, as one step. The group goes where the first of them was in the list, inside the
+     * deepest group that held them all. A node whose ancestor is also listed stays where it is (inside it).
+     */
+    groupNodes(input: z.input<typeof GroupNodesSchema>, actor: Actor): Group {
+      const { ids, name } = parse(GroupNodesSchema, input, "Nothing was grouped.");
+      const errors: string[] = [];
+      checkIds("ids", ids, errors);
+      failIf(errors, "Nothing was grouped.");
+      const listed = new Set(ids);
+      const members = ids.filter((id) => !ancestry(scene.nodes, id).slice(1).some((a) => listed.has(a)));
+      const parent = commonParent(scene.nodes, members);
+      const trimmed = name?.trim();
+      const group: Group = {
+        id: `group_${nextId.group++}`,
+        type: "group",
+        ...(trimmed ? { name: trimmed } : {}),
+        ...(parent !== undefined ? { parent } : {}),
+        createdBy: actor,
+      };
+      const index = Math.min(...members.map((id) => scene.nodes.findIndex((n) => n.id === id)));
+      commit(label("group", `${listIds(members)} as ${group.id}`, actor), actor, [
+        { op: "add", nodes: [group], indices: [index] },
+        { op: "update", changes: members.map((id) => ({ id, patch: { parent: group.id } })) },
+      ]);
+      return group;
+    },
+
+    /** Dissolves groups, as one step: their contents move up to the group's parent. Returns the freed node IDs. */
+    ungroup(input: z.input<typeof UngroupSchema>, actor: Actor): string[] {
+      const { ids } = parse(UngroupSchema, input, "Nothing was ungrouped.");
+      const errors: string[] = [];
+      checkIds("ids", ids, errors);
+      const nodes = byId();
       ids.forEach((id, i) => {
-        if (!existing.has(id)) errors.push(`ids[${i}]: no box "${id}"`);
-        if (seen.has(id)) errors.push(`ids[${i}]: "${id}" appears more than once`);
-        seen.add(id);
+        const n = nodes.get(id);
+        if (n && !isGroup(n)) errors.push(`ids[${i}]: "${id}" is a box, not a group`);
       });
-      if (errors.length > 0) throw new SceneError(`Nothing was removed.\n${errors.join("\n")}`);
-      commit(label("delete", ids, actor), actor, [{ op: "remove", ids }]);
+      failIf(errors, "Nothing was ungrouped.");
+      const dissolved = new Set(ids);
+      // The nearest ancestor that survives (nested groups can be dissolved together).
+      const newParent = (parent: string | undefined): string | undefined => {
+        let p = parent;
+        while (p !== undefined && dissolved.has(p)) p = nodes.get(p)!.parent;
+        return p;
+      };
+      const freed = scene.nodes.filter((n) => n.parent !== undefined && dissolved.has(n.parent) && !dissolved.has(n.id));
+      commit(label("ungroup", listIds(ids), actor), actor, [
+        { op: "update", changes: freed.map((n) => ({ id: n.id, patch: { parent: newParent(n.parent) } })) },
+        { op: "remove", ids },
+      ]);
+      return freed.map((n) => n.id);
     },
 
     /** What the editor currently shows (last reporting tab wins). Not an edit, so no broadcast. */
@@ -218,29 +387,29 @@ export function createSceneStore() {
 
     /** What the editor has selected (last reporting tab wins). Unknown IDs are dropped. Not an edit, so no broadcast. */
     setSelection(ids: string[]): void {
-      const existing = new Set(scene.boxes.map((b) => b.id));
+      const existing = new Set(scene.nodes.map((n) => n.id));
       scene.selection = [...new Set(ids)].filter((id) => existing.has(id));
     },
 
-    /** Removes every box as one undoable step. Clearing an empty scene records nothing. */
+    /** Removes every node as one undoable step. Clearing an empty scene records nothing. */
     clear(actor: Actor): void {
-      if (scene.boxes.length === 0) return;
-      commit("Clear", actor, [{ op: "remove", ids: scene.boxes.map((b) => b.id) }]);
+      if (scene.nodes.length === 0) return;
+      commit("Clear", actor, [{ op: "remove", ids: scene.nodes.map((n) => n.id) }]);
     },
 
     /** Reverts the latest step, whoever made it. Returns it, or null if there was nothing to undo. */
     undo(): HistoryEntry | null {
-      const result = history.undo(scene.boxes);
+      const result = history.undo(scene.nodes);
       if (!result) return null;
-      scene.boxes = result.boxes;
+      scene.nodes = result.nodes;
       emit();
       return result.entry;
     },
 
     redo(): HistoryEntry | null {
-      const result = history.redo(scene.boxes);
+      const result = history.redo(scene.nodes);
       if (!result) return null;
-      scene.boxes = result.boxes;
+      scene.nodes = result.nodes;
       emit();
       return result.entry;
     },
@@ -250,6 +419,19 @@ export function createSceneStore() {
       return () => listeners.delete(listener);
     },
   };
+}
+
+/** Whether following `id`'s parents ever comes back to `id`. */
+function isCycle(nodes: SceneNode[], id: string): boolean {
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const seen = new Set<string>();
+  let p = byId.get(id)?.parent;
+  while (p !== undefined) {
+    if (p === id || seen.has(p)) return true;
+    seen.add(p);
+    p = byId.get(p)?.parent;
+  }
+  return false;
 }
 
 export type SceneStore = ReturnType<typeof createSceneStore>;

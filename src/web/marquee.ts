@@ -1,6 +1,6 @@
 import { WALL_THICKNESS, type Box } from "../shared/scene.types";
 import { worldToScreen, type CameraState, type Size } from "./camera";
-import { fromBoxLocal } from "./gizmo";
+import { fromBoxLocal } from "../shared/geometry";
 
 /**
  * The marquee: which boxes a screen rectangle touches. Exact for our boxes: a box is convex, so its outline on

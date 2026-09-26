@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
+import type { Box } from "../shared/scene.types";
 import { createSceneStore, SceneError } from "./scene";
+
+const boxes = (store: ReturnType<typeof createSceneStore>) => store.getScene().nodes.filter((n): n is Box => n.type === "box");
 
 describe("scene store", () => {
   it("adds a valid batch with box_N IDs and notifies listeners", () => {
@@ -17,7 +20,7 @@ describe("scene store", () => {
     );
 
     expect(created.map((b) => b.id)).toEqual(["box_1", "box_2", "box_3"]);
-    expect(store.getScene().boxes).toHaveLength(3);
+    expect(store.getScene().nodes).toHaveLength(3);
     expect(created[1]).toMatchObject({ kind: "volume", width: 2, depth: 2, height: 1, createdBy: "agent" });
     expect(listener).toHaveBeenCalledTimes(1);
   });
@@ -58,9 +61,7 @@ describe("scene store", () => {
       /boxes\[0\]\.color/,
     );
     // @ts-expect-error unknown field on purpose
-    expect(() => store.drawBoxes([{ kind: "room", x: 0, z: 0, width: 1, depth: 1, parent: "group_1" }], "agent")).toThrow(
-      /parent/,
-    );
+    expect(() => store.drawBoxes([{ kind: "room", x: 0, z: 0, width: 1, depth: 1, level: 2 }], "agent")).toThrow(/level/);
   });
 
   it("rejects the whole batch when one item is invalid", () => {
@@ -77,7 +78,7 @@ describe("scene store", () => {
         "agent",
       ),
     ).toThrow(/boxes\[1\]\.depth/);
-    expect(store.getScene().boxes).toHaveLength(0);
+    expect(store.getScene().nodes).toHaveLength(0);
     expect(listener).not.toHaveBeenCalled();
   });
 
@@ -127,7 +128,7 @@ describe("scene store", () => {
     const store = createSceneStore();
     store.drawBoxes([{ kind: "room", x: 0, z: 0, width: 1, depth: 1 }], "human");
     store.clear("human");
-    expect(store.getScene().boxes).toHaveLength(0);
+    expect(store.getScene().nodes).toHaveLength(0);
     const [next] = store.drawBoxes([{ kind: "room", x: 0, z: 0, width: 1, depth: 1 }], "human");
     expect(next.id).toBe("box_2");
   });
@@ -135,7 +136,7 @@ describe("scene store", () => {
 
 describe("scene store history", () => {
   const room = (x: number) => ({ kind: "room" as const, x, z: 0, width: 4, depth: 4 });
-  const ids = (store: ReturnType<typeof createSceneStore>) => store.getScene().boxes.map((b) => b.id);
+  const ids = (store: ReturnType<typeof createSceneStore>) => store.getScene().nodes.map((b) => b.id);
 
   it("undoes and redoes a draw, keeping the same IDs", () => {
     const store = createSceneStore();
@@ -222,7 +223,7 @@ describe("scene store updates", () => {
     );
     return store;
   };
-  const heights = (store: ReturnType<typeof createSceneStore>) => store.getScene().boxes.map((b) => b.height);
+  const heights = (store: ReturnType<typeof createSceneStore>) => boxes(store).map((b) => b.height);
 
   it("changes heights as one undoable step", () => {
     const store = setup();
@@ -238,17 +239,17 @@ describe("scene store updates", () => {
 
   it("changes any field, and undo restores every one of them", () => {
     const store = setup();
-    const before = structuredClone(store.getScene().boxes);
+    const before = structuredClone(store.getScene().nodes);
     store.updateNodes(
       [{ id: "box_1", x: 10.123, z: -4, y: 3, width: 6, depth: 2, height: 4, rotation: 375, color: "yellow", kind: "volume", name: "lobby" }],
       "agent",
     );
-    expect(store.getScene().boxes[0]).toMatchObject({
+    expect(store.getScene().nodes[0]).toMatchObject({
       x: 10.12, z: -4, y: 3, width: 6, depth: 2, height: 4, rotation: 15, color: "yellow", kind: "volume", name: "lobby",
     });
     expect(store.getHistory().undoLabel).toBe("Agent: edit box_1");
     store.undo();
-    expect(store.getScene().boxes).toEqual(before);
+    expect(store.getScene().nodes).toEqual(before);
   });
 
   it("labels an edit by what changed", () => {
@@ -265,16 +266,16 @@ describe("scene store updates", () => {
     const store = setup();
     store.updateNodes([{ id: "box_1", name: "lobby" }], "human");
     store.updateNodes([{ id: "box_1", name: "" }], "human");
-    expect("name" in store.getScene().boxes[0]).toBe(false);
+    expect("name" in store.getScene().nodes[0]).toBe(false);
     store.undo();
-    expect(store.getScene().boxes[0].name).toBe("lobby");
+    expect(store.getScene().nodes[0].name).toBe("lobby");
   });
 
   it("rejects unknown IDs, duplicates, empty changes and invalid values, changing nothing", () => {
     const store = setup();
     const listener = vi.fn();
     store.onChange(listener);
-    expect(() => store.updateNodes([{ id: "box_99", height: 2 }], "agent")).toThrow(/changes\[0\]\.id: no box "box_99"/);
+    expect(() => store.updateNodes([{ id: "box_99", height: 2 }], "agent")).toThrow(/changes\[0\]\.id: no node "box_99"/);
     expect(() =>
       store.updateNodes(
         [
@@ -318,7 +319,7 @@ describe("scene store removal and selection", () => {
     );
     return store;
   };
-  const ids = (store: ReturnType<typeof createSceneStore>) => store.getScene().boxes.map((b) => b.id);
+  const ids = (store: ReturnType<typeof createSceneStore>) => store.getScene().nodes.map((b) => b.id);
 
   it("removes boxes as one step, and undo brings them back with the same IDs in place", () => {
     const store = setup();
@@ -331,7 +332,7 @@ describe("scene store removal and selection", () => {
 
   it("rejects unknown or repeated IDs, removing nothing", () => {
     const store = setup();
-    expect(() => store.removeNodes(["box_1", "box_9"], "agent")).toThrow(/ids\[1\]: no box "box_9"/);
+    expect(() => store.removeNodes(["box_1", "box_9"], "agent")).toThrow(/ids\[1\]: no node "box_9"/);
     expect(() => store.removeNodes(["box_1", "box_1"], "agent")).toThrow(/more than once/);
     expect(() => store.removeNodes([], "agent")).toThrow(SceneError);
     expect(ids(store)).toEqual(["box_1", "box_2", "box_3"]);
@@ -354,5 +355,125 @@ describe("scene store removal and selection", () => {
     expect(store.getScene().selection).toEqual(["box_2"]);
     store.clear("human");
     expect(store.getScene().selection).toEqual([]);
+  });
+});
+
+describe("scene store groups", () => {
+  /** box_1 at x 0, box_2 at x 10, box_3 at x 20, all 2 × 2 × 1 volumes. */
+  const setup = () => {
+    const store = createSceneStore();
+    store.drawBoxes(
+      [0, 10, 20].map((x) => ({ kind: "volume" as const, x, z: 0, width: 2, depth: 2, height: 1 })),
+      "human",
+    );
+    return store;
+  };
+  const node = (store: ReturnType<typeof createSceneStore>, id: string) => store.getScene().nodes.find((n) => n.id === id)!;
+  const ids = (store: ReturnType<typeof createSceneStore>) => store.getScene().nodes.map((n) => n.id);
+
+  it("groups nodes as one step: the group goes where the first node was, and undo dissolves it", () => {
+    const store = setup();
+    const group = store.groupNodes({ ids: ["box_3", "box_2"], name: " lobby " }, "human");
+    expect(group).toMatchObject({ id: "group_1", type: "group", name: "lobby" });
+    expect(ids(store)).toEqual(["box_1", "group_1", "box_2", "box_3"]);
+    expect(node(store, "box_2").parent).toBe("group_1");
+    expect(node(store, "box_1").parent).toBeUndefined();
+    expect(store.getHistory().undoLabel).toBe("Group box_3, box_2 as group_1");
+    store.undo();
+    expect(ids(store)).toEqual(["box_1", "box_2", "box_3"]);
+    expect("parent" in node(store, "box_2")).toBe(false);
+  });
+
+  it("nests a new group inside the deepest group holding all its members", () => {
+    const store = setup();
+    store.groupNodes({ ids: ["box_1", "box_2", "box_3"] }, "human");
+    const inner = store.groupNodes({ ids: ["box_2", "box_3"] }, "human");
+    expect(inner.parent).toBe("group_1");
+    // A listed node whose ancestor is also listed stays inside it.
+    const outer = store.groupNodes({ ids: ["group_2", "box_3"] }, "human");
+    expect(node(store, "group_2").parent).toBe(outer.id);
+    expect(node(store, "box_3").parent).toBe("group_2");
+  });
+
+  it("moves a group with everything in it, relatively, as one step", () => {
+    const store = setup();
+    store.groupNodes({ ids: ["box_1", "box_2"] }, "human");
+    const moved = store.moveNodes({ ids: ["group_1"], dx: 6, dy: 0.5 }, "agent");
+    expect(moved.map((b) => [b.id, b.x, b.y])).toEqual([
+      ["box_1", 6, 0.5],
+      ["box_2", 16, 0.5],
+    ]);
+    expect(node(store, "box_3")).toMatchObject({ x: 20 });
+    expect(store.getHistory().undoLabel).toBe("Agent: move group_1");
+    store.undo();
+    expect(node(store, "box_1")).toMatchObject({ x: 0, y: 0 });
+  });
+
+  it("rotates a group around the center of its bounds", () => {
+    const store = setup();
+    store.groupNodes({ ids: ["box_1", "box_2"] }, "human");
+    // Bounds x -1..11: center 5, 0. A 90° counterclockwise turn sends +x to -z.
+    store.rotateNodes({ ids: ["group_1"], degrees: 90 }, "agent");
+    expect(node(store, "box_1")).toMatchObject({ x: 5, z: 5, rotation: 90 });
+    expect(node(store, "box_2")).toMatchObject({ x: 5, z: -5, rotation: 90 });
+  });
+
+  it("deleting a group deletes everything in it; undo restores it all in place", () => {
+    const store = setup();
+    store.groupNodes({ ids: ["box_1", "box_2"] }, "human");
+    store.removeNodes(["group_1"], "human");
+    expect(ids(store)).toEqual(["box_3"]);
+    store.undo();
+    expect(ids(store)).toEqual(["group_1", "box_1", "box_2", "box_3"]);
+  });
+
+  it("a group left empty disappears in the same step, and comes back on undo", () => {
+    const store = setup();
+    store.groupNodes({ ids: ["box_1"] }, "human");
+    store.removeNodes(["box_1"], "human");
+    expect(ids(store)).toEqual(["box_2", "box_3"]);
+    store.undo();
+    expect(ids(store)).toEqual(["group_1", "box_1", "box_2", "box_3"]);
+
+    // Moving the last child out has the same effect.
+    store.updateNodes([{ id: "box_1", parent: null }], "human");
+    expect(ids(store)).toEqual(["box_1", "box_2", "box_3"]);
+  });
+
+  it("ungroups: contents move up to the group's parent, nested groups dissolve together", () => {
+    const store = setup();
+    store.groupNodes({ ids: ["box_1", "box_2", "box_3"] }, "human");
+    store.groupNodes({ ids: ["box_2", "box_3"] }, "human");
+    expect(store.ungroup({ ids: ["group_2"] }, "human")).toEqual(["box_2", "box_3"]);
+    expect(node(store, "box_2").parent).toBe("group_1");
+    store.undo();
+    expect(store.ungroup({ ids: ["group_1", "group_2"] }, "human")).toEqual(["box_1", "box_2", "box_3"]);
+    expect(store.getScene().nodes.every((n) => n.parent === undefined)).toBe(true);
+    expect(() => store.ungroup({ ids: ["box_1"] }, "human")).toThrow(/is a box, not a group/);
+  });
+
+  it("draws into a group and reparents with update_nodes, rejecting bad parents and cycles", () => {
+    const store = setup();
+    store.groupNodes({ ids: ["box_1"] }, "human");
+    const [pillar] = store.drawBoxes([{ kind: "volume", x: 0, z: 0, width: 1, depth: 1, parent: "group_1" }], "agent");
+    expect(pillar.parent).toBe("group_1");
+    expect(() => store.drawBoxes([{ kind: "room", x: 0, z: 0, width: 1, depth: 1, parent: "box_2" }], "agent")).toThrow(
+      /boxes\[0\]\.parent: "box_2" is a box/,
+    );
+    store.updateNodes([{ id: "box_2", parent: "group_1" }], "human");
+    expect(store.getHistory().undoLabel).toBe("Regroup box_2");
+    store.groupNodes({ ids: ["box_2"] }, "human"); // group_2 inside group_1
+    expect(() => store.updateNodes([{ id: "group_1", parent: "group_2" }], "agent")).toThrow(/"group_2" is inside "group_1"/);
+    expect(() => store.updateNodes([{ id: "group_1", x: 3 }], "agent")).toThrow(/only name and parent/);
+    store.updateNodes([{ id: "group_1", name: "lobby" }], "agent");
+    expect(node(store, "group_1").name).toBe("lobby");
+  });
+
+  it("drops selected nodes that disappear with their group", () => {
+    const store = setup();
+    store.groupNodes({ ids: ["box_1", "box_2"] }, "human");
+    store.setSelection(["group_1", "box_1", "box_3"]);
+    store.removeNodes(["group_1"], "human");
+    expect(store.getScene().selection).toEqual(["box_3"]);
   });
 });

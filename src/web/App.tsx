@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { DEFAULT_COLOR, DEFAULT_VIEW, type Box, type BoxColor, type BoxKind, type View } from "../shared/scene.types";
+import { DEFAULT_COLOR, DEFAULT_VIEW, type Box, type BoxColor, type BoxKind, type SceneNode, type View } from "../shared/scene.types";
+import { boxesUnder, childrenOf, isBox, isGroup } from "../shared/tree";
 import type { GroundPoint } from "./camera";
 import { ContextualBar, HINTS, TOOLS, ToolBar } from "./ToolBar";
 import { useScene } from "./useScene";
@@ -11,9 +12,11 @@ const coord = (n?: number) => (n === undefined ? "–".padStart(7) : n.toFixed(2
 /** Keys typed into a text field aren't shortcuts. */
 const typing = (e: KeyboardEvent) => e.target instanceof HTMLElement && e.target.matches("input, textarea, [contenteditable]");
 
+/** `lobby (group_1)` or just `box_3`. */
+const title = (n: SceneNode) => (n.name ? `${n.name} (${n.id})` : n.id);
+
 /** `lobby (box_3) · 6 × 4 × 3 m · y 0 · 0°` */
-const describe = (b: Box) =>
-  `${b.name ? `${b.name} (${b.id})` : b.id} · ${b.width} × ${b.depth} × ${b.height} m · y ${b.y} · ${b.rotation}°`;
+const describe = (b: Box) => `${title(b)} · ${b.width} × ${b.depth} × ${b.height} m · y ${b.y} · ${b.rotation}°`;
 
 export function App() {
   const { scene, history, connected, error, send } = useScene();
@@ -22,21 +25,28 @@ export function App() {
   const [tool, setTool] = useState<Tool>("select");
   // Holding Space switches to the hand for as long as it's held.
   const [spaceHand, setSpaceHand] = useState(false);
+  // Node IDs (boxes and groups), at the level of `context`.
   const [selection, setSelection] = useState<string[]>([]);
+  // The group entered with a double-click (null = the top level).
+  const [context, setContext] = useState<string | null>(null);
   // The next box's style in the Box tool, remembered while the tab is open.
   const [nextKind, setNextKind] = useState<BoxKind>("room");
   const [nextColor, setNextColor] = useState<BoxColor>(DEFAULT_COLOR);
-  // The key handler is installed once; it reads the current selection from here.
-  const selectionRef = useRef(selection);
-  selectionRef.current = selection;
-  const boxesRef = useRef<Box[]>([]);
-  boxesRef.current = scene?.boxes ?? [];
+  // After Cmd+G: the grouped IDs and the groups that existed then, so the new group can be selected when it arrives.
+  const pendingGroup = useRef<{ ids: string[]; before: Set<string> } | null>(null);
+
+  const nodes = scene?.nodes ?? [];
+  // The key handler is installed once; it reads the current state from here.
+  const state = useRef({ nodes, selection, context });
+  state.current = { nodes, selection, context };
 
   const activeTool: Tool = spaceHand ? "hand" : tool;
-  const boxes = scene?.boxes ?? [];
-  const selected = boxes.filter((b) => selection.includes(b.id));
+  const boxes = nodes.filter(isBox);
+  const selectedNodes = nodes.filter((n) => selection.includes(n.id));
+  const selectedBoxes = boxesUnder(nodes, selection);
   const rooms = boxes.filter((b) => b.kind === "room").length;
   const volumes = boxes.length - rooms;
+  const groups = nodes.filter(isGroup).length;
 
   // Tell the server what's visible so the agent's get_scene knows where to draw.
   useEffect(() => {
@@ -49,27 +59,58 @@ export function App() {
     if (connected) send({ type: "set_selection", ids: selectionKey ? selectionKey.split(",") : [] });
   }, [connected, selectionKey, send]);
 
-  // Drop selected boxes that go away (undo, Clear, the agent, another tab).
+  // A new scene: drop selected nodes that went away (undo, Clear, the agent, another tab), leave an entered group
+  // that went away, and select the group Cmd+G just made.
   useEffect(() => {
     if (!scene) return;
-    const ids = new Set(scene.boxes.map((b) => b.id));
+    const ids = new Set(scene.nodes.map((n) => n.id));
     setSelection((sel) => (sel.every((id) => ids.has(id)) ? sel : sel.filter((id) => ids.has(id))));
+    setContext((c) => (c !== null && !ids.has(c) ? null : c));
+    const pending = pendingGroup.current;
+    if (pending) {
+      const made = scene.nodes.find(
+        (n) => isGroup(n) && !pending.before.has(n.id) && scene.nodes.some((c) => c.parent === n.id && pending.ids.includes(c.id)),
+      );
+      if (made) {
+        pendingGroup.current = null;
+        setSelection([made.id]);
+      }
+    }
   }, [scene]);
 
   // V / H / B pick a tool, Space holds the hand. Cmd/Ctrl+Z undoes, Cmd/Ctrl+Shift+Z (or Ctrl+Y) redoes.
-  // Cmd/Ctrl+A selects everything, Delete / Backspace removes the selection, Esc deselects.
+  // Cmd/Ctrl+A selects everything at the current level, Cmd/Ctrl+G groups the selection, Cmd/Ctrl+Shift+G ungroups
+  // it, Delete / Backspace removes it, Esc deselects and leaves an entered group.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (typing(e)) return;
       const key = e.key.toLowerCase();
-      if ((e.metaKey || e.ctrlKey) && !e.altKey && (key === "z" || key === "y")) {
+      const { nodes, selection, context } = state.current;
+      const mod = (e.metaKey || e.ctrlKey) && !e.altKey;
+      if (mod && (key === "z" || key === "y")) {
         e.preventDefault();
         send({ type: key === "y" || e.shiftKey ? "redo" : "undo" });
         return;
       }
-      if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && key === "a") {
+      if (mod && !e.shiftKey && key === "a") {
         e.preventDefault();
-        setSelection(boxesRef.current.map((b) => b.id));
+        setSelection(childrenOf(nodes, context ?? undefined).map((n) => n.id));
+        return;
+      }
+      if (mod && key === "g") {
+        e.preventDefault();
+        if (selection.length === 0) return;
+        if (!e.shiftKey) {
+          pendingGroup.current = { ids: selection, before: new Set(nodes.filter(isGroup).map((n) => n.id)) };
+          send({ type: "group_nodes", ids: selection });
+          return;
+        }
+        const groupIds = selection.filter((id) => nodes.some((n) => n.id === id && isGroup(n)));
+        if (groupIds.length === 0) return;
+        // Their contents take their place in the selection.
+        const freed = nodes.filter((n) => n.parent !== undefined && groupIds.includes(n.parent)).map((n) => n.id);
+        send({ type: "ungroup", ids: groupIds });
+        setSelection([...selection.filter((id) => !groupIds.includes(id)), ...freed]);
         return;
       }
       if (e.key === " ") {
@@ -79,10 +120,13 @@ export function App() {
         return;
       }
       if (e.metaKey || e.ctrlKey || e.altKey) return;
-      if (e.key === "Escape") setSelection([]);
-      if ((e.key === "Delete" || e.key === "Backspace") && selectionRef.current.length > 0) {
+      if (e.key === "Escape") {
+        setSelection([]);
+        setContext(null);
+      }
+      if ((e.key === "Delete" || e.key === "Backspace") && selection.length > 0) {
         e.preventDefault();
-        send({ type: "remove_nodes", ids: selectionRef.current });
+        send({ type: "remove_nodes", ids: selection });
       }
       const match = TOOLS.find((t) => t.key === key);
       if (match) setTool(match.tool);
@@ -103,15 +147,26 @@ export function App() {
     };
   }, [send]);
 
-  const single = selected.length === 1 ? selected[0] : null;
-  const sharedColor = selected.length > 0 && selected.every((b) => b.color === selected[0].color) ? selected[0].color : null;
+  // Kind is for a single box; color applies to every box in the selection (groups included).
+  const single = selectedNodes.length === 1 ? selectedNodes[0] : null;
+  const singleBox = single && isBox(single) ? single : null;
+  const sharedColor =
+    selectedBoxes.length > 0 && selectedBoxes.every((b) => b.color === selectedBoxes[0].color) ? selectedBoxes[0].color : null;
+  const contextNode = context !== null ? nodes.find((n) => n.id === context) : undefined;
+  const selectionInfo = singleBox
+    ? describe(singleBox)
+    : single
+      ? `${title(single)} · ${selectedBoxes.length} boxes`
+      : `${selectedNodes.length} selected`;
 
   return (
     <div className="app">
       <Viewport
         tool={activeTool}
-        boxes={boxes}
+        nodes={nodes}
         selection={selection}
+        context={context}
+        onContext={setContext}
         nextKind={nextKind}
         onSelect={setSelection}
         onDrawBox={(box) => send({ type: "add_boxes", boxes: [{ ...box, color: nextColor }] })}
@@ -130,7 +185,7 @@ export function App() {
         </span>
         <span className="coords">yaw {`${Math.round(view.yaw)}°`.padStart(4)}</span>
         <span className="sep" />
-        <span className="counts">{scene ? `${rooms} rooms · ${volumes} volumes` : "—"}</span>
+        <span className="counts">{scene ? `${rooms} rooms · ${volumes} volumes · ${groups} groups` : "—"}</span>
         <span className="sep" />
         <span className="hint">{HINTS[activeTool]}</span>
       </div>
@@ -142,15 +197,15 @@ export function App() {
             next box
           </ContextualBar>
         )}
-        {tool === "select" && selected.length > 0 && (
+        {tool === "select" && selectedNodes.length > 0 && (
           <ContextualBar
-            kind={single?.kind ?? null}
-            kindDisabled={!single}
-            onKind={(kind) => single && send({ type: "update_nodes", changes: [{ id: single.id, kind }] })}
+            kind={singleBox?.kind ?? null}
+            kindDisabled={!singleBox}
+            onKind={(kind) => singleBox && send({ type: "update_nodes", changes: [{ id: singleBox.id, kind }] })}
             color={sharedColor}
-            onColor={(color) => send({ type: "update_nodes", changes: selected.map((b) => ({ id: b.id, color })) })}
+            onColor={(color) => send({ type: "update_nodes", changes: selectedBoxes.map((b) => ({ id: b.id, color })) })}
           >
-            {single ? describe(single) : `${selected.length} selected`}
+            {contextNode ? `in ${contextNode.name ?? contextNode.id} › ${selectionInfo}` : selectionInfo}
           </ContextualBar>
         )}
         <ToolBar

@@ -1,19 +1,18 @@
 import { describe, expect, it } from "vitest";
 import type { Box } from "../shared/scene.types";
+import { boundsOf, footprintBounds } from "../shared/geometry";
 import { DEFAULT_CAMERA, worldToScreen, type CameraState, type Vec3 } from "./camera";
 import {
   ARROW,
   dragUpdate,
   effectiveChanges,
   elevationTargets,
-  footprintBounds,
   gizmoAnchor,
   gizmoScale,
   hitGizmo,
   rotateHandlePlacement,
   SCALE_PARTS,
   scaleHandlePoint,
-  selectionBounds,
   snapElevation,
   startBodyDrag,
   startHandleDrag,
@@ -49,7 +48,7 @@ describe("bounds", () => {
   });
 
   it("spans every box, and the gizmo sits on its top center", () => {
-    const b = selectionBounds([box({}), box({ id: "box_2", x: 10, z: 4, y: 2, height: 3 })]);
+    const b = boundsOf([box({}), box({ id: "box_2", x: 10, z: 4, y: 2, height: 3 })]);
     expect(b).toEqual({ minX: -1, maxX: 11, minY: 0, maxY: 5, minZ: -1, maxZ: 5 });
     expect(gizmoAnchor(b)).toEqual({ x: 5, y: 5, z: 2 });
   });
@@ -60,7 +59,7 @@ describe("elevation snapping", () => {
   const far = box({ id: "far", x: 30, z: 30, height: 7 });
 
   it("targets the ground and the tops of boxes under the selection only", () => {
-    expect(elevationTargets(selectionBounds([box({ x: 2 })]), [room, far])).toEqual([0, 3]);
+    expect(elevationTargets(boundsOf([box({ x: 2 })]), [room, far])).toEqual([0, 3]);
   });
 
   it("snaps to a target within 0.25 m, else to 0.05 m steps, and not at all when free", () => {
@@ -221,7 +220,7 @@ describe("rotate handle", () => {
   const plain = { shift: false, alt: false, snap: true };
   /** Drags the rotate handle around the selection's center by `degrees` (counterclockwise seen from above). */
   const rotate = (boxes: Box[], degrees: number, mods = plain) => {
-    const bounds = selectionBounds(boxes);
+    const bounds = boundsOf(boxes);
     const pivot = gizmoAnchor(bounds);
     const r = 5;
     const at = (deg: number) => {
