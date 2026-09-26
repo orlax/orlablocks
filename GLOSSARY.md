@@ -13,10 +13,10 @@ Shared vocabulary for this project, for humans and agents alike. Use these names
 - **graybox**: the look of the view: warm near-white matte materials with a 1 m tile texture, a sun with soft shadows and faint outlines, like a blocked-out game level.
 - **grid**: the reference lines on the ground plane: a line every 1 m and a stronger one every 5 m, fading out away from the focus point. It's a measuring and snapping aid only and is never part of the scene data.
 - **hand tool**: `H`, navigation only: drag to pan and scroll to zoom toward the focus point. Holding `Space` switches to it temporarily from any tool (from 03; in 02 it also selected).
-- **height gizmo**: the blue handle (stem and cone) on top of the selected box, drawn over everything. Dragging it changes the box's height in 0.05 m steps (`Cmd/Ctrl` for free), with a live `h … m` label. It shows in the Select tool only, and one drag is one undo step. The transform gizmo replaces it in 03.3.
+- **height handle**: the small yellow cube on the top center of a single selected box, part of the transform gizmo. Dragging it changes the box's height with the bottom fixed, in 0.05 m steps (`Cmd/Ctrl` for free), with a live `h … m` label. It replaces 02's height gizmo (the blue stem and cone) (from 03).
 - **info-label**: the small fixed-width label at the top right. It shows the connection state, the cursor's ground position (x · z) and the camera yaw. It has a fixed width and fixed-width text so it never jitters.
 - **marquee**: the rectangle you drag on empty ground with the Select tool to select every node it touches (from 03).
-- **origin axes**: a marker at the world origin, with +x as a red bar and +z as a blue bar, for orientation while rotating.
+- **origin axes**: a marker at the world origin, with +x as a red bar, +y as a green bar and +z as a blue bar (the gizmo's colors), for orientation while rotating.
 - **outliner**: the tree panel listing nodes by name, used to select, rename, group and reorder (from 03).
 - **select tool**: `V`, click to select (`Shift` for multi), drag a node to move it, drag empty ground for a marquee (from 03).
 - **selection**: the boxes currently selected in the editor, highlighted with a blue tint and outline and described in the contextual bar. The Select tool selects on click, `Esc` deselects, `Delete` removes the selection, and drawing never changes it (from 03). It's also reported to the server as **selection (scene)**.

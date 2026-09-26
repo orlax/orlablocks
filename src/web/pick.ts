@@ -9,12 +9,19 @@ type Ray = { origin: Vec3; dir: Vec3 };
  * an inner wall instead (approximated by where it leaves the room's box), so a volume inside the room wins.
  */
 export function pickBox(ray: Ray, boxes: Box[]): string | null {
+  return pickHit(ray, boxes)?.id ?? null;
+}
+
+/** Like pickBox, plus the world point where the ray hits the box. */
+export function pickHit(ray: Ray, boxes: Box[]): { id: string; point: Vec3 } | null {
   let best: { id: string; t: number } | null = null;
   for (const box of boxes) {
     const t = hitDistance(toLocal(ray, box), box);
     if (t !== null && (!best || t < best.t)) best = { id: box.id, t };
   }
-  return best?.id ?? null;
+  if (!best) return null;
+  const { origin: o, dir: d } = ray;
+  return { id: best.id, point: { x: o.x + d.x * best.t, y: o.y + d.y * best.t, z: o.z + d.z * best.t } };
 }
 
 /**

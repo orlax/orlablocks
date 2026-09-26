@@ -12,7 +12,7 @@ export const TOOLS: { tool: Tool; label: string; key: string; icon: LucideIcon }
 ];
 
 const HINTS: Record<Tool, string> = {
-  select: "click to select · Delete to remove · drag to pan · hold Space to pan in any tool",
+  select: `click to select · drag a box to move it (Shift: one axis, ${MOD}: no snap) · Delete to remove · Space to pan`,
   hand: "drag to pan · scroll to zoom · A/D or ←/→ to rotate",
   box: `drag to draw · Shift square · Alt from center · ${MOD} no snap · Esc to cancel`,
 };

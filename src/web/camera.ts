@@ -98,19 +98,32 @@ export function worldToScreen(cam: CameraState, size: Size, p: Vec3): { sx: numb
 }
 
 /**
- * The height on the vertical line through ground point (x, z) closest to the ray under the cursor.
- * This is how the height gizmo follows the cursor at any yaw.
+ * The parameter `s` of the point on the line `p + s·u` (u a unit vector) closest to the ray under the cursor.
+ * This is how gizmo handles follow the cursor along their axis at any yaw.
  */
-export function heightOnVertical(cam: CameraState, size: Size, sx: number, sy: number, x: number, z: number): number {
+export function paramOnLine(cam: CameraState, size: Size, sx: number, sy: number, p: Vec3, u: Vec3): number {
   const { origin, dir } = screenRay(cam, size, sx, sy);
-  // Closest points between the ray origin + t·dir and the line (x, s, z): minimize over t and s.
-  const w = { x: origin.x - x, y: origin.y, z: origin.z - z };
+  // Closest points between the ray origin + t·dir and the line p + s·u: minimize over t and s.
+  const w = { x: origin.x - p.x, y: origin.y - p.y, z: origin.z - p.z };
   const a = dir.x * dir.x + dir.y * dir.y + dir.z * dir.z;
-  const b = dir.y; // dir · (0, 1, 0)
+  const b = dir.x * u.x + dir.y * u.y + dir.z * u.z;
   const d = w.x * dir.x + w.y * dir.y + w.z * dir.z;
-  const e = w.y; // w · (0, 1, 0)
-  const denom = a - b * b; // > 0: the ray is never vertical at our pitch
-  return (a * e - b * d) / denom; // s at the closest point, i.e. the height on the vertical line
+  const e = w.x * u.x + w.y * u.y + w.z * u.z;
+  const denom = a - b * b; // > 0: at our pitch the ray is never parallel to a vertical or horizontal line
+  return (a * e - b * d) / denom;
+}
+
+/** The height on the vertical line through ground point (x, z) closest to the ray under the cursor. */
+export function heightOnVertical(cam: CameraState, size: Size, sx: number, sy: number, x: number, z: number): number {
+  return paramOnLine(cam, size, sx, sy, { x, y: 0, z }, { x: 0, y: 1, z: 0 });
+}
+
+/** Where the ray under the cursor meets the horizontal plane at height `y`. */
+export function screenToPlane(cam: CameraState, size: Size, sx: number, sy: number, y: number): Vec3 {
+  const { origin, dir } = screenRay(cam, size, sx, sy);
+  // Every ray points down (see screenToGround), so it meets any plane below the camera.
+  const t = (y - origin.y) / dir.y;
+  return { x: origin.x + dir.x * t, y, z: origin.z + dir.z * t };
 }
 
 /** Moves the focus so that `grabbed` (a ground point) ends up under the screen position. */

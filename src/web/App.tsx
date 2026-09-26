@@ -106,7 +106,7 @@ export function App() {
         nextKind={nextKind}
         onSelect={setSelection}
         onDrawBox={(box) => send({ type: "add_boxes", boxes: [{ ...box, color: nextColor }] })}
-        onChangeHeight={(id, height) => send({ type: "update_nodes", changes: [{ id, height }] })}
+        onUpdate={(changes) => send({ type: "update_nodes", changes })}
         onCursor={setCursor}
         onViewChange={setView}
       />

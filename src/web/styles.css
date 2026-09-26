@@ -27,6 +27,7 @@ body {
   user-select: none;
 }
 .viewport.selecting { cursor: default; }
+.viewport.moving { cursor: move; }
 .viewport.panning { cursor: grabbing; }
 .viewport.drawing { cursor: crosshair; }
 .viewport.resizing { cursor: ns-resize; }

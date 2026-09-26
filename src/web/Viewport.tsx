@@ -2,14 +2,14 @@ import { useEffect, useRef, useState, type PointerEvent, type RefObject } from "
 import { Canvas, invalidate, useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
 import {
-  DEFAULT_HEIGHT,
-  HEIGHT_SNAP,
-  MIN_HEIGHT,
-  SNAP,
   DEFAULT_COLOR,
+  DEFAULT_HEIGHT,
+  SNAP,
   type Box,
   type BoxInput,
   type BoxKind,
+  type BoxPatch,
+  type NodeUpdate,
   type View,
 } from "../shared/scene.types";
 import { BoxMesh } from "./BoxMesh";
@@ -17,24 +17,33 @@ import {
   cameraPosition,
   DEFAULT_CAMERA,
   FOV_DEG,
-  heightOnVertical,
   MAX_DISTANCE,
   panTo,
   rotateBy,
   screenRay,
   screenToGround,
   viewOf,
-  worldToScreen,
   YAW_SPEED_DEG,
   zoomBy,
   type CameraState,
   type GroundPoint,
   type Size,
 } from "./camera";
+import {
+  dragUpdate,
+  effectiveChanges,
+  gizmoAnchor,
+  hitGizmo,
+  selectionBounds,
+  startBodyDrag,
+  startHandleDrag,
+  type GizmoDrag,
+  type GizmoPart,
+} from "./gizmo";
 import { Grid } from "./Grid";
-import { HANDLE_HIT_PX, handlePoint, HeightGizmo } from "./HeightGizmo";
 import { Lighting } from "./Lighting";
-import { pickBox } from "./pick";
+import { pickBox, pickHit } from "./pick";
+import { TransformGizmo } from "./TransformGizmo";
 
 const BACKGROUND = "#f7f6f2";
 const VIEW_REPORT_MS = 100;
@@ -48,7 +57,23 @@ export type Tool = "select" | "hand" | "box";
 
 /** A drawn footprint on the ground, by its center (like a box). */
 type Footprint = { x: number; z: number; width: number; depth: number };
-type HeightDrag = { pointerId: number; id: string; grabOffset: number; height: number; sx: number; sy: number };
+
+/**
+ * A gizmo drag in progress. A body drag only becomes `active` once the pointer moves past CLICK_PX: until then
+ * it's a click, which selects `clickId` alone. Handle drags are active right away.
+ */
+type Drag = GizmoDrag & {
+  pointerId: number;
+  ids: string[];
+  clickId?: string;
+  sx0: number;
+  sy0: number;
+  active: boolean;
+  patches: Record<string, BoxPatch>;
+  label: string;
+  sx: number;
+  sy: number;
+};
 
 const snap = (n: number) => Math.round(n / SNAP) * SNAP;
 const round2 = (n: number) => Math.round(n * 100) / 100;
@@ -79,7 +104,8 @@ type Props = {
   nextKind: BoxKind;
   onSelect: (ids: string[]) => void;
   onDrawBox: (box: BoxInput) => void;
-  onChangeHeight: (id: string, height: number) => void;
+  /** One gizmo drag: one `update_nodes`, so one undo step. */
+  onUpdate: (changes: NodeUpdate[]) => void;
   onCursor: (point: GroundPoint | null) => void;
   onViewChange: (view: View) => void;
 };
@@ -88,7 +114,7 @@ type Props = {
  * The 3D view. The camera state lives in a ref, not React state: it changes every frame while panning or
  * rotating, and the three.js side reads it in `useFrame`. Only the reported `view` goes back to React, throttled.
  */
-export function Viewport({ tool, boxes, selection, nextKind, onSelect, onDrawBox, onChangeHeight, onCursor, onViewChange }: Props) {
+export function Viewport({ tool, boxes, selection, nextKind, onSelect, onDrawBox, onUpdate, onCursor, onViewChange }: Props) {
   const cam = useRef<CameraState>({ ...DEFAULT_CAMERA });
   const wrap = useRef<HTMLDivElement>(null);
   const yawKeys = useRef(new Set<YawKey>());
@@ -97,16 +123,27 @@ export function Viewport({ tool, boxes, selection, nextKind, onSelect, onDrawBox
   const [panning, setPanning] = useState(false);
   const [draft, setDraft] = useState<(Footprint & { kind: BoxKind; sx: number; sy: number }) | null>(null);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
-  const [handleHot, setHandleHot] = useState(false);
-  const [heightDrag, setHeightDrag] = useState<HeightDrag | null>(null);
-  // After releasing the gizmo, keep showing the new height until the server's scene arrives (no flicker back).
-  const [pendingHeight, setPendingHeight] = useState<{ id: string; height: number } | null>(null);
+  const [hotPart, setHotPart] = useState<GizmoPart | null>(null);
+  const [drag, setDrag] = useState<Drag | null>(null);
+  // After releasing a drag, keep showing its result until the server's scene arrives (no flicker back).
+  const [pending, setPending] = useState<Record<string, BoxPatch> | null>(null);
+  // The Esc listener is installed once; it reads the current drag from here.
+  const dragRef = useRef(drag);
+  dragRef.current = drag;
 
-  // What's on screen: the server's boxes, with the height being dragged (or just released) applied locally.
-  const override = heightDrag ?? pendingHeight;
-  const shown = override ? boxes.map((b) => (b.id === override.id ? { ...b, height: override.height } : b)) : boxes;
-  // The height gizmo: one selected box, in the Select tool only.
-  const gizmoBox = tool === "select" && selection.length === 1 ? (shown.find((b) => b.id === selection[0]) ?? null) : null;
+  // What's on screen: the server's boxes, with the drag in progress (or just released) applied locally.
+  const override = drag?.active ? drag.patches : pending;
+  const shown = override ? boxes.map((b) => (override[b.id] ? { ...b, ...override[b.id] } : b)) : boxes;
+
+  // The transform gizmo: on the selection, in the Select tool only. Height is for a single box.
+  const selectedBoxes = tool === "select" ? shown.filter((b) => selection.includes(b.id)) : [];
+  const gizmo =
+    selectedBoxes.length > 0
+      ? {
+          anchor: gizmoAnchor(selectionBounds(selectedBoxes)),
+          parts: (selectedBoxes.length === 1 ? ["x", "y", "z", "height"] : ["x", "y", "z"]) as GizmoPart[],
+        }
+      : null;
 
   const local = (e: { clientX: number; clientY: number }) => {
     const r = wrap.current!.getBoundingClientRect();
@@ -121,43 +158,54 @@ export function Viewport({ tool, boxes, selection, nextKind, onSelect, onDrawBox
   };
 
   const pickAt = (sx: number, sy: number, size: Size) => pickBox(screenRay(cam.current, size, sx, sy), shown);
-
-  const onHandle = (sx: number, sy: number, size: Size) => {
-    if (!gizmoBox) return false;
-    const p = worldToScreen(cam.current, size, handlePoint(gizmoBox, cam.current));
-    return !!p && Math.hypot(p.sx - sx, p.sy - sy) <= HANDLE_HIT_PX;
-  };
+  const gizmoAt = (sx: number, sy: number, size: Size) =>
+    gizmo ? hitGizmo(cam.current, size, sx, sy, gizmo.anchor, gizmo.parts) : null;
 
   const cancelDrawing = () => {
     drawing.current = null;
     setDraft(null);
   };
 
-  // Switching tools (or holding Space) mid-drag drops the unfinished footprint or height drag.
+  // Switching tools (or holding Space) mid-drag drops the unfinished footprint or gizmo drag.
   useEffect(() => {
     cancelDrawing();
-    setHeightDrag(null);
+    setDrag(null);
   }, [tool]);
 
-  // A new scene from the server: the released height is now real, and a box that vanished (undo, Clear,
-  // another tab) can't be dragged anymore.
+  // A new scene from the server: the released drag is now real, and a drag whose boxes vanished (undo, Clear,
+  // another tab) is cancelled.
   useEffect(() => {
-    setPendingHeight(null);
-    setHeightDrag((d) => (d && boxes.some((b) => b.id === d.id) ? d : null));
+    setPending(null);
+    setDrag((d) => (d && d.ids.every((id) => boxes.some((b) => b.id === id)) ? d : null));
   }, [boxes]);
 
-  // Select tool: the gizmo drags the selected box's height; otherwise a click without a drag selects the box
-  // under the cursor, and a drag pans (until 03.3 / 03.6 give it move and marquee).
+  const startDrag = (e: PointerEvent, gizmoDrag: GizmoDrag, extra: { active: boolean; clickId?: string }) => {
+    const { sx, sy } = local(e);
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const ids = gizmoDrag.origin.map((b) => b.id);
+    setDrag({ ...gizmoDrag, ...extra, pointerId: e.pointerId, ids, sx0: sx, sy0: sy, patches: {}, label: "", sx, sy });
+  };
+
+  // Select tool: a gizmo handle drags it; pressing a box selects it (unless it's already selected) and dragging
+  // moves the selection; a click on empty ground deselects, and dragging there pans (until 03.6's marquee).
   // Hand tool (or middle button in any tool): drag to pan, the grabbed ground point stays under the cursor.
   // Box tool: drag a footprint on the ground.
   const onPointerDown = (e: PointerEvent) => {
     const { sx, sy, size } = local(e);
-    if (e.button === 0 && gizmoBox && onHandle(sx, sy, size)) {
-      e.currentTarget.setPointerCapture(e.pointerId);
-      const top = gizmoBox.y + gizmoBox.height;
-      const grabOffset = heightOnVertical(cam.current, size, sx, sy, gizmoBox.x, gizmoBox.z) - top;
-      setHeightDrag({ pointerId: e.pointerId, id: gizmoBox.id, grabOffset, height: gizmoBox.height, sx, sy });
-      return;
+    if (e.button === 0 && tool === "select") {
+      const part = gizmoAt(sx, sy, size);
+      if (part) {
+        startDrag(e, startHandleDrag(cam.current, size, sx, sy, part, selectedBoxes), { active: true });
+        return;
+      }
+      const hit = pickHit(screenRay(cam.current, size, sx, sy), shown);
+      if (hit) {
+        const ids = selection.includes(hit.id) ? selection : [hit.id];
+        if (!selection.includes(hit.id)) onSelect(ids);
+        const origin = shown.filter((b) => ids.includes(b.id));
+        startDrag(e, startBodyDrag(origin, hit.point), { active: false, clickId: hit.id });
+        return;
+      }
     }
     const panButton = e.button === 1 || (e.button === 0 && tool !== "box");
     const drawButton = e.button === 0 && tool === "box";
@@ -178,11 +226,12 @@ export function Viewport({ tool, boxes, selection, nextKind, onSelect, onDrawBox
     const { sx, sy, size } = local(e);
     onCursor(screenToGround(cam.current, size, sx, sy));
 
-    if (heightDrag?.pointerId === e.pointerId) {
-      const box = boxes.find((b) => b.id === heightDrag.id)!;
-      const raw = heightOnVertical(cam.current, size, sx, sy, box.x, box.z) - heightDrag.grabOffset - box.y;
-      const snapped = noSnap(e) ? raw : Math.round(raw / HEIGHT_SNAP) * HEIGHT_SNAP;
-      setHeightDrag({ ...heightDrag, height: round2(Math.max(MIN_HEIGHT, snapped)), sx, sy });
+    if (drag?.pointerId === e.pointerId) {
+      if (!drag.active && Math.hypot(sx - drag.sx0, sy - drag.sy0) < CLICK_PX) return;
+      const others = boxes.filter((b) => !drag.ids.includes(b.id));
+      const { patches, label } = dragUpdate(drag, cam.current, size, sx, sy, { shift: e.shiftKey, snap: !noSnap(e) }, others);
+      setDrag({ ...drag, active: true, patches, label, sx, sy });
+      setHoveredId(null);
       return;
     }
     if (pan.current?.pointerId === e.pointerId) {
@@ -196,21 +245,26 @@ export function Viewport({ tool, boxes, selection, nextKind, onSelect, onDrawBox
       setDraft({ kind: d.kind, ...footprintFrom(d.start, point, e.shiftKey, e.altKey), sx, sy });
       return;
     }
-    // Just hovering: highlight the gizmo, or in the Select tool the box that a click would select.
-    const hot = onHandle(sx, sy, size);
-    setHandleHot(hot);
-    setHoveredId(tool === "select" && !hot && !pan.current ? pickAt(sx, sy, size) : null);
+    // Just hovering: highlight the gizmo handle, or in the Select tool the box that a press would grab.
+    const hot = gizmoAt(sx, sy, size);
+    setHotPart(hot);
+    setHoveredId(tool === "select" && !hot ? pickAt(sx, sy, size) : null);
   };
 
   const onPointerUp = (e: PointerEvent) => {
     const { sx, sy, size } = local(e);
-    if (heightDrag?.pointerId === e.pointerId) {
-      const box = boxes.find((b) => b.id === heightDrag.id);
-      if (box && box.height !== heightDrag.height) {
-        onChangeHeight(box.id, heightDrag.height);
-        setPendingHeight({ id: box.id, height: heightDrag.height });
+    if (drag?.pointerId === e.pointerId) {
+      if (drag.active) {
+        const changes = effectiveChanges(drag.origin, drag.patches);
+        if (changes.length > 0) {
+          onUpdate(changes);
+          setPending(drag.patches);
+        }
+      } else if (drag.clickId) {
+        // A click on a box (no drag) selects just that box.
+        onSelect([drag.clickId]);
       }
-      setHeightDrag(null);
+      setDrag(null);
       return;
     }
     const p = pan.current;
@@ -232,6 +286,19 @@ export function Viewport({ tool, boxes, selection, nextKind, onSelect, onDrawBox
     }
   };
 
+  // Esc mid-drag cancels the drag or the draft and nothing else: this runs in the capture phase, before the
+  // app's Esc (deselect), and stops it.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || (!dragRef.current?.active && !drawing.current)) return;
+      e.stopImmediatePropagation();
+      cancelDrawing();
+      setDrag(null);
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, []);
+
   // Wheel zoom around the focus point. A native listener, because React's wheel listener is passive
   // and can't stop the browser from zooming the page on a trackpad pinch.
   useEffect(() => {
@@ -246,13 +313,9 @@ export function Viewport({ tool, boxes, selection, nextKind, onSelect, onDrawBox
     return () => el.removeEventListener("wheel", onWheel);
   }, []);
 
-  // Yaw while A/D or ←/→ is held. The rig integrates it per frame. Esc drops an unfinished draw or height drag.
+  // Yaw while A/D or ←/→ is held. The rig integrates it per frame.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        cancelDrawing();
-        setHeightDrag(null);
-      }
       const key = YAW_KEYS[e.key.toLowerCase()];
       if (!key || e.metaKey || e.ctrlKey || e.altKey) return;
       e.preventDefault();
@@ -275,8 +338,19 @@ export function Viewport({ tool, boxes, selection, nextKind, onSelect, onDrawBox
   }, []);
 
   const start = cameraPosition(cam.current);
+  const activePart = drag?.active ? drag.part : hotPart;
   const cursorClass =
-    heightDrag || handleHot ? "resizing" : panning ? "panning" : tool === "box" ? "drawing" : tool === "select" ? "selecting" : "";
+    activePart === "y" || activePart === "height"
+      ? "resizing"
+      : activePart
+        ? "moving"
+        : panning
+          ? "panning"
+          : tool === "box"
+            ? "drawing"
+            : tool === "select"
+              ? "selecting"
+              : "";
 
   return (
     <div
@@ -291,7 +365,7 @@ export function Viewport({ tool, boxes, selection, nextKind, onSelect, onDrawBox
       onPointerLeave={() => {
         onCursor(null);
         setHoveredId(null);
-        setHandleHot(false);
+        setHotPart(null);
       }}
     >
       <Canvas
@@ -310,16 +384,18 @@ export function Viewport({ tool, boxes, selection, nextKind, onSelect, onDrawBox
         <Grid cam={cam} />
         <OriginAxes />
         <Boxes boxes={shown} draft={draft} selection={selection} hoveredId={hoveredId} />
-        {gizmoBox && <HeightGizmo box={gizmoBox} cam={cam} hot={handleHot || !!heightDrag} />}
+        {gizmo && (
+          <TransformGizmo anchor={gizmo.anchor} parts={gizmo.parts} hot={activePart === "body" ? null : activePart} cam={cam} />
+        )}
       </Canvas>
       {draft && (draft.width > 0 || draft.depth > 0) && (
         <div className="draft-label" style={{ left: draft.sx + 14, top: draft.sy + 14 }}>
           {round2(draft.width)} × {round2(draft.depth)} m
         </div>
       )}
-      {heightDrag && (
-        <div className="draft-label" style={{ left: heightDrag.sx + 14, top: heightDrag.sy + 14 }}>
-          h {heightDrag.height.toFixed(2)} m
+      {drag?.active && (
+        <div className="draft-label" style={{ left: drag.sx + 14, top: drag.sy + 14 }}>
+          {drag.label}
         </div>
       )}
     </div>
@@ -404,7 +480,7 @@ function CameraRig({
   return null;
 }
 
-/** A marker at the world origin: +x in red, +z in blue, so you can tell which way you're facing. */
+/** A marker at the world origin: +x in red, +y in green, +z in blue (the gizmo's colors), for orientation. */
 function OriginAxes() {
   const LENGTH = 2;
   const THICK = 0.15;
@@ -417,6 +493,10 @@ function OriginAxes() {
       <mesh position={[0, THICK / 2, LENGTH / 2]}>
         <boxGeometry args={[THICK, THICK, LENGTH]} />
         <meshBasicMaterial color="#3d6fd0" />
+      </mesh>
+      <mesh position={[0, LENGTH / 2, 0]}>
+        <boxGeometry args={[THICK, LENGTH, THICK]} />
+        <meshBasicMaterial color="#3f9e4d" />
       </mesh>
     </group>
   );

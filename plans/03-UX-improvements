@@ -368,3 +368,14 @@ Adopted as recommended (say if any should change):
 - The editor's selection is already an array of IDs, so 03.6 only needs to add ways to select several.
 - Keyboard shortcuts ignore keys typed into text fields (ready for renaming in 03.8).
 - **Pastel tuning** is left for Orlando's browser pass. The values are still the §3.1 starting values in `PALETTE`.
+
+### 03.3 — Move: body drag, x/z arrows, y arrow (done)
+
+- **Gizmo infrastructure** (`src/web/gizmo.ts`, pure and unit-tested) works on the selection: `selectionBounds` (the axis-aligned bounds of the rotated footprints and `y..y + height`), the anchor at its top center, screen-space hit testing of the handles (10 px), `dragUpdate` (patches plus the live label) and `effectiveChanges`. `camera.ts` gained `paramOnLine` (the point on any line nearest the cursor ray, with `heightOnVertical` now built on it) and `screenToPlane`. `pick.ts` gained `pickHit`, which also returns the hit point.
+- **`TransformGizmo.tsx`** replaces `HeightGizmo.tsx`: world-axis arrows (x red, y green, z blue) from the top center, a constant size on screen and drawn over everything. For a single box it also shows the **height handle**, a small yellow cube on the top center. It was pulled forward from 03.4 because the y arrow now takes the spot of 02's up-pointing cone. The origin axes gained a green y bar.
+- **Select tool:** pressing a box selects it (or keeps the current selection if the box is in it) and dragging moves the selection, with the grabbed point staying under the cursor (on the horizontal plane at the grabbed height). `Shift` locks to the dominant world axis. A click without a drag selects just that box. Empty ground still pans on drag and deselects on click.
+- **Arrows:** x / z move along that world axis only. The y arrow raises or lowers the selection's bottom, snapping to the ground and to the tops of boxes whose footprints overlap it within 0.25 m, else to 0.05 m steps.
+- **Snap:** moves snap the **offset** to 0.5 m steps (not the position to the grid), so boxes drawn on the grid stay on it and boxes placed off-grid keep their offset. `Cmd/Ctrl` turns all snapping off.
+- Live labels: `x 4.50 · z 2.00` (the selection's center), `y 3.00 m` (its bottom), `h 3.25 m`. One drag sends one `update_nodes` on release (one undo step), and the result stays on screen until the server's scene confirms it. `Esc` mid-drag cancels only the drag (a capture-phase listener that stops the app's Esc deselect), as it does for a draft. So do switching tools, holding Space, and a dragged box disappearing.
+- Cursors: `move` over and while dragging the body or the x / z arrows, `ns-resize` for y and height.
+- **Tests:** bounds (rotated, several boxes), elevation targets and snapping, hit testing of each part, x-arrow drag (snap, off-axis), body drag (grab point, Shift lock), y drag onto a room top, height drag (min 0.05 m), multi-box moves, effective changes. 72 tests pass.
