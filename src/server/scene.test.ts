@@ -181,3 +181,78 @@ describe("scene store history", () => {
     expect(listener).toHaveBeenCalledTimes(3);
   });
 });
+
+describe("scene store updates", () => {
+  const setup = () => {
+    const store = createSceneStore();
+    store.drawBoxes(
+      [
+        { kind: "room", x: 0, z: 0, width: 4, depth: 4 },
+        { kind: "volume", x: 1, z: 1, width: 1, depth: 1 },
+      ],
+      "human",
+    );
+    return store;
+  };
+  const heights = (store: ReturnType<typeof createSceneStore>) => store.getScene().boxes.map((b) => b.height);
+
+  it("changes heights as one undoable step", () => {
+    const store = setup();
+    const updated = store.updateBoxes([{ id: "volume_1", height: 1.5 }], "human");
+    expect(updated).toMatchObject([{ id: "volume_1", height: 1.5 }]);
+    expect(heights(store)).toEqual([3, 1.5]);
+    expect(store.getHistory().undoLabel).toBe("Change height of volume_1");
+    store.undo();
+    expect(heights(store)).toEqual([3, 0.25]);
+    store.redo();
+    expect(heights(store)).toEqual([3, 1.5]);
+  });
+
+  it("labels agent changes and batches them in one step", () => {
+    const store = setup();
+    store.updateBoxes(
+      [
+        { id: "room_1", height: 6 },
+        { id: "volume_1", height: 2 },
+      ],
+      "agent",
+    );
+    expect(store.getHistory().undoLabel).toBe("Agent: change height of room_1, volume_1");
+    store.undo();
+    expect(heights(store)).toEqual([3, 0.25]);
+  });
+
+  it("rejects unknown IDs, duplicates and heights below 0.05 m, changing nothing", () => {
+    const store = setup();
+    const listener = vi.fn();
+    store.onChange(listener);
+    expect(() => store.updateBoxes([{ id: "room_99", height: 2 }], "agent")).toThrow(/changes\[0\]\.id: no box "room_99"/);
+    expect(() =>
+      store.updateBoxes(
+        [
+          { id: "room_1", height: 5 },
+          { id: "volume_1", height: 0.01 },
+        ],
+        "agent",
+      ),
+    ).toThrow(/changes\[1\]\.height/);
+    expect(() =>
+      store.updateBoxes(
+        [
+          { id: "room_1", height: 5 },
+          { id: "room_1", height: 6 },
+        ],
+        "agent",
+      ),
+    ).toThrow(/more than once/);
+    expect(heights(store)).toEqual([3, 0.25]);
+    expect(listener).not.toHaveBeenCalled();
+    expect(store.getHistory().undoLabel).toBe("Draw room_1, volume_1");
+  });
+
+  it("records nothing when no height actually changes", () => {
+    const store = setup();
+    store.updateBoxes([{ id: "room_1", height: 3 }], "human");
+    expect(store.getHistory().undoLabel).toBe("Draw room_1, volume_1");
+  });
+});

@@ -1,27 +1,44 @@
 import { useEffect, useRef, useState, type PointerEvent, type RefObject } from "react";
 import { Canvas, invalidate, useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
-import { DEFAULT_HEIGHT, SNAP, type Box, type BoxInput, type BoxKind, type View } from "../shared/scene.types";
+import {
+  DEFAULT_HEIGHT,
+  HEIGHT_SNAP,
+  MIN_HEIGHT,
+  SNAP,
+  type Box,
+  type BoxInput,
+  type BoxKind,
+  type View,
+} from "../shared/scene.types";
 import { BoxMesh } from "./BoxMesh";
 import {
   cameraPosition,
   DEFAULT_CAMERA,
   FOV_DEG,
+  heightOnVertical,
   MAX_DISTANCE,
   panTo,
   rotateBy,
+  screenRay,
   screenToGround,
   viewOf,
+  worldToScreen,
   YAW_SPEED_DEG,
   zoomBy,
   type CameraState,
   type GroundPoint,
+  type Size,
 } from "./camera";
 import { Grid } from "./Grid";
+import { HANDLE_HIT_PX, handlePoint, HeightGizmo } from "./HeightGizmo";
 import { Lighting } from "./Lighting";
+import { pickBox } from "./pick";
 
 const BACKGROUND = "#f7f6f2";
 const VIEW_REPORT_MS = 100;
+/** A pointer-up within this many px of its pointer-down is a click, not a drag. */
+const CLICK_PX = 4;
 
 type YawKey = "left" | "right";
 const YAW_KEYS: Record<string, YawKey> = { a: "left", arrowleft: "left", d: "right", arrowright: "right" };
@@ -29,6 +46,7 @@ const YAW_KEYS: Record<string, YawKey> = { a: "left", arrowleft: "left", d: "rig
 export type Tool = "hand" | BoxKind;
 
 type Footprint = { x: number; z: number; width: number; depth: number };
+type HeightDrag = { pointerId: number; id: string; grabOffset: number; height: number; sx: number; sy: number };
 
 const snap = (n: number) => Math.round(n / SNAP) * SNAP;
 const round2 = (n: number) => Math.round(n * 100) / 100;
@@ -46,7 +64,10 @@ function footprintFrom(start: GroundPoint, end: GroundPoint, square: boolean): F
 type Props = {
   tool: Tool;
   boxes: Box[];
+  selectedId: string | null;
+  onSelect: (id: string | null) => void;
   onDrawBox: (box: BoxInput) => void;
+  onChangeHeight: (id: string, height: number) => void;
   onCursor: (point: GroundPoint | null) => void;
   onViewChange: (view: View) => void;
 };
@@ -55,14 +76,24 @@ type Props = {
  * The 3D view. The camera state lives in a ref, not React state: it changes every frame while panning or
  * rotating, and the three.js side reads it in `useFrame`. Only the reported `view` goes back to React, throttled.
  */
-export function Viewport({ tool, boxes, onDrawBox, onCursor, onViewChange }: Props) {
+export function Viewport({ tool, boxes, selectedId, onSelect, onDrawBox, onChangeHeight, onCursor, onViewChange }: Props) {
   const cam = useRef<CameraState>({ ...DEFAULT_CAMERA });
   const wrap = useRef<HTMLDivElement>(null);
   const yawKeys = useRef(new Set<YawKey>());
-  const pan = useRef<{ pointerId: number; grabbed: GroundPoint } | null>(null);
+  const pan = useRef<{ pointerId: number; grabbed: GroundPoint; clickable: boolean; sx: number; sy: number } | null>(null);
   const drawing = useRef<{ pointerId: number; kind: BoxKind; start: GroundPoint } | null>(null);
   const [panning, setPanning] = useState(false);
   const [draft, setDraft] = useState<(Footprint & { kind: BoxKind; sx: number; sy: number }) | null>(null);
+  const [hoveredId, setHoveredId] = useState<string | null>(null);
+  const [handleHot, setHandleHot] = useState(false);
+  const [heightDrag, setHeightDrag] = useState<HeightDrag | null>(null);
+  // After releasing the gizmo, keep showing the new height until the server's scene arrives (no flicker back).
+  const [pendingHeight, setPendingHeight] = useState<{ id: string; height: number } | null>(null);
+
+  // What's on screen: the server's boxes, with the height being dragged (or just released) applied locally.
+  const override = heightDrag ?? pendingHeight;
+  const shown = override ? boxes.map((b) => (b.id === override.id ? { ...b, height: override.height } : b)) : boxes;
+  const selected = shown.find((b) => b.id === selectedId) ?? null;
 
   const local = (e: { clientX: number; clientY: number }) => {
     const r = wrap.current!.getBoundingClientRect();
@@ -76,6 +107,14 @@ export function Viewport({ tool, boxes, onDrawBox, onCursor, onViewChange }: Pro
     return { sx, sy, point: e.altKey ? g : { x: snap(g.x), z: snap(g.z) } };
   };
 
+  const pickAt = (sx: number, sy: number, size: Size) => pickBox(screenRay(cam.current, size, sx, sy), shown);
+
+  const onHandle = (sx: number, sy: number, size: Size) => {
+    if (!selected) return false;
+    const p = worldToScreen(cam.current, size, handlePoint(selected, cam.current));
+    return !!p && Math.hypot(p.sx - sx, p.sy - sy) <= HANDLE_HIT_PX;
+  };
+
   const cancelDrawing = () => {
     drawing.current = null;
     setDraft(null);
@@ -84,19 +123,37 @@ export function Viewport({ tool, boxes, onDrawBox, onCursor, onViewChange }: Pro
   // Switching tools mid-drag drops the unfinished footprint.
   useEffect(cancelDrawing, [tool]);
 
-  // Hand tool (or middle button in any tool): drag to pan, the grabbed ground point stays under the cursor.
+  // A new scene from the server: the released height is now real, and a box that vanished (undo, Clear,
+  // another tab) can't be dragged anymore.
+  useEffect(() => {
+    setPendingHeight(null);
+    setHeightDrag((d) => (d && boxes.some((b) => b.id === d.id) ? d : null));
+  }, [boxes]);
+
+  // Gizmo (any tool, left button): drag the selected box's height.
+  // Hand tool (or middle button in any tool): drag to pan, the grabbed ground point stays under the cursor;
+  // a click without a drag selects the box under the cursor.
   // Room / volume tool: drag a footprint on the ground.
   const onPointerDown = (e: PointerEvent) => {
+    const { sx, sy, size } = local(e);
+    if (e.button === 0 && selected && onHandle(sx, sy, size)) {
+      e.currentTarget.setPointerCapture(e.pointerId);
+      const x = selected.x + selected.width / 2;
+      const z = selected.z + selected.depth / 2;
+      const grabOffset = heightOnVertical(cam.current, size, sx, sy, x, z) - selected.height;
+      setHeightDrag({ pointerId: e.pointerId, id: selected.id, grabOffset, height: selected.height, sx, sy });
+      return;
+    }
     const panButton = e.button === 1 || (e.button === 0 && tool === "hand");
     const drawButton = e.button === 0 && tool !== "hand";
     if (!panButton && !drawButton) return;
     e.currentTarget.setPointerCapture(e.pointerId);
     if (panButton) {
-      const { sx, sy, size } = local(e);
-      pan.current = { pointerId: e.pointerId, grabbed: screenToGround(cam.current, size, sx, sy) };
+      const grabbed = screenToGround(cam.current, size, sx, sy);
+      pan.current = { pointerId: e.pointerId, grabbed, clickable: e.button === 0, sx, sy };
       setPanning(true);
     } else if (tool !== "hand") {
-      const { sx, sy, point } = groundAt(e);
+      const { point } = groundAt(e);
       drawing.current = { pointerId: e.pointerId, kind: tool, start: point };
       setDraft({ kind: tool, ...point, width: 0, depth: 0, sx, sy });
     }
@@ -104,22 +161,48 @@ export function Viewport({ tool, boxes, onDrawBox, onCursor, onViewChange }: Pro
 
   const onPointerMove = (e: PointerEvent) => {
     const { sx, sy, size } = local(e);
+    onCursor(screenToGround(cam.current, size, sx, sy));
+
+    if (heightDrag?.pointerId === e.pointerId) {
+      const box = boxes.find((b) => b.id === heightDrag.id)!;
+      const raw = heightOnVertical(cam.current, size, sx, sy, box.x + box.width / 2, box.z + box.depth / 2) - heightDrag.grabOffset;
+      const snapped = e.altKey ? raw : Math.round(raw / HEIGHT_SNAP) * HEIGHT_SNAP;
+      setHeightDrag({ ...heightDrag, height: round2(Math.max(MIN_HEIGHT, snapped)), sx, sy });
+      return;
+    }
     if (pan.current?.pointerId === e.pointerId) {
       cam.current = panTo(cam.current, size, pan.current.grabbed, sx, sy);
       invalidate();
+      return;
     }
     const d = drawing.current;
     if (d?.pointerId === e.pointerId) {
       const { point } = groundAt(e);
       setDraft({ kind: d.kind, ...footprintFrom(d.start, point, e.shiftKey), sx, sy });
+      return;
     }
-    onCursor(screenToGround(cam.current, size, sx, sy));
+    // Just hovering: highlight the gizmo, or in the hand tool the box that a click would select.
+    const hot = onHandle(sx, sy, size);
+    setHandleHot(hot);
+    setHoveredId(tool === "hand" && !hot ? pickAt(sx, sy, size) : null);
   };
 
   const onPointerUp = (e: PointerEvent) => {
-    if (pan.current?.pointerId === e.pointerId) {
+    const { sx, sy, size } = local(e);
+    if (heightDrag?.pointerId === e.pointerId) {
+      const box = boxes.find((b) => b.id === heightDrag.id);
+      if (box && box.height !== heightDrag.height) {
+        onChangeHeight(box.id, heightDrag.height);
+        setPendingHeight({ id: box.id, height: heightDrag.height });
+      }
+      setHeightDrag(null);
+      return;
+    }
+    const p = pan.current;
+    if (p?.pointerId === e.pointerId) {
       pan.current = null;
       setPanning(false);
+      if (p.clickable && Math.hypot(sx - p.sx, sy - p.sy) < CLICK_PX) onSelect(pickAt(sx, sy, size));
     }
     const d = drawing.current;
     if (d?.pointerId === e.pointerId) {
@@ -145,10 +228,13 @@ export function Viewport({ tool, boxes, onDrawBox, onCursor, onViewChange }: Pro
     return () => el.removeEventListener("wheel", onWheel);
   }, []);
 
-  // Yaw while A/D or ←/→ is held. The rig integrates it per frame.
+  // Yaw while A/D or ←/→ is held. The rig integrates it per frame. Esc drops an unfinished draw or height drag.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") cancelDrawing();
+      if (e.key === "Escape") {
+        cancelDrawing();
+        setHeightDrag(null);
+      }
       const key = YAW_KEYS[e.key.toLowerCase()];
       if (!key || e.metaKey || e.ctrlKey || e.altKey) return;
       e.preventDefault();
@@ -171,16 +257,21 @@ export function Viewport({ tool, boxes, onDrawBox, onCursor, onViewChange }: Pro
   }, []);
 
   const start = cameraPosition(cam.current);
+  const cursorClass = heightDrag || handleHot ? "resizing" : panning ? "panning" : tool === "hand" ? "" : "drawing";
 
   return (
     <div
       ref={wrap}
-      className={`viewport ${panning ? "panning" : tool === "hand" ? "" : "drawing"}`}
+      className={`viewport ${cursorClass}`}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerUp}
-      onPointerLeave={() => onCursor(null)}
+      onPointerLeave={() => {
+        onCursor(null);
+        setHoveredId(null);
+        setHandleHot(false);
+      }}
     >
       <Canvas
         shadows="percentage"
@@ -197,11 +288,17 @@ export function Viewport({ tool, boxes, onDrawBox, onCursor, onViewChange }: Pro
         <Lighting cam={cam} />
         <Grid cam={cam} />
         <OriginAxes />
-        <Boxes boxes={boxes} draft={draft} />
+        <Boxes boxes={shown} draft={draft} selectedId={selectedId} hoveredId={hoveredId} />
+        {selected && <HeightGizmo box={selected} cam={cam} hot={handleHot || !!heightDrag} />}
       </Canvas>
       {draft && (draft.width > 0 || draft.depth > 0) && (
         <div className="draft-label" style={{ left: draft.sx + 14, top: draft.sy + 14 }}>
           {round2(draft.width)} × {round2(draft.depth)} m
+        </div>
+      )}
+      {heightDrag && (
+        <div className="draft-label" style={{ left: heightDrag.sx + 14, top: heightDrag.sy + 14 }}>
+          h {heightDrag.height.toFixed(2)} m
         </div>
       )}
     </div>
@@ -212,12 +309,26 @@ export function Viewport({ tool, boxes, onDrawBox, onCursor, onViewChange }: Pro
  * The scene's boxes plus the draft. With frameloop="demand", r3f redraws when objects are added or changed
  * but not when they're removed (Clear, a cancelled draft), so request a frame after every change.
  */
-function Boxes({ boxes, draft }: { boxes: Box[]; draft: (Footprint & { kind: BoxKind }) | null }) {
-  useEffect(() => invalidate(), [boxes, draft]);
+function Boxes({
+  boxes,
+  draft,
+  selectedId,
+  hoveredId,
+}: {
+  boxes: Box[];
+  draft: (Footprint & { kind: BoxKind }) | null;
+  selectedId: string | null;
+  hoveredId: string | null;
+}) {
+  useEffect(() => invalidate(), [boxes, draft, selectedId, hoveredId]);
   return (
     <>
       {boxes.map((b) => (
-        <BoxMesh key={b.id} {...b} />
+        <BoxMesh
+          key={b.id}
+          {...b}
+          highlight={b.id === selectedId ? "selected" : b.id === hoveredId ? "hover" : undefined}
+        />
       ))}
       {draft && draft.width > 0 && draft.depth > 0 && (
         <BoxMesh {...draft} height={DEFAULT_HEIGHT[draft.kind]} draft />

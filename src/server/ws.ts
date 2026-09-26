@@ -37,7 +37,11 @@ export function attachWebSocket(httpServer: Server, store: SceneStore) {
 
       try {
         const msg = parsed.data;
-        if (msg.type === "add_boxes") store.drawBoxes(msg.boxes, "human");
+        if (msg.type === "add_boxes") {
+          const created = store.drawBoxes(msg.boxes, "human");
+          // Sent after the scene broadcast, so the editor already has the boxes it's about to select.
+          if (msg.requestId) send(ws, { type: "created", requestId: msg.requestId, ids: created.map((b) => b.id) });
+        } else if (msg.type === "update_boxes") store.updateBoxes(msg.changes, "human");
         else if (msg.type === "clear") store.clear("human");
         else if (msg.type === "undo") store.undo();
         else if (msg.type === "redo") store.redo();

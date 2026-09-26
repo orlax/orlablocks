@@ -49,6 +49,8 @@ export const SNAP = 0.5;
 export const HEIGHT_SNAP = 0.05;
 export const MIN_HEIGHT = HEIGHT_SNAP;
 export const DEFAULT_HEIGHT: Record<BoxKind, number> = { room: 3, volume: 0.25 };
+/** Room walls are this thick, centered on the footprint edge. Rendering and picking only: the data stores the centerline. */
+export const WALL_THICKNESS = 0.2;
 
 export const BoxKindSchema = z.enum(["room", "volume"]);
 
@@ -66,6 +68,13 @@ export const BoxInputSchema = z.object({
 });
 export type BoxInput = z.input<typeof BoxInputSchema>;
 
+/** A change to an existing box, by ID. Only height for now; move and resize will join it. */
+export const BoxUpdateSchema = z.object({
+  id: z.string().describe("ID of an existing box, e.g. room_3"),
+  height: z.number().min(MIN_HEIGHT).describe(`New height in meters, >= ${MIN_HEIGHT}`),
+});
+export type BoxUpdate = z.input<typeof BoxUpdateSchema>;
+
 export const ViewSchema = z.object({
   focus: z.object({ x: z.number(), z: z.number() }),
   yaw: z.number(),
@@ -73,7 +82,9 @@ export const ViewSchema = z.object({
 });
 
 export const ClientMessageSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("add_boxes"), boxes: z.array(BoxInputSchema).min(1) }),
+  // `requestId` lets the editor select the boxes it just drew: the server answers with `created`.
+  z.object({ type: z.literal("add_boxes"), requestId: z.string().optional(), boxes: z.array(BoxInputSchema).min(1) }),
+  z.object({ type: z.literal("update_boxes"), changes: z.array(BoxUpdateSchema).min(1) }),
   z.object({ type: z.literal("clear") }),
   z.object({ type: z.literal("undo") }),
   z.object({ type: z.literal("redo") }),
@@ -83,4 +94,5 @@ export type ClientMessage = z.input<typeof ClientMessageSchema>;
 
 export type ServerMessage =
   | { type: "scene"; scene: Scene; history: HistorySummary }
+  | { type: "created"; requestId: string; ids: string[] }
   | { type: "error"; message: string };

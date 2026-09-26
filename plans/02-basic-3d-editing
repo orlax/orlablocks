@@ -346,6 +346,8 @@ Settled:
 
 ## 13. Progress
 
+**Phase complete (2026-09-25).** All four increments are done and the acceptance test in §11 passed in the browser. Beyond the plan, the phase also switched to a narrow-FOV perspective camera and a graybox look (see 02.1 and 02.2 below). Candidates for the next phase: persistence, and move / resize / delete (the plan already expects both to extend `update_boxes` and the ops).
+
 ### 02.1 — 3D view and hand tool (done)
 
 - The SVG canvas is replaced by react-three-fiber with a camera at a fixed 35° pitch (starts at yaw 45° with the focus at the origin, about 20 px/m at the focus), a shader grid on the ground and the hand tool (drag to pan, left or middle button; wheel or pinch to zoom toward the focus; A/D and ←/→ for yaw at 90°/s).
@@ -376,3 +378,11 @@ Settled:
 - WS: `undo` / `redo` messages, and every `scene` message carries a `history` summary (can undo/redo, labels).
 - Editor: Undo / Redo buttons in the tool-bar (disabled when unavailable, tooltip shows the label), `Cmd/Ctrl+Z`, `Cmd/Ctrl+Shift+Z` and `Ctrl+Y`.
 - The `draw_boxes` description tells the agent each call is one undo step for the human.
+
+### 02.4 — Selection and height gizmo (done)
+
+- `update` op with an inverse, and `updateBoxes` in the store: all-or-nothing, rejects unknown or repeated IDs and heights below 0.05 m, records nothing if no height actually changes. Labels: `Change height of room_3` / `Agent: change height of …`.
+- MCP `update_boxes { changes: [{ id, height }] }`. WS `update_boxes`, and `add_boxes` takes an optional `requestId` that the server answers with `created { requestId, ids }` (sent after the scene broadcast).
+- Picking is pure math (`src/web/pick.ts`, a slab test per box): rooms are hollow, so a volume inside a room wins over the room's open top.
+- Hand tool: a click (under 4 px of movement) selects the box under the cursor, empty ground deselects, and hovering outlines the box a click would pick. A new box is selected right after drawing. `Esc` deselects. The tool-bar shows the selection (`room_3 · 6 × 4 m · h 3 m`).
+- Height gizmo: a blue stem and cone above the selected box, a constant size on screen and drawn over everything. Dragging it follows the cursor along the vertical line (`heightOnVertical` in `camera.ts`), snaps to 0.05 m (`Alt` free), minimum 0.05 m, with an `h … m` label. It's previewed locally and sends one `update_boxes` on release. The new height stays on screen until the server's scene confirms it, so it doesn't flicker back. A box that disappears mid-drag cancels it, and so does `Esc`.

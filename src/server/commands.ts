@@ -8,7 +8,8 @@ import type { Actor, Box, HistorySummary } from "../shared/scene.types";
 /** The smallest reversible change to the scene's boxes. */
 export type Op =
   | { op: "add"; boxes: Box[]; indices?: number[] } // `indices`: restore removed boxes at their original positions
-  | { op: "remove"; ids: string[] };
+  | { op: "remove"; ids: string[] }
+  | { op: "update"; changes: { id: string; height: number }[] }; // grows to x/z/width/depth later
 
 /** One user-level action and one undo step. */
 export type HistoryEntry = {
@@ -38,6 +39,10 @@ export function applyOp(boxes: Box[], op: Op): Box[] {
       const ids = new Set(op.ids);
       return boxes.filter((b) => !ids.has(b.id));
     }
+    case "update": {
+      const heights = new Map(op.changes.map((c) => [c.id, c.height]));
+      return boxes.map((b) => (heights.has(b.id) ? { ...b, height: heights.get(b.id)! } : b));
+    }
   }
 }
 
@@ -51,6 +56,17 @@ export function invertOp(boxes: Box[], op: Op): Op {
       const removed = boxes.flatMap((box, index) => (ids.has(box.id) ? [{ box, index }] : []));
       if (removed.length !== ids.size) throw new Error(`remove: unknown box in ${op.ids.join(", ")}`);
       return { op: "add", boxes: removed.map((r) => r.box), indices: removed.map((r) => r.index) };
+    }
+    case "update": {
+      const byId = new Map(boxes.map((b) => [b.id, b]));
+      return {
+        op: "update",
+        changes: op.changes.map((c) => {
+          const box = byId.get(c.id);
+          if (!box) throw new Error(`update: unknown box ${c.id}`);
+          return { id: c.id, height: box.height };
+        }),
+      };
     }
   }
 }

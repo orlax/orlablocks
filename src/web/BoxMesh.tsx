@@ -1,6 +1,6 @@
 import { useEffect, useMemo } from "react";
 import * as THREE from "three";
-import type { BoxKind } from "../shared/scene.types";
+import { WALL_THICKNESS, type BoxKind } from "../shared/scene.types";
 
 type Props = {
   kind: BoxKind;
@@ -11,10 +11,9 @@ type Props = {
   height: number;
   /** The live preview while drawing: translucent blue, so it reads as not-yet-placed. */
   draft?: boolean;
+  highlight?: "hover" | "selected";
 };
 
-/** Walls are centered on the footprint edge, so two rooms sharing an edge read as one wall. */
-export const WALL_THICKNESS = 0.2;
 const FLOOR_THICKNESS = 0.04; // a thin slab just above the ground, so it hides the grid inside the room
 
 /** A white 1 m tile with thin gray borders: the classic prototype texture. Lines land on whole meters. */
@@ -38,15 +37,32 @@ function tileTexture() {
   return texture;
 }
 
+const SELECT_COLOR = "#3d7be0";
+
 // Graybox materials, shared by every box: warm near-white, matte, tiled every meter.
 let materials: ReturnType<typeof createMaterials> | null = null;
 function createMaterials() {
   const tiles = tileTexture();
+  const wall = new THREE.MeshLambertMaterial({ color: "#f3f0ea", map: tiles });
+  const floor = new THREE.MeshLambertMaterial({ color: "#e6e2da", map: tiles });
+  const volume = new THREE.MeshLambertMaterial({ color: "#ece9e3", map: tiles });
+  // Selected: the same materials with a faint blue glow.
+  const selected = (m: THREE.MeshLambertMaterial) => {
+    const c = m.clone();
+    c.emissive.set(SELECT_COLOR);
+    c.emissiveIntensity = 0.22;
+    return c;
+  };
   return {
-    wall: new THREE.MeshLambertMaterial({ color: "#f3f0ea", map: tiles }),
-    floor: new THREE.MeshLambertMaterial({ color: "#e6e2da", map: tiles }),
-    volume: new THREE.MeshLambertMaterial({ color: "#ece9e3", map: tiles }),
+    wall,
+    floor,
+    volume,
+    wallSelected: selected(wall),
+    floorSelected: selected(floor),
+    volumeSelected: selected(volume),
     edge: new THREE.LineBasicMaterial({ color: "#8a857b", transparent: true, opacity: 0.3 }),
+    edgeHover: new THREE.LineBasicMaterial({ color: SELECT_COLOR, transparent: true, opacity: 0.6 }),
+    edgeSelected: new THREE.LineBasicMaterial({ color: SELECT_COLOR }),
     draft: new THREE.MeshLambertMaterial({ color: "#3d7be0", transparent: true, opacity: 0.35, depthWrite: false }),
     draftEdge: new THREE.LineBasicMaterial({ color: "#3d7be0" }),
   };
@@ -110,7 +126,7 @@ function wallGeometry(width: number, depth: number, height: number) {
  * Graybox rendering. A room is a floor slab plus thick walls, with no ceiling, so you see in from above.
  * A volume is a solid block. Both cast and receive shadows and have faint outlined edges.
  */
-export function BoxMesh({ kind, x, z, width, depth, height, draft = false }: Props) {
+export function BoxMesh({ kind, x, z, width, depth, height, draft = false, highlight }: Props) {
   const solid = useMemo(() => {
     if (kind === "volume") {
       const g = new THREE.BoxGeometry(width, height, depth);
@@ -134,13 +150,20 @@ export function BoxMesh({ kind, x, z, width, depth, height, draft = false }: Pro
   useEffect(() => () => edges.dispose(), [edges]);
 
   const m = getMaterials();
-  const bodyMaterial = draft ? m.draft : kind === "room" ? m.wall : m.volume;
+  const sel = highlight === "selected";
+  const bodyMaterial = draft
+    ? m.draft
+    : kind === "room"
+      ? sel ? m.wallSelected : m.wall
+      : sel ? m.volumeSelected : m.volume;
+  const floorMaterial = draft ? m.draft : sel ? m.floorSelected : m.floor;
+  const edgeMaterial = draft ? m.draftEdge : sel ? m.edgeSelected : highlight === "hover" ? m.edgeHover : m.edge;
 
   return (
     <group position={[x, 0, z]}>
       <mesh geometry={solid} material={bodyMaterial} castShadow={!draft} receiveShadow={!draft} />
-      {floor && <mesh geometry={floor} material={draft ? m.draft : m.floor} receiveShadow={!draft} />}
-      <lineSegments geometry={edges} material={draft ? m.draftEdge : m.edge} renderOrder={1} />
+      {floor && <mesh geometry={floor} material={floorMaterial} receiveShadow={!draft} />}
+      <lineSegments geometry={edges} material={edgeMaterial} renderOrder={1} />
     </group>
   );
 }

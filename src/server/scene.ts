@@ -1,5 +1,6 @@
 import {
   BoxInputSchema,
+  BoxUpdateSchema,
   DEFAULT_HEIGHT,
   DEFAULT_VIEW,
   MIN_HEIGHT,
@@ -7,6 +8,7 @@ import {
   type Box,
   type BoxInput,
   type BoxKind,
+  type BoxUpdate,
   type HistorySummary,
   type Scene,
   type View,
@@ -21,6 +23,12 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
 function drawLabel(boxes: Box[], actor: Actor): string {
   const what = boxes.length <= 3 ? boxes.map((b) => b.id).join(", ") : `${boxes.length} boxes`;
   return actor === "agent" ? `Agent: draw ${what}` : `Draw ${what}`;
+}
+
+/** "Change height of room_3", or for the agent "Agent: change height of room_4, volume_2" / "... of 5 boxes". */
+function heightLabel(ids: string[], actor: Actor): string {
+  const what = ids.length <= 3 ? ids.join(", ") : `${ids.length} boxes`;
+  return actor === "agent" ? `Agent: change height of ${what}` : `Change height of ${what}`;
 }
 
 export function createSceneStore() {
@@ -75,6 +83,42 @@ export function createSceneStore() {
       const created: Box[] = valid.map((b) => ({ id: `${b!.kind}_${nextId[b!.kind]++}`, ...b!, createdBy: actor }));
       commit(drawLabel(created, actor), actor, [{ op: "add", boxes: created }]);
       return created;
+    },
+
+    /**
+     * Changes existing boxes by ID (height only for now). Validates every change first; applies all or nothing.
+     * Changes that don't alter anything are dropped, and if nothing is left no step is recorded.
+     */
+    updateBoxes(changes: BoxUpdate[], actor: Actor): Box[] {
+      if (changes.length === 0) throw new SceneError("changes: at least one change is required");
+
+      const byId = new Map(scene.boxes.map((b) => [b.id, b]));
+      const seen = new Set<string>();
+      const errors: string[] = [];
+      const valid = changes.map((change, i) => {
+        const result = BoxUpdateSchema.safeParse(change);
+        if (!result.success) {
+          for (const issue of result.error.issues) {
+            errors.push(`changes[${i}].${issue.path.join(".") || "(item)"}: ${issue.message}`);
+          }
+          return null;
+        }
+        const { id, height } = result.data;
+        if (!byId.has(id)) errors.push(`changes[${i}].id: no box "${id}"`);
+        if (seen.has(id)) errors.push(`changes[${i}].id: "${id}" appears more than once`);
+        seen.add(id);
+        const rounded = round2(height);
+        if (rounded < MIN_HEIGHT) errors.push(`changes[${i}].height: ${height} rounds below ${MIN_HEIGHT} at 2 decimals`);
+        return { id, height: rounded };
+      });
+      if (errors.length > 0) throw new SceneError(`Nothing was changed.\n${errors.join("\n")}`);
+
+      const effective = valid.filter((c) => byId.get(c!.id)!.height !== c!.height) as { id: string; height: number }[];
+      if (effective.length > 0) {
+        commit(heightLabel(effective.map((c) => c.id), actor), actor, [{ op: "update", changes: effective }]);
+      }
+      const ids = new Set(valid.map((c) => c!.id));
+      return scene.boxes.filter((b) => ids.has(b.id));
     },
 
     /** What the editor currently shows (last reporting tab wins). Not an edit, so no broadcast. */

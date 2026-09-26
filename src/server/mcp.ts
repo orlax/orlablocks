@@ -2,7 +2,7 @@ import type { Express } from "express";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
-import { BoxInputSchema, DEFAULT_HEIGHT, MIN_HEIGHT } from "../shared/scene.types";
+import { BoxInputSchema, BoxUpdateSchema, DEFAULT_HEIGHT, MIN_HEIGHT } from "../shared/scene.types";
 import type { SceneStore } from "./scene";
 
 const CONVENTIONS =
@@ -51,6 +51,25 @@ function buildServer(store: SceneStore) {
       };
       return {
         content: [{ type: "text", text: JSON.stringify({ created, totals }, null, 2) }],
+      };
+    },
+  );
+
+  server.registerTool(
+    "update_boxes",
+    {
+      title: "Update boxes",
+      description:
+        `Change existing boxes by ID in a single batch; changes appear live in the editor. ` +
+        `Only height can change for now (footprints stay where they are). Get IDs from get_scene or draw_boxes. ` +
+        `The batch is all-or-nothing: an unknown ID or an invalid height rejects it and nothing changes. ` +
+        `Each call is one step in the shared undo history. ${CONVENTIONS}`,
+      inputSchema: { changes: z.array(BoxUpdateSchema).min(1) },
+    },
+    async ({ changes }) => {
+      const updated = store.updateBoxes(changes, "agent");
+      return {
+        content: [{ type: "text", text: JSON.stringify({ updated }, null, 2) }],
       };
     },
   );

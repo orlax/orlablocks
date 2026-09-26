@@ -43,6 +43,14 @@ describe("ops", () => {
     expect(inverse.reduce(applyOp, boxes)).toEqual(start);
   });
 
+  it("update's inverse restores the previous heights", () => {
+    const start = [box("room_1"), box("volume_1")];
+    const { boxes, inverse } = runOps(start, [{ op: "update", changes: [{ id: "volume_1", height: 2.5 }] }]);
+    expect(boxes.map((b) => b.height)).toEqual([1, 2.5]);
+    expect(inverse.reduce(applyOp, boxes)).toEqual(start);
+    expect(() => runOps(start, [{ op: "update", changes: [{ id: "room_9", height: 1 }] }])).toThrow(/room_9/);
+  });
+
   it("rejects removing an unknown box", () => {
     expect(() => runOps([box("room_1")], [{ op: "remove", ids: ["room_9"] }])).toThrow(/room_9/);
   });

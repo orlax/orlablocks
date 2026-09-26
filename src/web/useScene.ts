@@ -7,6 +7,7 @@ const NO_HISTORY: HistorySummary = { canUndo: false, canRedo: false };
 export function useScene() {
   const [scene, setScene] = useState<Scene | null>(null);
   const [history, setHistory] = useState<HistorySummary>(NO_HISTORY);
+  const [lastCreated, setLastCreated] = useState<{ requestId: string; ids: string[] } | null>(null);
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -29,6 +30,8 @@ export function useScene() {
           setScene(msg.scene);
           setHistory(msg.history);
           setError(null);
+        } else if (msg.type === "created") {
+          setLastCreated({ requestId: msg.requestId, ids: msg.ids });
         } else if (msg.type === "error") {
           setError(msg.message);
         }
@@ -48,5 +51,5 @@ export function useScene() {
     if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
   }, []);
 
-  return { scene, history, connected, error, send };
+  return { scene, history, lastCreated, connected, error, send };
 }

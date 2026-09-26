@@ -60,22 +60,57 @@ export function pxPerMeterAtFocus(cam: CameraState, size: Size): number {
   return size.height / 2 / (cam.distance * TAN_HALF_FOV);
 }
 
-/** The ground point under a screen position (CSS px from the viewport's top-left). */
-export function screenToGround(cam: CameraState, size: Size, sx: number, sy: number): GroundPoint {
+/** The ray from the camera through a screen position (CSS px from the viewport's top-left). `dir` isn't normalized. */
+export function screenRay(cam: CameraState, size: Size, sx: number, sy: number): { origin: Vec3; dir: Vec3 } {
   const { forward, right, up } = basis(cam.yaw);
   const ndcX = (sx / size.width) * 2 - 1;
   const ndcY = 1 - (sy / size.height) * 2;
   const a = ndcX * TAN_HALF_FOV * (size.width / size.height);
   const b = ndcY * TAN_HALF_FOV;
-  const dir = {
-    x: forward.x + right.x * a + up.x * b,
-    y: forward.y + right.y * a + up.y * b,
-    z: forward.z + right.z * a + up.z * b,
+  return {
+    origin: cameraPosition(cam),
+    dir: {
+      x: forward.x + right.x * a + up.x * b,
+      y: forward.y + right.y * a + up.y * b,
+      z: forward.z + right.z * a + up.z * b,
+    },
   };
-  const origin = cameraPosition(cam);
+}
+
+/** The ground point under a screen position (CSS px from the viewport's top-left). */
+export function screenToGround(cam: CameraState, size: Size, sx: number, sy: number): GroundPoint {
+  const { origin, dir } = screenRay(cam, size, sx, sy);
   // Every ray points down as long as FOV_DEG / 2 < PITCH_DEG, so it always meets the ground.
   const t = -origin.y / dir.y;
   return { x: origin.x + dir.x * t, z: origin.z + dir.z * t };
+}
+
+/** Where a world point lands on screen (CSS px), or null if it's behind the camera. */
+export function worldToScreen(cam: CameraState, size: Size, p: Vec3): { sx: number; sy: number } | null {
+  const { forward, right, up } = basis(cam.yaw);
+  const o = cameraPosition(cam);
+  const v = { x: p.x - o.x, y: p.y - o.y, z: p.z - o.z };
+  const depth = v.x * forward.x + v.y * forward.y + v.z * forward.z;
+  if (depth <= 0) return null;
+  const ndcX = (v.x * right.x + v.y * right.y + v.z * right.z) / (depth * TAN_HALF_FOV * (size.width / size.height));
+  const ndcY = (v.x * up.x + v.y * up.y + v.z * up.z) / (depth * TAN_HALF_FOV);
+  return { sx: ((ndcX + 1) / 2) * size.width, sy: ((1 - ndcY) / 2) * size.height };
+}
+
+/**
+ * The height on the vertical line through ground point (x, z) closest to the ray under the cursor.
+ * This is how the height gizmo follows the cursor at any yaw.
+ */
+export function heightOnVertical(cam: CameraState, size: Size, sx: number, sy: number, x: number, z: number): number {
+  const { origin, dir } = screenRay(cam, size, sx, sy);
+  // Closest points between the ray origin + t·dir and the line (x, s, z): minimize over t and s.
+  const w = { x: origin.x - x, y: origin.y, z: origin.z - z };
+  const a = dir.x * dir.x + dir.y * dir.y + dir.z * dir.z;
+  const b = dir.y; // dir · (0, 1, 0)
+  const d = w.x * dir.x + w.y * dir.y + w.z * dir.z;
+  const e = w.y; // w · (0, 1, 0)
+  const denom = a - b * b; // > 0: the ray is never vertical at our pitch
+  return (a * e - b * d) / denom; // s at the closest point, i.e. the height on the vertical line
 }
 
 /** Moves the focus so that `grabbed` (a ground point) ends up under the screen position. */

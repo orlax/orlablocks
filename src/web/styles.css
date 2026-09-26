@@ -28,6 +28,7 @@ body {
 }
 .viewport.panning { cursor: grabbing; }
 .viewport.drawing { cursor: crosshair; }
+.viewport.resizing { cursor: ns-resize; }
 
 /* Live footprint size next to the cursor while drawing. */
 .draft-label {
@@ -72,6 +73,7 @@ body {
 
 .tool-bar .sep { width: 1px; height: 16px; background: rgba(255, 255, 255, 0.15); }
 .tool-bar .muted { color: var(--muted); }
+.tool-bar .selected-info { color: #8fb4f2; font-variant-numeric: tabular-nums; }
 
 .tool-bar button {
   background: transparent;
