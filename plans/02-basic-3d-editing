@@ -1,0 +1,343 @@
+# 02 — Basic 3D Editing
+
+> **For the agent reading this:** Read `plans/00-initial` for the long-term vision and `plans/01-first-playable` + `01B-first-playable-refinements` for what exists today. This phase moves the editor from a flat SVG canvas to a **simplified 3D view** (think Townscaper / Tiny Glade, not Blender) and starts the **command history** so edits can be undone. It is built in **four small increments** (§10). Each increment ends with the human ↔ agent loop still working. Don't build ahead of the current increment.
+
+---
+
+## 1. Goal
+
+One demo, end to end:
+
+1. Orlando opens the editor and sees an **almost isometric 3D view** of the ground grid.
+2. With the **hand tool** he drags to pan, scrolls to zoom and holds **A/D** (or **←/→**) to rotate the view around the center of the screen.
+3. With the **room tool** he drags a rect on the ground, and a hollow 3 m room appears. With the **volume tool** he drags one, and a solid 0.25 m block appears.
+4. He clicks a box to select it and drags its **height gizmo** up to make it taller.
+5. He presses **Cmd/Ctrl+Z** and the height change is undone. **Cmd/Ctrl+Shift+Z** redoes it.
+6. In Claude Code he asks *"add three rooms next to mine and make the middle one 6 m tall"*. The agent draws them with one call and changes the height with a second call, referencing the room by ID. Both show up live.
+7. He undoes once and the agent's height change goes away. He undoes again and all three agent rooms go away together.
+
+If this works, we have 3D direct manipulation, referencable entities and a shared, undoable history. Those are the foundations for doors, stairs and everything else.
+
+---
+
+## 2. Scope
+
+### In
+
+- **3D view:** orthographic camera, fixed pitch, smooth yaw, pan, zoom, and the ground grid in 3D.
+- **Tools:** hand (pan + select), room, volume.
+- **Boxes:** rooms (hollow) and volumes (solid), with server-assigned IDs, drawn on the ground at `y = 0`.
+- **Height gizmo:** one handle on the selected box that changes its height.
+- **Commands and history:** every edit is a command with an inverse. One shared linear history, with undo/redo in the editor.
+- **MCP:** `get_scene`, `draw_boxes`, `update_boxes` (height only for now).
+
+### Out (deliberately deferred)
+
+- Moving, resizing the footprint of, or deleting individual boxes (undo and Clear are the only ways to remove things).
+- Floor elevation: every box stands on `y = 0`.
+- Doors, windows, holes, stairs, and derived connections.
+- Top-down camera, changing the pitch, free camera.
+- Multi-select, a history panel, labeled proposals.
+- Undo from the agent, and history in `get_scene`.
+- Persistence. The scene and history are still memory-only.
+
+---
+
+## 3. Coordinates and units
+
+| | Before (01) | Now (02) |
+|---|---|---|
+| Unit | abstract `u` | **meter (m)**. `1 u = 1 m` from now on |
+| Axes | x right, y down (2D) | **x** and **z** on the ground plane, **y up** |
+| Footprint | `x, y, width, height` | `x, z, width, depth` |
+| Vertical | none | `height` (the box goes from `y = 0` to `y = height`) |
+
+- `x, z` is the footprint's **minimum corner** (smallest x, smallest z), and `width` runs along +x and `depth` along +z.
+- **Snap** is 0.5 m on the ground (unchanged) and **0.05 m vertically** (new). The minimum height is one vertical step, 0.05 m.
+- Values from the agent are kept as given, rounded to 2 decimals (unchanged).
+- Handedness (three.js is right-handed and Unity left-handed) only matters for the Unity handoff. We ignore it until then.
+
+---
+
+## 4. Scene model (v1)
+
+```ts
+type Actor = "human" | "agent";
+type BoxKind = "room" | "volume";
+
+type Box = {
+  id: string;        // server-assigned, per kind: "room_1", "room_2", "volume_1", ...
+  kind: BoxKind;     // room = hollow (floor + walls, no ceiling); volume = solid
+  x: number;         // footprint min corner, meters
+  z: number;
+  width: number;     // along +x, > 0
+  depth: number;     // along +z, > 0
+  height: number;    // >= 0.05 (one vertical snap step)
+  createdBy: Actor;
+};
+
+type View = {
+  focus: { x: number; z: number };                             // ground point under the screen center
+  yaw: number;                                                 // degrees, 0..360
+  bounds: { x: number; z: number; width: number; depth: number }; // axis-aligned box around the visible ground
+};
+
+type Scene = { view: View; boxes: Box[] };
+```
+
+- **Box** is the umbrella term, and **room** and **volume** are its two kinds. They share every field and differ in meaning and rendering. A room will later get openings (doors, windows, holes), and a volume is something you stand on or bump into.
+- **Default heights:** room 3 m, volume 0.25 m, used when the drawer (human or agent) doesn't give one.
+- **IDs are never reused.** Counters only go up. Undoing a creation removes the box, and redoing it brings it back **with the same ID**, because the inverse stores the full box.
+- **`view` changes shape.** With a rotated camera, the visible ground is a rotated quad, not an axis-aligned rect. We report the focus point, the yaw and the axis-aligned bounds of the visible ground. That's enough for the agent to put things on screen. As before, setting the view is not an edit, isn't broadcast and never enters the history.
+- Selection is **editor-local** state and is not part of the scene.
+
+---
+
+## 5. Commands and history
+
+This is the start of the command layer from `00-initial` §7. It's deliberately small.
+
+### Ops
+
+An **op** is the smallest reversible change to the scene:
+
+```ts
+type Op =
+  | { op: "add"; boxes: Box[] }                                  // full boxes, IDs already assigned
+  | { op: "remove"; ids: string[] }
+  | { op: "update"; changes: { id: string; height: number }[] }; // grows to x/z/width/depth later
+```
+
+Every op has an exact inverse, computed **before** it's applied:
+- `add` → `remove` of those IDs
+- `remove` → `add` of the removed boxes, restored at their **original positions** in the list
+- `update` → `update` with the previous values
+
+### History entries
+
+A **command** is one user-level action and one undo step. It holds one or more ops:
+
+```ts
+type HistoryEntry = {
+  label: string;     // "Draw room", "Change height of room_3", "Agent: draw 3 boxes", "Clear"
+  actor: Actor;
+  at: number;        // timestamp
+  ops: Op[];
+  inverse: Op[];     // applied in reverse order on undo
+};
+```
+
+- **One linear history**, shared by the human and the agent. **Undo** reverts the latest entry, **whoever** made it. **Redo** re-applies it. Any new edit clears the redo stack. This is the "linear history first" decision from 00.
+- **One MCP call = one entry**, so the agent's batch undoes as a unit.
+- **One gizmo drag = one entry.** The editor previews the drag locally and sends a single update on release, never one per frame.
+- **Clear is a command**, so it can be undone.
+- **All-or-nothing still holds.** A rejected batch applies nothing and adds no entry.
+- Undo and redo are not entries themselves. The history is capped (say 200 entries), and the oldest are dropped.
+
+### Store API
+
+```
+scene.ts
+  getScene(): Scene
+  getHistory(): { canUndo, canRedo, undoLabel?, redoLabel? }
+  drawBoxes(inputs, actor): Box[]            // validates all, builds an add command, applies it
+  updateBoxes(changes, actor): Box[]         // unknown ID or bad height rejects the whole batch
+  clear(actor): void
+  undo(): HistoryEntry | null
+  redo(): HistoryEntry | null
+  setView(view): void                        // not a command
+  onChange(listener)                         // fires after every apply, undo and redo
+```
+
+Keep ops, inverses and the history in a pure module (`src/server/commands.ts`) with no server dependencies, so it stays unit-testable and can become the core library later.
+
+---
+
+## 6. MCP surface
+
+### `get_scene`
+
+- Input: none.
+- Output: the scene as JSON (`view` + all `boxes`, with `kind`, `id` and `createdBy`).
+
+### `draw_boxes` (replaces `draw_rects`)
+
+- Input: `{ boxes: [{ kind, x, z, width, depth, height? }] }`. `height` defaults to 3 for a room and 0.25 for a volume.
+- All-or-nothing. Errors name the item (`boxes[2].depth: must be > 0`).
+- Output: the created boxes with their IDs, plus totals per kind.
+
+### `update_boxes` (new)
+
+- Input: `{ changes: [{ id, height }] }`. Only `height` is accepted in this phase. The name is general on purpose, so move and resize join it later instead of becoming new tools.
+- Unknown IDs and heights below 0.05 reject the whole batch (`changes[0].id: no box "room_9"`).
+- Output: the updated boxes.
+
+Tool descriptions state the conventions: meters, y up, footprint `x/z` at the min corner, `width` along +x and `depth` along +z, default heights, and what `view` means.
+
+---
+
+## 7. Editor ↔ server protocol
+
+```
+server → client  { type: "scene", scene, history: { canUndo, canRedo, undoLabel?, redoLabel? } }
+server → client  { type: "created", requestId, ids }      // reply to add_boxes, so the editor can select the new box
+server → client  { type: "error", message }
+
+client → server  { type: "add_boxes", requestId, boxes: [{ kind, x, z, width, depth, height? }] }
+client → server  { type: "update_boxes", changes: [{ id, height }] }
+client → server  { type: "undo" } | { type: "redo" } | { type: "clear" }
+client → server  { type: "set_view", view }
+```
+
+The full scene is still sent on every change, and the client still renders whatever the server says. The only new thing is the `created` reply, because auto-selecting a freshly drawn box needs its server-assigned ID.
+
+---
+
+## 8. Editor
+
+### Stack
+
+**react-three-fiber** (three.js in React) plus **drei** helpers. The SVG canvas is replaced.
+
+### Camera
+
+- **Orthographic.** Pitch is fixed at about 35° (close to true isometric) and never changes.
+- It orbits a **focus point** on the ground, the point under the screen center. It starts at yaw 45° with the focus at the world origin.
+- **Zoom** is the orthographic scale. It starts at 20 px per meter (the old 2D scale), is clamped to a sensible range, and zooms **toward the focus point** (the screen center), just like yaw rotates around it. The focus point never moves when you zoom.
+- **Yaw:** holding **A/D** or **←/→** rotates smoothly around the focus point, frame-rate independent (about 90°/s, tuned by feel).
+- Camera math (ground ray, pan, zoom, view bounds) lives in pure functions in `camera.ts` so it can be unit-tested.
+
+### Grid
+
+The same grid as today, lying on the ground plane: a line every 1 m, a stronger one every 5 m, fading out with distance from the focus point. It's only a visual aid and is never part of the data.
+
+### Tools (in the tool-bar)
+
+| Tool | Key | Drag | Click (no drag) |
+|---|---|---|---|
+| **Hand** | `H` | pans. The grabbed ground point stays under the cursor | selects the box under the cursor. Clicking empty ground deselects |
+| **Room** | `R` | draws a footprint on the ground (0.5 m snap, `Shift` square, `Alt` free). Live `W × D m` label. The preview box shows at 3 m | — |
+| **Volume** | `V` | same as Room, previewed at 0.25 m | — |
+
+- A click is a pointer-up within about 4 px of the pointer-down. Anything more is a drag.
+- After drawing, the new box is **selected automatically** (via the `created` reply) and the tool **stays active**, so you can draw-then-pull without switching tools.
+- `Esc` deselects.
+
+### Height gizmo
+
+- One handle at the **top center** of the selected box. It works in **every tool**.
+- Dragging it moves the height along the vertical line through the handle: the cursor ray is projected onto that line, so it follows the cursor at any yaw.
+- Snaps to 0.05 m (`Alt` for free, still 2 decimals), minimum 0.05 m, with a live `H m` label.
+- It's a local preview while dragging, and one `update_boxes` on release.
+- If the box disappears mid-drag (an agent undo or a Clear), the drag is cancelled.
+
+### Rendering
+
+- **Room:** a faint floor plus four double-sided, semi-transparent walls with outlined edges, and **no ceiling**, so you can see in from above.
+- **Volume:** a solid box with outlined edges.
+- **Actor** keeps its color coding (human vs agent). **Kind** reads from the style (hollow vs solid).
+- **Selected:** a highlighted outline. Hovering in the hand tool gives a subtle highlight.
+
+### Chrome
+
+- **tool-bar:** tools (Hand / Room / Volume), Undo / Redo (disabled when unavailable, tooltip shows the label), counts (rooms, volumes), Clear.
+- **info-label:** connection state and the cursor's ground position as `x · z m`.
+- **Shortcuts:** `Cmd/Ctrl+Z` undo, `Cmd/Ctrl+Shift+Z` redo, `H/R/V` tools, `A/D/←/→` yaw, `Esc` deselect.
+
+---
+
+## 9. Suggested file layout
+
+```
+src/
+  shared/
+    scene.types.ts        # Box, View, Op, HistoryEntry, zod schemas, WS messages
+  server/
+    commands.ts           # ops, inverses, history (pure)
+    commands.test.ts
+    scene.ts              # store: validation + builds commands, uses commands.ts
+    scene.test.ts
+    ws.ts, mcp.ts, main.ts
+  web/
+    App.tsx               # layout, tool state, chrome
+    Viewport.tsx          # <Canvas>, camera controller, pointer routing to tools
+    camera.ts             # pure camera math
+    camera.test.ts
+    Grid.tsx
+    BoxMesh.tsx           # room / volume rendering
+    HeightGizmo.tsx
+    useScene.ts
+```
+
+---
+
+## 10. Increments
+
+Each increment is its own small change, verified before the next one starts. Each one ends with an agent check (the MCP loop still works) and a **browser checklist for Orlando**, since browser testing is done by hand.
+
+### 02.1 — 3D view and hand tool
+
+- Add the three.js deps and replace the SVG canvas with `<Canvas>`, the orthographic camera and the ground grid.
+- Hand tool: pan, zoom toward the focus point, yaw on A/D/←/→.
+- The existing **rects stay** and render as flat tiles on the ground (`rect.y → z`), so `draw_rects` keeps working.
+- `set_view` sends the new `view` shape (focus, yaw, bounds). MCP descriptions updated.
+- **Check:** pan, zoom and yaw feel right. The agent's `draw_rects` inside `view.bounds` lands on screen at any yaw.
+
+### 02.2 — Rooms and volumes
+
+- Scene model v1: `Box` replaces `Rect`, with per-kind IDs and default heights.
+- Room and Volume tools with a live preview and the `W × D` label.
+- `draw_boxes` replaces `draw_rects`, and `add_boxes` replaces `add_rects`.
+- Room and volume rendering. No selection or history yet.
+- **Check:** draw both kinds by hand. The agent draws both kinds, and `get_scene` reports IDs, kinds and heights.
+
+### 02.3 — Command history and undo
+
+- `commands.ts`: ops, inverses, capped linear history. `drawBoxes` and `clear` go through it.
+- WS `undo`/`redo`, and the `history` summary sent with each scene.
+- Undo/Redo buttons and shortcuts.
+- **Unit tests:** undo/redo of add; Clear undo restores boxes in their original order; redo keeps the same IDs; a new edit clears redo; an agent batch is one step; a rejected batch adds no entry.
+- **Check:** draw, undo, redo across two tabs. An agent batch undoes as one step.
+
+### 02.4 — Selection and height gizmo
+
+- Click-to-select in the hand tool, auto-select after drawing (the `created` reply), hover and selected highlights, `Esc`.
+- Height gizmo with a local preview and one `update_boxes` on release.
+- `update_boxes` in the store (through `commands.ts`), over WS and over MCP.
+- **Unit tests:** update and its inverse; unknown ID rejects the batch; height below 0.05 rejects the batch.
+- **Check:** the full demo from §1.
+
+---
+
+## 11. Acceptance test (end of phase)
+
+With the server running and the editor open:
+
+1. Pan, zoom and yaw all work. Yaw is smooth while a key is held and stops when it's released.
+2. Draw two rooms and a volume by hand. The rooms are hollow 3 m boxes and the volume a solid 0.25 m block, in the human color. Each new box is selected right after drawing.
+3. Pull the volume's gizmo up to 1.5 m. The label follows in 0.05 m steps. Undo brings it back to 0.25 m, and redo sets it to 1.5 m again.
+4. In a fresh `claude` session: `/mcp` shows `dungeon-designer` with 3 tools (`get_scene`, `draw_boxes`, `update_boxes`).
+5. *"Add three rooms next to mine and make the middle one 6 m tall."* → one `draw_boxes` call and one `update_boxes` call referencing the new ID. It updates live, in the agent color.
+6. Undo once → the 6 m room goes back to 3 m. Undo again → all three agent rooms disappear together. Redo twice → they're back, with the **same IDs**.
+7. Ask the agent to set a height of `0` or to update `room_99` → a clear error, and nothing changes.
+8. Clear, then undo → everything comes back.
+9. A second browser tab shows the same scene and the same undo/redo state.
+
+---
+
+## 12. Decisions
+
+Settled:
+
+- The editor is **3D-first**, Townscaper / Tiny Glade style: few verbs, always acting on a known surface, a constrained camera. There's no top-down camera for now.
+- **Orthographic** camera, fixed pitch, smooth yaw on held keys.
+- Meters, y up, footprint on x/z.
+- Default heights are room **3 m** and volume **0.25 m**, applied at creation.
+- **Vertical snap is 0.05 m** (ground snap stays 0.5 m). The minimum height after creation is one step, 0.05 m.
+- Zoom goes toward the focus point (screen center), the same pivot as yaw.
+- In the hand tool, a click without a drag selects.
+- The agent references boxes by server-assigned, per-kind IDs (`room_3`, `volume_1`).
+- One shared linear history. Undo reverts the latest entry whoever made it. One MCP call, one gizmo drag or one Clear = one undo step.
+- **No agent undo** in 02. The agent fixes its own mistakes with `update_boxes`, and undo is the human's.
+- **`get_scene` doesn't include history** in 02.
+- **No persistence** in 02. It comes in a later phase.
