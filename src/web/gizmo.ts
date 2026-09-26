@@ -10,7 +10,7 @@ export type Bounds = { minX: number; maxX: number; minY: number; maxY: number; m
 type Sign = -1 | 0 | 1;
 /** A footprint scale handle on the top face, by its side in the box's local frame: `scale:1:-1` is the +x, -z corner. */
 export type ScalePart = `scale:${Sign}:${Sign}`;
-export type GizmoPart = "x" | "y" | "z" | "height" | ScalePart;
+export type GizmoPart = "x" | "y" | "z" | "height" | "rotate" | ScalePart;
 export type DragPart = GizmoPart | "body";
 
 /** The gizmo keeps a roughly constant size on screen: its world size grows with the camera distance. */
@@ -27,6 +27,11 @@ export const SCALE_HANDLE = 0.24;
 export const HANDLE_HIT_PX = 10;
 /** The smallest width or depth scaling can leave. */
 export const MIN_SIZE = 0.05;
+/** The rotate handle: a ring this far (gizmo units) out from a top corner, and its radius. */
+export const ROTATE_OFFSET = 0.75;
+export const ROTATE_RADIUS = 0.3;
+/** Rotation snap, degrees. */
+export const ROTATE_SNAP = 15;
 
 /** The 4 corners, then the 4 edge midpoints. */
 export const SCALE_PARTS: ScalePart[] = [
@@ -50,7 +55,8 @@ export const AXES: Record<"x" | "y" | "z", Vec3> = {
   z: { x: 0, y: 0, z: 1 },
 };
 
-const round2 = (n: number) => Math.round(n * 100) / 100;
+/** 2 decimals, and never -0 (so labels and patches read "0"). */
+const round2 = (n: number) => Math.round(n * 100) / 100 + 0;
 const snapTo = (n: number, step: number) => Math.round(n / step) * step;
 
 /**
@@ -95,6 +101,29 @@ export function scaleCursor(cam: CameraState, size: Size, box: Box, part: ScaleP
   return deg < 22.5 || deg >= 157.5 ? "ew" : deg < 67.5 ? "nwse" : deg < 112.5 ? "ns" : "nesw";
 }
 
+/**
+ * Where the rotate handle sits: just outside a top corner, out along the diagonal. For a single box it's the box's
+ * own (-x, -z) corner, so it turns with the box; for several it's the bounds' min corner. `inward` points back
+ * toward the corner (the ring's gap faces it). `scale` is the gizmo scale.
+ */
+export function rotateHandlePlacement(boxes: Box[], scale: number): { point: Vec3; inward: { x: number; z: number } } {
+  const offset = ROTATE_OFFSET * scale;
+  if (boxes.length === 1) {
+    const box = boxes[0];
+    const { ex, ez } = boxAxes(box);
+    const corner = scaleHandlePoint(box, "scale:-1:-1");
+    const out = { x: -(ex.x + ez.x) / Math.SQRT2, z: -(ex.z + ez.z) / Math.SQRT2 };
+    return { point: { x: corner.x + out.x * offset, y: corner.y, z: corner.z + out.z * offset }, inward: { x: -out.x, z: -out.z } };
+  }
+  const b = selectionBounds(boxes);
+  const d = offset / Math.SQRT2;
+  return { point: { x: b.minX - d, y: b.maxY, z: b.minZ - d }, inward: { x: Math.SQRT1_2, z: Math.SQRT1_2 } };
+}
+
+/** The angle of a ground vector in degrees, counterclockwise seen from above (the rotation convention). */
+const angleOf = (x: number, z: number) => (Math.atan2(-z, x) * 180) / Math.PI;
+const normalizeDeg = (deg: number) => ((deg % 360) + 360) % 360;
+
 /** The axis-aligned bounds of a box's (possibly rotated) footprint. */
 export function footprintBounds(box: Box): { minX: number; maxX: number; minZ: number; maxZ: number } {
   const a = (box.rotation * Math.PI) / 180;
@@ -136,7 +165,7 @@ function segmentDistance(px: number, py: number, a: { sx: number; sy: number }, 
 
 /**
  * Which of `parts` is under the cursor, or null. The height handle wins over everything around it, otherwise the
- * nearest handle wins. Scale handles need the (single) selected `box`.
+ * nearest handle wins. Scale and rotate handles need the selected `boxes`.
  */
 export function hitGizmo(
   cam: CameraState,
@@ -145,7 +174,7 @@ export function hitGizmo(
   sy: number,
   anchor: Vec3,
   parts: GizmoPart[],
-  box?: Box,
+  boxes: Box[] = [],
 ): GizmoPart | null {
   const scale = gizmoScale(cam);
   if (parts.includes("height")) {
@@ -153,6 +182,17 @@ export function hitGizmo(
     if (p && Math.hypot(p.sx - sx, p.sy - sy) <= HANDLE_HIT_PX) return "height";
   }
   let best: { part: GizmoPart; d: number } | null = null;
+  if (parts.includes("rotate") && boxes.length > 0) {
+    // The ring is bigger than a point handle: anywhere within its radius (on screen) grabs it.
+    const { point } = rotateHandlePlacement(boxes, scale);
+    const c = worldToScreen(cam, size, point);
+    const rim = worldToScreen(cam, size, add(point, AXES.y, ROTATE_RADIUS * scale));
+    if (c && rim) {
+      const d = Math.hypot(c.sx - sx, c.sy - sy);
+      if (d <= Math.hypot(rim.sx - c.sx, rim.sy - c.sy) + HANDLE_HIT_PX / 2) best = { part: "rotate", d };
+    }
+  }
+  const box = boxes.length === 1 ? boxes[0] : undefined;
   if (box) {
     for (const part of parts.filter(isScalePart)) {
       const p = worldToScreen(cam, size, scaleHandlePoint(box, part));
@@ -207,6 +247,12 @@ export type DragModifiers = { shift: boolean; alt: boolean; snap: boolean };
  */
 export function startHandleDrag(cam: CameraState, size: Size, sx: number, sy: number, part: GizmoPart, origin: Box[]): GizmoDrag {
   const bounds = selectionBounds(origin);
+  if (part === "rotate") {
+    // The cursor's angle around the pivot (the selection's center), on the plane of its top.
+    const p = screenToPlane(cam, size, sx, sy, bounds.maxY);
+    const pivot = gizmoAnchor(bounds);
+    return { part, origin, bounds, grab: angleOf(p.x - pivot.x, p.z - pivot.z) };
+  }
   if (isScalePart(part)) {
     const box = origin[0];
     const [hx, hz] = signs(part);
@@ -238,6 +284,32 @@ export function dragUpdate(
   const patches: Record<string, BoxPatch> = {};
 
   if (isScalePart(part)) return scaleUpdate(drag, part, cam, size, sx, sy, mods);
+
+  if (part === "rotate") {
+    const p = screenToPlane(cam, size, sx, sy, bounds.maxY);
+    let delta = normalizeDeg(angleOf(p.x - anchor.x, p.z - anchor.z) - (drag.grab as number));
+    if (delta > 180) delta -= 360;
+    // One box snaps to whole 15° angles; several snap the change (their angles differ).
+    const single = origin.length === 1 ? origin[0] : null;
+    if (mods.snap) {
+      delta = single ? snapTo(single.rotation + delta, ROTATE_SNAP) - single.rotation : snapTo(delta, ROTATE_SNAP);
+    }
+    const a = (delta * Math.PI) / 180;
+    const cos = Math.cos(a);
+    const sin = Math.sin(a);
+    for (const box of origin) {
+      // Each center turns around the pivot (the same counterclockwise-from-above turn as the rotation itself).
+      const dx = box.x - anchor.x;
+      const dz = box.z - anchor.z;
+      patches[box.id] = {
+        x: round2(anchor.x + dx * cos + dz * sin),
+        z: round2(anchor.z - dx * sin + dz * cos),
+        rotation: round2(normalizeDeg(box.rotation + delta)) % 360,
+      };
+    }
+    const label = single ? `${patches[single.id].rotation}°` : `${delta >= 0 ? "+" : ""}${round2(delta)}°`;
+    return { patches, label };
+  }
 
   if (part === "height") {
     const box = origin[0];

@@ -390,3 +390,13 @@ Adopted as recommended (say if any should change):
 - The cursor over or dragging a scale handle is the resize cursor matching the direction that handle points on screen (`ns`, `ew`, `nwse`, `nesw`), so it's right at any yaw and rotation.
 - Handle priority: the height cube wins, otherwise the nearest handle (scale or arrow) within 10 px.
 - **Tests:** handle positions (including rotated), hit testing, corner, edge, `Alt`, `Shift` (corner and edge), a rotated box, and the minimum size with and without snap. 80 tests pass.
+
+### 03.5 — Rotate (done)
+
+- **Rotate handle:** a purple ring, open for a quarter turn with an arrowhead at one end, lying flat just outside a top corner. For a single box it's the box's own (-x, -z) corner, so it turns with the box. For several boxes it's the bounds' min corner (ready for 03.6). The gap faces the corner. Anywhere within the ring grabs it.
+- Dragging it turns the selection around the **center of its bounds**, on the plane of its top: each box's center orbits the pivot and the angle is added to its rotation (one code path for one box or many, so group rotation in 03.6 and 03.7 needs no new math). A single box's center doesn't move.
+- **Snap:** a single box snaps to whole 15° angles (a box at 7° goes to 15°, 30°, ...). Several boxes snap the change in 15° steps, since their angles differ. `Cmd/Ctrl` turns it free.
+- Live label: the box's new angle (`45°`) or the change for several (`+90°`). One drag is one `update_nodes` (x, z, rotation), so one undo step.
+- A curved-arrow SVG cursor over and while dragging the handle (CSS has no rotate cursor), falling back to a crosshair.
+- Scale handles already worked on rotated boxes (03.4). The gizmo's rounding no longer produces `-0`.
+- **Tests:** handle placement (including turned with the box), hit testing, single-box snapping (up and down, free), and a multi-box turn around the bounds' center. 84 tests pass.

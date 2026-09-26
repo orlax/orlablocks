@@ -10,6 +10,7 @@ import {
   gizmoAnchor,
   gizmoScale,
   hitGizmo,
+  rotateHandlePlacement,
   SCALE_PARTS,
   scaleHandlePoint,
   selectionBounds,
@@ -176,7 +177,7 @@ describe("scale handles", () => {
   it("are found by hitGizmo, given the box", () => {
     const p = screen(scaleHandlePoint(a, "scale:1:-1"));
     const anchor = { x: 1, y: 1, z: 1 };
-    expect(hitGizmo(cam, size, p.sx, p.sy, anchor, ["x", "y", "z", "height", ...SCALE_PARTS], a)).toBe("scale:1:-1");
+    expect(hitGizmo(cam, size, p.sx, p.sy, anchor, ["x", "y", "z", "height", ...SCALE_PARTS], [a])).toBe("scale:1:-1");
   });
 
   it("a corner resizes with the opposite corner fixed, in 0.5 m steps", () => {
@@ -213,6 +214,62 @@ describe("scale handles", () => {
   it("never shrinks a side below the smallest size on the snap lattice", () => {
     expect(scale(a, "scale:1:0", { x: -10, z: 1 }).patches.box_1).toMatchObject({ width: 0.5, x: 0.25 });
     expect(scale(a, "scale:1:0", { x: -10, z: 1 }, { ...plain, snap: false }).patches.box_1).toMatchObject({ width: 0.05 });
+  });
+});
+
+describe("rotate handle", () => {
+  const plain = { shift: false, alt: false, snap: true };
+  /** Drags the rotate handle around the selection's center by `degrees` (counterclockwise seen from above). */
+  const rotate = (boxes: Box[], degrees: number, mods = plain) => {
+    const bounds = selectionBounds(boxes);
+    const pivot = gizmoAnchor(bounds);
+    const r = 5;
+    const at = (deg: number) => {
+      const a = (deg * Math.PI) / 180;
+      return screen({ x: pivot.x + r * Math.cos(a), y: pivot.y, z: pivot.z - r * Math.sin(a) });
+    };
+    const start = at(-135);
+    const drag = startHandleDrag(cam, size, start.sx, start.sy, "rotate", boxes);
+    const end = at(-135 + degrees);
+    return dragUpdate(drag, cam, size, end.sx, end.sy, mods, []);
+  };
+
+  it("sits just outside the box's (-x, -z) corner, turning with the box", () => {
+    const a = box({ x: 0, z: 0, width: 2, depth: 2 });
+    const { point, inward } = rotateHandlePlacement([a], 1);
+    expect(point.x).toBeLessThan(-1);
+    expect(point.z).toBeLessThan(-1);
+    expect(point.y).toBe(1);
+    expect(inward.x).toBeCloseTo(Math.SQRT1_2);
+    const turned = rotateHandlePlacement([box({ x: 0, z: 0, width: 2, depth: 2, rotation: 90 })], 1).point;
+    // Turned 90° counterclockwise: the (-x, -z) corner is now at world (-1, +1).
+    expect(turned.x).toBeLessThan(-1);
+    expect(turned.z).toBeGreaterThan(1);
+  });
+
+  it("is found by hitGizmo", () => {
+    const a = box({ x: 3, z: 3 });
+    const p = screen(rotateHandlePlacement([a], gizmoScale(cam)).point);
+    expect(hitGizmo(cam, size, p.sx, p.sy, { x: 3, y: 1, z: 3 }, ["x", "y", "z", "rotate"], [a])).toBe("rotate");
+  });
+
+  it("turns a single box in place, snapping to whole 15° angles", () => {
+    const a = box({ x: 2, z: 3, rotation: 7 });
+    const { patches, label } = rotate([a], 36);
+    expect(patches).toEqual({ box_1: { x: 2, z: 3, rotation: 45 } });
+    expect(label).toBe("45°");
+    expect(rotate([a], -20).patches.box_1.rotation).toBe(345);
+    expect(rotate([a], 36, { ...plain, snap: false }).patches.box_1.rotation).toBeCloseTo(43, 0);
+  });
+
+  it("turns several boxes around their combined center, snapping the change", () => {
+    // Centers at x -2 and +2, so the bounds' center (the pivot) is 0, 0. A 90° counterclockwise turn (seen from
+    // above) sends +x to -z.
+    const a = box({ x: -2, z: 0, rotation: 90 });
+    const b = box({ id: "box_2", x: 2, z: 0 });
+    const { patches, label } = rotate([a, b], 88);
+    expect(patches).toEqual({ box_1: { x: 0, z: 2, rotation: 180 }, box_2: { x: 0, z: -2, rotation: 90 } });
+    expect(label).toBe("+90°");
   });
 });
 

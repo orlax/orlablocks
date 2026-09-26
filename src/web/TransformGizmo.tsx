@@ -8,6 +8,8 @@ import {
   gizmoScale,
   HEIGHT_HANDLE,
   isScalePart,
+  rotateHandlePlacement,
+  ROTATE_RADIUS,
   SCALE_HANDLE,
   scaleHandlePoint,
   type GizmoPart,
@@ -32,6 +34,16 @@ const scaleGeometry = new THREE.BoxGeometry(SCALE_HANDLE, SCALE_HANDLE / 3, SCAL
 const scaleRimGeometry = new THREE.BoxGeometry(SCALE_HANDLE + 2 * RIM, SCALE_HANDLE / 3 + RIM, SCALE_HANDLE + 2 * RIM);
 const SCALE_COLORS = { fill: "#ffffff", hot: "#8fb4f2", rim: "#2b2d33" };
 
+// The rotate handle: a flat ring, open for a quarter turn (the gap faces the corner), with an arrowhead at its end.
+// Angles are counterclockwise seen from above, from +x; the gap is centered on -45°.
+const RING_ARC = 1.5 * Math.PI;
+const ringGeometry = new THREE.TorusGeometry(ROTATE_RADIUS, 0.05, 8, 32, RING_ARC).rotateX(-Math.PI / 2);
+// At the arc's end (270°, i.e. +z) the ring runs toward +x: the cone points that way.
+const ringTipGeometry = new THREE.ConeGeometry(0.11, 0.24, 16)
+  .rotateZ(-Math.PI / 2)
+  .translate(0.06, 0, ROTATE_RADIUS);
+const ROTATE_COLOR = { base: "#9b59d0", hot: "#c08ef0" };
+
 /** Turns the +y arrow to point along each axis. */
 const ARROW_ROTATION: Record<"x" | "y" | "z", [number, number, number]> = {
   x: [0, 0, -Math.PI / 2],
@@ -47,14 +59,14 @@ const ARROW_ROTATION: Record<"x" | "y" | "z", [number, number, number]> = {
 export function TransformGizmo({
   anchor,
   parts,
-  box,
+  boxes,
   hot,
   cam,
 }: {
   anchor: Vec3;
   parts: GizmoPart[];
-  /** The single selected box, for the scale handles. */
-  box?: Box;
+  /** The selected boxes: scale handles need a single one, the rotate handle any. */
+  boxes: Box[];
   hot: GizmoPart | null;
   cam: RefObject<CameraState>;
 }) {
@@ -68,8 +80,10 @@ export function TransformGizmo({
   });
 
   const color = (part: keyof typeof COLORS) => (hot === part ? COLORS[part].hot : COLORS[part].base);
+  const box = boxes.length === 1 ? boxes[0] : undefined;
   return (
     <>
+      {parts.includes("rotate") && <RotateHandle boxes={boxes} hot={hot === "rotate"} cam={cam} />}
       {box &&
         parts
           .filter(isScalePart)
@@ -94,6 +108,34 @@ export function TransformGizmo({
         )}
       </group>
     </>
+  );
+}
+
+/** The rotate handle, just outside a top corner, turned so its gap faces the corner. */
+function RotateHandle({ boxes, hot, cam }: { boxes: Box[]; hot: boolean; cam: RefObject<CameraState> }) {
+  const group = useRef<THREE.Group>(null);
+
+  useFrame(() => {
+    const g = group.current;
+    if (!g) return;
+    const scale = gizmoScale(cam.current);
+    const { point, inward } = rotateHandlePlacement(boxes, scale);
+    g.position.set(point.x, point.y, point.z);
+    g.scale.setScalar(scale);
+    // Turn the gap (at -45°) to face `inward`, counterclockwise seen from above.
+    g.rotation.y = Math.atan2(-inward.z, inward.x) + Math.PI / 4;
+  });
+
+  const color = hot ? ROTATE_COLOR.hot : ROTATE_COLOR.base;
+  return (
+    <group ref={group}>
+      <mesh geometry={ringGeometry} renderOrder={12}>
+        <meshBasicMaterial color={color} depthTest={false} transparent />
+      </mesh>
+      <mesh geometry={ringTipGeometry} renderOrder={12}>
+        <meshBasicMaterial color={color} depthTest={false} transparent />
+      </mesh>
+    </group>
   );
 }
 
