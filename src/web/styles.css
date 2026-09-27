@@ -43,6 +43,8 @@ body {
 .viewport.panning { cursor: grabbing; }
 .viewport.drawing { cursor: crosshair; }
 .viewport.resizing { cursor: ns-resize; }
+/* On a profile knob (wall, taper, bevel). */
+.viewport.shaping { cursor: pointer; }
 
 /* The Select tool's marquee. */
 .marquee {

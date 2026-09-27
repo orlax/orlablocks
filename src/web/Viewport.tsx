@@ -27,7 +27,6 @@ import {
   boundsOf,
   isClosed,
   isFootprinted,
-  isTilted,
   lineProblem,
   rampProblem,
   outlineProblem,
@@ -76,6 +75,8 @@ import {
   isScalePart,
   SCALE_PARTS,
   scaleCursor,
+  isProfilePart,
+  profileParts,
   snapElevation,
   startBodyDrag,
   startHandleDrag,
@@ -409,10 +410,9 @@ export function Viewport({
   const selectedBoxes = tool !== "select" || editShape ? [] : ghosts.length > 0 ? ghosts : shownUnder(selection);
   const single =
     selection.length === 1 && selectedBoxes.length === 1 && selectedBoxes[0].id === selection[0] ? selectedBoxes[0] : undefined;
-  // Height and scale handles are for a single closed shape (a line has neither) that isn't tilted (its top face
-  // isn't flat on screen: it's resized with the contextual bar's fields). Tilt rings are for a single box or
-  // cylinder volume or hole.
-  const scalable = single && isClosed(single) && !isTilted(single) ? single : undefined;
+  // Height and scale handles and the profile knobs are for a single closed shape (a line has none; a tilted
+  // shape's sit on its own tilted top). Tilt rings are for a single box or cylinder volume or hole.
+  const scalable = single && isClosed(single) ? single : undefined;
   const tiltable = single && isFootprinted(single) && single.kind !== "room";
   // The selection frame turns with the selection: live while rotating, then as far as it was turned.
   const selectionKey = selection.join(",");
@@ -423,7 +423,7 @@ export function Viewport({
       ? {
           anchor: gizmoAnchor(boundsOf(selectedBoxes), frame),
           parts: [
-            ...(scalable ? ["x", "y", "z", "rotate", "height", ...SCALE_PARTS] : ["x", "y", "z", "rotate"]),
+            ...(scalable ? ["x", "y", "z", "rotate", "height", ...SCALE_PARTS, ...profileParts(scalable)] : ["x", "y", "z", "rotate"]),
             ...(tiltable ? ["pitch", "roll"] : []),
           ] as GizmoPart[],
           boxes: selectedBoxes,
@@ -1105,6 +1105,7 @@ export function Viewport({
     if (drag?.active && drag.copy) return "copying";
     if (activePart === "rotate" || activePart === "pitch" || activePart === "roll") return "rotating";
     if (activePart === "y" || activePart === "height") return "resizing";
+    if (activePart && isProfilePart(activePart)) return "shaping";
     if (activePart) return "moving";
     if (panning) return "panning";
     return DRAWS[tool] || isPointTool(tool) ? "drawing" : tool === "select" ? "selecting" : "";

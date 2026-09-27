@@ -106,13 +106,13 @@ Consequences:
 All three are small knobs in the gizmo's style. Dragging one previews live and sends one step on release, with Cmd/Ctrl turning off the snap as usual. The label shows the value (`wall 0.35 m`, `taper 0.40`, `bevel 0.25`).
 
 - **Wall** (single rooms):
-  - **Where:** a knob on the inner top edge of the wall at the room's local +x side. For a free-form, it goes on its first edge's midpoint.
+  - **Where:** a knob on the wall's inner face at the room's local +x side, halfway up (built there instead of the top edge, which is crowded with the scale handles). A free-form's goes on its longest edge's midpoint.
   - **Drag:** along that edge's inward normal on the top plane. Thickness = the distance from the outline, snapped to 0.05 m, from `MIN_WALL` up to the largest wall that still leaves a room.
 - **Taper** (single volumes and holes):
-  - **Where:** a knob at the midpoint of the top face's local +x edge.
+  - **Where:** a knob on the top face's edge, between the local +x edge's midpoint and the corner (built there instead of the midpoint, which is where the +x scale handle sits).
   - **Drag:** toward the center, on the top plane. Taper = how far the edge has moved in, 0 at the base's edge and 1 at the center, snapped to 0.05. A free-form measures toward its centroid.
 - **Bevel** (single volumes and holes):
-  - **Where:** a knob on the top edge at the local −x side.
+  - **Where:** a knob on the top edge at the opposite side (−x, between the midpoint and the corner).
   - **Drag:** down the side. Bevel = the drop ÷ the largest radius it can have (min(height, the top's half smallest extent)), snapped to 0.05.
 - **Crowding:**
   - At taper 1 the top is a point, so the taper knob sits at the apex and the bevel knob hides (there's no edge to round).
@@ -225,4 +225,45 @@ Each increment ends with typecheck, the tests, a bundle build and a browser chec
    - Double-click the header and it goes back top right.
    - Collapse it and reload, and it stays collapsed.
 9. **In a group:** enter a group (double-click) and select a child. The header reads `group › child`.
+
+### 07B.3 — Handles (done; checked in the browser by Orlando)
+
+**What changed:**
+- **Profile knobs** (`gizmo.ts`: `profileSpokes`, `profileKnob`, `profileParts` and `profileUpdate`; drawn by `ProfileKnob` in `TransformGizmo.tsx`) sit on a single selected closed shape:
+  - **Wall knob** (brick): on a room's inner wall face, halfway up.
+  - **Taper knob** (teal): on the top, where the side meets it.
+  - **Bevel knob** (pink): on the side, where the rounding starts. It hides when the top is a point.
+- **Where the taper and bevel knobs sit:** a box's or cylinder's are on opposite sides, between an edge's midpoint and a corner, so every scale handle stays reachable (a test checks all 8). A free-form's are on its longest edge's midpoint and the edge midpoint farthest from it.
+- **Dragging a knob:**
+  - It previews live with its label (`taper 0.40`, `bevel 0.25`, `wall 0.35 m`) and sends one step on release.
+  - It snaps to 0.05, and Cmd/Ctrl makes it free.
+  - A drag back to the start value sends nothing, even when the stored value is none. A new value of 0 is sent as 0, not undefined.
+- **Tilted shapes get every handle,** all worked out in the shape's own frame (`cursorInShape`, `shapeAxis`):
+  - The scale handles lie on the tilted top face, turned with it, and an edge keeps the opposite face fixed in the world (the center moves along the tilted axes, `y` included).
+  - The height handle sits on the tilted top face's center and keeps the bottom fixed.
+  - The profile knobs work as on a level shape.
+- **The viewport** gives any single closed shape the height and scale handles plus its profile knobs, and a knob shows the `pointer` cursor.
+
+**Verified:**
+- Typecheck, 283 unit tests and the bundle build pass.
+- The new tests cover:
+  - knob placement, including a cylinder's taper knob on its circle;
+  - hit testing, with every scale handle still reachable;
+  - taper, bevel and wall drags with their limits;
+  - a wall dragged back to the start sending nothing;
+  - a taper knob on a tilted shape;
+  - on a tilted log, the scale edge keeping the opposite face fixed and height keeping the bottom fixed.
+
+**Browser checklist:**
+1. **Taper and bevel knobs:** select a box volume. A teal knob is on the top edge and a pink one on the opposite top edge, clear of the white scale squares.
+   - Drag teal toward the center: the box tapers live, `taper …` shows, and there's one undo step.
+   - Drag pink down: the top rounds live.
+   - At taper 1, the pink knob is gone.
+2. **Cylinders and free-forms:** the same on a cylinder volume, a free-form volume and a hole cutting a wall (the cut follows live).
+3. **Wall knob:** select a room. A brick knob sits on the inner +x wall face, halfway up. Dragging it inward thickens the walls live, and it stops before the room closes.
+4. **Tilted shapes:** tilt a box (roll 90) with a ring. The outline handles are back, lying on its tilted top.
+   - Drag an edge handle: the opposite face stays put.
+   - Drag the yellow height handle: the bottom stays put.
+   - The taper and bevel knobs work on it too.
+5. **Nothing else changed:** move and rotate handles, the tilt rings, and the scale handles on level shapes all work as before.
 

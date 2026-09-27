@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Box } from "../shared/scene.types";
-import { boundsOf, footprintBounds, selectionFrame } from "../shared/geometry";
+import { boundsOf, footprintBounds, selectionFrame, toWorld3 } from "../shared/geometry";
 import { DEFAULT_CAMERA, worldToScreen, type CameraState, type Vec3 } from "./camera";
 import {
   ARROW,
@@ -11,7 +11,10 @@ import {
   elevationTargets,
   gizmoAnchor,
   gizmoScale,
+  heightHandlePoint,
   hitGizmo,
+  profileKnobPoint,
+  profileParts,
   rotateHandlePlacement,
   SCALE_PARTS,
   scaleHandlePoint,
@@ -361,3 +364,106 @@ describe("tilt rings", () => {
     expect(JSON.parse(JSON.stringify({ roll: tiltValue(-0.001) }))).toEqual({ roll: 0 });
   });
 });
+
+describe("profile knobs", () => {
+  const plain = { shift: false, alt: false, snap: true };
+  const anchorOf = (b: Box) => gizmoAnchor(boundsOf([b]));
+  /** Drags a knob of `b` from where it is to the world point `to`. */
+  const pull = (b: Box, part: "wall" | "taper" | "bevel", to: Vec3, mods = plain) => {
+    const from = screen(profileKnobPoint(b, part));
+    const drag = startHandleDrag(cam, size, from.sx, from.sy, part, [b]);
+    const end = screen(to);
+    return dragUpdate(drag, cam, size, end.sx, end.sy, mods, []).patches.box_1;
+  };
+  const hill = box({ width: 4, depth: 2, height: 2 });
+  const hall = box({ kind: "room", width: 6, depth: 4, height: 3 });
+
+  it("are a room's wall, a volume's taper and bevel (no bevel once the top is a point)", () => {
+    expect(profileParts(hall)).toEqual(["wall"]);
+    expect(profileParts(hill)).toEqual(["taper", "bevel"]);
+    expect(profileParts({ ...hill, taper: 1 })).toEqual(["taper"]);
+    expect(profileKnobPoint(hall, "wall")).toEqual({ x: 2.8, y: 1.5, z: 0 });
+    // Between the +x edge's midpoint and the corner (clear of the scale handles), and opposite for the bevel.
+    expect(profileKnobPoint(hill, "taper")).toEqual({ x: 2, y: 2, z: 0.5 });
+    expect(profileKnobPoint({ ...hill, taper: 0.5 }, "taper")).toEqual({ x: 1, y: 2, z: 0.25 });
+    expect(profileKnobPoint(hill, "bevel")).toEqual({ x: -2, y: 2, z: -0.5 });
+    const knob = profileKnobPoint({ ...box({ width: 4, depth: 4, height: 2 }), type: "cylinder" }, "taper");
+    expect(Math.hypot(knob.x, knob.z)).toBeCloseTo(2, 1);
+  });
+
+  it("are found by hitGizmo, and leave every scale handle reachable", () => {
+    const parts = ["height", ...SCALE_PARTS, "taper", "bevel"] as const;
+    for (const part of SCALE_PARTS) {
+      const p = screen(scaleHandlePoint(hill, part));
+      expect(hitGizmo(cam, size, p.sx, p.sy, anchorOf(hill), [...parts], [hill])).toBe(part);
+    }
+    for (const part of ["taper", "bevel"] as const) {
+      const p = screen(profileKnobPoint(hill, part));
+      expect(hitGizmo(cam, size, p.sx, p.sy, anchorOf(hill), ["x", "y", "z", "height", ...SCALE_PARTS, "taper", "bevel"], [hill])).toBe(part);
+    }
+    const p = screen(profileKnobPoint(hall, "wall"));
+    expect(hitGizmo(cam, size, p.sx, p.sy, anchorOf(hall), ["height", ...SCALE_PARTS, "wall"], [hall])).toBe("wall");
+  });
+
+  it("the taper knob slides toward the center on the top, in 0.05 steps, 0 to 1", () => {
+    expect(pull(hill, "taper", { x: 1.02, y: 2, z: 0.3 })).toEqual({ taper: 0.5 });
+    expect(pull(hill, "taper", { x: -3, y: 2, z: 0 })).toEqual({ taper: 1 });
+    expect(pull({ ...hill, taper: 0.5 }, "taper", { x: 5, y: 2, z: 0 })).toEqual({ taper: 0 });
+  });
+
+  it("the bevel knob slides down the side: the radius as a fraction of the largest it can be", () => {
+    // The largest radius is min(height 2, half the depth 1) = 1.
+    expect(pull(hill, "bevel", { x: -2, y: 1.5, z: -0.5 })).toEqual({ bevel: 0.5 });
+    expect(pull(hill, "bevel", { x: -2, y: -4, z: -0.5 })).toEqual({ bevel: 1 });
+    expect(pull({ ...hill, bevel: 0.5 }, "bevel", { x: -2, y: 9, z: -0.5 })).toEqual({ bevel: 0 });
+  });
+
+  it("the wall knob slides across the wall, from MIN_WALL to what leaves an inside, and back to the start changes nothing", () => {
+    expect(pull(hall, "wall", { x: 2.36, y: 1.5, z: 0 })).toEqual({ wall: 0.65 });
+    expect(pull(hall, "wall", { x: -9, y: 1.5, z: 0 })).toEqual({ wall: 1.95 });
+    expect(pull(hall, "wall", { x: 4, y: 1.5, z: 0 })).toEqual({ wall: 0.05 });
+    expect(pull(hall, "wall", { x: 2.8, y: 1.5, z: 0 })).toEqual({ wall: undefined });
+    expect(effectiveChanges([hall], { box_1: { wall: undefined } })).toEqual([]);
+  });
+
+  it("work on a tilted shape, in its own frame", () => {
+    const leaning = { ...hill, pitch: 30 };
+    const top = toWorld3(leaning, { x: 1, y: 2, z: 0.25 });
+    expect(pull(leaning, "taper", top)).toEqual({ taper: 0.5 });
+  });
+});
+
+describe("handles on a tilted shape", () => {
+  const log = box({ width: 2, depth: 2, height: 4, roll: 90, pitch: 20, x: 5, y: 1 });
+  const plain = { shift: false, alt: false, snap: true };
+  const close = (a: Vec3, b: Vec3) => {
+    expect(a.x).toBeCloseTo(b.x, 1);
+    expect(a.y).toBeCloseTo(b.y, 1);
+    expect(a.z).toBeCloseTo(b.z, 1);
+  };
+
+  it("scale handles sit on its own top face, and an edge keeps the opposite side fixed in the world", () => {
+    expect(scaleHandlePoint(log, "scale:1:0")).toEqual(toWorld3(log, { x: 1, y: 4, z: 0 }));
+    const from = screen(scaleHandlePoint(log, "scale:1:0"));
+    const drag = startHandleDrag(cam, size, from.sx, from.sy, "scale:1:0", [log]);
+    const to = screen(toWorld3(log, { x: 2, y: 4, z: 0 }));
+    const patch = dragUpdate(drag, cam, size, to.sx, to.sy, plain, []).patches.box_1;
+    expect(patch.width).toBe(3);
+    const after = { ...log, ...patch } as Box;
+    close(toWorld3(after, { x: -1.5, y: 2, z: 0 }), toWorld3(log, { x: -1, y: 2, z: 0 }));
+  });
+
+  it("the height handle sits on its own top face's center, and keeps the bottom fixed", () => {
+    const anchor = gizmoAnchor(boundsOf([log]));
+    const h = heightHandlePoint(log, anchor);
+    expect(h).toEqual(toWorld3(log, { x: 0, y: 4, z: 0 }));
+    const from = screen(h);
+    expect(hitGizmo(cam, size, from.sx, from.sy, anchor, ["height"], [log])).toBe("height");
+    const drag = startHandleDrag(cam, size, from.sx, from.sy, "height", [log]);
+    const to = screen(toWorld3(log, { x: 0, y: 5, z: 0 }));
+    const patch = dragUpdate(drag, cam, size, to.sx, to.sy, plain, []).patches.box_1;
+    expect(patch.height).toBe(5);
+    close(toWorld3({ ...log, ...patch } as Box, { x: 0, y: 0, z: 0 }), toWorld3(log, { x: 0, y: 0, z: 0 }));
+  });
+});
+

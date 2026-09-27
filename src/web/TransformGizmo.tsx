@@ -2,13 +2,18 @@ import { useRef, type RefObject } from "react";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 import type { Frame } from "../shared/geometry";
+import { isClosed, isFootprinted, isTilted } from "../shared/geometry";
 import type { Shape } from "../shared/scene.types";
 import type { CameraState, Vec3 } from "./camera";
 import {
   ARROW,
   gizmoScale,
   HEIGHT_HANDLE,
+  heightHandlePoint,
+  isProfilePart,
   isScalePart,
+  PROFILE_HANDLE,
+  profileKnobPoint,
   rotateHandlePlacement,
   ROTATE_RADIUS,
   SCALE_HANDLE,
@@ -16,6 +21,7 @@ import {
   TILT_RADIUS,
   tiltRing,
   type GizmoPart,
+  type ProfilePart,
   type ScalePart,
   type TiltPart,
 } from "./gizmo";
@@ -53,6 +59,23 @@ const ROTATE_COLOR = { base: "#9b59d0", hot: "#c08ef0" };
 const tiltGeometry = new THREE.TorusGeometry(TILT_RADIUS, 0.035, 8, 64);
 const TILT_COLORS: Record<TiltPart, { base: string; hot: string }> = { pitch: COLORS.x, roll: COLORS.z };
 
+// The profile knobs: small spheres, one color each (wall: brick, taper: teal, bevel: pink), with a dark rim.
+const knobGeometry = new THREE.SphereGeometry(PROFILE_HANDLE, 16, 12);
+const knobRimGeometry = new THREE.SphereGeometry(PROFILE_HANDLE + 0.04, 16, 12);
+const KNOB_COLORS: Record<ProfilePart, { base: string; hot: string }> = {
+  wall: { base: "#c8744a", hot: "#eea27c" },
+  taper: { base: "#2fb3a3", hot: "#6fe0d2" },
+  bevel: { base: "#d0609a", hot: "#f09ac4" },
+};
+
+/** A shape's full turn (rotation, then its tilt inside it), as in ShapeMesh: what a tilted shape's handles turn by. */
+function shapeEuler(shape: Shape): THREE.Euler {
+  const deg = Math.PI / 180;
+  const tilt = isFootprinted(shape) ? [shape.pitch ?? 0, shape.roll ?? 0] : [0, 0];
+  const rotation = isFootprinted(shape) ? shape.rotation : 0;
+  return new THREE.Euler(tilt[0] * deg, rotation * deg, tilt[1] * deg, "YXZ");
+}
+
 /** Turns the +y arrow to point along each axis. */
 const ARROW_ROTATION: Record<"x" | "y" | "z", [number, number, number]> = {
   x: [0, 0, -Math.PI / 2],
@@ -62,9 +85,10 @@ const ARROW_ROTATION: Record<"x" | "y" | "z", [number, number, number]> = {
 
 /**
  * The transform gizmo on the selection: world-axis move arrows (x red, y green, z blue) from the top center and,
- * for a single box, the height handle there and the 8 scale handles on the top face's corners and edges, and for a
- * single box or cylinder volume the two tilt rings (pitch red, roll blue) around its center. A constant size on screen and drawn over everything (no depth
- * test). The dragging itself is handled by the Viewport.
+ * for a single shape, the height handle there and the 8 scale handles on the top face's corners and edges (on a
+ * tilted shape's own tilted top), the profile knobs (a room's wall, a volume's taper and bevel), and for a single box
+ * or cylinder volume the two tilt rings (pitch red, roll blue) around its center. A constant size on screen and drawn
+ * over everything (no depth test). The dragging itself is handled by the Viewport.
  */
 export function TransformGizmo({
   anchor,
@@ -105,6 +129,10 @@ export function TransformGizmo({
         parts
           .filter(isScalePart)
           .map((part) => <ScaleHandle key={part} box={box} frame={frame} part={part} hot={hot === part} cam={cam} />)}
+      {box &&
+        isClosed(box) &&
+        parts.filter(isProfilePart).map((part) => <ProfileKnob key={part} shape={box} part={part} hot={hot === part} cam={cam} />)}
+      {box && parts.includes("height") && isTilted(box) && <TiltedHeightHandle box={box} anchor={anchor} hot={hot === "height"} cam={cam} />}
       <group ref={group}>
         {(["x", "y", "z"] as const)
           .filter((axis) => parts.includes(axis))
@@ -118,7 +146,7 @@ export function TransformGizmo({
               </mesh>
             </group>
           ))}
-        {parts.includes("height") && (
+        {parts.includes("height") && !(box && isTilted(box)) && (
           <mesh geometry={cubeGeometry} renderOrder={11}>
             <meshBasicMaterial color={color("height")} depthTest={false} transparent />
           </mesh>
@@ -206,7 +234,7 @@ function ScaleHandle({
   });
 
   return (
-    <group ref={group} rotation={[0, (frame.rotation * Math.PI) / 180, 0]}>
+    <group ref={group} rotation={isTilted(box) ? shapeEuler(box) : [0, (frame.rotation * Math.PI) / 180, 0]}>
       <mesh geometry={scaleRimGeometry} renderOrder={12}>
         <meshBasicMaterial color={SCALE_COLORS.rim} depthTest={false} transparent />
       </mesh>
@@ -216,3 +244,49 @@ function ScaleHandle({
     </group>
   );
 }
+
+/** A profile knob (wall, taper or bevel) where it sits on the shape, at a constant size on screen. */
+function ProfileKnob({ shape, part, hot, cam }: { shape: Shape; part: ProfilePart; hot: boolean; cam: RefObject<CameraState> }) {
+  const group = useRef<THREE.Group>(null);
+
+  useFrame(() => {
+    const g = group.current;
+    if (!g || !isClosed(shape)) return;
+    const p = profileKnobPoint(shape, part);
+    g.position.set(p.x, p.y, p.z);
+    g.scale.setScalar(gizmoScale(cam.current));
+  });
+
+  return (
+    <group ref={group}>
+      <mesh geometry={knobRimGeometry} renderOrder={12}>
+        <meshBasicMaterial color={SCALE_COLORS.rim} depthTest={false} transparent />
+      </mesh>
+      <mesh geometry={knobGeometry} renderOrder={13}>
+        <meshBasicMaterial color={hot ? KNOB_COLORS[part].hot : KNOB_COLORS[part].base} depthTest={false} transparent />
+      </mesh>
+    </group>
+  );
+}
+
+/** A tilted shape's height handle, on its own top face's center and tilted with it. */
+function TiltedHeightHandle({ box, anchor, hot, cam }: { box: Shape; anchor: Vec3; hot: boolean; cam: RefObject<CameraState> }) {
+  const group = useRef<THREE.Group>(null);
+
+  useFrame(() => {
+    const g = group.current;
+    if (!g) return;
+    const p = heightHandlePoint(box, anchor);
+    g.position.set(p.x, p.y, p.z);
+    g.scale.setScalar(gizmoScale(cam.current));
+  });
+
+  return (
+    <group ref={group} rotation={shapeEuler(box)}>
+      <mesh geometry={cubeGeometry} renderOrder={11}>
+        <meshBasicMaterial color={hot ? COLORS.height.hot : COLORS.height.base} depthTest={false} transparent />
+      </mesh>
+    </group>
+  );
+}
+
