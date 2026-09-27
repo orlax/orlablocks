@@ -149,7 +149,7 @@ export type ShapeParts = {
 const partsCache = new WeakMap<ClosedShape, ShapeParts>();
 
 /**
- * A closed shape's meshes in its own frame: a volume is its footprint extruded to its height (tapered and beveled,
+ * A closed shape's meshes in its own frame: a volume (or a hole) is its footprint extruded to its height (tapered and beveled,
  * see `volumeRings`); a room is its walls
  * (see `roomWalls`) plus a floor slab, with no ceiling. An outline with no area (a preview can have one) gives no
  * meshes. Cached per shape object.
@@ -160,7 +160,7 @@ export function shapeMesh(shape: ClosedShape): ShapeParts {
   const outline = localFootprint(shape);
   let parts: ShapeParts;
   if (Math.abs(signedArea2(outline)) < 1e-9) parts = { body: null, floor: null };
-  else if (shape.kind === "volume") parts = { body: loft(volumeRings(shape)), floor: null };
+  else if (shape.kind !== "room") parts = { body: loft(volumeRings(shape)), floor: null };
   else parts = { body: prism(roomWalls(shape).walls, 0, shape.height), floor: prism([outline], 0, FLOOR_THICKNESS) };
   partsCache.set(shape, parts);
   return parts;

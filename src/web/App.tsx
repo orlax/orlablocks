@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ChevronDown, Map as MapIcon } from "lucide-react";
+import { ChevronDown, Eye, EyeOff, Map as MapIcon } from "lucide-react";
 import {
   DEFAULT_COLOR,
   DEFAULT_LINE_COLOR,
@@ -108,6 +108,8 @@ export function App() {
   const pendingSelect = useRef<PendingSelect | null>(null);
   // The last Alt-drag copy's offset (world axes), which Alt+J repeats. Forgotten when the scene changes.
   const lastCopy = useRef<{ dx: number; dy: number; dz: number } | null>(null);
+  // Whether holes show as ghosts (off: only what they cut away shows).
+  const [showHoles, setShowHoles] = useState(true);
   // A one-off message in the info-label, in place of the tool hint.
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -122,6 +124,7 @@ export function App() {
   const selectedShapes = shapesUnder(nodes, selection);
   const rooms = boxes.filter((b) => b.type !== "line" && b.kind === "room").length;
   const volumes = boxes.filter((b) => b.type !== "line" && b.kind === "volume").length;
+  const holes = boxes.filter((b) => b.type !== "line" && b.kind === "hole").length;
   const lines = boxes.filter((b) => b.type === "line").length;
   const groups = nodes.filter(isGroup).length;
 
@@ -372,8 +375,8 @@ export function App() {
           onChange: (wall: number) => send({ type: "update_nodes", changes: selectedRooms.map((r) => ({ id: r.id, wall })) }),
         }
       : undefined;
-  // The taper and bevel sliders act on every volume in the selection, showing each value when they all share it.
-  const selectedVolumes = selectedShapes.filter((s): s is ClosedShape => s.type !== "line" && s.kind === "volume");
+  // The taper and bevel sliders act on every volume and hole in the selection, showing each value when they all share it.
+  const selectedVolumes = selectedShapes.filter((s): s is ClosedShape => s.type !== "line" && s.kind !== "room");
   const sharedOf = (f: "taper" | "bevel") =>
     selectedVolumes.every((v) => (v[f] ?? 0) === (selectedVolumes[0][f] ?? 0)) ? (selectedVolumes[0]?.[f] ?? 0) : undefined;
   const profileControl =
@@ -385,7 +388,7 @@ export function App() {
             send({ type: "update_nodes", changes: selectedVolumes.map((v) => ({ id: v.id, ...patch })) }),
         }
       : undefined;
-  // The tilt fields act on every box and cylinder volume in the selection, each around its own center.
+  // The tilt fields act on every box and cylinder volume or hole in the selection, each around its own center.
   const tiltable = selectedVolumes.filter((v): v is Box | Cylinder => v.type === "box" || v.type === "cylinder");
   const sharedTilt = (f: "pitch" | "roll") => (tiltable.every((v) => (v[f] ?? 0) === (tiltable[0][f] ?? 0)) ? (tiltable[0]?.[f] ?? 0) : undefined);
   const tiltControl =
@@ -403,7 +406,7 @@ export function App() {
       ? { value: nextFields.wall ?? DEFAULT_WALL, onChange: (wall: number) => setNext({ wall: wall === DEFAULT_WALL ? undefined : wall }) }
       : undefined;
   const nextProfileControl =
-    nextKind === "volume"
+    nextKind !== "room"
       ? {
           taper: nextFields.taper ?? 0,
           bevel: nextFields.bevel ?? 0,
@@ -435,6 +438,7 @@ export function App() {
         nextSides={nextSides}
         nextFields={nextFields}
         nextLine={nextLine}
+        showHoles={showHoles}
         onSelect={setSelection}
         onDrawShape={(shape) => send({ type: "add_shapes", shapes: [{ ...shape, color: shape.type === "line" ? nextLine.color : nextColor }] })}
         onUpdate={(changes) => send({ type: "update_nodes", changes })}
@@ -493,8 +497,19 @@ export function App() {
         <span className="coords">yaw {`${Math.round(view.yaw)}°`.padStart(4)}</span>
         <span className="sep" />
         <span className="counts">
-          {scene ? `${rooms} rooms · ${volumes} volumes${lines > 0 ? ` · ${lines} line${lines === 1 ? "" : "s"}` : ""} · ${groups} groups` : "—"}
+          {scene
+            ? `${rooms} rooms · ${volumes} volumes${holes > 0 ? ` · ${holes} hole${holes === 1 ? "" : "s"}` : ""}${lines > 0 ? ` · ${lines} line${lines === 1 ? "" : "s"}` : ""} · ${groups} groups`
+            : "—"}
         </span>
+        <span className="sep" />
+        <button
+          type="button"
+          className={showHoles ? "holes-toggle" : "holes-toggle off"}
+          title={showHoles ? "Hide holes: see only what they cut away" : "Show holes as ghosts"}
+          onClick={() => setShowHoles(!showHoles)}
+        >
+          {showHoles ? <Eye size={13} /> : <EyeOff size={13} />} holes
+        </button>
         <span className="sep" />
         <span className={notice ? "hint notice" : "hint"}>{notice ?? (editing && activeTool === "select" ? EDIT_POINTS_HINT : HINTS[activeTool])}</span>
       </div>

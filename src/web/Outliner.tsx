@@ -1,12 +1,27 @@
 import { useEffect, useState, type DragEvent, type KeyboardEvent, type MouseEvent } from "react";
-import { ChevronDown, ChevronRight, ChevronsDownUp, Circle, CircleDashed, Folder, Square, SquareDashed, Squircle, SquircleDashed, Waypoints } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronRight,
+  ChevronsDownUp,
+  Circle,
+  CircleDashed,
+  Folder,
+  Square,
+  SquareDashed,
+  Squircle,
+  SquircleDashed,
+  TriangleAlert,
+  Waypoints,
+} from "lucide-react";
+import { isHole } from "../shared/holes";
 import type { SceneNode } from "../shared/scene.types";
 import { ancestry, childrenOf, isGroup, subtreeIds } from "../shared/tree";
 
+// A hole uses its shape's solid icon, drawn dotted (the `hole` class).
 const SHAPE_ICONS = {
-  box: { room: SquareDashed, volume: Square },
-  cylinder: { room: CircleDashed, volume: Circle },
-  freeform: { room: SquircleDashed, volume: Squircle },
+  box: { room: SquareDashed, volume: Square, hole: Square },
+  cylinder: { room: CircleDashed, volume: Circle, hole: Circle },
+  freeform: { room: SquircleDashed, volume: Squircle, hole: Squircle },
 } as const;
 /** The icon for a node: a folder for a group, a line's own, a closed shape's by type and kind. */
 const iconOf = (node: SceneNode) => (isGroup(node) ? Folder : node.type === "line" ? Waypoints : SHAPE_ICONS[node.type][node.kind]);
@@ -194,7 +209,7 @@ export function Outliner({
                 >
                   {hasChildren && (collapsed.has(node.id) ? <ChevronRight size={12} /> : <ChevronDown size={12} />)}
                 </span>
-                <Icon size={13} className="icon" />
+                <Icon size={13} className={isHole(node) ? "icon hole" : "icon"} />
                 {renaming?.id === node.id ? (
                   <input
                     autoFocus
@@ -211,6 +226,11 @@ export function Outliner({
                   <>
                     <span className="label">{node.name ?? node.id}</span>
                     {node.name && <span className="id">{node.id}</span>}
+                    {isHole(node) && node.parent === undefined && (
+                      <span className="warn" title="Not in a group: this hole cuts nothing">
+                        <TriangleAlert size={12} />
+                      </span>
+                    )}
                   </>
                 )}
               </div>

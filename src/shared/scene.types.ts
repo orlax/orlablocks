@@ -2,8 +2,11 @@ import { z } from "zod";
 
 export type Actor = "human" | "agent";
 
-/** A room is hollow (floor and walls, no ceiling); a volume is solid (something you stand on or bump into). */
-export type ShapeKind = "room" | "volume";
+/**
+ * A room is hollow (floor and walls, no ceiling); a volume is solid (something you stand on or bump into); a hole
+ * cuts itself out of the shapes in its own group and its sibling groups (a door, a window, a hole in a floor).
+ */
+export type ShapeKind = "room" | "volume" | "hole";
 
 /**
  * The palette: the keys are the contract (the agent and the editor use them), the hex values are the material's
@@ -45,10 +48,10 @@ type Footprinted = {
   rotation: number; // degrees, 0..360
   color: ShapeColor;
   wall?: number; // rooms only: the walls' thickness, grown inward from the footprint; none = DEFAULT_WALL
-  taper?: number; // volumes only: 0..1, how much the top shrinks toward the center (1 = a point); none = 0
-  bevel?: number; // volumes only: 0..1, how round the top edge is (1 = as round as it fits); none = 0
-  pitch?: number; // volumes only: degrees around the local x axis through the center (+ leans the top toward local +z); none = 0
-  roll?: number; // volumes only: degrees around the local z axis through the center (+ leans the top toward local -x); none = 0
+  taper?: number; // volumes and holes only: 0..1, how much the top shrinks toward the center (1 = a point); none = 0
+  bevel?: number; // volumes and holes only: 0..1, how round the top edge is (1 = as round as it fits); none = 0
+  pitch?: number; // volumes and holes only: degrees around the local x axis through the center (+ leans the top toward local +z); none = 0
+  roll?: number; // volumes and holes only: degrees around the local z axis through the center (+ leans the top toward local -x); none = 0
   createdBy: Actor;
 };
 
@@ -85,8 +88,8 @@ export type Freeform = {
   height: number;
   color: ShapeColor;
   wall?: number; // rooms only, as a box's
-  taper?: number; // volumes only, as a box's (toward the outline's centroid)
-  bevel?: number; // volumes only, as a box's
+  taper?: number; // volumes and holes only, as a box's (toward the outline's centroid)
+  bevel?: number; // volumes and holes only, as a box's
   pitch?: undefined; // a free-form never tilts (its points are on the ground)
   roll?: undefined;
   points: FootPoint[];
@@ -193,7 +196,7 @@ export const SNAP = 0.5;
 /** Vertical snap for heights, and the smallest height a box can have. */
 export const HEIGHT_SNAP = 0.05;
 export const MIN_HEIGHT = HEIGHT_SNAP;
-export const DEFAULT_HEIGHT: Record<ShapeKind, number> = { room: 3, volume: 0.25 };
+export const DEFAULT_HEIGHT: Record<ShapeKind, number> = { room: 3, volume: 0.25, hole: 2.2 };
 /**
  * A room's walls are this thick unless it sets `wall`, and never thinner than MIN_WALL. They grow inward from the
  * footprint, which is the room's outside.
@@ -201,15 +204,15 @@ export const DEFAULT_HEIGHT: Record<ShapeKind, number> = { room: 3, volume: 0.25
 export const DEFAULT_WALL = 0.2;
 export const MIN_WALL = 0.05;
 /**
- * Which kinds each kind-specific field is for: a room's walls, a volume's taper and bevel. Changing a shape's kind
+ * Which kinds each kind-specific field is for: a room's walls, a volume's or hole's taper, bevel and tilt. Changing a shape's kind
  * drops the fields its new kind doesn't have.
  */
 export const KIND_FIELDS = {
   wall: ["room"],
-  taper: ["volume"],
-  bevel: ["volume"],
-  pitch: ["volume"],
-  roll: ["volume"],
+  taper: ["volume", "hole"],
+  bevel: ["volume", "hole"],
+  pitch: ["volume", "hole"],
+  roll: ["volume", "hole"],
 } as const satisfies Record<string, readonly ShapeKind[]>;
 /** The tilt fields: only boxes and cylinders have them (a free-form's points are on the ground). */
 export const TILT_FIELDS = ["pitch", "roll"] as const;
@@ -233,11 +236,11 @@ export const DEFAULT_THICKNESS = 3;
 export const DEFAULT_LINE_COLOR: ShapeColor = "black";
 export const LINE_ARROWS = ["none", "end", "both"] as const;
 
-export const ShapeKindSchema = z.enum(["room", "volume"]);
+export const ShapeKindSchema = z.enum(["room", "volume", "hole"]);
 export const ShapeColorSchema = z.enum(SHAPE_COLORS);
 
 const field = {
-  kind: ShapeKindSchema.describe("room = hollow (floor + walls, no ceiling); volume = solid"),
+  kind: ShapeKindSchema.describe("room = hollow (floor + walls, no ceiling); volume = solid; hole = cuts the shapes in its group and its sibling groups"),
   x: z.number().describe("Footprint center x, meters"),
   z: z.number().describe("Footprint center z, meters"),
   y: z.number().describe("Elevation of the box's bottom, meters. 0 = on the ground, negative = below ground"),
@@ -258,14 +261,14 @@ const field = {
     .number()
     .min(MIN_WALL)
     .describe(`Rooms only: the walls' thickness in meters (>= ${MIN_WALL}, default ${DEFAULT_WALL}), grown inward from the footprint`),
-  taper: z.number().min(0).max(1).describe("Volumes only: 0 (straight sides, the default) to 1 (the top comes to a point, a pyramid or cone)"),
-  bevel: z.number().min(0).max(1).describe("Volumes only: 0 (a sharp top edge, the default) to 1 (the top edge as round as it fits, a dome)"),
+  taper: z.number().min(0).max(1).describe("Volumes and holes only: 0 (straight sides, the default) to 1 (the top comes to a point, a pyramid or cone)"),
+  bevel: z.number().min(0).max(1).describe("Volumes and holes only: 0 (a sharp top edge, the default) to 1 (the top edge as round as it fits, a dome)"),
   pitch: z
     .number()
-    .describe("Box and cylinder volumes only: degrees around the shape's own x axis through its center; + leans the top toward local +z. Default 0"),
+    .describe("Box and cylinder volumes and holes only: degrees around the shape's own x axis through its center; + leans the top toward local +z. Default 0"),
   roll: z
     .number()
-    .describe("Box and cylinder volumes only: degrees around the shape's own z axis through its center; + leans the top toward local -x. Default 0"),
+    .describe("Box and cylinder volumes and holes only: degrees around the shape's own z axis through its center; + leans the top toward local -x. Default 0"),
 };
 
 const ActorSchema = z.enum(["human", "agent"]);

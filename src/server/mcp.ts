@@ -3,6 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
 import { boundsOf, isTilted, round2 } from "../shared/geometry";
+import { holeWarnings } from "../shared/holes";
 import {
   SHAPE_COLORS,
   COMPASS,
@@ -65,6 +66,15 @@ const INSTRUCTIONS =
   "before tilting and `height` the length along the tilted axis: a cylinder lying on its side (a round window or a " +
   "log) is pitch 90, with height as its length and its center at y + height / 2. get_scene gives a tilted shape its " +
   "actual axis-aligned `bounds`. Free-forms and rooms don't tilt, and a tilted shape can't convert to a free-form. " +
+  "A HOLE (kind: hole) is any closed shape that cuts itself out of other shapes when drawn: a door, a window, an arch, " +
+  "a hole in a floor, a tunnel. It cuts only the shapes directly in its OWN group and directly in its group's " +
+  "SIBLING groups (the other groups in the same parent); a hole outside any group cuts nothing (results warn about it). " +
+  "So put a room and its doors and windows in one group, and a doorway between two room groups that sit in the same " +
+  "parent cuts both rooms' walls. Holes never cut holes. A hole cuts a room's floor only if its bottom is below the " +
+  `room's y (a door standing on the floor doesn't notch it). Default hole height ${DEFAULT_HEIGHT.hole} m. A door: a box hole about 1 m wide, ` +
+  "2.2 m tall, standing on the floor, turned like the wall and a bit deeper than the wall. A round window: a cylinder " +
+  "hole with pitch 90 (lying, its height through the wall). An arch: a box hole plus a lying cylinder hole on top. Holes " +
+  "can taper, bevel and tilt like volumes. " +
   `\`color\` is a palette key: ${SHAPE_COLORS.join(", ")} (default ${DEFAULT_COLOR}). ` +
   "A cylinder has exactly a box's fields, and its footprint is the ellipse inscribed in its width × depth rectangle " +
   "(width = depth for a circle, so a round room 10 m across is width 10, depth 10), centered at (x, z) and turned by `rotation` like a box. " +
@@ -144,6 +154,11 @@ function describeScene(open: OpenScene, scene: Scene) {
 }
 
 function buildServer(workspace: Workspace) {
+  /** A result with the scene's hole warnings added (holes that cut nothing), when there are any. */
+  const warned = <T extends object>(result: T) => {
+    const warnings = holeWarnings(store().getScene().nodes);
+    return warnings.length > 0 ? { ...result, warnings } : result;
+  };
   const server = new McpServer({ name: "dungeon-designer", version: "0.0.8" }, { instructions: INSTRUCTIONS });
   // Every tool reads or edits the open scene, and fails with a clear message while nothing is open.
   const store = () => workspace.requireScene();
@@ -156,7 +171,7 @@ function buildServer(workspace: Workspace) {
     },
     async () => {
       const scene = store().getScene();
-      return json(describeScene(workspace.getOpen()!, scene));
+      return json(warned(describeScene(workspace.getOpen()!, scene)));
     },
   );
 
@@ -166,7 +181,7 @@ function buildServer(workspace: Workspace) {
       title: "Draw shapes",
       description:
         `Add one or more shapes to the scene in a single batch; they appear live in the editor. Each has a \`type\` ` +
-        `(box, the default, cylinder, freeform or line) and that type's fields. For a box or cylinder (a room or a volume) only ` +
+        `(box, the default, cylinder, freeform or line) and that type's fields. For a box or cylinder (a room, a volume or a hole) only ` +
         `kind, x, z, width and depth are required; for a free-form, kind and points; for a line, points. The rest have defaults (the kind's ` +
         `height, y 0, rotation 0, color ${DEFAULT_COLOR} (${DEFAULT_LINE_COLOR} for a line), ${DEFAULT_WALL} m room walls, no taper or bevel, no name, top level, a smooth cylinder, ` +
         `and a solid ${DEFAULT_THICKNESS} px line with no arrow). ` +
@@ -177,13 +192,15 @@ function buildServer(workspace: Workspace) {
     async ({ shapes }) => {
       const created = store().drawShapes(shapes, "agent");
       const all = store().getScene().nodes;
+      const count = (kind: string) => all.filter((n) => isShape(n) && n.type !== "line" && n.kind === kind).length;
       const totals = {
-        rooms: all.filter((n) => isShape(n) && n.type !== "line" && n.kind === "room").length,
-        volumes: all.filter((n) => isShape(n) && n.type !== "line" && n.kind === "volume").length,
+        rooms: count("room"),
+        volumes: count("volume"),
+        holes: count("hole"),
         lines: all.filter((n) => n.type === "line").length,
         groups: all.filter(isGroup).length,
       };
-      return json({ created, totals });
+      return json(warned({ created, totals }));
     },
   );
 
@@ -207,8 +224,8 @@ function buildServer(workspace: Workspace) {
     },
     async ({ changes }) => {
       const updated = store().updateNodes(changes, "agent");
-      if (!changes.some((c) => c.type !== undefined)) return json({ updated });
-      return json({ converted: changes.map((c, i) => ({ from: c.id, to: updated[i].id })), updated });
+      if (!changes.some((c) => c.type !== undefined)) return json(warned({ updated }));
+      return json(warned({ converted: changes.map((c, i) => ({ from: c.id, to: updated[i].id })), updated }));
     },
   );
 
@@ -289,7 +306,7 @@ function buildServer(workspace: Workspace) {
         `held them all. Returns the new group (use its ID with move_nodes, rotate_nodes, or as a parent in draw_shapes).`,
       inputSchema: GroupNodesSchema.shape,
     },
-    async (input) => json({ group: store().groupNodes(input, "agent") }),
+    async (input) => json(warned({ group: store().groupNodes(input, "agent") })),
   );
 
   server.registerTool(
@@ -299,7 +316,7 @@ function buildServer(workspace: Workspace) {
       description: "Dissolve groups; their contents stay where they are and move up to the group's parent.",
       inputSchema: UngroupSchema.shape,
     },
-    async (input) => json({ freed: store().ungroup(input, "agent") }),
+    async (input) => json(warned({ freed: store().ungroup(input, "agent") })),
   );
 
   return server;

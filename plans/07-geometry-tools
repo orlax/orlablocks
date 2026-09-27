@@ -459,3 +459,53 @@ Adopted as recommended (say if any should change):
     - converting a tilted box and tilting a room were refused;
     - a WS reset leveled the window and dropped its bounds.
 
+### 07.4 — Holes (done; browser check pending with the rest of the phase)
+
+- **The library (the spike):**
+  - Both candidates were tried on our own meshes, in a scratch folder: a door flush with the wall's bottom, a door exactly as deep as the wall (coplanar with both faces), a lying cylinder window through a curved free-form wall, and a tapered pit in a beveled hill. **Both got the coplanar cases right.**
+  - **`manifold-3d` was chosen.**
+    - Its output is always a valid closed mesh, and its coplanar handling is exact by design.
+    - It reports genus: the door keeps the wall ring at genus 1, and the window adds a through-hole (genus 2).
+    - The volumes matched to the millimeter. Ten doors through one wall took 0.2 ms.
+    - Its npm dependencies are for its command-line tool (0 vulnerabilities). Only the 532 KB WASM and its loader are bundled: the WASM as its own asset, and the loader as a pre-bundled dependency in dev.
+  - `three-bvh-csg` is pre-1.0 and doesn't promise watertight output.
+- **Data:** `ShapeKind` gains `hole`, `DEFAULT_HEIGHT.hole` is 2.2, and `KIND_FIELDS` lets holes taper, bevel and tilt. The kind toggle has a third button (a dotted square).
+- **`src/shared/holes.ts` (new, pure):**
+  - `holeScope(nodes, hole)` gives the shapes directly in the hole's group, plus those directly in the other groups with the same parent. Nothing deeper counts, and neither do shapes loose in the parent, holes or lines.
+  - `cutters(nodes)` maps each shape to the holes that are in scope for it and overlap its 3D bounds.
+  - `cutsFloor(hole, room)` is the floor rule: the hole's bottom is below the room's `y`.
+  - `holeWarnings(nodes)` covers a hole outside any group, and a hole whose scope is empty.
+- **Cutting (`src/web/csg.ts`):**
+  - manifold loads once in the background (`useManifold`, with `locateFile` pointed at the WASM URL from Vite's `?url`), and shapes draw uncut until it's ready.
+  - `holeInFrameOf(target, hole)` puts the hole's world mesh in the target's own frame (`toLocal3`, the new inverse of `toWorld3`).
+  - `subtract(mesh, holes)` returns the mesh minus the union of the holes, freeing every WASM object. A failure goes to the error panel and draws the shape uncut.
+- **Rendering:**
+  - The Viewport computes `cutters` over the shown shapes (drag previews included, so a hole cuts live while it's dragged) and passes each shape its `cuts`.
+  - `ShapeMesh` cuts a room's walls by all its cuts, and its floor only by the ones `cutsFloor` allows. The memo key includes the cuts and the target's frame and tilt.
+  - A hole draws as a ghost: translucent in its color (tinted blue or yellow when selected or hovered), dashed edges (`LineDashedMaterial`), no shadow, drawn after the solids.
+  - A hole outside any group gets a yellow diamond above it (`HoleWarning`).
+- **Editor:**
+  - **Show holes** in the info-label (an eye icon). Off hides the ghosts (a selected or hovered one still shows), and hidden holes can't be clicked or marquee-selected unless selected (`pickable`).
+  - The counts add `· N holes`.
+  - The outliner draws a hole's icon dotted, and warns on a hole outside any group.
+  - Elevation snapping ignores holes' tops.
+  - The taper, bevel and tilt controls act on holes too, and the tilt rings show on a single box or cylinder hole.
+- **MCP:**
+  - An instructions paragraph on holes: the scope rule, nothing outside a group, the floor rule, and how to make a door, a round window and an arch. The instructions are 8.5 kB.
+  - `draw_shapes` totals count holes.
+  - `draw_shapes`, `update_nodes`, `group_nodes`, `ungroup` and `get_scene` add `warnings` when a hole cuts nothing.
+- **Checks:**
+  - typecheck;
+  - 265 tests. The new ones:
+    - `holes.test.ts`: the scope (a sibling room is cut; a deeper group, a loose shape in the parent and other holes aren't), the overlap filter, the warnings and the floor rule;
+    - `toLocal3` inverting `toWorld3`;
+    - "scene store holes";
+  - the editor bundles, with the WASM as an asset;
+  - the dev server on `:5171` serves `csg.ts`, the pre-bundled loader, and the WASM as `application/wasm`;
+  - a node run of the same manifold calls `csg.ts` makes (`Mesh`, `merge`, `union`, `subtract`, `getMesh`'s `numVert` / `numProp` / `vertProperties`) on our meshes;
+  - a scripted run on `:5171`:
+    - the agent drew a room, a door and a round window (heights 2.2 and 0.6, `totals.holes` 2), with two warnings;
+    - grouping them cleared the warnings;
+    - a group holding only the window warned that there was nothing to cut, and ungrouping it cleared that;
+  - **not checked: the cut itself in a browser.** It needs Orlando's browser check.
+

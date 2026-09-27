@@ -7,6 +7,7 @@ import {
   mirrorAcross,
   mirrorShape,
   toWorld3,
+  toLocal3,
   lineProblem,
   orientedFrame,
   polyline,
@@ -555,5 +556,16 @@ describe("tilt", () => {
         expect({ ...once, ...mirrorShape(once, axis, 0) }).toEqual(s);
       }
     }
+  });
+});
+
+describe("toLocal3", () => {
+  it("undoes toWorld3 for a tilted, turned, raised shape", () => {
+    const s = box({ x: 3, z: -2, y: 1.5, width: 4, depth: 2, height: 3, rotation: 40, pitch: 30, roll: -20 });
+    const p = { x: 0.7, y: 2.2, z: -0.4 };
+    const back = toLocal3(s, toWorld3(s, p));
+    expect(back.x).toBeCloseTo(p.x);
+    expect(back.y).toBeCloseTo(p.y);
+    expect(back.z).toBeCloseTo(p.z);
   });
 });

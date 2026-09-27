@@ -185,6 +185,22 @@ export function toWorld3(shape: ClosedShape, p: Point3): Point3 {
   return { x: w.x, y: y + shape.y, z: w.z };
 }
 
+/** A world point in a closed shape's own frame: the inverse of `toWorld3`. */
+export function toLocal3(shape: ClosedShape, p: Point3): Point3 {
+  const l = toShapeLocal(shapeFrame(shape), p);
+  let [x, y, z] = [l.x, p.y - shape.y, l.z];
+  if (isTilted(shape)) {
+    const h = shape.height / 2;
+    y -= h;
+    const q = (-(shape.pitch ?? 0) * Math.PI) / 180;
+    [y, z] = [y * Math.cos(q) - z * Math.sin(q), y * Math.sin(q) + z * Math.cos(q)];
+    const r = (-(shape.roll ?? 0) * Math.PI) / 180;
+    [x, y] = [x * Math.cos(r) - y * Math.sin(r), x * Math.sin(r) + y * Math.cos(r)];
+    y += h;
+  }
+  return { x, y, z };
+}
+
 /** A tilted shape's points in the world (its rings' corners): what its bounds and its outline on the ground come from. */
 function tiltedPoints(shape: ClosedShape): Point3[] {
   return volumeRings(shape).flatMap(({ ring, y }) => ring.map((p) => toWorld3(shape, { x: p.x, y, z: p.z })));

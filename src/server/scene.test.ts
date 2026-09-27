@@ -1084,7 +1084,7 @@ describe("scene store taper and bevel", () => {
     expect(hill).toMatchObject({ taper: 0.6, bevel: 0.5 });
     expect(plain).not.toHaveProperty("taper");
     expect(plain).not.toHaveProperty("bevel");
-    expect(() => store.drawShapes([{ kind: "room", x: 0, z: 0, width: 4, depth: 4, taper: 0.5 }], "agent")).toThrow(/only a volume has a taper \(this is a room\)/);
+    expect(() => store.drawShapes([{ kind: "room", x: 0, z: 0, width: 4, depth: 4, taper: 0.5 }], "agent")).toThrow(/only a volume or a hole has a taper \(this is a room\)/);
     expect(() => store.drawShapes([{ kind: "volume", x: 0, z: 0, width: 4, depth: 4, bevel: 1.5 }], "agent")).toThrow(/bevel/);
   });
 
@@ -1097,7 +1097,7 @@ describe("scene store taper and bevel", () => {
     expect(store.getHistory().undoLabel).toBe("Bevel box_1");
     store.updateNodes([{ id: v.id, taper: 0 }], "human");
     expect(store.getScene().nodes[0]).not.toHaveProperty("taper");
-    expect(() => store.updateNodes([{ id: v.id, kind: "room", bevel: 0.5 }], "human")).toThrow(/only a volume has a bevel/);
+    expect(() => store.updateNodes([{ id: v.id, kind: "room", bevel: 0.5 }], "human")).toThrow(/only a volume or a hole has a bevel/);
     store.updateNodes([{ id: v.id, kind: "room" }], "human");
     expect(store.getScene().nodes[0]).not.toHaveProperty("bevel");
     expect(store.getHistory().undoLabel).toBe("Change kind of box_1");
@@ -1126,7 +1126,7 @@ describe("scene store tilt", () => {
 
   it("refuses tilt on rooms and free-forms, and refuses to convert a tilted shape", () => {
     const store = createSceneStore();
-    expect(() => store.drawShapes([{ kind: "room", x: 0, z: 0, width: 4, depth: 4, pitch: 30 }], "agent")).toThrow(/only a volume has a pitch/);
+    expect(() => store.drawShapes([{ kind: "room", x: 0, z: 0, width: 4, depth: 4, pitch: 30 }], "agent")).toThrow(/only a volume or a hole has a pitch/);
     expect(() =>
       store.drawShapes([{ type: "freeform", kind: "volume", points: [{ x: 0, z: 0 }, { x: 4, z: 0 }, { x: 2, z: 3 }], pitch: 30 } as never], "agent"),
     ).toThrow(/pitch/);
@@ -1148,5 +1148,24 @@ describe("scene store tilt", () => {
     expect(store.getHistory().undoLabel).toBe("Tilt cylinder_1");
     store.updateNodes([{ id: c.id, pitch: 0, roll: 0 }], "human");
     expect(store.getScene().nodes.find((n) => n.id === c.id)).not.toHaveProperty("pitch");
+  });
+});
+
+describe("scene store holes", () => {
+  it("draws holes of any shape, 2.2 m tall by default, with taper and tilt but no walls", () => {
+    const store = createSceneStore();
+    const [door, window] = store.drawShapes(
+      [
+        { kind: "hole", x: 0, z: 4, width: 1, depth: 0.6 },
+        { type: "cylinder", kind: "hole", x: 3, z: 4, y: 1.2, width: 1, depth: 1, height: 0.6, pitch: 90, taper: 0.2 },
+      ],
+      "agent",
+    );
+    expect(door).toMatchObject({ kind: "hole", height: 2.2 });
+    expect(window).toMatchObject({ kind: "hole", pitch: 90, taper: 0.2 });
+    expect(() => store.drawShapes([{ kind: "hole", x: 0, z: 0, width: 1, depth: 1, wall: 0.3 }], "agent")).toThrow(/only a room has walls \(this is a hole\)/);
+    // A hole that becomes a room loses its tilt and taper.
+    store.updateNodes([{ id: window.id, kind: "room" }], "agent");
+    expect(store.getScene().nodes[1]).not.toHaveProperty("pitch");
   });
 });

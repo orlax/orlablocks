@@ -20,6 +20,7 @@ import {
   Rotate3d,
   Square,
   SquareDashed,
+  SquareDot,
   Trash2,
   Undo2,
   Waypoints,
@@ -81,6 +82,7 @@ const MIRRORS: { axis: MirrorAxis; title: string }[] = [
 const KINDS: { kind: ShapeKind; label: string; icon: LucideIcon }[] = [
   { kind: "room", label: "Room (hollow)", icon: SquareDashed },
   { kind: "volume", label: "Volume (solid)", icon: Square },
+  { kind: "hole", label: "Hole (cuts the shapes in its group and its sibling groups)", icon: SquareDot },
 ];
 
 /** The floating bar at the bottom: the tools, then undo / redo / clear. */

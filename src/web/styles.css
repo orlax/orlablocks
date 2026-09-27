@@ -569,3 +569,21 @@ body {
 .contextual-bar .fraction .label-icon { opacity: 0.8; }
 .contextual-bar .fraction input { width: 70px; accent-color: #8fb4f2; }
 .contextual-bar .fraction .value { min-width: 30px; font-variant-numeric: tabular-nums; color: #8fb4f2; }
+
+/* A hole's icon is its shape's, dotted; a hole that cuts nothing (outside any group) gets a warning. */
+.outliner-row .icon.hole { stroke-dasharray: 2 2.5; }
+.outliner-row .warn { display: inline-flex; margin-left: auto; color: #f5c518; }
+
+/* The info-label's Show holes toggle. */
+.info-label .holes-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  padding: 0 4px;
+}
+.info-label .holes-toggle.off { opacity: 0.55; }

@@ -2,14 +2,18 @@ import { useEffect, useMemo } from "react";
 import * as THREE from "three";
 import { toCreasedNormals } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { isFootprinted, localFootprint, shapeFrame, wallOf } from "../shared/geometry";
+import { cutsFloor } from "../shared/holes";
 import { shapeMesh, type Mesh } from "../shared/mesh";
 import { PALETTE, type ClosedShape, type ShapeColor } from "../shared/scene.types";
+import { holeInFrameOf, subtract, useManifold } from "./csg";
 
 type Props = {
   shape: ClosedShape;
   /** The live preview while drawing: translucent blue, so it reads as not-yet-placed. */
   draft?: boolean;
   highlight?: "hover" | "selected";
+  /** The holes that cut this shape (see `cutters`): its mesh is drawn minus them. */
+  cuts?: ClosedShape[];
 };
 
 /** Room floors are a slightly darker shade of the room's color. */
@@ -50,7 +54,24 @@ function createShared() {
     edgeSelected: new THREE.LineBasicMaterial({ color: SELECT_COLOR }),
     draft: new THREE.MeshLambertMaterial({ color: "#3d7be0", transparent: true, opacity: 0.35, depthWrite: false }),
     draftEdge: new THREE.LineBasicMaterial({ color: "#3d7be0" }),
+    // A hole's dashed outline, and its highlights.
+    holeEdge: new THREE.LineDashedMaterial({ color: "#5d5c5a", dashSize: 0.18, gapSize: 0.12, transparent: true, opacity: 0.8 }),
+    holeEdgeHover: new THREE.LineDashedMaterial({ color: HOVER_COLOR, dashSize: 0.18, gapSize: 0.12 }),
+    holeEdgeSelected: new THREE.LineDashedMaterial({ color: SELECT_COLOR, dashSize: 0.18, gapSize: 0.12 }),
   };
+}
+
+/** A hole is a ghost: translucent in its color (a bit stronger when hovered or selected), casting no shadow. */
+const ghosts = new Map<string, THREE.MeshLambertMaterial>();
+function ghostMaterial(color: ShapeColor, highlight: "hover" | "selected" | undefined) {
+  const k = `${color}:${highlight ?? ""}`;
+  let m = ghosts.get(k);
+  if (!m) {
+    const tint = highlight === "selected" ? SELECT_COLOR : highlight === "hover" ? HOVER_COLOR : PALETTE[color];
+    m = new THREE.MeshLambertMaterial({ color: tint, transparent: true, opacity: highlight ? 0.3 : 0.18, depthWrite: false });
+    ghosts.set(k, m);
+  }
+  return m;
 }
 const getShared = () => (shared ??= createShared());
 
@@ -135,26 +156,39 @@ function uvOffset(shape: ClosedShape): [number, number] {
 }
 
 /**
- * Graybox rendering of a closed shape, from its meshes (`shapeMesh`). A room is a floor slab plus thick walls (the
- * region between the footprint and the footprint shrunk by the wall thickness), with no ceiling, so you see in from
- * above. A volume is the footprint extruded to its height. Both cast and receive shadows and have faint outlined
- * edges.
+ * Graybox rendering of a closed shape, from its meshes (`shapeMesh`), minus the holes that cut it. A room is a floor
+ * slab plus thick walls (the region between the footprint and the footprint shrunk by the wall thickness), with no
+ * ceiling, so you see in from above. A volume is the footprint extruded to its height. Both cast and receive shadows
+ * and have faint outlined edges. A hole is a translucent ghost with dashed edges.
  */
-export function ShapeMesh({ shape, draft = false, highlight }: Props) {
+export function ShapeMesh({ shape, draft = false, highlight, cuts }: Props) {
   const { kind, y, height, color } = shape;
   const frame = shapeFrame(shape);
   const [ox, oz] = uvOffset(shape);
-  // Geometry is rebuilt only when what it's made from changes (the shape is a new object every render).
+  const ready = useManifold();
+  // Geometry is rebuilt only when what it's made from changes (the shape is a new object every render), and cut
+  // again when a hole that cuts it changes (its position, the target's tilt and turn included).
   const key = JSON.stringify([kind, localFootprint(shape), height, ox, y, oz, kind === "room" ? wallOf(shape) : 0, shape.taper, shape.bevel]);
+  const cutKey = cuts && cuts.length > 0 && ready ? JSON.stringify([cuts, frame, shape.pitch, shape.roll]) : "";
 
   // An outline with no area (a stored shape is never one, but a preview can be) has no meshes: nothing to draw.
   // Rooms too narrow to have an inside come out as solid blocks (walls with no inner ring).
-  const parts = useMemo(() => shapeMesh(shape), [key]);
+  const parts = useMemo(() => {
+    const p = shapeMesh(shape);
+    if (!cutKey || !cuts) return p;
+    const holes = cuts.map((h) => ({ hole: h, mesh: holeInFrameOf(shape, h) })).filter((h): h is { hole: ClosedShape; mesh: Mesh } => h.mesh !== null);
+    const floorHoles = holes.filter((h) => cutsFloor(h.hole, shape)).map((h) => h.mesh);
+    return {
+      body: p.body && subtract(p.body, holes.map((h) => h.mesh)),
+      floor: p.floor && (floorHoles.length > 0 ? subtract(p.floor, floorHoles) : p.floor),
+    };
+  }, [key, cutKey]);
   // UVs pick their plane from the flat normals, so they come first.
   const solid = useMemo(() => (parts.body ? toCreasedNormals(applyBoxUVs(toGeometry(parts.body), ox, y, oz), CREASE) : null), [parts]);
   const floor = useMemo(() => (parts.floor ? applyBoxUVs(toGeometry(parts.floor), ox, y, oz) : null), [parts]);
 
   const edges = useMemo(() => (solid ? new THREE.EdgesGeometry(solid, 15) : null), [solid]);
+  const hole = kind === "hole" && !draft;
 
   useEffect(() => () => solid?.dispose(), [solid]);
   useEffect(() => () => floor?.dispose(), [floor]);
@@ -164,9 +198,21 @@ export function ShapeMesh({ shape, draft = false, highlight }: Props) {
   const c = colorMaterials(color);
   const sel = highlight === "selected";
   const hover = highlight === "hover";
-  const bodyMaterial = draft ? s.draft : sel ? c.bodySelected : hover ? c.bodyHover : c.body;
+  const bodyMaterial = draft ? s.draft : hole ? ghostMaterial(color, highlight) : sel ? c.bodySelected : hover ? c.bodyHover : c.body;
   const floorMaterial = draft ? s.draft : sel ? c.floorSelected : hover ? c.floorHover : c.floor;
-  const edgeMaterial = draft ? s.draftEdge : sel ? s.edgeSelected : hover ? s.edgeHover : s.edge;
+  const edgeMaterial = draft
+    ? s.draftEdge
+    : hole
+      ? sel
+        ? s.holeEdgeSelected
+        : hover
+          ? s.holeEdgeHover
+          : s.holeEdge
+      : sel
+        ? s.edgeSelected
+        : hover
+          ? s.edgeHover
+          : s.edge;
 
   // Turned around the vertical, then (inside) tilted around the shape's center: roll, then pitch (see `toWorld3`).
   const deg = Math.PI / 180;
@@ -174,9 +220,18 @@ export function ShapeMesh({ shape, draft = false, highlight }: Props) {
   return (
     <group position={[frame.x, y + height / 2, frame.z]} rotation={turn}>
       <group position={[0, -height / 2, 0]}>
-        {solid && <mesh geometry={solid} material={bodyMaterial} castShadow={!draft} receiveShadow={!draft} />}
+        {solid && <mesh geometry={solid} material={bodyMaterial} castShadow={!draft && !hole} receiveShadow={!draft && !hole} renderOrder={hole ? 2 : 0} />}
         {floor && <mesh geometry={floor} material={floorMaterial} receiveShadow={!draft} />}
-        {edges && <lineSegments geometry={edges} material={edgeMaterial} renderOrder={1} />}
+        {edges && (
+          <lineSegments
+            key={hole ? "dashed" : "solid"}
+            geometry={edges}
+            material={edgeMaterial}
+            renderOrder={hole ? 3 : 1}
+            // Dashes need each segment's distance along the line.
+            onUpdate={(l: THREE.LineSegments) => hole && l.computeLineDistances()}
+          />
+        )}
       </group>
     </group>
   );

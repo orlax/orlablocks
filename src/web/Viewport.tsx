@@ -8,6 +8,7 @@ import {
   MIN_LINE_POINTS,
   MIN_POINTS,
   SNAP,
+  type ClosedShape,
   type KindField,
   type Line,
   type LinePoint,
@@ -37,7 +38,8 @@ import {
   type Point,
   type Point3,
 } from "../shared/geometry";
-import { shapesUnder, isShape, selectableAt } from "../shared/tree";
+import { shapesUnder, isGroup, isShape, selectableAt } from "../shared/tree";
+import { cutters, isHole } from "../shared/holes";
 import { ShapeMesh } from "./ShapeMesh";
 import {
   cameraPosition,
@@ -249,6 +251,8 @@ type Props = {
   nextFields: KindFields;
   /** How the Line tool draws the next line. */
   nextLine: LineStyle;
+  /** Whether holes show as ghosts (off: only the result shows, and hidden holes can't be clicked). */
+  showHoles: boolean;
   onSelect: (ids: string[]) => void;
   onDrawShape: (shape: ShapeInput) => void;
   /** One gizmo drag: one `update_nodes`, so one undo step. */
@@ -281,6 +285,7 @@ export function Viewport({
   nextSides,
   nextFields,
   nextLine,
+  showHoles,
   onSelect,
   onDrawShape,
   onUpdate,
@@ -353,6 +358,11 @@ export function Viewport({
     pointPreview && !pointPreview.problem && b.id === editing ? ({ ...b, points: roundPoints(pointPreview.points) } as Shape) : b,
   );
   const ghosts = override?.copy ? override.origin.map((b) => ({ ...moved(b), id: `${b.id}:copy` }) as Shape) : [];
+  // Hidden holes (Show holes off) can't be clicked or marquee-selected, unless they're selected.
+  const selectedIds = new Set(shapesUnder(nodes, selection).map((b) => b.id));
+  const pickable = showHoles ? shown : shown.filter((b) => !isHole(b) || selectedIds.has(b.id));
+  // Which holes cut which shapes, as shown (so a drag cuts live).
+  const cuts = cutters([...nodes.filter(isGroup), ...shown, ...ghosts]);
   // The free-form or line in point editing, as shown. A free-form's points sit on its top face (`editTop`); a
   // line's carry their own y, and its path is open.
   const editShape = editing !== null ? shown.find((b) => b.id === editing && (b.type === "freeform" || b.type === "line")) : undefined;
@@ -379,9 +389,9 @@ export function Viewport({
     selection.length === 1 && selectedBoxes.length === 1 && selectedBoxes[0].id === selection[0] ? selectedBoxes[0] : undefined;
   // Height and scale handles are for a single closed shape (a line has neither) that isn't tilted (its top face
   // isn't flat on screen: it's resized with the contextual bar's fields). Tilt rings are for a single box or
-  // cylinder volume.
+  // cylinder volume or hole.
   const scalable = single && isClosed(single) && !isTilted(single) ? single : undefined;
-  const tiltable = single && isFootprinted(single) && single.kind === "volume";
+  const tiltable = single && isFootprinted(single) && single.kind !== "room";
   // The selection frame turns with the selection: live while rotating, then as far as it was turned.
   const selectionKey = selection.join(",");
   const frameTurn = drag?.active && drag.turn !== undefined ? drag.turn : turn?.key === selectionKey ? turn.angle : 0;
@@ -425,7 +435,7 @@ export function Viewport({
    * within a few px of their path on screen), else the first closed shape the ray hits.
    */
   const hitAt = (sx: number, sy: number, size: Size) =>
-    pickLine(cam.current, size, sx, sy, shown) ?? pickHit(screenRay(cam.current, size, sx, sy), shown);
+    pickLine(cam.current, size, sx, sy, pickable) ?? pickHit(screenRay(cam.current, size, sx, sy), pickable);
   const pickAt = (sx: number, sy: number, size: Size) => {
     const id = hitAt(sx, sy, size)?.id;
     return id === undefined ? null : resolve(id).id;
@@ -507,7 +517,7 @@ export function Viewport({
    */
   const surfaceAt = (e: PointerEvent): LinePoint => {
     const { sx, sy, size } = local(e);
-    const hit = pickHit(screenRay(cam.current, size, sx, sy), shown);
+    const hit = pickHit(screenRay(cam.current, size, sx, sy), pickable);
     const p = hit ? hit.point : { ...screenToGround(cam.current, size, sx, sy), y: 0 };
     return noSnap(e) ? { x: p.x, y: round2(p.y), z: p.z } : { x: snap(p.x), y: round2(p.y), z: snap(p.z) };
   };
@@ -779,7 +789,7 @@ export function Viewport({
         // The selection follows the marquee live.
         // Boxes resolve to the nodes at the current level; inside a group, boxes outside it don't count.
         const hits: string[] = [];
-        for (const id of marqueeHits(cam.current, size, shown, rectFrom(marquee.start, end))) {
+        for (const id of marqueeHits(cam.current, size, pickable, rectFrom(marquee.start, end))) {
           const r = resolve(id);
           if (!r.leaves && !hits.includes(r.id)) hits.push(r.id);
         }
@@ -1095,6 +1105,8 @@ export function Viewport({
         <OriginAxes />
         <Boxes
           boxes={[...shown, ...ghosts]}
+          cuts={cuts}
+          showHoles={showHoles}
           draft={draft}
           selected={new Set(ghosts.length > 0 ? ghosts.map((b) => b.id) : shapesUnder(nodes, selection).map((b) => b.id))}
           hovered={new Set(shapesUnder(nodes, [hoveredId, outsideHover].filter((id) => id !== null)).map((b) => b.id))}
@@ -1186,11 +1198,17 @@ export function Viewport({
  */
 function Boxes({
   boxes,
+  cuts,
+  showHoles,
   draft,
   selected,
   hovered,
 }: {
   boxes: Shape[];
+  /** The holes that cut each shape, by its ID. */
+  cuts: Map<string, ClosedShape[]>;
+  /** Whether holes show as ghosts; hidden ones still show while selected or hovered. */
+  showHoles: boolean;
   draft: (Footprint & Draft) | null;
   /** Shape IDs to highlight: in the selection (or in a selected group), and under the cursor. */
   selected: Set<string>;
@@ -1203,7 +1221,14 @@ function Boxes({
     <>
       {boxes.map((b) => {
         const highlight = selected.has(b.id) ? "selected" : hovered.has(b.id) ? "hover" : undefined;
-        return b.type === "line" ? <LineMesh key={b.id} line={b} highlight={highlight} /> : <ShapeMesh key={b.id} shape={b} highlight={highlight} />;
+        if (b.type === "line") return <LineMesh key={b.id} line={b} highlight={highlight} />;
+        if (isHole(b) && !showHoles && !highlight) return null;
+        return (
+          <group key={b.id}>
+            <ShapeMesh shape={b} highlight={highlight} cuts={cuts.get(b.id)} />
+            {isHole(b) && b.parent === undefined && <HoleWarning hole={b} />}
+          </group>
+        );
       })}
       {draft && draft.width > 0 && draft.depth > 0 && (
         <ShapeMesh
@@ -1226,6 +1251,22 @@ function Boxes({
         />
       )}
     </>
+  );
+}
+
+/** The warning over a hole that cuts nothing (it's outside any group): a small yellow diamond above its top. */
+const warningGeometry = new THREE.OctahedronGeometry(0.22);
+const warningMaterial = new THREE.MeshBasicMaterial({ color: "#f5c518", depthTest: false });
+function HoleWarning({ hole }: { hole: ClosedShape }) {
+  const b = boundsOf([hole]);
+  return (
+    <mesh
+      geometry={warningGeometry}
+      material={warningMaterial}
+      position={[(b.minX + b.maxX) / 2, b.maxY + 0.45, (b.minZ + b.maxZ) / 2]}
+      scale={[1, 1.6, 1]}
+      renderOrder={4}
+    />
   );
 }
 
