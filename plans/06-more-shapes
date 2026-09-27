@@ -326,7 +326,7 @@ Settled with Orlando in 06.4:
 
 ---
 
-## 14. Progress
+## 14. Progress (phase complete)
 
 ### 06.1 — Footprint refactor (done)
 
@@ -395,7 +395,7 @@ Settled with Orlando in 06.4:
     - after a restart, the history reloaded, undo removed `cylinder_4`, and the next cylinder was `cylinder_5` (no ID reused);
   - Orlando's browser check passed.
 
-### 06.3 — Free-form and the Pen tool (done; committed at Orlando's request, full browser checklist not confirmed yet)
+### 06.3 — Free-form and the Pen tool (done; its full browser checklist was confirmed at the start of 06.4)
 
 - **Types:**
   - `Freeform` is `{ kind, y, height, color, points: FootPoint[] }`, with no x, z, width, depth or rotation. A `FootPoint` is `{ x, z, in?, out? }`, and its handles are offsets from the point. `Shape = Box | Cylinder | Freeform`.
@@ -563,38 +563,102 @@ The agent drew the shrine taking +z as south, because nothing declared north. No
     - a WS `add_shapes` drew `line_4`;
   - Orlando's browser check passed (after the highlight change above).
 
-### Notes for the next session (updated 2026-09-27)
+### Phase 06 complete (2026-09-27)
+
+- **Every increment is committed and passed Orlando's browser check:**
+  - 06.1 footprint refactor;
+  - 06.2 cylinder;
+  - 06.3 free-form and the Pen;
+  - 06.4 point editing and convert, with the Figma-style rotate pivot and the error panel;
+  - the compass (a side mission);
+  - 06.5 lines.
+- **The acceptance test (§12):** Orlando tested it and reports every item works. Items 9 and 10 (the agent's shrine, and 9 tools with `draw_shapes`) were also confirmed by the scripted runs in 06.4 and 06.5. Item 8 (a scene saved in phase 05) wasn't run by script: scenes saved during 06.1 and 06.4 reopened fine, and Orlando's own scenes predate the phase.
+- **What the phase added beyond §1–§10 (see each increment above):**
+  - decisions 16 and 17: the rotate pivot and the error panel;
+  - the compass, with north = −z;
+  - `rotate_nodes` with `pivot`;
+  - a selected line keeps its color, with a halo and point rings.
+
+### Notes for the next session (written 2026-09-27, at the end of phase 06)
 
 **Where things stand:**
-- 06.1, 06.2 and 06.3 are committed, one commit each, and their browser checklists passed.
-- 06.4 is committed, and its browser check passed.
-- **Side mission, done: the compass.** Orlando settled north = -z (with +x east, as the tools already said), fixed for every scene, and a rose in the lower right. See the Compass section below.
-- 06.5 is committed, and its browser check passed. What's left of phase 06 is the acceptance test (§12).
+- Phase 06 is finished and committed. The tree is clean, and there are 226 tests.
+- **The next phase is 07, and it has no plan yet.** Orlando's intent is **semantics + prefabs**. But he said "there are a couple of things we are gonna need" first and hasn't named them. **Start by asking him what those are,** and don't guess. Then write `plans/07-...` with him, in the shape of this plan: goal, scope, data, increments, acceptance test, decisions, progress.
 
-**06.4, how I planned it (built as described in the 06.4 section, with the differences noted there):**
-- **Entering the mode:** today a double-click in the Select tool enters a group (`onDoubleClick` in `Viewport.tsx`). Make a double-click on a free-form (the node itself, once it's selected at its level) enter point editing instead. Keep it as Viewport state next to `context`, or lift it to App like `context` if the contextual bar needs it (it does: `editing freeform_1`).
-- **Hit-testing points and handles** is like the gizmo's `hitGizmo` (screen distance ≤ `HANDLE_HIT_PX`). Put the pure math in a new `src/web/points.ts` with tests, as `gizmo.ts` and `marquee.ts` do.
-- **Dragging a point** reuses `groundAt` (snap, `Cmd/Ctrl` for free). Dragging a handle mirrors the opposite one, and `Alt` breaks the mirror. Preview locally like the gizmo's `pending` (patch `points`), then send one `update_nodes { points }` on release. The store already validates with `outlineProblem` and records `Reshape freeform_1`, so show red and don't send when `outlineProblem` fails.
-- **Inserting a point:** click an edge to split its bezier at t (de Casteljau). New in `geometry.ts`, and it needs the nearest t on the sampled edge (`sampleEdge`) to the cursor.
-- **Deleting** keeps at least 3 points. A double-click on a point toggles corner ↔ smooth: smooth gets handles along its neighbors' direction (about a third of the shorter neighbor edge).
-- **Convert** (`convert_nodes { ids }` on WS, and `update_nodes { type: "freeform" }` for the agent):
-  - a box → its 4 world corners (`footprint`);
-  - a sided cylinder → its corners;
-  - a smooth cylinder → 4 smooth points on the ellipse's axes, with handles 0.5523 × each radius along the tangent, turned by the rotation.
-  - It's a new ID (`freeform_N`) at the same place in the node list, keeping name, parent, kind, color, y and height. One step: a `remove` plus an `add` with `indices`. It's labeled `Convert box_3 to freeform_4`, and the editor selects the new node (App's `pendingSelect`).
-  - `NodeUpdateSchema` doesn't have `type` yet; add it as `z.literal("freeform").optional()`.
-- **Undo** already works for all of this, because every change is an `update` or `add` / `remove` op.
+**Background for 07 (from `plans/thinking-01-entities`, Orlando's own list):**
+- **Already done:**
+  - a second primitive (the cylinder);
+  - free-forms with bezier editing, and convert;
+  - Alt-drag copy and `Alt+J` (05);
+  - mirroring on x and z (05).
+- **Not done:**
+  - **An array tool:** copies on a circle, a grid or a row, stacked, with optional noise in the distribution. Today `move_nodes` with `copy` and `count` makes only a row.
+  - **A semantic scene summary for the agent:** today `get_scene` returns every node in full. As scenes grow, the agent needs an overview it can zoom into. Nothing is built for this yet.
+  - **Entities (non-shapes):** a human reference figure (Orlando asked where the model would come from; stick figures are fine), a "pawn" placeholder (sized and colored to mean things, e.g. an enemy), **doors**, **windows** and **holes in room floors**.
+- **The hook for openings (§9):**
+  - every closed shape has indexed edges: a box's 4, a cylinder's `sides` (a smooth one would take an angle), and a free-form's edges from point i to point i + 1;
+  - a door or window can anchor by edge index plus `t` along the edge;
+  - point editing's insert and delete shift the indices after the spot, so a later phase must remap anchors there (`splitEdge` inserts at i + 1, and `removePoints` drops some);
+  - nothing reorders points: the mirror keeps the order, and convert emits points counterclockwise from local +x.
+- **Still deferred from §2:**
+  - booleans;
+  - free-forms with holes;
+  - corridors with a width;
+  - ramps and sloped tops, which matter a lot for a platformer and need their own discussion;
+  - snapping to other shapes' points and edges;
+  - more primitives;
+  - closed lines and text on lines;
+  - converting back to a box or cylinder.
 
-**Questions raised with Orlando (both settled in 06.4, decisions 16 and 17):**
-- The rotate pivot: Figma-style, bounds that turn with the selection.
-- An error boundary around the `<Canvas>`: yes, plus a collapsible error panel so nothing fails silently.
+**How to add a new node type (the checklist that lines followed, useful for entities):**
+1. **`scene.types.ts`:**
+   - the type;
+   - its stored schema in `NodeSchema`;
+   - a `ShapeInputSchema` branch for `draw_shapes`;
+   - its fields in `NodeUpdateSchema`;
+   - constants and defaults.
+2. **`project.types.ts`:** a `NextIdSchema` key with `.default(1)` (so old scenes load) and `firstIds()`. The store's `newId(type)` and the log replay pick it up by themselves.
+3. **`geometry.ts`:**
+   - its cases in `moveShape`, `rotateShape` and `mirrorShape` (and `resizeShape` if it scales);
+   - bounds through `groundPoints` and `verticalRange`;
+   - a validity check, like `outlineProblem` or `lineProblem`.
+   - `Shape` is every non-group node, so anything that needs a footprint, a kind or a height must go through `isClosed` / `ClosedShape`. `isFootprinted` means box or cylinder only.
+4. **`scene.ts`:**
+   - `drawShapes` (defaults);
+   - `updateNodes`: what it accepts and refuses by type, with a `FIELD_VERBS` entry per new field for the undo label;
+   - `pasteNodes` normalization;
+   - `convert` if it's convertible.
+5. **Editor:**
+   - picking (`pick.ts`; `hitAt` in the Viewport checks lines before rays);
+   - the marquee (`marquee.ts`);
+   - rendering: a component like `LineMesh`, routed in the Viewport's `Boxes`;
+   - the gizmo's parts (`scalable` in the Viewport);
+   - the outliner icon (`iconOf`);
+   - App's `describe` and counts;
+   - the contextual bar's controls;
+   - a tool in `TOOLS`, `HINTS` and the Viewport, if it's drawn by hand.
+6. **MCP:** a short paragraph in `INSTRUCTIONS` (about 6.4 kB now, so keep it tight), and mentions in `draw_shapes` and `update_nodes`.
+7. **Docs:** GLOSSARY.md (marked "from 07"), CLAUDE.md's "Working with the scene", and the plan's Progress.
+
+**Known loose ends (none block anything):**
+- **`rotate_nodes` turns around the axis-aligned bounds' center by default.** The editor's rotate handle is Figma-style, and the agent gets exact returns only by passing back the reported `pivot`.
+- **Point edits and scale drags on a free-form or line are all labeled `Reshape …`** (not §8's `Edit points of`).
+- **Line dashes are in world units,** so they look shorter when zoomed out. The thickness and the arrowheads are in screen pixels.
+- **The server version is still 0.0.7** through all of 06, even though the instructions changed several times. Bump it when the MCP surface changes in 07.
+- **The error panel only logs:** nothing reports errors to the server.
 
 **Things that bit me (save the next agent the time):**
+- **Editing with Python string replaces** (assert the count, then replace) worked well for big multi-spot edits. Slicing a file between two markers deleted the compass components that sat between them once, so check what's between the markers first.
+- **Line2 / `LineMaterial`:** set `material.resolution` to the canvas size every render. `dashed` is a shader define, so toggling it needs a new material. Call `computeLineDistances()` after building the `Line2`.
+- **TypeScript:** narrowing doesn't see assignments inside `forEach` callbacks, so write `for … of` when a loop updates a `best` variable. A spread `{ ...shape, ...patch }` with `points` of a union type needs `as Shape`.
 - **zsh doesn't split `$VAR` into words:** `perl -pi -e '...' $FILES` ran on one file named with newlines. Pipe through `xargs`.
 - **A blanket `\bBox\b` → `Shape` rename also rewrites comments** ("Box tool" became "Shape tool"). After a rename, grep the comments.
 - **`clipper2-js` pulls in Angular.** Use `@countertype/clipper2-ts` (CommonJS, fine under Vite and tsx). Its `PathD` points are `{ x, y }`, so ours are mapped `z ↔ y` in `geometry.ts` (`toPath` / `fromPath`).
 - **`toCreasedNormals`** (`three/examples/jsm/utils/BufferGeometryUtils.js`) edits non-indexed geometry in place and keeps UVs. Apply it after `applyBoxUVs`, which reads the flat normals.
-- **The Pen's preview can hold degenerate outlines** (duplicate points, no area). Anything drawn from a preview has to tolerate them (`ShapeMesh` returns no mesh). Stored shapes never are degenerate, because the store validates.
-- **Scripted checks:** run `PORT=5171 DATA_DIR=<scratchpad>/data npm run dev` in the background. Talk MCP with `fetch` POSTs to `/mcp` (`initialize`, `tools/list`, `tools/call`; the reply is SSE, so read the `data:` line), and WS with `ws` imported from `node_modules/ws/wrapper.mjs` by absolute path when the script lives outside the repo. Stop that server by PID (`lsof -tiTCP:5171 -sTCP:LISTEN`), never by pattern: `:5170` is Orlando's.
+- **Previews can hold degenerate outlines** (duplicate points, no area). Anything drawn from a preview has to tolerate them: `ShapeMesh` returns no mesh, and the Pen draws a draft only for a valid outline. Stored shapes are never degenerate, because the store validates.
+- **Scripted checks:** run `PORT=5171 DATA_DIR=<scratchpad>/data npm run dev` in the background.
+  - Talk MCP with `fetch` POSTs to `/mcp` (`initialize`, `tools/list`, `tools/call`). The reply is SSE, so read the `data:` line.
+  - Talk WS with `ws`, imported from `node_modules/ws/wrapper.mjs` by absolute path when the script lives outside the repo.
+  - Stop that server by PID (`lsof -tiTCP:5171 -sTCP:LISTEN`), never by pattern: `:5170` is Orlando's.
 - **Bundle check:** run `npx vite build --outDir <scratchpad>/build` from `src/web` (the Vite root; there's no vite config file). The chunk-size warning is expected.
 - **Browser testing is Orlando's.** Hand over a checklist, and don't commit an increment until he says it passed.
