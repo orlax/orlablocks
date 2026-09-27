@@ -1,4 +1,4 @@
-import { WALL_THICKNESS, type Box } from "../shared/scene.types";
+import { WALL_THICKNESS, type Shape } from "../shared/scene.types";
 import { worldToScreen, type CameraState, type Size } from "./camera";
 import { footprint, offsetPolygon } from "../shared/geometry";
 
@@ -23,7 +23,7 @@ export const rectFrom = (a: ScreenPoint, b: ScreenPoint): ScreenRect => ({
  * The shape's faces on screen (room walls included): its bottom and top outlines, then one quad per side. Null if
  * any corner is behind the camera.
  */
-export function shapeFaces(cam: CameraState, size: Size, box: Box): ScreenPoint[][] | null {
+export function shapeFaces(cam: CameraState, size: Size, box: Shape): ScreenPoint[][] | null {
   const outline = box.kind === "room" ? offsetPolygon(footprint(box), WALL_THICKNESS / 2)! : footprint(box);
   const ring = (y: number) => {
     const points: ScreenPoint[] = [];
@@ -89,7 +89,7 @@ export function polygonOverlapsRect(poly: ScreenPoint[], rect: ScreenRect): bool
 }
 
 /** The IDs of the shapes the rect touches on screen, in scene order. */
-export function marqueeHits(cam: CameraState, size: Size, boxes: Box[], rect: ScreenRect): string[] {
+export function marqueeHits(cam: CameraState, size: Size, boxes: Shape[], rect: ScreenRect): string[] {
   return boxes
     .filter((b) => shapeFaces(cam, size, b)?.some((face) => polygonOverlapsRect(face, rect)) ?? false)
     .map((b) => b.id);

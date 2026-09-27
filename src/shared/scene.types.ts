@@ -3,7 +3,7 @@ import { z } from "zod";
 export type Actor = "human" | "agent";
 
 /** A room is hollow (floor and walls, no ceiling); a volume is solid (something you stand on or bump into). */
-export type BoxKind = "room" | "volume";
+export type ShapeKind = "room" | "volume";
 
 /**
  * The palette: the keys are the contract (the agent and the editor use them), the hex values are the material's
@@ -21,22 +21,21 @@ export const PALETTE = {
   brown: "#cdb49b",
   black: "#5d5c5a",
 } as const;
-export type BoxColor = keyof typeof PALETTE;
-export const BOX_COLORS = Object.keys(PALETTE) as [BoxColor, ...BoxColor[]];
-export const DEFAULT_COLOR: BoxColor = "almost-white";
+export type ShapeColor = keyof typeof PALETTE;
+export const SHAPE_COLORS = Object.keys(PALETTE) as [ShapeColor, ...ShapeColor[]];
+export const DEFAULT_COLOR: ShapeColor = "almost-white";
 
 /**
- * Meters, y up. The footprint is centered at `x, z` on the ground plane, with `width` along the box's local x and
- * `depth` along its local z. It rises from its elevation `y` (its bottom; 0 = on the ground, negative = below) to
- * `y + height`. `rotation` turns it around the vertical axis through its center, in degrees, counterclockwise seen
- * from above (a right-handed turn about +y); 0 = grid-aligned.
+ * What boxes and cylinders share. Meters, y up. The footprint is centered at `x, z` on the ground plane, with
+ * `width` along the shape's local x and `depth` along its local z. It rises from its elevation `y` (its bottom;
+ * 0 = on the ground, negative = below) to `y + height`. `rotation` turns it around the vertical axis through its
+ * center, in degrees, counterclockwise seen from above (a right-handed turn about +y); 0 = grid-aligned.
  */
-export type Box = {
-  id: string; // server-assigned, "box_1", "box_2", ... never reused
-  type: "box";
+type Footprinted = {
+  id: string; // server-assigned, "box_1", "cylinder_1", ... never reused
   name?: string; // for people and the agent ("lobby"); not unique
   parent?: string; // the group it's in; none = top level
-  kind: BoxKind;
+  kind: ShapeKind;
   x: number;
   z: number;
   y: number;
@@ -44,9 +43,21 @@ export type Box = {
   depth: number; // > 0
   height: number; // >= MIN_HEIGHT
   rotation: number; // degrees, 0..360
-  color: BoxColor;
+  color: ShapeColor;
   createdBy: Actor;
 };
+
+export type Box = Footprinted & { type: "box" };
+
+/**
+ * A cylinder: its footprint is the ellipse inscribed in width × depth (an oval when they differ). With `sides` it's
+ * a regular polygon on that ellipse instead, with a flat edge facing local +x; without, it's smooth.
+ */
+export type Cylinder = Footprinted & { type: "cylinder"; sides?: number };
+
+/** Anything drawn: every node that isn't a group. */
+export type Shape = Box | Cylinder;
+export type ShapeType = Shape["type"];
 
 /**
  * A group: a container with no position, size or rotation of its own (Figma-style). Its boxes keep their world
@@ -62,12 +73,14 @@ export type Group = {
 };
 
 /** Anything in the scene's flat list. (Not `Node`, which is the DOM's.) */
-export type SceneNode = Box | Group;
+export type SceneNode = Shape | Group;
 
-/** The box fields an edit can change. */
-export type BoxPatch = Partial<Pick<Box, "name" | "kind" | "x" | "z" | "y" | "width" | "depth" | "height" | "rotation" | "color">>;
-/** What an update op can change on any node: box fields (boxes only), `name` and `parent`. */
-export type NodePatch = BoxPatch & { parent?: string };
+/** The shape fields an edit can change. `sides` is for cylinders (undefined = smooth). */
+export type ShapePatch = Partial<Pick<Footprinted, "name" | "kind" | "x" | "z" | "y" | "width" | "depth" | "height" | "rotation" | "color">> & {
+  sides?: number;
+};
+/** What an update op can change on any node: shape fields (shapes only), `name` and `parent`. */
+export type NodePatch = ShapePatch & { parent?: string };
 
 /**
  * What the editor currently shows. The camera looks down at the ground (x/z plane, y up) at a fixed pitch,
@@ -100,15 +113,20 @@ export const SNAP = 0.5;
 /** Vertical snap for heights, and the smallest height a box can have. */
 export const HEIGHT_SNAP = 0.05;
 export const MIN_HEIGHT = HEIGHT_SNAP;
-export const DEFAULT_HEIGHT: Record<BoxKind, number> = { room: 3, volume: 0.25 };
+export const DEFAULT_HEIGHT: Record<ShapeKind, number> = { room: 3, volume: 0.25 };
 /** Room walls are this thick, centered on the footprint edge. Rendering and picking only: the data stores the centerline. */
 export const WALL_THICKNESS = 0.2;
+/** A cylinder's side count, when it has one; without, it's smooth. */
+export const MIN_SIDES = 3;
+export const MAX_SIDES = 64;
+/** How many segments a smooth cylinder is drawn and picked with. */
+export const SMOOTH_SEGMENTS = 64;
 
-export const BoxKindSchema = z.enum(["room", "volume"]);
-export const BoxColorSchema = z.enum(BOX_COLORS);
+export const ShapeKindSchema = z.enum(["room", "volume"]);
+export const ShapeColorSchema = z.enum(SHAPE_COLORS);
 
 const field = {
-  kind: BoxKindSchema.describe("room = hollow (floor + walls, no ceiling); volume = solid"),
+  kind: ShapeKindSchema.describe("room = hollow (floor + walls, no ceiling); volume = solid"),
   x: z.number().describe("Footprint center x, meters"),
   z: z.number().describe("Footprint center z, meters"),
   y: z.number().describe("Elevation of the box's bottom, meters. 0 = on the ground, negative = below ground"),
@@ -116,19 +134,24 @@ const field = {
   depth: z.number().positive().describe("Extent along the box's local z (world +z at rotation 0), meters, > 0"),
   height: z.number().min(MIN_HEIGHT).describe(`Meters, >= ${MIN_HEIGHT}`),
   rotation: z.number().describe("Degrees around the vertical axis through the center, counterclockwise seen from above"),
-  color: BoxColorSchema.describe(`Palette key: ${BOX_COLORS.join(", ")}`),
+  color: ShapeColorSchema.describe(`Palette key: ${SHAPE_COLORS.join(", ")}`),
   name: z.string().describe('A label for people, e.g. "lobby". Not unique'),
   parent: z.string().describe("ID of the group to put it in, e.g. group_1"),
+  sides: z
+    .number()
+    .int()
+    .min(MIN_SIDES)
+    .max(MAX_SIDES)
+    .describe(`Cylinders only: ${MIN_SIDES}..${MAX_SIDES} sides make a regular polygon (a flat edge faces local +x); omit for a smooth circle or oval`),
 };
 
 const ActorSchema = z.enum(["human", "agent"]);
 
-const BoxSchema = z.object({
+const footprinted = {
   id: z.string(),
-  type: z.literal("box"),
   name: z.string().optional(),
   parent: z.string().optional(),
-  kind: BoxKindSchema,
+  kind: ShapeKindSchema,
   x: z.number(),
   z: z.number(),
   y: z.number(),
@@ -136,9 +159,11 @@ const BoxSchema = z.object({
   depth: z.number().positive(),
   height: z.number().min(MIN_HEIGHT),
   rotation: z.number(),
-  color: BoxColorSchema,
+  color: ShapeColorSchema,
   createdBy: ActorSchema,
-});
+};
+const BoxSchema = z.object({ ...footprinted, type: z.literal("box") });
+const CylinderSchema = z.object({ ...footprinted, type: z.literal("cylinder"), sides: z.number().int().min(MIN_SIDES).max(MAX_SIDES).optional() });
 
 const GroupSchema = z.object({
   id: z.string(),
@@ -149,7 +174,7 @@ const GroupSchema = z.object({
 });
 
 /** A stored node, as in `scene.json` (and on the clipboard). */
-export const NodeSchema: z.ZodType<SceneNode> = z.discriminatedUnion("type", [BoxSchema, GroupSchema]);
+export const NodeSchema: z.ZodType<SceneNode> = z.discriminatedUnion("type", [BoxSchema, CylinderSchema, GroupSchema]);
 
 export const BoxInputSchema = z.strictObject({
   kind: field.kind,
@@ -162,18 +187,22 @@ export const BoxInputSchema = z.strictObject({
     .describe(`Meters, >= ${MIN_HEIGHT}. Defaults to ${DEFAULT_HEIGHT.room} for a room, ${DEFAULT_HEIGHT.volume} for a volume`),
   y: field.y.optional().describe("Elevation of the box's bottom, meters. Defaults to 0 (on the ground); negative = below ground"),
   rotation: field.rotation.optional().describe("Degrees, counterclockwise seen from above. Defaults to 0 (grid-aligned)"),
-  color: field.color.optional().describe(`Palette key: ${BOX_COLORS.join(", ")}. Defaults to ${DEFAULT_COLOR}`),
+  color: field.color.optional().describe(`Palette key: ${SHAPE_COLORS.join(", ")}. Defaults to ${DEFAULT_COLOR}`),
   name: field.name.optional(),
   parent: field.parent.optional().describe("ID of the group to put it in, e.g. group_1. Omit for the top level"),
 });
 export type BoxInput = z.input<typeof BoxInputSchema>;
-/** A new shape for `draw_shapes`: its `type` (only `box` so far, the default) and that type's fields. */
+/**
+ * A new shape for `draw_shapes`: its `type` (box, the default, or cylinder) and that type's fields. Boxes and
+ * cylinders share every field; `sides` is for cylinders only (the store rejects it on a box).
+ */
 export const ShapeInputSchema = BoxInputSchema.extend({
-  type: z.literal("box").optional().describe("The shape type. Defaults to box"),
+  type: z.enum(["box", "cylinder"]).optional().describe("box (the default) or cylinder (the ellipse inscribed in width × depth)"),
+  sides: field.sides.optional(),
 });
 export type ShapeInput = z.input<typeof ShapeInputSchema>;
 
-/** A change to an existing node, by ID: any of a box's editable fields; for a group only `name` and `parent`. */
+/** A change to an existing node, by ID: any of a shape's editable fields; for a group only `name` and `parent`. */
 export const NodeUpdateSchema = z.strictObject({
   id: z.string().describe("ID of an existing node, e.g. box_3 or group_1"),
   kind: field.kind.optional(),
@@ -185,6 +214,7 @@ export const NodeUpdateSchema = z.strictObject({
   height: field.height.optional(),
   rotation: field.rotation.optional(),
   color: field.color.optional(),
+  sides: field.sides.nullable().optional().describe(`Cylinders only: ${MIN_SIDES}..${MAX_SIDES} sides, or null to make it smooth`),
   name: field.name.optional().describe('A label for people, e.g. "lobby". Not unique. An empty string removes it'),
   parent: field.parent
     .nullable()

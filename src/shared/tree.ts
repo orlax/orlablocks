@@ -1,12 +1,12 @@
 import { moveShape } from "./geometry";
-import type { Box, Group, SceneNode } from "./scene.types";
+import type { Shape, Group, SceneNode } from "./scene.types";
 
 /**
  * The node tree: a flat list where each node may name its `parent` group. Order in the list is the order among
  * siblings. Pure helpers, shared by the server and the editor.
  */
 
-export const isBox = (n: SceneNode): n is Box => n.type === "box";
+export const isShape = (n: SceneNode): n is Shape => n.type !== "group";
 export const isGroup = (n: SceneNode): n is Group => n.type === "group";
 
 /** The nodes directly inside `parent` (undefined = the top level), in list order. */
@@ -30,10 +30,10 @@ export function subtreeIds(nodes: SceneNode[], id: string): Set<string> {
 }
 
 /** The boxes in or under the given nodes (a box counts itself), in list order, each once. */
-export function boxesUnder(nodes: SceneNode[], ids: string[]): Box[] {
+export function shapesUnder(nodes: SceneNode[], ids: string[]): Shape[] {
   const all = new Set<string>();
   for (const id of ids) for (const d of subtreeIds(nodes, id)) all.add(d);
-  return nodes.filter((n): n is Box => isBox(n) && all.has(n.id));
+  return nodes.filter((n): n is Shape => isShape(n) && all.has(n.id));
 }
 
 /** `[id, its parent, its grandparent, ...]` up to the top level. */
@@ -84,7 +84,7 @@ export function copyNodes(
 ): SceneNode[] {
   const ids = new Map(source.map((n) => [n.id, newId(n.type)]));
   return source.map((n) => {
-    const copy: SceneNode = isBox(n) ? { ...n, ...moveShape(n, dx, dy, dz), id: ids.get(n.id)! } : { ...n, id: ids.get(n.id)! };
+    const copy: SceneNode = isShape(n) ? { ...n, ...moveShape(n, dx, dy, dz), id: ids.get(n.id)! } : { ...n, id: ids.get(n.id)! };
     if (n.parent !== undefined && ids.has(n.parent)) copy.parent = ids.get(n.parent);
     return copy;
   });

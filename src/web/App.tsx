@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ChevronDown, Map as MapIcon } from "lucide-react";
-import { DEFAULT_COLOR, DEFAULT_VIEW, type Box, type BoxColor, type BoxKind, type SceneNode, type View } from "../shared/scene.types";
-import { boxesUnder, childrenOf, isBox, isGroup } from "../shared/tree";
+import { DEFAULT_COLOR, DEFAULT_VIEW, type Shape, type ShapeColor, type ShapeKind, type SceneNode, type View } from "../shared/scene.types";
+import { shapesUnder, childrenOf, isShape, isGroup } from "../shared/tree";
 import type { CameraState, GroundPoint } from "./camera";
 import { clipboardText, readClipboard } from "./clipboard";
 import { typingInField } from "./keys";
@@ -33,8 +33,11 @@ const copiedRoots = (added: SceneNode[]) => {
 /** `lobby (group_1)` or just `box_3`. */
 const title = (n: SceneNode) => (n.name ? `${n.name} (${n.id})` : n.id);
 
-/** `lobby (box_3) · 6 × 4 × 3 m · y 0 · 0°` */
-const describe = (b: Box) => `${title(b)} · ${b.width} × ${b.depth} × ${b.height} m · y ${b.y} · ${b.rotation}°`;
+/** `lobby (box_3) · 6 × 4 × 3 m · y 0 · 0°`, and a cylinder's sides: `tower (cylinder_1) · 8 × 8 × 3 m · 8 sides · y 0 · 0°` */
+const describe = (s: Shape) => {
+  const sides = s.type === "cylinder" ? (s.sides !== undefined ? ` · ${s.sides} sides` : " · smooth") : "";
+  return `${title(s)} · ${s.width} × ${s.depth} × ${s.height} m${sides} · y ${s.y} · ${s.rotation}°`;
+};
 
 export function App() {
   const { scene, history, projects, open, restore, connected, error, clearError, send } = useScene();
@@ -51,9 +54,11 @@ export function App() {
   const [context, setContext] = useState<string | null>(null);
   // The node under the cursor in the outliner, highlighted in the view.
   const [outlinerHover, setOutlinerHover] = useState<string | null>(null);
-  // The next box's style in the Box tool, remembered while the tab is open.
-  const [nextKind, setNextKind] = useState<BoxKind>("room");
-  const [nextColor, setNextColor] = useState<BoxColor>(DEFAULT_COLOR);
+  // The next shape's style in the Box and Cylinder tools, remembered while the tab is open.
+  const [nextKind, setNextKind] = useState<ShapeKind>("room");
+  const [nextColor, setNextColor] = useState<ShapeColor>(DEFAULT_COLOR);
+  // The Cylinder tool's sides (undefined = smooth).
+  const [nextSides, setNextSides] = useState<number | undefined>(undefined);
   // After Cmd+G or a copy: what to select when the result arrives (the new group, the copies).
   const pendingSelect = useRef<PendingSelect | null>(null);
   // The last Alt-drag copy's offset (world axes), which Alt+J repeats. Forgotten when the scene changes.
@@ -67,9 +72,9 @@ export function App() {
   state.current = { nodes, selection, context, open, pickerOpen, view };
 
   const activeTool: Tool = spaceHand ? "hand" : tool;
-  const boxes = nodes.filter(isBox);
+  const boxes = nodes.filter(isShape);
   const selectedNodes = nodes.filter((n) => selection.includes(n.id));
-  const selectedBoxes = boxesUnder(nodes, selection);
+  const selectedShapes = shapesUnder(nodes, selection);
   const rooms = boxes.filter((b) => b.kind === "room").length;
   const volumes = boxes.length - rooms;
   const groups = nodes.filter(isGroup).length;
@@ -262,16 +267,16 @@ export function App() {
     };
   }, [send]);
 
-  // Kind is for a single box; color applies to every box in the selection (groups included).
+  // Kind and sides are for a single shape; color applies to every shape in the selection (groups included).
   const single = selectedNodes.length === 1 ? selectedNodes[0] : null;
-  const singleBox = single && isBox(single) ? single : null;
+  const singleShape = single && isShape(single) ? single : null;
   const sharedColor =
-    selectedBoxes.length > 0 && selectedBoxes.every((b) => b.color === selectedBoxes[0].color) ? selectedBoxes[0].color : null;
+    selectedShapes.length > 0 && selectedShapes.every((b) => b.color === selectedShapes[0].color) ? selectedShapes[0].color : null;
   const contextNode = context !== null ? nodes.find((n) => n.id === context) : undefined;
-  const selectionInfo = singleBox
-    ? describe(singleBox)
+  const selectionInfo = singleShape
+    ? describe(singleShape)
     : single
-      ? `${title(single)} · ${selectedBoxes.length} boxes`
+      ? `${title(single)} · ${selectedShapes.length} shapes`
       : `${selectedNodes.length} selected`;
 
   return (
@@ -284,6 +289,7 @@ export function App() {
         onContext={setContext}
         outsideHover={outlinerHover}
         nextKind={nextKind}
+        nextSides={nextSides}
         onSelect={setSelection}
         onDrawShape={(shape) => send({ type: "add_shapes", shapes: [{ ...shape, color: nextColor }] })}
         onUpdate={(changes) => send({ type: "update_nodes", changes })}
@@ -352,14 +358,30 @@ export function App() {
             next box
           </ContextualBar>
         )}
+        {tool === "cylinder" && (
+          <ContextualBar
+            kind={nextKind}
+            onKind={setNextKind}
+            color={nextColor}
+            onColor={setNextColor}
+            sides={{ value: nextSides, onChange: setNextSides }}
+          >
+            next cylinder
+          </ContextualBar>
+        )}
         {tool === "select" && selectedNodes.length > 0 && (
           <ContextualBar
-            kind={singleBox?.kind ?? null}
-            kindDisabled={!singleBox}
-            onKind={(kind) => singleBox && send({ type: "update_nodes", changes: [{ id: singleBox.id, kind }] })}
+            kind={singleShape?.kind ?? null}
+            kindDisabled={!singleShape}
+            onKind={(kind) => singleShape && send({ type: "update_nodes", changes: [{ id: singleShape.id, kind }] })}
             color={sharedColor}
-            onColor={(color) => send({ type: "update_nodes", changes: selectedBoxes.map((b) => ({ id: b.id, color })) })}
+            onColor={(color) => send({ type: "update_nodes", changes: selectedShapes.map((b) => ({ id: b.id, color })) })}
             onMirror={(axis) => send({ type: "mirror_nodes", ids: selection, axis })}
+            sides={
+              singleShape?.type === "cylinder"
+                ? { value: singleShape.sides, onChange: (sides) => send({ type: "update_nodes", changes: [{ id: singleShape.id, sides: sides ?? null }] }) }
+                : undefined
+            }
           >
             {contextNode ? `in ${contextNode.name ?? contextNode.id} › ${selectionInfo}` : selectionInfo}
           </ContextualBar>

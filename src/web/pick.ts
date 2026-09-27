@@ -1,4 +1,4 @@
-import { WALL_THICKNESS, type Box } from "../shared/scene.types";
+import { WALL_THICKNESS, type Shape } from "../shared/scene.types";
 import { footprint, offsetPolygon, pointInPolygon, type Point } from "../shared/geometry";
 import type { Vec3 } from "./camera";
 
@@ -9,12 +9,12 @@ type Ray = { origin: Vec3; dir: Vec3 };
  * the ray against the prism's top, bottom and side faces, no three.js needed. Rooms are hollow: a ray that enters
  * through the open top, inside the walls, hits the floor or an inner wall instead, so a volume inside the room wins.
  */
-export function pickBox(ray: Ray, boxes: Box[]): string | null {
+export function pickShape(ray: Ray, boxes: Shape[]): string | null {
   return pickHit(ray, boxes)?.id ?? null;
 }
 
-/** Like pickBox, plus the world point where the ray hits the shape. */
-export function pickHit(ray: Ray, boxes: Box[]): { id: string; point: Vec3 } | null {
+/** Like pickShape, plus the world point where the ray hits the shape. */
+export function pickHit(ray: Ray, boxes: Shape[]): { id: string; point: Vec3 } | null {
   let best: { id: string; t: number } | null = null;
   for (const box of boxes) {
     const t = hitDistance(ray, box);
@@ -54,7 +54,7 @@ export function prismCrossings({ origin: o, dir: d }: Ray, poly: Point[], y0: nu
   return out.sort((p, q) => p.t - q.t);
 }
 
-function hitDistance(ray: Ray, box: Box): number | null {
+function hitDistance(ray: Ray, box: Shape): number | null {
   const { origin: o } = ray;
   const y0 = box.y;
   const y1 = box.y + box.height;

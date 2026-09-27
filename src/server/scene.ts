@@ -17,8 +17,8 @@ import {
   SNAP,
   UngroupSchema,
   type Actor,
-  type Box,
-  type BoxPatch,
+  type Shape,
+  type ShapePatch,
   type Group,
   type HistorySummary,
   type NodePatch,
@@ -28,8 +28,8 @@ import {
   type ShapeInput,
   type View,
 } from "../shared/scene.types";
-import type { NextId } from "../shared/project.types";
-import { boxesUnder, commonParent, copyNodes, isBox, isGroup, subtreeIds, topmost } from "../shared/tree";
+import { firstIds, type NextId } from "../shared/project.types";
+import { shapesUnder, commonParent, copyNodes, isShape, isGroup, subtreeIds, topmost } from "../shared/tree";
 import { applyOp, createHistory, invertOp, runOps, type History, type HistoryEntry, type Op } from "./commands";
 
 export class SceneError extends Error {}
@@ -67,6 +67,7 @@ const FIELD_VERBS: Record<keyof NodePatch, string> = {
   height: "change height of",
   rotation: "rotate",
   color: "recolor",
+  sides: "change sides of",
 };
 
 /** One verb when every change is the same kind of edit ("move", "recolor"), "edit" otherwise. */
@@ -92,12 +93,12 @@ export function createSceneStore() {
   const listeners = new Set<(scene: Scene) => void>();
   const stepListeners = new Set<(step: Step) => void>();
   // Only go up, so IDs are never reused.
-  const nextId = { box: 1, group: 1 };
+  const nextId: NextId = firstIds();
 
   let history = createHistory();
 
   /** The next ID for a new node of `type`. */
-  const newId = (type: SceneNode["type"]) => (type === "box" ? `box_${nextId.box++}` : `group_${nextId.group++}`);
+  const newId = (type: SceneNode["type"]) => `${type}_${nextId[type]++}`;
 
   /** Tells step listeners (persistence) first, so a step is on disk before anyone sees it. */
   const step = (s: Step) => stepListeners.forEach((l) => l(s));
@@ -165,11 +166,11 @@ export function createSceneStore() {
     }
   };
 
-  /** Box patches that change something, as update changes. */
-  const effectiveBoxChanges = (boxes: Box[], patches: Record<string, BoxPatch>) =>
+  /** Shape patches that change something, as update changes. */
+  const effectiveShapeChanges = (boxes: Shape[], patches: Record<string, ShapePatch>) =>
     boxes.flatMap((box) => {
       const patch = patches[box.id];
-      const changed = patch && (Object.keys(patch) as (keyof BoxPatch)[]).some((k) => patch[k] !== box[k]);
+      const changed = patch && (Object.keys(patch) as (keyof ShapePatch)[]).some((k) => patch[k] !== (box as ShapePatch)[k]);
       return changed ? [{ id: box.id, patch }] : [];
     });
 
@@ -200,10 +201,10 @@ export function createSceneStore() {
     },
 
     /**
-     * Validates every input first; applies all or nothing. Missing fields get their defaults: the kind's height,
-     * y 0, rotation 0, the default color, no name, the top level.
+     * Validates every input first; applies all or nothing. Missing fields get their defaults: a box, the kind's
+     * height, y 0, rotation 0, the default color, no name, the top level (and a smooth cylinder).
      */
-    drawShapes(inputs: ShapeInput[], actor: Actor): Box[] {
+    drawShapes(inputs: ShapeInput[], actor: Actor): Shape[] {
       if (inputs.length === 0) throw new SceneError("shapes: at least one shape is required");
 
       const errors: string[] = [];
@@ -220,9 +221,12 @@ export function createSceneStore() {
           const e = parentError(d.parent);
           if (e) errors.push(`shapes[${i}].parent: ${e}`);
         }
+        const type = d.type ?? "box";
+        if (d.sides !== undefined && type !== "cylinder") errors.push(`shapes[${i}].sides: only a cylinder has sides (this is a ${type})`);
         const name = d.name?.trim();
         return {
-          type: "box" as const,
+          type,
+          ...(type === "cylinder" && d.sides !== undefined ? { sides: d.sides } : {}),
           ...(name ? { name } : {}),
           ...(d.parent !== undefined ? { parent: d.parent } : {}),
           kind: d.kind,
@@ -238,15 +242,15 @@ export function createSceneStore() {
       });
       failIf(errors, "Nothing was drawn.");
 
-      const created: Box[] = valid.map((b) => ({ id: `box_${nextId.box++}`, ...b!, createdBy: actor }));
+      const created = valid.map((b) => ({ id: newId(b!.type), ...b!, createdBy: actor }) as Shape);
       const ids = created.map((b) => b.id);
       commit(label("draw", listIds(ids, "shapes"), actor), actor, [{ op: "add", nodes: created }]);
       return created;
     },
 
     /**
-     * Changes existing nodes by ID. A box takes any of name, parent, kind, x, z, y, width, depth, height, rotation,
-     * color; a group takes only name and parent. Validates every change first; applies all or nothing. Fields that
+     * Changes existing nodes by ID. A shape takes any of name, parent, kind, x, z, y, width, depth, height, rotation,
+     * color, and a cylinder also sides (null = smooth); a group takes only name and parent. Validates every change first; applies all or nothing. Fields that
      * don't actually change are dropped, and if nothing is left no step is recorded. An empty name removes the name,
      * and a null (or empty) parent moves the node to the top level.
      */
@@ -269,8 +273,10 @@ export function createSceneStore() {
         seen.add(id);
         if (Object.keys(fields).length === 0) errors.push(`changes[${i}]: nothing to change`);
         if (node && isGroup(node)) {
-          const boxOnly = Object.keys(fields).filter((k) => k !== "name" && k !== "parent");
-          if (boxOnly.length > 0) errors.push(`changes[${i}]: "${id}" is a group; only name and parent can change (not ${boxOnly.join(", ")})`);
+          const shapeOnly = Object.keys(fields).filter((k) => k !== "name" && k !== "parent");
+          if (shapeOnly.length > 0) errors.push(`changes[${i}]: "${id}" is a group; only name and parent can change (not ${shapeOnly.join(", ")})`);
+        } else if (node && fields.sides !== undefined && node.type !== "cylinder") {
+          errors.push(`changes[${i}].sides: only a cylinder has sides ("${id}" is a ${node.type})`);
         }
         checkSizes(`changes[${i}]`, fields, errors);
         const parent = fields.parent === null || fields.parent === "" ? undefined : fields.parent;
@@ -287,6 +293,7 @@ export function createSceneStore() {
         if (fields.rotation !== undefined) patch.rotation = normalizeRotation(fields.rotation);
         if (fields.kind !== undefined) patch.kind = fields.kind;
         if (fields.color !== undefined) patch.color = fields.color;
+        if (fields.sides !== undefined) patch.sides = fields.sides ?? undefined;
         if (fields.name !== undefined) patch.name = fields.name.trim() || undefined;
         if (fields.parent !== undefined) patch.parent = parent;
 
@@ -332,17 +339,17 @@ export function createSceneStore() {
     },
 
     /** Moves boxes and whole groups by a relative offset, as one step. Returns the boxes that moved. */
-    moveNodes(input: z.input<typeof MoveNodesSchema>, actor: Actor): Box[] {
+    moveNodes(input: z.input<typeof MoveNodesSchema>, actor: Actor): Shape[] {
       const { ids, dx = 0, dy = 0, dz = 0 } = parse(MoveNodesSchema, input, "Nothing was moved.");
       const errors: string[] = [];
       checkIds("ids", ids, errors);
       failIf(errors, "Nothing was moved.");
-      const boxes = boxesUnder(scene.nodes, ids);
+      const boxes = shapesUnder(scene.nodes, ids);
       const patches = Object.fromEntries(boxes.map((b) => [b.id, moveShape(b, dx, dy, dz)]));
-      const changes = effectiveBoxChanges(boxes, patches);
+      const changes = effectiveShapeChanges(boxes, patches);
       if (changes.length > 0) commit(label("move", listIds(ids), actor), actor, [{ op: "update", changes }]);
       const moved = new Set(boxes.map((b) => b.id));
-      return scene.nodes.filter((n): n is Box => moved.has(n.id));
+      return scene.nodes.filter((n): n is Shape => moved.has(n.id));
     },
 
     /**
@@ -387,18 +394,18 @@ export function createSceneStore() {
      * Turns boxes and whole groups around the vertical axis through the center of their combined bounds, as one
      * step: each center orbits it and the angle is added to each rotation. Returns the boxes that turned.
      */
-    rotateNodes(input: z.input<typeof RotateNodesSchema>, actor: Actor): Box[] {
+    rotateNodes(input: z.input<typeof RotateNodesSchema>, actor: Actor): Shape[] {
       const { ids, degrees } = parse(RotateNodesSchema, input, "Nothing was rotated.");
       const errors: string[] = [];
       checkIds("ids", ids, errors);
       failIf(errors, "Nothing was rotated.");
-      const boxes = boxesUnder(scene.nodes, ids);
+      const boxes = shapesUnder(scene.nodes, ids);
       const b = boundsOf(boxes);
       const patches = rotateAround(boxes, { x: (b.minX + b.maxX) / 2, z: (b.minZ + b.maxZ) / 2 }, degrees);
-      const changes = effectiveBoxChanges(boxes, patches);
+      const changes = effectiveShapeChanges(boxes, patches);
       if (changes.length > 0) commit(label("rotate", listIds(ids), actor), actor, [{ op: "update", changes }]);
       const turned = new Set(boxes.map((b) => b.id));
-      return scene.nodes.filter((n): n is Box => turned.has(n.id));
+      return scene.nodes.filter((n): n is Shape => turned.has(n.id));
     },
 
     /**
@@ -424,16 +431,16 @@ export function createSceneStore() {
       const nodes = snapshot.map((n): SceneNode => {
         const { parent: p, ...rest } = n;
         const kept = p !== undefined && groups.has(p) ? { parent: p } : {};
-        if (!isBox(n)) return { ...rest, ...kept } as SceneNode;
-        const box = { ...(rest as Box), ...kept };
+        if (!isShape(n)) return { ...rest, ...kept } as SceneNode;
+        const box = { ...(rest as Shape), ...kept };
         return { ...box, width: round2(box.width), depth: round2(box.depth), height: round2(box.height), rotation: normalizeRotation(box.rotation) };
       });
       nodes.forEach((n, i) => {
-        if (isBox(n)) checkSizes(`nodes[${i}]`, snapshot[i] as Box, errors);
+        if (isShape(n)) checkSizes(`nodes[${i}]`, snapshot[i] as Shape, errors);
         if (isCycle(nodes, n.id)) errors.push(`nodes[${i}].parent: "${n.id}" ends up inside itself`);
       });
-      const boxes = nodes.filter(isBox);
-      if (boxes.length === 0) errors.push("nodes: there are no boxes to paste");
+      const boxes = nodes.filter(isShape);
+      if (boxes.length === 0) errors.push("nodes: there are no shapes to paste");
       failIf(errors, "Nothing was pasted.");
 
       const b = boundsOf(boxes);
@@ -461,16 +468,16 @@ export function createSceneStore() {
      * of their combined footprint bounds, and every rotation becomes -rotation. Records nothing if nothing changes
      * (a single unrotated box). Returns the boxes.
      */
-    mirrorNodes(input: z.input<typeof MirrorNodesSchema>, actor: Actor): Box[] {
+    mirrorNodes(input: z.input<typeof MirrorNodesSchema>, actor: Actor): Shape[] {
       const { ids, axis } = parse(MirrorNodesSchema, input, "Nothing was mirrored.");
       const errors: string[] = [];
       checkIds("ids", ids, errors);
       failIf(errors, "Nothing was mirrored.");
-      const boxes = boxesUnder(scene.nodes, ids);
-      const changes = effectiveBoxChanges(boxes, mirrorAcross(boxes, axis));
+      const boxes = shapesUnder(scene.nodes, ids);
+      const changes = effectiveShapeChanges(boxes, mirrorAcross(boxes, axis));
       if (changes.length > 0) commit(label("mirror", `${listIds(ids)} on ${axis.toUpperCase()}`, actor), actor, [{ op: "update", changes }]);
       const mirrored = new Set(boxes.map((b) => b.id));
-      return scene.nodes.filter((n): n is Box => mirrored.has(n.id));
+      return scene.nodes.filter((n): n is Shape => mirrored.has(n.id));
     },
 
     /**
@@ -486,7 +493,7 @@ export function createSceneStore() {
       const parent = commonParent(scene.nodes, members);
       const trimmed = name?.trim();
       const group: Group = {
-        id: `group_${nextId.group++}`,
+        id: newId("group"),
         type: "group",
         ...(trimmed ? { name: trimmed } : {}),
         ...(parent !== undefined ? { parent } : {}),

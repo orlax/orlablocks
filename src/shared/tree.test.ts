@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Box, Group, SceneNode } from "./scene.types";
-import { ancestry, boxesUnder, childrenOf, commonParent, copyNodes, selectableAt, subtreeIds, topmost } from "./tree";
+import { ancestry, shapesUnder, childrenOf, commonParent, copyNodes, selectableAt, subtreeIds, topmost } from "./tree";
 
 const group = (id: string, parent?: string): Group => ({ id, type: "group", createdBy: "human", ...(parent ? { parent } : {}) });
 const box = (id: string, parent?: string): Box => ({
@@ -31,7 +31,7 @@ describe("tree", () => {
 
   it("finds a subtree and the boxes under nodes, each once, in list order", () => {
     expect([...subtreeIds(nodes, "group_1")].sort()).toEqual(["box_1", "box_2", "box_3", "group_1", "group_2"]);
-    expect(boxesUnder(nodes, ["group_2", "box_3", "box_4"]).map((b) => b.id)).toEqual(["box_2", "box_3", "box_4"]);
+    expect(shapesUnder(nodes, ["group_2", "box_3", "box_4"]).map((b) => b.id)).toEqual(["box_2", "box_3", "box_4"]);
   });
 
   it("walks up to the top level", () => {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { boundsOf, footprint, mirrorAcross, moveShape, offsetPolygon, pointInPolygon, signedArea2 } from "./geometry";
-import type { Box } from "./scene.types";
+import { boundsOf, footprint, footprintBounds, mirrorAcross, moveShape, offsetPolygon, pointInPolygon, signedArea2 } from "./geometry";
+import type { Box, Cylinder } from "./scene.types";
 
 const box = (patch: Partial<Box>): Box => ({
   id: "box_1",
@@ -124,5 +124,40 @@ describe("moveShape", () => {
   it("patches only the axes that move, rounded to 2 decimals", () => {
     expect(moveShape(box({ x: 1, y: 0, z: 2 }), 0.333, 0, 0)).toEqual({ x: 1.33 });
     expect(moveShape(box({}), 0, 0, 0)).toEqual({});
+  });
+});
+
+describe("cylinders", () => {
+  const cylinder = (patch: Partial<Cylinder>): Cylinder => ({ ...box({}), type: "cylinder", ...patch }) as Cylinder;
+  const r2 = (n: number) => Math.round(n * 100) / 100 + 0;
+
+  it("an octagon has flat edges facing the world axes at rotation 0", () => {
+    const f = footprint(cylinder({ width: 10, depth: 10, sides: 8 }));
+    expect(f).toHaveLength(8);
+    // The two corners either side of +x share x (a flat edge facing +x), and likewise for +z.
+    expect(r2(f[0].x)).toBe(r2(f[7].x));
+    expect(r2(f[0].z)).toBe(-r2(f[7].z));
+    const b = footprintBounds(cylinder({ width: 10, depth: 10, sides: 8 }));
+    expect([r2(b.minX), r2(b.maxX), r2(b.minZ), r2(b.maxZ)]).toEqual([-5, 5, -5, 5].map((v) => r2(v * Math.cos(Math.PI / 8))));
+  });
+
+  it("a smooth oval's bounds are its true ellipse's, turned", () => {
+    const b = footprintBounds(cylinder({ width: 8, depth: 4, rotation: 90 }));
+    expect([r2(b.minX), r2(b.maxX), r2(b.minZ), r2(b.maxZ)]).toEqual([-2, 2, -4, 4]);
+    const d = footprintBounds(cylinder({ width: 8, depth: 4, rotation: 45 }));
+    expect(r2(d.maxX)).toBe(r2(Math.sqrt((16 + 4) / 2) * 1));
+  });
+
+  it("mirroring a pentagon gives its true mirror image on both axes (the box rule, -rotation, wouldn't on X)", () => {
+    const p = cylinder({ x: 3, z: 1, width: 4, depth: 3, sides: 5, rotation: 20 });
+    for (const axis of ["x", "z"] as const) {
+      const [out] = apply([p as unknown as Box], mirrorAcross([p], axis)) as unknown as Cylinder[];
+      const b = boundsOf([p]);
+      const sum = axis === "x" ? b.minX + b.maxX : b.minZ + b.maxZ;
+      const reflected = footprint(p).map((q) => (axis === "x" ? { x: sum - q.x, z: q.z } : { x: q.x, z: sum - q.z }));
+      // Every reflected corner is a corner of the result (within the 1 cm the center is rounded to).
+      const corners = footprint(out);
+      for (const q of reflected) expect(Math.min(...corners.map((c) => Math.hypot(c.x - q.x, c.z - q.z)))).toBeLessThan(0.01);
+    }
   });
 });

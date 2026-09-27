@@ -4,6 +4,7 @@ import { z } from "zod";
 import {
   AppFileSchema,
   EditorFileSchema,
+  firstIds,
   ProjectFileSchema,
   SceneFileSchema,
   type AppFile,
@@ -231,7 +232,7 @@ export function openDataDir(root: string) {
     createScene(project: string, name: string): string {
       const id = freeSlug(scenesDir(project), slugify(name, "scene"));
       fs.mkdirSync(path.join(scenesDir(project), id), { recursive: true });
-      const file: SceneFile = { name, createdAt: new Date().toISOString(), seq: 0, nextId: { box: 1, group: 1 }, nodes: [] };
+      const file: SceneFile = { name, createdAt: new Date().toISOString(), seq: 0, nextId: firstIds(), nodes: [] };
       writeJson(sceneFile(project, id), file);
       return id;
     },

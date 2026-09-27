@@ -57,10 +57,10 @@ function raisedNextId(nextId: NextId, entry: HistoryEntry): NextId {
   for (const op of [...entry.ops, ...entry.inverse]) {
     if (op.op !== "add") continue;
     for (const node of op.nodes) {
-      const match = /^(box|group)_(\d+)$/.exec(node.id);
-      if (match) {
-        const kind = match[1] as keyof NextId;
-        next[kind] = Math.max(next[kind], Number(match[2]) + 1);
+      const match = /^([a-z]+)_(\d+)$/.exec(node.id);
+      if (match && match[1] in next) {
+        const type = match[1] as keyof NextId;
+        next[type] = Math.max(next[type], Number(match[2]) + 1);
       }
     }
   }

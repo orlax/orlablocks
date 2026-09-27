@@ -1,10 +1,10 @@
 import { useEffect, useMemo } from "react";
 import * as THREE from "three";
 import { localFootprint, offsetPolygon, shapeFrame, type Point } from "../shared/geometry";
-import { PALETTE, WALL_THICKNESS, type Box, type BoxColor } from "../shared/scene.types";
+import { PALETTE, WALL_THICKNESS, type Shape, type ShapeColor } from "../shared/scene.types";
 
 type Props = {
-  shape: Box;
+  shape: Shape;
   /** The live preview while drawing: translucent blue, so it reads as not-yet-placed. */
   draft?: boolean;
   highlight?: "hover" | "selected";
@@ -57,8 +57,8 @@ type ColorMaterials = Record<
   "body" | "floor" | "bodySelected" | "floorSelected" | "bodyHover" | "floorHover",
   THREE.MeshLambertMaterial
 >;
-const byColor = new Map<BoxColor, ColorMaterials>();
-function colorMaterials(color: BoxColor): ColorMaterials {
+const byColor = new Map<ShapeColor, ColorMaterials>();
+function colorMaterials(color: ShapeColor): ColorMaterials {
   let m = byColor.get(color);
   if (m) return m;
   const map = getShared().tiles;
@@ -121,10 +121,36 @@ function extrude(outline: Point[], height: number, hole?: Point[] | null) {
 }
 
 /**
+ * A smooth cylinder is drawn as many flat facets. This bends the normals of its side faces (the ones that aren't
+ * floors or tops) to the true ellipse's, so the lighting reads as round: the gradient of x²/hw² + z²/hd², turned to
+ * face the same side as the facet (a room's inner wall faces in). Call it after the UVs, which pick their plane
+ * from the flat normals.
+ */
+function smoothSides(geometry: THREE.BufferGeometry, hw: number, hd: number) {
+  const pos = geometry.getAttribute("position");
+  const nrm = geometry.getAttribute("normal");
+  for (let i = 0; i < pos.count; i++) {
+    const nx = nrm.getX(i);
+    const nz = nrm.getZ(i);
+    if (Math.abs(nrm.getY(i)) > 0.5) continue;
+    let gx = pos.getX(i) / (hw * hw);
+    let gz = pos.getZ(i) / (hd * hd);
+    const len = Math.hypot(gx, gz);
+    if (len === 0) continue;
+    gx /= len;
+    gz /= len;
+    const sign = gx * nx + gz * nz < 0 ? -1 : 1;
+    nrm.setXYZ(i, sign * gx, 0, sign * gz);
+  }
+  nrm.needsUpdate = true;
+  return geometry;
+}
+
+/**
  * The UV offset: the frame's world position for an unrotated shape (its tiles line up with the ground grid and
  * with other shapes), its half size for a rotated one (tiles start at a corner).
  */
-function uvOffset(box: Box): [number, number] {
+function uvOffset(box: Shape): [number, number] {
   return box.rotation === 0 ? [box.x, box.z] : [box.width / 2, box.depth / 2];
 }
 
@@ -142,12 +168,17 @@ export function ShapeMesh({ shape, draft = false, highlight }: Props) {
   // Geometry is rebuilt only when what it's made from changes (the outline is a new array every render).
   const key = JSON.stringify([kind, outline, height, ox, y, oz]);
 
+  const smooth = shape.type === "cylinder" && shape.sides === undefined;
   const solid = useMemo(() => {
-    if (kind === "volume") return applyBoxUVs(extrude(outline, height), ox, y, oz);
-    // Rooms narrower than two wall thicknesses have no inside left: they render as a solid block.
-    const outer = offsetPolygon(outline, WALL_THICKNESS / 2)!;
-    return applyBoxUVs(extrude(outer, height, offsetPolygon(outline, -WALL_THICKNESS / 2)), ox, y, oz);
-  }, [key]);
+    let g: THREE.BufferGeometry;
+    if (kind === "volume") g = applyBoxUVs(extrude(outline, height), ox, y, oz);
+    else {
+      // Rooms narrower than two wall thicknesses have no inside left: they render as a solid block.
+      const outer = offsetPolygon(outline, WALL_THICKNESS / 2)!;
+      g = applyBoxUVs(extrude(outer, height, offsetPolygon(outline, -WALL_THICKNESS / 2)), ox, y, oz);
+    }
+    return smooth ? smoothSides(g, shape.width / 2, shape.depth / 2) : g;
+  }, [key, smooth]);
 
   const floor = useMemo(
     () => (kind === "room" ? applyBoxUVs(extrude(outline, FLOOR_THICKNESS), ox, y, oz) : null),

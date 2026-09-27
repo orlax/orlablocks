@@ -4,7 +4,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { z } from "zod";
 import { boundsOf, round2 } from "../shared/geometry";
 import {
-  BOX_COLORS,
+  SHAPE_COLORS,
   DEFAULT_COLOR,
   DEFAULT_HEIGHT,
   DuplicateNodesSchema,
@@ -17,11 +17,13 @@ import {
   RotateNodesSchema,
   ShapeInputSchema,
   UngroupSchema,
+  MAX_SIDES,
+  MIN_SIDES,
   WALL_THICKNESS,
   type OpenScene,
   type Scene,
 } from "../shared/scene.types";
-import { boxesUnder, isGroup } from "../shared/tree";
+import { isGroup, isShape, shapesUnder } from "../shared/tree";
 import { SceneError } from "./scene";
 import type { Workspace } from "./workspace";
 
@@ -34,7 +36,7 @@ const INSTRUCTIONS =
   "the human opens and switches scenes in the editor. Every change is saved as it happens (there's no save step), " +
   "and the undo history survives server restarts. " +
   "Units are meters; decimals are allowed and kept to 2 places. The world is 3D with y up and the ground at y = 0. " +
-  "The scene is a flat list of nodes: shapes and groups. The only shape so far is the box (type: box). " +
+  "The scene is a flat list of nodes: shapes and groups. The shapes so far are boxes (type: box) and cylinders (type: cylinder). " +
   "A box's footprint is CENTERED at (x, z), with `width` along the box's local x and " +
   "`depth` along its local z. It rises from its elevation `y` (its bottom: 0 = on the ground, negative = below ground) " +
   "to y + height, so to stack box B on box A, set B.y = A.y + A.height. " +
@@ -43,15 +45,20 @@ const INSTRUCTIONS =
   `A box is either a room (hollow: floor and walls, no ceiling; default height ${DEFAULT_HEIGHT.room} m; ` +
   `walls are ${WALL_THICKNESS} m thick, centered on the footprint edge, so rooms that share an edge share a wall) ` +
   `or a volume (solid, e.g. a platform or pillar; default height ${DEFAULT_HEIGHT.volume} m). Minimum height is ${MIN_HEIGHT} m. ` +
-  `\`color\` is a palette key: ${BOX_COLORS.join(", ")} (default ${DEFAULT_COLOR}). ` +
-  "A group (type: group) is a container with NO position of its own: its boxes keep absolute world coordinates, " +
+  `\`color\` is a palette key: ${SHAPE_COLORS.join(", ")} (default ${DEFAULT_COLOR}). ` +
+  "A cylinder has exactly a box's fields, and its footprint is the ellipse inscribed in its width × depth rectangle " +
+  "(width = depth for a circle, so a round room 10 m across is width 10, depth 10), centered at (x, z) and turned by `rotation` like a box. " +
+  `It's a room or a volume like a box, with the same walls and heights. With \`sides\` (${MIN_SIDES}..${MAX_SIDES}) it's a regular polygon on that ellipse instead, ` +
+  "with a flat edge facing its local +x (sides 8 at rotation 0: an octagon with flat walls facing ±x and ±z); " +
+  "without sides it's smooth. update_nodes with sides: null makes one smooth. " +
+  "A group (type: group) is a container with NO position of its own: its shapes keep absolute world coordinates, " +
   "and a node is in a group when its `parent` is that group's ID (groups can nest). get_scene adds each group's " +
   "derived `bounds` (center x/z, bottom y, width, depth, height, axis-aligned) for reference. Groups are a unit of " +
   "action: move_nodes, rotate_nodes and remove_nodes on a group act on everything in it. A group left empty disappears. " +
-  "Every node has a server-assigned ID (box_1, group_1, ..., never reused), an optional `name` for people " +
+  "Every node has a server-assigned ID (box_1, cylinder_1, group_1, ..., never reused), an optional `name` for people " +
   '("lobby"; not unique, tools always take IDs, so resolve names to IDs with get_scene), and records who created it (human or agent). ' +
   "To repeat things (a row of pillars, a second wing, another floor), copy them with move_nodes and copy: true " +
-  "(count for several, each offset further) instead of retyping boxes with draw_shapes: copies get new IDs and keep " +
+  "(count for several, each offset further) instead of retyping shapes with draw_shapes: copies get new IDs and keep " +
   "their names, structure and parent group. " +
   "For symmetry, mirror_nodes flips nodes in place on a WORLD axis (x or z, not the camera's view): copy a wing " +
   "with move_nodes, then mirror the copy, instead of computing reflected positions and angles by hand. " +
@@ -72,7 +79,7 @@ function describeScene(open: OpenScene, scene: Scene) {
     ...scene,
     nodes: scene.nodes.map((n) => {
       if (!isGroup(n)) return n;
-      const boxes = boxesUnder(scene.nodes, [n.id]);
+      const boxes = shapesUnder(scene.nodes, [n.id]);
       if (boxes.length === 0) return n;
       const b = boundsOf(boxes);
       const bounds = {
@@ -111,8 +118,9 @@ function buildServer(workspace: Workspace) {
       title: "Draw shapes",
       description:
         `Add one or more shapes to the scene in a single batch; they appear live in the editor. Each has a \`type\` ` +
-        `(box, the default) and that type's fields. For a box (a room or a volume) only kind, x, z, width and depth are ` +
-        `required; the rest have defaults (the kind's height, y 0, rotation 0, color ${DEFAULT_COLOR}, no name, top level). ` +
+        `(box, the default, or cylinder) and that type's fields. For a box or cylinder (a room or a volume) only kind, x, z, ` +
+        `width and depth are required; the rest have defaults (the kind's height, y 0, rotation 0, color ${DEFAULT_COLOR}, ` +
+        `no name, top level, and a smooth cylinder). ` +
         `Set \`parent\` to a group's ID to draw straight into that group. ` +
         `The batch is all-or-nothing: if any shape is invalid, nothing is drawn and the error says which one.`,
       inputSchema: { shapes: z.array(ShapeInputSchema).min(1) },
@@ -121,8 +129,8 @@ function buildServer(workspace: Workspace) {
       const created = store().drawShapes(shapes, "agent");
       const all = store().getScene().nodes;
       const totals = {
-        rooms: all.filter((n) => n.type === "box" && n.kind === "room").length,
-        volumes: all.filter((n) => n.type === "box" && n.kind === "volume").length,
+        rooms: all.filter((n) => isShape(n) && n.kind === "room").length,
+        volumes: all.filter((n) => isShape(n) && n.kind === "volume").length,
         groups: all.filter(isGroup).length,
       };
       return json({ created, totals });
@@ -135,7 +143,8 @@ function buildServer(workspace: Workspace) {
       title: "Update nodes",
       description:
         `Change existing nodes by ID in a single batch; changes appear live in the editor. ` +
-        `A box takes any of: name, parent, kind, x, z, y, width, depth, height, rotation, color. A group takes only name and parent. ` +
+        `A box takes any of: name, parent, kind, x, z, y, width, depth, height, rotation, color; a cylinder those and sides. ` +
+        `A group takes only name and parent. ` +
         `Values are absolute (x: 4 moves the center to x = 4); to shift boxes or whole groups by an offset, use move_nodes instead. ` +
         `An empty name removes the name; parent null moves a node to the top level. ` +
         `The batch is all-or-nothing: an unknown ID or an invalid value rejects it and nothing changes.`,
@@ -200,7 +209,8 @@ function buildServer(workspace: Workspace) {
       description:
         `Flip boxes and/or whole groups in place on a world axis, across the center of their combined bounds: ` +
         `axis x swaps east and west (every x reflects), axis z swaps +z and -z. y never changes, and every rotation ` +
-        `becomes -rotation. A group mirrors as a unit. Mirroring twice restores the original exactly.`,
+        `becomes -rotation (an odd-sided cylinder mirrored on x: 180 - rotation). A group mirrors as a unit. ` +
+        `Mirroring twice restores the original exactly.`,
       inputSchema: MirrorNodesSchema.shape,
     },
     async (input) => json({ mirrored: store().mirrorNodes(input, "agent") }),

@@ -1,5 +1,5 @@
 import { useEffect, useState, type DragEvent, type KeyboardEvent, type MouseEvent } from "react";
-import { ChevronDown, ChevronRight, ChevronsDownUp, Folder, Square, SquareDashed } from "lucide-react";
+import { ChevronDown, ChevronRight, ChevronsDownUp, Circle, CircleDashed, Folder, Square, SquareDashed } from "lucide-react";
 import type { SceneNode } from "../shared/scene.types";
 import { ancestry, childrenOf, isGroup, subtreeIds } from "../shared/tree";
 
@@ -151,7 +151,16 @@ export function Outliner({
           {rows.length === 0 && <div className="outliner-empty">No boxes yet</div>}
           {rows.map((row) => {
             const { node, depth, hasChildren } = row;
-            const Icon = isGroup(node) ? Folder : node.kind === "room" ? SquareDashed : Square;
+            // Rooms are dashed (hollow), volumes solid; circles for cylinders.
+            const Icon = isGroup(node)
+              ? Folder
+              : node.type === "cylinder"
+                ? node.kind === "room"
+                  ? CircleDashed
+                  : Circle
+                : node.kind === "room"
+                  ? SquareDashed
+                  : Square;
             const classes = ["outliner-row"];
             if (selection.includes(node.id)) classes.push("selected");
             if (drop?.id === node.id) classes.push(`drop-${drop.where}`);

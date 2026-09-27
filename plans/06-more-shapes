@@ -353,3 +353,39 @@ Adopted as recommended (say if any should change):
   - the editor bundles with `vite build`;
   - a scripted run on `:5171` with a scratch `DATA_DIR`: `initialize` reports 0.0.7 and instructions that mention `draw_shapes` and no longer mention `draw_boxes`. `tools/list` has 9 tools with `draw_shapes`. `draw_shapes` drew a room and a rotated volume, with and without `type`. A missing `depth` was rejected naming `shapes[0].depth`, and `draw_boxes` is gone. A WS `add_shapes` drew a box. `move_nodes` by dx moved only x, and a WS undo reverted it;
   - Orlando's browser check passed.
+
+### 06.2 — Cylinder (done)
+
+- **Types (`scene.types.ts`):**
+  - `Box` and `Cylinder` share their fields (`Footprinted`), and `Shape = Box | Cylinder`. `Cylinder` adds `sides?` (3..64; none = smooth).
+  - The shape-generic names were renamed across the code: `ShapeKind`, `ShapeColor`, `SHAPE_COLORS`, `ShapePatch`, `isShape` (any node that isn't a group), `shapesUnder`, `shapeAxes`, `toShapeLocal`, `fromShapeLocal`, `pickShape`. `Box` is left for what's really a box, and for test fixtures.
+  - `ShapeInputSchema` is one flat object with `type: "box" | "cylinder"` and `sides`, because boxes and cylinders share every field. That gives the agent plain errors instead of union noise. Free-forms (06.3), whose fields differ, will need a discriminated union.
+  - `update_nodes` takes `sides`, and null makes a cylinder smooth. The history log already stores a removed field as null.
+- **ID counters are per type:** `NextIdSchema` gains `cylinder` (default 1, so older scenes load), `firstIds()` makes a new scene's counters, the store's `newId(type)` is `${type}_${n}`, and the log replay raises any `<type>_<n>` it knows. The next shape type only adds a key.
+- **`geometry.ts`:**
+  - `localFootprint` for a cylinder puts corner i at angle (i + ½) × 360° / sides on the inscribed ellipse, so a flat edge faces local +x. A smooth one uses `SMOOTH_SEGMENTS` (64).
+  - `footprintBounds` is exact: from the corners for a polygon, and the rotated ellipse's for a smooth one.
+  - `mirrorShape` sets `180 − rotation` on X for an odd side count. The test checks the corners are the true mirror image, and it fails with the box rule.
+- **Store:** `drawShapes` draws both types and rejects `sides` on a box. `updateNodes` changes `sides` (label `Change sides of cylinder_1`) and rejects it on a box. Copy and paste keep `sides`.
+- **Editor:**
+  - **The Cylinder tool (`C`)** drags like the Box tool, sharing its kind and color. The draft previews the cylinder with its sides.
+  - **The sides control** (`SidesControl` in `ToolBar.tsx`) is on the contextual bar for the Cylinder tool (`next cylinder`, state in App) and for a single selected cylinder (one `update_nodes` per change).
+  - **The outliner** shows circle icons for cylinders (dashed for a room).
+  - **The selection info** reads `shrine (cylinder_1) · 10 × 10 × 3 m · smooth · y 0 · 0°`.
+  - **The gizmo** is unchanged: the box's handles work on the cylinder's width × depth rectangle.
+- **Rendering:** a smooth cylinder's side faces get the true ellipse's normals (`smoothSides`, after the UVs), so it lights as round instead of banding across 64 facets.
+- **MCP:** the instructions describe the cylinder (the inscribed ellipse, `sides`, the flat edge facing +x, `sides: null`), and the ID examples include `cylinder_1`. `draw_shapes`, `update_nodes` and `mirror_nodes` mention it. Counts are across all shapes. The server version stays 0.0.7. **Restart the server and reconnect with `/mcp`.**
+- **Fixed on the way:** the 06.1-era `Box` → `Shape` rename had also rewritten two comments ("Box tool" → "Shape tool"). They're fixed.
+- **Checks:**
+  - typecheck;
+  - 182 tests (new: "cylinders" in `geometry.test.ts`, "scene store cylinders" in `scene.test.ts`);
+  - the editor bundles;
+  - a scripted run on `:5171` reusing 06.1's scratch data folder:
+    - the 06.1 scene (whose `nextId` had no `cylinder`) reopened;
+    - the agent drew a smooth 10 m room and a 5-sided rotated volume in one call (`cylinder_1`, `cylinder_2`), and `sides` on a box was refused;
+    - `sides: 8`, then `sides: null` made it faceted, then smooth;
+    - mirroring the pentagon on X gave 160°, and twice restored the exact JSON;
+    - a copy kept `sides`, and a group of both got its bounds;
+    - a WS `add_shapes` drew `cylinder_4`;
+    - after a restart, the history reloaded, undo removed `cylinder_4`, and the next cylinder was `cylinder_5` (no ID reused);
+  - Orlando's browser check passed.

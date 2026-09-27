@@ -5,16 +5,16 @@ import {
   DEFAULT_COLOR,
   DEFAULT_HEIGHT,
   SNAP,
-  type Box,
-  type BoxKind,
-  type BoxPatch,
+  type Shape,
+  type ShapeKind,
+  type ShapePatch,
   type NodeUpdate,
   type SceneNode,
   type ShapeInput,
   type View,
 } from "../shared/scene.types";
 import { boundsOf } from "../shared/geometry";
-import { boxesUnder, isBox, selectableAt } from "../shared/tree";
+import { shapesUnder, isShape, selectableAt } from "../shared/tree";
 import { ShapeMesh } from "./ShapeMesh";
 import {
   cameraPosition,
@@ -52,7 +52,7 @@ import { Grid } from "./Grid";
 import { typingInField } from "./keys";
 import { Lighting } from "./Lighting";
 import { marqueeHits, rectFrom, type ScreenPoint } from "./marquee";
-import { pickBox, pickHit } from "./pick";
+import { pickShape, pickHit } from "./pick";
 import { TransformGizmo } from "./TransformGizmo";
 
 const BACKGROUND = "#f7f6f2";
@@ -63,10 +63,14 @@ const CLICK_PX = 4;
 type YawKey = "left" | "right";
 const YAW_KEYS: Record<string, YawKey> = { a: "left", arrowleft: "left", d: "right", arrowright: "right" };
 
-export type Tool = "select" | "hand" | "box";
+export type Tool = "select" | "hand" | "box" | "cylinder";
+/** The tools that drag a footprint on the ground, and the shape type each draws. */
+const DRAWS: Partial<Record<Tool, "box" | "cylinder">> = { box: "box", cylinder: "cylinder" };
 
 /** A drawn footprint on the ground, by its center (like a box). */
 type Footprint = { x: number; z: number; width: number; depth: number };
+/** What the draft being drawn is. */
+type Draft = { type: "box" | "cylinder"; kind: ShapeKind; sides?: number };
 
 /**
  * A gizmo drag in progress. A body drag only becomes `active` once the pointer moves past CLICK_PX: until then
@@ -83,7 +87,7 @@ type Drag = GizmoDrag & {
   sx0: number;
   sy0: number;
   active: boolean;
-  patches: Record<string, BoxPatch>;
+  patches: Record<string, ShapePatch>;
   label: string;
   sx: number;
   sy: number;
@@ -120,8 +124,10 @@ type Props = {
   onContext: (id: string | null) => void;
   /** A node hovered outside the view (an outliner row): its boxes get the hover highlight too. */
   outsideHover: string | null;
-  /** The kind the Box tool draws (its draft is previewed at that kind's default height). */
-  nextKind: BoxKind;
+  /** The kind the Box and Cylinder tools draw (the draft is previewed at that kind's default height). */
+  nextKind: ShapeKind;
+  /** The sides the Cylinder tool draws (undefined = smooth). */
+  nextSides: number | undefined;
   onSelect: (ids: string[]) => void;
   onDrawShape: (shape: ShapeInput) => void;
   /** One gizmo drag: one `update_nodes`, so one undo step. */
@@ -147,6 +153,7 @@ export function Viewport({
   onContext,
   outsideHover,
   nextKind,
+  nextSides,
   onSelect,
   onDrawShape,
   onUpdate,
@@ -166,14 +173,14 @@ export function Viewport({
   const wrap = useRef<HTMLDivElement>(null);
   const yawKeys = useRef(new Set<YawKey>());
   const pan = useRef<{ pointerId: number; grabbed: GroundPoint; sx: number; sy: number } | null>(null);
-  const drawing = useRef<{ pointerId: number; kind: BoxKind; start: GroundPoint } | null>(null);
+  const drawing = useRef<{ pointerId: number; type: "box" | "cylinder"; kind: ShapeKind; sides?: number; start: GroundPoint } | null>(null);
   const [panning, setPanning] = useState(false);
-  const [draft, setDraft] = useState<(Footprint & { kind: BoxKind; sx: number; sy: number }) | null>(null);
+  const [draft, setDraft] = useState<(Footprint & Draft & { sx: number; sy: number }) | null>(null);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [hotPart, setHotPart] = useState<GizmoPart | null>(null);
   const [drag, setDrag] = useState<Drag | null>(null);
   // After releasing a drag, keep showing its result until the server's scene arrives (no flicker back).
-  const [pending, setPending] = useState<{ origin: Box[]; patches: Record<string, BoxPatch>; copy: boolean } | null>(null);
+  const [pending, setPending] = useState<{ origin: Shape[]; patches: Record<string, ShapePatch>; copy: boolean } | null>(null);
   // The marquee: dragging empty ground in the Select tool. It becomes `active` past CLICK_PX (before that it's a
   // click, which deselects). `base` is the selection it started from, restored by Esc and added to with Shift.
   const [marquee, setMarquee] = useState<{
@@ -192,18 +199,18 @@ export function Viewport({
   const onSelectRef = useRef(onSelect);
   onSelectRef.current = onSelect;
 
-  const boxes = nodes.filter(isBox);
+  const boxes = nodes.filter(isShape);
   const boxesRef = useRef(boxes);
   boxesRef.current = boxes;
   // What's on screen: the server's boxes, with the drag in progress (or just released) applied locally. A copy
   // leaves the originals where they are and shows the copies (`ghosts`) where the drag puts them.
   const override = drag?.active ? drag : pending;
-  const moved = (b: Box) => (override?.patches[b.id] ? { ...b, ...override.patches[b.id] } : b);
+  const moved = (b: Shape) => (override?.patches[b.id] ? { ...b, ...override.patches[b.id] } : b);
   const shown = override && !override.copy ? boxes.map(moved) : boxes;
   const ghosts = override?.copy ? override.origin.map((b) => ({ ...moved(b), id: `${b.id}:copy` })) : [];
   /** The boxes (as shown) in or under the given nodes. */
   const shownUnder = (ids: string[]) => {
-    const under = new Set(boxesUnder(nodes, ids).map((b) => b.id));
+    const under = new Set(shapesUnder(nodes, ids).map((b) => b.id));
     return shown.filter((b) => under.has(b.id));
   };
 
@@ -244,7 +251,7 @@ export function Viewport({
     return inside !== null ? { id: inside, leaves: false } : { id: selectableAt(nodes, id, null) ?? id, leaves: context !== null };
   };
   const pickAt = (sx: number, sy: number, size: Size) => {
-    const id = pickBox(screenRay(cam.current, size, sx, sy), shown);
+    const id = pickShape(screenRay(cam.current, size, sx, sy), shown);
     return id === null ? null : resolve(id).id;
   };
   const gizmoAt = (sx: number, sy: number, size: Size) =>
@@ -299,7 +306,7 @@ export function Viewport({
   // moves them all), and clicking a selected one removes it. Empty ground: a drag draws a marquee, a click
   // deselects (Shift keeps the selection).
   // Hand tool (or middle button in any tool): drag to pan, the grabbed ground point stays under the cursor.
-  // Box tool: drag a footprint on the ground.
+  // Box and Cylinder tools: drag a footprint on the ground.
   const onPointerDown = (e: PointerEvent) => {
     const { sx, sy, size } = local(e);
     if (e.button === 0 && tool === "select") {
@@ -332,8 +339,9 @@ export function Viewport({
       setMarquee({ pointerId: e.pointerId, start, end: start, additive: e.shiftKey, base: selection, active: false });
       return;
     }
-    const panButton = e.button === 1 || (e.button === 0 && tool !== "box");
-    const drawButton = e.button === 0 && tool === "box";
+    const draws = DRAWS[tool];
+    const panButton = e.button === 1 || (e.button === 0 && !draws);
+    const drawButton = e.button === 0 && !!draws;
     if (!panButton && !drawButton) return;
     e.currentTarget.setPointerCapture(e.pointerId);
     if (panButton) {
@@ -342,8 +350,9 @@ export function Viewport({
       setPanning(true);
     } else {
       const { point } = groundAt(e);
-      drawing.current = { pointerId: e.pointerId, kind: nextKind, start: point };
-      setDraft({ kind: nextKind, ...point, width: 0, depth: 0, sx, sy });
+      const shape: Draft = { type: draws!, kind: nextKind, ...(draws === "cylinder" && nextSides !== undefined ? { sides: nextSides } : {}) };
+      drawing.current = { pointerId: e.pointerId, ...shape, start: point };
+      setDraft({ ...shape, ...point, width: 0, depth: 0, sx, sy });
     }
   };
 
@@ -381,7 +390,7 @@ export function Viewport({
     const d = drawing.current;
     if (d?.pointerId === e.pointerId) {
       const { point } = groundAt(e);
-      setDraft({ kind: d.kind, ...footprintFrom(d.start, point, e.shiftKey, e.altKey), sx, sy });
+      setDraft({ type: d.type, kind: d.kind, sides: d.sides, ...footprintFrom(d.start, point, e.shiftKey, e.altKey), sx, sy });
       return;
     }
     // Just hovering: highlight the gizmo handle, or in the Select tool the box that a press would grab.
@@ -428,7 +437,15 @@ export function Viewport({
     if (d?.pointerId === e.pointerId) {
       const f = footprintFrom(d.start, groundAt(e).point, e.shiftKey, e.altKey);
       if (round2(f.width) > 0 && round2(f.depth) > 0) {
-        onDrawShape({ type: "box", kind: d.kind, x: round2(f.x), z: round2(f.z), width: round2(f.width), depth: round2(f.depth) });
+        onDrawShape({
+          type: d.type,
+          ...(d.sides !== undefined ? { sides: d.sides } : {}),
+          kind: d.kind,
+          x: round2(f.x),
+          z: round2(f.z),
+          width: round2(f.width),
+          depth: round2(f.depth),
+        });
       }
       cancelDrawing();
     }
@@ -439,7 +456,7 @@ export function Viewport({
   const onDoubleClick = (e: MouseEvent) => {
     if (tool !== "select") return;
     const { sx, sy, size } = local(e);
-    const id = pickBox(screenRay(cam.current, size, sx, sy), shown);
+    const id = pickShape(screenRay(cam.current, size, sx, sy), shown);
     if (id === null) return;
     const target = resolve(id).id;
     if (target === id) return; // already the box itself
@@ -534,7 +551,7 @@ export function Viewport({
     if (activePart === "y" || activePart === "height") return "resizing";
     if (activePart) return "moving";
     if (panning) return "panning";
-    return tool === "box" ? "drawing" : tool === "select" ? "selecting" : "";
+    return DRAWS[tool] ? "drawing" : tool === "select" ? "selecting" : "";
   })();
 
   return (
@@ -572,8 +589,8 @@ export function Viewport({
         <Boxes
           boxes={[...shown, ...ghosts]}
           draft={draft}
-          selected={new Set(ghosts.length > 0 ? ghosts.map((b) => b.id) : boxesUnder(nodes, selection).map((b) => b.id))}
-          hovered={new Set(boxesUnder(nodes, [hoveredId, outsideHover].filter((id) => id !== null)).map((b) => b.id))}
+          selected={new Set(ghosts.length > 0 ? ghosts.map((b) => b.id) : shapesUnder(nodes, selection).map((b) => b.id))}
+          hovered={new Set(shapesUnder(nodes, [hoveredId, outsideHover].filter((id) => id !== null)).map((b) => b.id))}
         />
         {gizmo && (
           <TransformGizmo
@@ -620,9 +637,9 @@ function Boxes({
   selected,
   hovered,
 }: {
-  boxes: Box[];
-  draft: (Footprint & { kind: BoxKind }) | null;
-  /** Box IDs to highlight: in the selection (or in a selected group), and under the cursor. */
+  boxes: Shape[];
+  draft: (Footprint & Draft) | null;
+  /** Shape IDs to highlight: in the selection (or in a selected group), and under the cursor. */
   selected: Set<string>;
   hovered: Set<string>;
 }) {
@@ -638,7 +655,7 @@ function Boxes({
         <ShapeMesh
           shape={{
             id: "draft",
-            type: "box",
+            ...(draft.type === "cylinder" ? { type: "cylinder", sides: draft.sides } : { type: "box" }),
             kind: draft.kind,
             x: draft.x,
             z: draft.z,

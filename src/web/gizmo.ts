@@ -1,14 +1,14 @@
-import { HEIGHT_SNAP, MIN_HEIGHT, SNAP, type Box, type BoxPatch } from "../shared/scene.types";
+import { HEIGHT_SNAP, MIN_HEIGHT, SNAP, type Shape, type ShapePatch } from "../shared/scene.types";
 import {
   boundsOf,
-  boxAxes,
+  shapeAxes,
   footprintBounds,
-  fromBoxLocal,
+  fromShapeLocal,
   moveShape,
   normalizeDeg,
   rotateAround,
   round2,
-  toBoxLocal,
+  toShapeLocal,
   type Bounds,
 } from "../shared/geometry";
 import { paramOnLine, screenToPlane, worldToScreen, type CameraState, type Size, type Vec3 } from "./camera";
@@ -69,9 +69,9 @@ export const AXES: Record<"x" | "y" | "z", Vec3> = {
 const snapTo = (n: number, step: number) => Math.round(n / step) * step;
 
 /** Where a scale handle sits: on the top face's corner or edge midpoint. */
-export function scaleHandlePoint(box: Box, part: ScalePart): Vec3 {
+export function scaleHandlePoint(box: Shape, part: ScalePart): Vec3 {
   const [sx, sz] = signs(part);
-  const p = fromBoxLocal(box, { x: (sx * box.width) / 2, z: (sz * box.depth) / 2 });
+  const p = fromShapeLocal(box, { x: (sx * box.width) / 2, z: (sz * box.depth) / 2 });
   return { x: p.x, y: box.y + box.height, z: p.z };
 }
 
@@ -79,7 +79,7 @@ export function scaleHandlePoint(box: Box, part: ScalePart): Vec3 {
  * The resize cursor for a scale handle, from the direction it points on screen (center → handle), so it stays
  * right at any yaw and rotation.
  */
-export function scaleCursor(cam: CameraState, size: Size, box: Box, part: ScalePart): "ns" | "ew" | "nwse" | "nesw" {
+export function scaleCursor(cam: CameraState, size: Size, box: Shape, part: ScalePart): "ns" | "ew" | "nwse" | "nesw" {
   const c = worldToScreen(cam, size, { x: box.x, y: box.y + box.height, z: box.z });
   const h = worldToScreen(cam, size, scaleHandlePoint(box, part));
   if (!c || !h) return "nwse";
@@ -92,11 +92,11 @@ export function scaleCursor(cam: CameraState, size: Size, box: Box, part: ScaleP
  * own (-x, -z) corner, so it turns with the box; for several it's the bounds' min corner. `inward` points back
  * toward the corner (the ring's gap faces it). `scale` is the gizmo scale.
  */
-export function rotateHandlePlacement(boxes: Box[], scale: number): { point: Vec3; inward: { x: number; z: number } } {
+export function rotateHandlePlacement(boxes: Shape[], scale: number): { point: Vec3; inward: { x: number; z: number } } {
   const offset = ROTATE_OFFSET * scale;
   if (boxes.length === 1) {
     const box = boxes[0];
-    const { ex, ez } = boxAxes(box);
+    const { ex, ez } = shapeAxes(box);
     const corner = scaleHandlePoint(box, "scale:-1:-1");
     const out = { x: -(ex.x + ez.x) / Math.SQRT2, z: -(ex.z + ez.z) / Math.SQRT2 };
     return { point: { x: corner.x + out.x * offset, y: corner.y, z: corner.z + out.z * offset }, inward: { x: -out.x, z: -out.z } };
@@ -134,7 +134,7 @@ export function hitGizmo(
   sy: number,
   anchor: Vec3,
   parts: GizmoPart[],
-  boxes: Box[] = [],
+  boxes: Shape[] = [],
 ): GizmoPart | null {
   const scale = gizmoScale(cam);
   if (parts.includes("height")) {
@@ -172,7 +172,7 @@ export function hitGizmo(
 }
 
 /** What the bottom of a raised selection can snap to: the ground, and the tops of boxes under it. */
-export function elevationTargets(moving: Bounds, others: Box[]): number[] {
+export function elevationTargets(moving: Bounds, others: Shape[]): number[] {
   const targets = [0];
   for (const box of others) {
     const f = footprintBounds(box);
@@ -197,7 +197,7 @@ export function snapElevation(raw: number, targets: number[], snap: boolean): nu
  * their bounds. `grab` is the grabbed world point for a body drag (it stays under the cursor), and the starting
  * position along the handle's line for the others.
  */
-export type GizmoDrag = { part: DragPart; origin: Box[]; bounds: Bounds; grab: Vec3 | number };
+export type GizmoDrag = { part: DragPart; origin: Shape[]; bounds: Bounds; grab: Vec3 | number };
 
 export type DragModifiers = { shift: boolean; alt: boolean; snap: boolean };
 
@@ -205,7 +205,7 @@ export type DragModifiers = { shift: boolean; alt: boolean; snap: boolean };
  * Starts a drag on a handle: remembers where along its line the cursor is, or for a scale handle how far the
  * cursor is from the handle (in the box's frame, on the top face's plane), so the handle doesn't jump.
  */
-export function startHandleDrag(cam: CameraState, size: Size, sx: number, sy: number, part: GizmoPart, origin: Box[]): GizmoDrag {
+export function startHandleDrag(cam: CameraState, size: Size, sx: number, sy: number, part: GizmoPart, origin: Shape[]): GizmoDrag {
   const bounds = boundsOf(origin);
   if (part === "rotate") {
     // The cursor's angle around the pivot (the selection's center), on the plane of its top.
@@ -216,7 +216,7 @@ export function startHandleDrag(cam: CameraState, size: Size, sx: number, sy: nu
   if (isScalePart(part)) {
     const box = origin[0];
     const [hx, hz] = signs(part);
-    const l = toBoxLocal(box, screenToPlane(cam, size, sx, sy, box.y + box.height));
+    const l = toShapeLocal(box, screenToPlane(cam, size, sx, sy, box.y + box.height));
     return { part, origin, bounds, grab: { x: l.x - (hx * box.width) / 2, y: 0, z: l.z - (hz * box.depth) / 2 } };
   }
   const axis = part === "height" ? AXES.y : AXES[part];
@@ -224,7 +224,7 @@ export function startHandleDrag(cam: CameraState, size: Size, sx: number, sy: nu
 }
 
 /** Starts a body drag at the point where the cursor hit a box. */
-export const startBodyDrag = (origin: Box[], grab: Vec3): GizmoDrag => ({ part: "body", origin, bounds: boundsOf(origin), grab });
+export const startBodyDrag = (origin: Shape[], grab: Vec3): GizmoDrag => ({ part: "body", origin, bounds: boundsOf(origin), grab });
 
 /**
  * The boxes' changes for the cursor at (sx, sy), plus the live label. `others` are the boxes not being dragged
@@ -237,11 +237,11 @@ export function dragUpdate(
   sx: number,
   sy: number,
   mods: DragModifiers,
-  others: Box[],
-): { patches: Record<string, BoxPatch>; label: string } {
+  others: Shape[],
+): { patches: Record<string, ShapePatch>; label: string } {
   const { part, origin, bounds } = drag;
   const anchor = gizmoAnchor(bounds);
-  const patches: Record<string, BoxPatch> = {};
+  const patches: Record<string, ShapePatch> = {};
 
   if (isScalePart(part)) return scaleUpdate(drag, part, cam, size, sx, sy, mods);
 
@@ -323,11 +323,11 @@ function scaleUpdate(
   sx: number,
   sy: number,
   mods: DragModifiers,
-): { patches: Record<string, BoxPatch>; label: string } {
+): { patches: Record<string, ShapePatch>; label: string } {
   const box = drag.origin[0];
   const grab = drag.grab as Vec3;
   const [hx, hz] = signs(part);
-  const l = toBoxLocal(box, screenToPlane(cam, size, sx, sy, box.y + box.height));
+  const l = toShapeLocal(box, screenToPlane(cam, size, sx, sy, box.y + box.height));
   // Where the dragged handle should be, in the box's frame.
   const tx = l.x - grab.x;
   const tz = l.z - grab.z;
@@ -354,7 +354,7 @@ function scaleUpdate(
 
   // The fixed side stays put, so the center moves by half the change (not at all from the center).
   const shift = (sign: Sign, next: number, original: number) => (mods.alt || sign === 0 ? 0 : (sign * (next - original)) / 2);
-  const c = fromBoxLocal(box, { x: shift(hx, width, box.width), z: shift(hz, depth, box.depth) });
+  const c = fromShapeLocal(box, { x: shift(hx, width, box.width), z: shift(hz, depth, box.depth) });
   return {
     patches: { [box.id]: { x: round2(c.x), z: round2(c.z), width, depth } },
     label: `${width.toFixed(2)} × ${depth.toFixed(2)} m`,
@@ -362,11 +362,11 @@ function scaleUpdate(
 }
 
 /** Only the patches that actually change something, as `update_nodes` changes. */
-export function effectiveChanges(origin: Box[], patches: Record<string, BoxPatch>): ({ id: string } & BoxPatch)[] {
+export function effectiveChanges(origin: Shape[], patches: Record<string, ShapePatch>): ({ id: string } & ShapePatch)[] {
   return origin.flatMap((box) => {
     const patch = patches[box.id];
     if (!patch) return [];
-    const changed = (Object.keys(patch) as (keyof BoxPatch)[]).some((k) => patch[k] !== box[k]);
+    const changed = (Object.keys(patch) as (keyof ShapePatch)[]).some((k) => patch[k] !== (box as ShapePatch)[k]);
     return changed ? [{ id: box.id, ...patch }] : [];
   });
 }
@@ -375,7 +375,7 @@ export function effectiveChanges(origin: Box[], patches: Record<string, BoxPatch
 export const canCopy = (part: DragPart) => part === "body" || part === "x" || part === "y" || part === "z";
 
 /** How far a move drag has taken the boxes (world axes, 2 decimals), from the first box's patch. */
-export function dragOffset(origin: Box[], patches: Record<string, BoxPatch>): { dx: number; dy: number; dz: number } {
+export function dragOffset(origin: Shape[], patches: Record<string, ShapePatch>): { dx: number; dy: number; dz: number } {
   const box = origin[0];
   const p = patches[box.id] ?? {};
   return { dx: round2((p.x ?? box.x) - box.x), dy: round2((p.y ?? box.y) - box.y), dz: round2((p.z ?? box.z) - box.z) };

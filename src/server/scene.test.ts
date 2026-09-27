@@ -679,7 +679,7 @@ describe("scene store paste and cut", () => {
     expect(() => paste([...clip, clip[0]])).toThrow(/appears more than once/);
     expect(() => paste(clip.map((n) => (n.id === "group_2" ? { ...n, parent: "group_1" } : n)))).toThrow(/inside itself/);
     expect(() => paste(clip, "box_3")).toThrow(/is a box, not a group/);
-    expect(() => paste(clip.filter((n) => n.type === "group"))).toThrow(/no boxes/);
+    expect(() => paste(clip.filter((n) => n.type === "group"))).toThrow(/no shapes/);
     expect(() => paste([{ ...clip[2], width: -1 }])).toThrow(SceneError);
     expect(() => paste([])).toThrow(SceneError);
     expect(store.getScene().nodes).toHaveLength(before);
@@ -731,5 +731,70 @@ describe("scene store placing (outliner drag and drop)", () => {
     const label = store.getHistory().undoLabel;
     store.placeNodes({ ids: ["box_2"], parent: "group_1", before: "box_3" }, "human");
     expect(store.getHistory().undoLabel).toBe(label);
+  });
+});
+
+describe("scene store cylinders", () => {
+  it("draws cylinders with their own IDs, smooth unless given sides", () => {
+    const store = createSceneStore();
+    const [box, round, octagon] = store.drawShapes(
+      [
+        { kind: "room", x: 0, z: 0, width: 4, depth: 4 },
+        { type: "cylinder", kind: "room", x: 10, z: 0, width: 10, depth: 10, name: "shrine" },
+        { type: "cylinder", kind: "volume", x: 20, z: 0, width: 3, depth: 2, sides: 8 },
+      ],
+      "agent",
+    );
+    expect([box.id, round.id, octagon.id]).toEqual(["box_1", "cylinder_1", "cylinder_2"]);
+    expect(round).toMatchObject({ type: "cylinder", height: 3, name: "shrine" });
+    expect(round).not.toHaveProperty("sides");
+    expect(octagon).toMatchObject({ type: "cylinder", sides: 8, height: 0.25 });
+    expect(store.getNextId()).toEqual({ box: 2, group: 1, cylinder: 3 });
+    expect(store.getHistory().undoLabel).toBe("Agent: draw box_1, cylinder_1, cylinder_2");
+  });
+
+  it("rejects sides on a box, and side counts outside 3..64", () => {
+    const store = createSceneStore();
+    expect(() => store.drawShapes([{ kind: "room", x: 0, z: 0, width: 4, depth: 4, sides: 6 }], "agent")).toThrow(/shapes\[0\]\.sides: only a cylinder/);
+    expect(() => store.drawShapes([{ type: "cylinder", kind: "room", x: 0, z: 0, width: 4, depth: 4, sides: 2 }], "agent")).toThrow(/sides/);
+    expect(() => store.drawShapes([{ type: "cylinder", kind: "room", x: 0, z: 0, width: 4, depth: 4, sides: 65 }], "agent")).toThrow(/sides/);
+    expect(store.getScene().nodes).toHaveLength(0);
+  });
+
+  it("changes sides, makes it smooth with null, and undoes both", () => {
+    const store = createSceneStore();
+    const [c] = store.drawShapes([{ type: "cylinder", kind: "room", x: 0, z: 0, width: 6, depth: 6 }], "human");
+    store.updateNodes([{ id: c.id, sides: 6 }], "human");
+    expect(store.getScene().nodes[0]).toMatchObject({ sides: 6 });
+    expect(store.getHistory().undoLabel).toBe("Change sides of cylinder_1");
+    store.updateNodes([{ id: c.id, sides: null }], "human");
+    expect(store.getScene().nodes[0]).not.toHaveProperty("sides");
+    store.undo();
+    expect(store.getScene().nodes[0]).toMatchObject({ sides: 6 });
+    store.undo();
+    expect(store.getScene().nodes[0]).not.toHaveProperty("sides");
+    // A box has no sides.
+    const [b] = store.drawShapes([{ kind: "room", x: 10, z: 0, width: 4, depth: 4 }], "human");
+    expect(() => store.updateNodes([{ id: b.id, sides: 6 }], "agent")).toThrow(/only a cylinder has sides/);
+  });
+
+  it("mirrors an odd-sided cylinder on X to 180 - rotation, and twice back exactly", () => {
+    const store = createSceneStore();
+    const [p] = store.drawShapes([{ type: "cylinder", kind: "volume", x: 3, z: 1, width: 4, depth: 3, sides: 5, rotation: 20 }], "human");
+    store.mirrorNodes({ ids: [p.id], axis: "x" }, "human");
+    expect(store.getScene().nodes[0]).toMatchObject({ rotation: 160 });
+    store.mirrorNodes({ ids: [p.id], axis: "x" }, "human");
+    expect(store.getScene().nodes[0]).toEqual(p);
+    store.mirrorNodes({ ids: [p.id], axis: "z" }, "human");
+    expect(store.getScene().nodes[0]).toMatchObject({ rotation: 340 });
+  });
+
+  it("copies and pastes cylinders with fresh cylinder IDs, keeping their sides", () => {
+    const store = createSceneStore();
+    const [c] = store.drawShapes([{ type: "cylinder", kind: "room", x: 0, z: 0, width: 6, depth: 6, sides: 8 }], "human");
+    const [copy] = store.duplicateNodes({ ids: [c.id], dx: 10 }, "human");
+    expect(copy).toMatchObject({ id: "cylinder_2", type: "cylinder", sides: 8, x: 10 });
+    const [pasted] = store.pasteNodes({ nodes: [c], focus: { x: 50, z: 0 }, parent: null }, "human");
+    expect(pasted).toMatchObject({ id: "cylinder_3", sides: 8, x: 50 });
   });
 });

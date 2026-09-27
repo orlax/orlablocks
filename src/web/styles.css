@@ -152,6 +152,24 @@ body {
 /* Z's icon is turned a quarter, so the two buttons tell apart at a glance (the letter still names the axis). */
 .contextual-bar button.mirror.z svg { transform: rotate(90deg); }
 
+/* A cylinder's sides: a smooth toggle, then − / count / +. */
+.contextual-bar .sides { display: flex; align-items: center; gap: 2px; }
+.contextual-bar .sides button { width: 26px; height: 28px; }
+.contextual-bar .sides button.smooth { width: 30px; }
+.contextual-bar .sides button.smooth.active { background: rgba(255, 255, 255, 0.18); }
+.contextual-bar .sides input.count {
+  width: 52px;
+  height: 24px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--bar-text);
+  font: 12px/1 ui-monospace, monospace;
+  text-align: center;
+}
+.contextual-bar .sides input.count::placeholder { color: rgba(255, 255, 255, 0.45); }
+.contextual-bar .sides input.count:focus { outline: 1px solid #8fb4f2; }
+
 /* The outliner: a collapsible tree panel on the left, below the project bar. */
 .outliner {
   position: fixed;

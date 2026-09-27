@@ -1,7 +1,22 @@
-import type { ReactNode } from "react";
-import { Box as BoxIcon, FlipHorizontal2, Hand, MousePointer2, Redo2, Square, SquareDashed, Trash2, Undo2, type LucideIcon } from "lucide-react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  Box as BoxIcon,
+  Circle,
+  Cylinder,
+  FlipHorizontal2,
+  Hand,
+  Minus,
+  MousePointer2,
+  Plus,
+  Redo2,
+  Square,
+  SquareDashed,
+  Trash2,
+  Undo2,
+  type LucideIcon,
+} from "lucide-react";
 import type { MirrorAxis } from "../shared/geometry";
-import { BOX_COLORS, PALETTE, type BoxColor, type BoxKind, type HistorySummary } from "../shared/scene.types";
+import { MAX_SIDES, MIN_SIDES, PALETTE, SHAPE_COLORS, type HistorySummary, type ShapeColor, type ShapeKind } from "../shared/scene.types";
 import type { Tool } from "./Viewport";
 
 export const MOD = /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl+";
@@ -10,6 +25,7 @@ export const TOOLS: { tool: Tool; label: string; key: string; icon: LucideIcon }
   { tool: "select", label: "Select", key: "v", icon: MousePointer2 },
   { tool: "hand", label: "Hand", key: "h", icon: Hand },
   { tool: "box", label: "Box", key: "b", icon: BoxIcon },
+  { tool: "cylinder", label: "Cylinder", key: "c", icon: Cylinder },
 ];
 
 /** What each tool does and its modifiers, shown in the info-label. */
@@ -17,6 +33,7 @@ export const HINTS: Record<Tool, string> = {
   select: `click to select (Shift adds) · drag a box to move it (Alt copies, Alt+J repeats) · ⇧X/⇧Z mirror · drag empty ground to marquee · ${MOD}A all · Space to pan`,
   hand: "drag to pan · scroll to zoom · A/D or ←/→ to rotate",
   box: `drag to draw · Shift square · Alt from center · ${MOD} no snap · Esc to cancel`,
+  cylinder: `drag to draw · Shift circle · Alt from center · ${MOD} no snap · Esc to cancel`,
 };
 
 /**
@@ -29,7 +46,7 @@ const MIRRORS: { axis: MirrorAxis; title: string }[] = [
   { axis: "z", title: "Mirror on Z (⇧Z): swap +z and -z, across the selection's center" },
 ];
 
-const KINDS: { kind: BoxKind; label: string; icon: LucideIcon }[] = [
+const KINDS: { kind: ShapeKind; label: string; icon: LucideIcon }[] = [
   { kind: "room", label: "Room (hollow)", icon: SquareDashed },
   { kind: "volume", label: "Volume (solid)", icon: Square },
 ];
@@ -103,15 +120,18 @@ export function ContextualBar({
   color,
   onColor,
   onMirror,
+  sides,
   children,
 }: {
-  kind: BoxKind | null;
+  kind: ShapeKind | null;
   kindDisabled?: boolean;
-  onKind: (kind: BoxKind) => void;
-  color: BoxColor | null;
-  onColor: (color: BoxColor) => void;
+  onKind: (kind: ShapeKind) => void;
+  color: ShapeColor | null;
+  onColor: (color: ShapeColor) => void;
   /** Shows the X / Z mirror buttons (the Select tool). */
   onMirror?: (axis: MirrorAxis) => void;
+  /** Shows the sides control (the Cylinder tool, a selected cylinder): the side count, undefined = smooth. */
+  sides?: { value: number | undefined; onChange: (sides: number | undefined) => void };
   children?: ReactNode;
 }) {
   return (
@@ -122,7 +142,7 @@ export function ContextualBar({
             key={k}
             className={k === kind ? "active" : ""}
             disabled={kindDisabled}
-            title={kindDisabled ? `${label}: select a single box to change its kind` : label}
+            title={kindDisabled ? `${label}: select a single shape to change its kind` : label}
             onClick={() => onKind(k)}
           >
             <Icon size={16} />
@@ -131,7 +151,7 @@ export function ContextualBar({
       </div>
       <span className="sep" />
       <div className="swatches">
-        {BOX_COLORS.map((c) => (
+        {SHAPE_COLORS.map((c) => (
           <button
             key={c}
             className={c === color ? "swatch active" : "swatch"}
@@ -141,6 +161,12 @@ export function ContextualBar({
           />
         ))}
       </div>
+      {sides && (
+        <>
+          <span className="sep" />
+          <SidesControl {...sides} />
+        </>
+      )}
       {onMirror && (
         <>
           <span className="sep" />
@@ -160,6 +186,57 @@ export function ContextualBar({
           <span className="info">{children}</span>
         </>
       )}
+    </div>
+  );
+}
+
+/** The count − and + switch to from smooth, before any count has been used. */
+const DEFAULT_SIDES = 8;
+
+/**
+ * A cylinder's sides: a smooth toggle, then − / a count field / +. From smooth, − or + switches to the last count
+ * used here (8 at first); typing a count and pressing Enter (or leaving the field) sets it, clamped to 3..64.
+ */
+function SidesControl({ value, onChange }: { value: number | undefined; onChange: (sides: number | undefined) => void }) {
+  const [last, setLast] = useState(DEFAULT_SIDES);
+  // What's being typed, until it's committed; null = show the value. Esc cancels it (the blur then commits nothing).
+  const [text, setText] = useState<string | null>(null);
+  const cancelled = useRef(false);
+  useEffect(() => {
+    if (value !== undefined) setLast(value);
+  }, [value]);
+  const set = (n: number) => onChange(Math.min(MAX_SIDES, Math.max(MIN_SIDES, Math.round(n))));
+  const commit = () => {
+    if (!cancelled.current && text !== null && text.trim() !== "" && Number.isFinite(Number(text))) set(Number(text));
+    cancelled.current = false;
+    setText(null);
+  };
+  const smooth = value === undefined;
+  return (
+    <div className="sides">
+      <button className={smooth ? "smooth active" : "smooth"} title="Smooth: a circle or an oval" onClick={() => onChange(undefined)}>
+        <Circle size={16} />
+      </button>
+      <button title="One side fewer" disabled={!smooth && value <= MIN_SIDES} onClick={() => set(smooth ? last : value - 1)}>
+        <Minus size={14} />
+      </button>
+      <input
+        type="text"
+        inputMode="numeric"
+        className={smooth ? "count smooth" : "count"}
+        title={`Sides, ${MIN_SIDES} to ${MAX_SIDES}`}
+        value={text ?? (smooth ? "" : String(value))}
+        placeholder={smooth ? "smooth" : ""}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") cancelled.current = true;
+          if (e.key === "Enter" || e.key === "Escape") e.currentTarget.blur();
+        }}
+      />
+      <button title="One side more" disabled={!smooth && value >= MAX_SIDES} onClick={() => set(smooth ? last : value + 1)}>
+        <Plus size={14} />
+      </button>
     </div>
   );
 }

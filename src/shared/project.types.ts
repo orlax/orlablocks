@@ -6,9 +6,15 @@ import { CameraSchema, NodeSchema } from "./scene.types";
  * never written over. No format versions: new fields are optional, with defaults.
  */
 
-/** The next number for each kind of ID. Saved, because IDs are never reused and history can hold removed nodes. */
-export const NextIdSchema = z.object({ box: z.number().int().min(1), group: z.number().int().min(1) });
+/**
+ * The next number for each node type's IDs (`box_3`, `cylinder_1`, ...). Saved, because IDs are never reused and
+ * history can hold removed nodes. Types added later default to 1, so older scenes load unchanged.
+ */
+const counter = z.number().int().min(1);
+export const NextIdSchema = z.object({ box: counter, group: counter, cylinder: counter.default(1) });
 export type NextId = z.infer<typeof NextIdSchema>;
+/** A new scene's counters. */
+export const firstIds = (): NextId => ({ box: 1, group: 1, cylinder: 1 });
 
 /** `project.json` */
 export const ProjectFileSchema = z.object({

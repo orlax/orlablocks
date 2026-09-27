@@ -1,7 +1,7 @@
 import { useRef, type RefObject } from "react";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
-import type { Box } from "../shared/scene.types";
+import type { Shape } from "../shared/scene.types";
 import type { CameraState, Vec3 } from "./camera";
 import {
   ARROW,
@@ -66,7 +66,7 @@ export function TransformGizmo({
   anchor: Vec3;
   parts: GizmoPart[];
   /** The selected boxes: scale handles need a single one, the rotate handle any. */
-  boxes: Box[];
+  boxes: Shape[];
   hot: GizmoPart | null;
   cam: RefObject<CameraState>;
 }) {
@@ -112,7 +112,7 @@ export function TransformGizmo({
 }
 
 /** The rotate handle, just outside a top corner, turned so its gap faces the corner. */
-function RotateHandle({ boxes, hot, cam }: { boxes: Box[]; hot: boolean; cam: RefObject<CameraState> }) {
+function RotateHandle({ boxes, hot, cam }: { boxes: Shape[]; hot: boolean; cam: RefObject<CameraState> }) {
   const group = useRef<THREE.Group>(null);
 
   useFrame(() => {
@@ -140,7 +140,7 @@ function RotateHandle({ boxes, hot, cam }: { boxes: Box[]; hot: boolean; cam: Re
 }
 
 /** One scale handle, turned with the box so it reads as part of its top face, at a constant size on screen. */
-function ScaleHandle({ box, part, hot, cam }: { box: Box; part: ScalePart; hot: boolean; cam: RefObject<CameraState> }) {
+function ScaleHandle({ box, part, hot, cam }: { box: Shape; part: ScalePart; hot: boolean; cam: RefObject<CameraState> }) {
   const group = useRef<THREE.Group>(null);
 
   useFrame(() => {

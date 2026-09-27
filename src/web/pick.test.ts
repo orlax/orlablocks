@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Box } from "../shared/scene.types";
 import { DEFAULT_CAMERA, heightOnVertical, screenRay, worldToScreen, type CameraState, type Vec3 } from "./camera";
-import { pickBox, prismCrossings } from "./pick";
+import { pickShape, prismCrossings } from "./pick";
 
 const size = { width: 1200, height: 800 };
 const cam: CameraState = { ...DEFAULT_CAMERA, yaw: 30, distance: 60 };
@@ -17,38 +17,38 @@ const rayAt = (p: Vec3) => {
   return screenRay(cam, size, s.sx, s.sy);
 };
 
-describe("pickBox", () => {
+describe("pickShape", () => {
   it("picks a volume inside a room through the open top", () => {
-    expect(pickBox(rayAt({ x: 5, y: 1, z: 4 }), [room, volume])).toBe("volume_1");
+    expect(pickShape(rayAt({ x: 5, y: 1, z: 4 }), [room, volume])).toBe("volume_1");
   });
 
   it("picks the room when aiming at its floor", () => {
-    expect(pickBox(rayAt({ x: 1.5, y: 0, z: 6.5 }), [room, volume])).toBe("room_1");
+    expect(pickShape(rayAt({ x: 1.5, y: 0, z: 6.5 }), [room, volume])).toBe("room_1");
   });
 
   it("picks the room when aiming at the top of a wall", () => {
-    expect(pickBox(rayAt({ x: 10, y: 3, z: 4 }), [room, volume])).toBe("room_1");
+    expect(pickShape(rayAt({ x: 10, y: 3, z: 4 }), [room, volume])).toBe("room_1");
   });
 
   it("misses empty ground", () => {
-    expect(pickBox(rayAt({ x: 30, y: 0, z: 30 }), [room, volume])).toBeNull();
+    expect(pickShape(rayAt({ x: 30, y: 0, z: 30 }), [room, volume])).toBeNull();
   });
 
   it("picks the nearer of two volumes along the same ray", () => {
     const tall: Box = { ...volume, id: "volume_2", height: 5 };
-    expect(pickBox(rayAt({ x: 5, y: 1, z: 4 }), [volume, tall])).toBe("volume_2");
+    expect(pickShape(rayAt({ x: 5, y: 1, z: 4 }), [volume, tall])).toBe("volume_2");
   });
 
   it("honors elevation: a raised box is hit above the ground, not at it", () => {
     const raised: Box = { ...volume, x: 20, z: 20, y: 3 };
-    expect(pickBox(rayAt({ x: 20, y: 3.5, z: 20 }), [raised])).toBe("volume_1");
-    expect(pickBox(rayAt({ x: 20, y: 0.5, z: 20 }), [raised])).toBeNull();
+    expect(pickShape(rayAt({ x: 20, y: 3.5, z: 20 }), [raised])).toBe("volume_1");
+    expect(pickShape(rayAt({ x: 20, y: 0.5, z: 20 }), [raised])).toBeNull();
   });
 
   it("honors rotation: a long box turned 90° covers z, not x", () => {
     const long: Box = { ...volume, x: 20, z: 20, width: 10, depth: 1, rotation: 90 };
-    expect(pickBox(rayAt({ x: 20, y: 1, z: 24 }), [long])).toBe("volume_1");
-    expect(pickBox(rayAt({ x: 24, y: 1, z: 20 }), [long])).toBeNull();
+    expect(pickShape(rayAt({ x: 20, y: 1, z: 24 }), [long])).toBe("volume_1");
+    expect(pickShape(rayAt({ x: 24, y: 1, z: 20 }), [long])).toBeNull();
   });
 });
 
