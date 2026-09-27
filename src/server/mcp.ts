@@ -15,12 +15,16 @@ import {
   RotateNodesSchema,
   UngroupSchema,
   WALL_THICKNESS,
+  type OpenScene,
   type Scene,
 } from "../shared/scene.types";
 import { boxesUnder, isGroup } from "../shared/tree";
-import type { SceneStore } from "./scene";
+import type { Workspace } from "./workspace";
 
 const CONVENTIONS =
+  "The scene is one scene of a project (a project holds several scenes, e.g. one per level); get_scene reports " +
+  "which project and scene are open, and the project's description gives the context. You only see the open scene: " +
+  "the human opens and switches scenes in the editor. Every change is saved as it happens (there's no save step). " +
   "Units are meters; decimals are allowed and kept to 2 places. The world is 3D with y up and the ground at y = 0. " +
   "The scene is a flat list of nodes: boxes and groups. " +
   "A box's footprint is CENTERED at (x, z), with `width` along the box's local x and " +
@@ -48,9 +52,10 @@ const CONVENTIONS =
 
 const json = (value: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }] });
 
-/** The scene for the agent: each group gets its derived bounds (center x/z, bottom y, sizes). */
-function describeScene(scene: Scene) {
+/** The scene for the agent: which project and scene it is, and each group gets its derived bounds (center x/z, bottom y, sizes). */
+function describeScene(open: OpenScene, scene: Scene) {
   return {
+    ...open,
     ...scene,
     nodes: scene.nodes.map((n) => {
       if (!isGroup(n)) return n;
@@ -70,16 +75,21 @@ function describeScene(scene: Scene) {
   };
 }
 
-function buildServer(store: SceneStore) {
-  const server = new McpServer({ name: "dungeon-designer", version: "0.0.4" });
+function buildServer(workspace: Workspace) {
+  const server = new McpServer({ name: "dungeon-designer", version: "0.0.5" });
+  // Every tool reads or edits the open scene, and fails with a clear message while nothing is open.
+  const store = () => workspace.requireScene();
 
   server.registerTool(
     "get_scene",
     {
       title: "Get scene",
-      description: `Return the current scene as JSON: the visible view, the editor's selection and every node (boxes and groups). ${CONVENTIONS}`,
+      description: `Return the open scene as JSON: its project (id, name, description) and scene (id, name), the visible view, the editor's selection and every node (boxes and groups). ${CONVENTIONS}`,
     },
-    async () => json(describeScene(store.getScene())),
+    async () => {
+      const scene = store().getScene();
+      return json(describeScene(workspace.getOpen()!, scene));
+    },
   );
 
   server.registerTool(
@@ -94,8 +104,8 @@ function buildServer(store: SceneStore) {
       inputSchema: { boxes: z.array(BoxInputSchema).min(1) },
     },
     async ({ boxes }) => {
-      const created = store.drawBoxes(boxes, "agent");
-      const all = store.getScene().nodes;
+      const created = store().drawBoxes(boxes, "agent");
+      const all = store().getScene().nodes;
       const totals = {
         rooms: all.filter((n) => n.type === "box" && n.kind === "room").length,
         volumes: all.filter((n) => n.type === "box" && n.kind === "volume").length,
@@ -117,7 +127,7 @@ function buildServer(store: SceneStore) {
         `The batch is all-or-nothing: an unknown ID or an invalid value rejects it and nothing changes. ${CONVENTIONS}`,
       inputSchema: { changes: z.array(NodeUpdateSchema).min(1) },
     },
-    async ({ changes }) => json({ updated: store.updateNodes(changes, "agent") }),
+    async ({ changes }) => json({ updated: store().updateNodes(changes, "agent") }),
   );
 
   server.registerTool(
@@ -130,8 +140,8 @@ function buildServer(store: SceneStore) {
       inputSchema: { ids: z.array(z.string()).min(1).describe("IDs of existing nodes, e.g. box_3 or group_1") },
     },
     async ({ ids }) => {
-      store.removeNodes(ids, "agent");
-      return json({ removed: ids, remaining: store.getScene().nodes.length });
+      store().removeNodes(ids, "agent");
+      return json({ removed: ids, remaining: store().getScene().nodes.length });
     },
   );
 
@@ -144,7 +154,7 @@ function buildServer(store: SceneStore) {
         `This is the way to move a group: one call moves everything in it, keeping its layout. ${CONVENTIONS}`,
       inputSchema: MoveNodesSchema.shape,
     },
-    async (input) => json({ moved: store.moveNodes(input, "agent") }),
+    async (input) => json({ moved: store().moveNodes(input, "agent") }),
   );
 
   server.registerTool(
@@ -156,7 +166,7 @@ function buildServer(store: SceneStore) {
         `the center of their combined bounds: every box's center orbits that point and its rotation grows by the same angle. ${CONVENTIONS}`,
       inputSchema: RotateNodesSchema.shape,
     },
-    async (input) => json({ rotated: store.rotateNodes(input, "agent") }),
+    async (input) => json({ rotated: store().rotateNodes(input, "agent") }),
   );
 
   server.registerTool(
@@ -168,7 +178,7 @@ function buildServer(store: SceneStore) {
         `held them all. Returns the new group (use its ID with move_nodes, rotate_nodes, or as a parent in draw_boxes). ${CONVENTIONS}`,
       inputSchema: GroupNodesSchema.shape,
     },
-    async (input) => json({ group: store.groupNodes(input, "agent") }),
+    async (input) => json({ group: store().groupNodes(input, "agent") }),
   );
 
   server.registerTool(
@@ -178,16 +188,16 @@ function buildServer(store: SceneStore) {
       description: `Dissolve groups; their contents stay where they are and move up to the group's parent. ${CONVENTIONS}`,
       inputSchema: UngroupSchema.shape,
     },
-    async (input) => json({ freed: store.ungroup(input, "agent") }),
+    async (input) => json({ freed: store().ungroup(input, "agent") }),
   );
 
   return server;
 }
 
-/** Stateless Streamable HTTP: a fresh server + transport per request, all sharing one scene store. */
-export function mountMcp(app: Express, store: SceneStore) {
+/** Stateless Streamable HTTP: a fresh server + transport per request, all sharing one scene store(). */
+export function mountMcp(app: Express, workspace: Workspace) {
   app.post("/mcp", async (req, res) => {
-    const server = buildServer(store);
+    const server = buildServer(workspace);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     res.on("close", () => {
       transport.close();

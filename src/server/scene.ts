@@ -24,10 +24,14 @@ import {
   type SceneNode,
   type View,
 } from "../shared/scene.types";
+import type { NextId } from "../shared/project.types";
 import { ancestry, boxesUnder, commonParent, isGroup, subtreeIds } from "../shared/tree";
 import { applyOp, createHistory, invertOp, runOps, type HistoryEntry, type Op } from "./commands";
 
 export class SceneError extends Error {}
+
+/** A change to the nodes that the history records: a new step, or moving through the existing ones. */
+export type Step = { type: "commit"; entry: HistoryEntry } | { type: "undo"; entry: HistoryEntry } | { type: "redo"; entry: HistoryEntry };
 
 /** Degrees in 0..360, 2 decimals. */
 const normalizeRotation = (deg: number) => round2(normalizeDeg(deg)) % 360;
@@ -76,10 +80,14 @@ function parse<T extends z.ZodType>(schema: T, input: unknown, failure: string):
 export function createSceneStore() {
   const scene: Scene = { view: { ...DEFAULT_VIEW }, selection: [], nodes: [] };
   const listeners = new Set<(scene: Scene) => void>();
+  const stepListeners = new Set<(step: Step) => void>();
   // Only go up, so IDs are never reused.
   const nextId = { box: 1, group: 1 };
 
-  const history = createHistory();
+  let history = createHistory();
+
+  /** Tells step listeners (persistence) first, so a step is on disk before anyone sees it. */
+  const step = (s: Step) => stepListeners.forEach((l) => l(s));
 
   const byId = () => new Map(scene.nodes.map((n) => [n.id, n]));
 
@@ -106,7 +114,9 @@ export function createSceneStore() {
       all.push(prune);
     }
     scene.nodes = nodes;
-    history.push({ label, actor, at: Date.now(), ops: all, inverse });
+    const entry: HistoryEntry = { label, actor, at: Date.now(), ops: all, inverse };
+    history.push(entry);
+    step({ type: "commit", entry });
     emit();
   };
 
@@ -157,6 +167,23 @@ export function createSceneStore() {
 
     getHistory(): HistorySummary {
       return history.summary();
+    },
+
+    /** The next number for each kind of ID. */
+    getNextId(): NextId {
+      return { ...nextId };
+    },
+
+    /**
+     * Replaces the whole scene with a saved one (opening a scene): its nodes and ID counters, an empty history and
+     * no selection. Broadcasts; isn't a step.
+     */
+    load(saved: { nodes: SceneNode[]; nextId: NextId }): void {
+      scene.nodes = saved.nodes;
+      scene.selection = [];
+      Object.assign(nextId, saved.nextId);
+      history = createHistory();
+      emit();
     },
 
     /**
@@ -450,6 +477,7 @@ export function createSceneStore() {
       const result = history.undo(scene.nodes);
       if (!result) return null;
       scene.nodes = result.nodes;
+      step({ type: "undo", entry: result.entry });
       emit();
       return result.entry;
     },
@@ -458,8 +486,15 @@ export function createSceneStore() {
       const result = history.redo(scene.nodes);
       if (!result) return null;
       scene.nodes = result.nodes;
+      step({ type: "redo", entry: result.entry });
       emit();
       return result.entry;
+    },
+
+    /** After every commit, undo and redo, before the broadcast. */
+    onStep(listener: (step: Step) => void): () => void {
+      stepListeners.add(listener);
+      return () => stepListeners.delete(listener);
     },
 
     onChange(listener: (scene: Scene) => void): () => void {

@@ -267,3 +267,59 @@ body {
   white-space: pre-wrap;
   pointer-events: auto;
 }
+
+/* Which project and scene are open, first in the info-label. */
+.info-label .where { color: var(--bar-text); font: 600 12px/1.4 system-ui, sans-serif; }
+
+/* Modals (the project picker): centered on a dimmed backdrop, above everything. */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(20, 22, 26, 0.35);
+  backdrop-filter: blur(2px);
+}
+.modal {
+  width: 420px;
+  max-width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 18px 20px;
+  border-radius: 12px;
+  background: var(--bar-bg);
+  color: var(--bar-text);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+}
+.modal h2 { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 15px; }
+.modal .muted { margin: 0; color: var(--muted); font-size: 12px; font-weight: 400; }
+.modal label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 600; }
+.modal input,
+.modal textarea {
+  padding: 6px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--bar-text);
+  font: 13px/1.4 system-ui, sans-serif;
+  resize: vertical;
+}
+.modal input:focus,
+.modal textarea:focus { outline: 2px solid #8fb4f2; outline-offset: -1px; }
+.modal .error { max-width: none; }
+.modal .actions { display: flex; justify-content: flex-end; gap: 8px; }
+.modal button {
+  padding: 6px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--bar-text);
+  font: 600 13px/1.4 system-ui, sans-serif;
+  cursor: pointer;
+}
+.modal button.primary { border-color: #3d7be0; background: #3d7be0; color: #fff; }
+.modal button:disabled { opacity: 0.4; cursor: default; }

@@ -286,3 +286,30 @@ Adopted as recommended (say if any should change):
 19. **A duplicate copies the history** along with the state.
 20. **A lock file** stops two servers from sharing a data folder.
 21. **A file that fails to load is never overwritten.** Its scene doesn't open, and the picker shows why.
+
+---
+
+## 12. Progress
+
+### 04.1 — Projects and scenes on disk (done, pending Orlando's browser check)
+
+- **Data folder:** `./data` or `DATA_DIR`, gitignored. `.lock` holds the server's PID, and a second server on the same folder exits with a message. A lock left by a process that's gone is taken over. The lock is released on exit (`SIGINT`, `SIGTERM`, `SIGHUP`).
+- **`persist.ts`** does file access only: slugs (accents dropped, `-2`, `-3` when taken), atomic JSON writes (a temp file, then a rename), reading with the zod schemas in `src/shared/project.types.ts`, and listing projects and scenes (a file that doesn't load is reported with its error, not thrown).
+- **`workspace.ts`** holds the open scene:
+  - creating a project also creates its first scene and opens it;
+  - `scene.json` is written after every commit, undo and redo, with `seq` and `nextId`;
+  - `app.json` is written on open, and on start the server reopens that scene. If the scene is gone or fails to load, it starts with nothing open, and the file is left untouched.
+- **Scene store:** `load()`, `getNextId()` and an `onStep` hook (commit / undo / redo, called before the broadcast). History is still in memory: undo stops at a restart until 04.2.
+- **Protocol:** `create_project`, `projects` and `opened` messages. Scene edits, undo, redo and clear fail with "No scene is open" while nothing is open. `set_view` and `set_selection` are still accepted.
+- **MCP:** `get_scene` adds `project` (id, name, description) and `scene` (id, name). Every tool returns the no-scene error while nothing is open. The conventions text explains projects, scenes and saving. Server version 0.0.5. **Restart the server and reconnect with `/mcp`.**
+- **Editor:**
+  - the create project form (`ProjectPicker.tsx`, the picker's first piece), shown while nothing is open;
+  - `Castle ▸ Entrance` first in the info-label;
+  - the tab title follows the open scene;
+  - shortcuts are off in modals (`typingInField` covers `.modal`) and while nothing is open.
+- In 04.1, projects that exist but aren't open can't be opened from the UI. The form only creates. Opening comes with the picker in 04.3.
+- **Checks:**
+  - typecheck;
+  - 124 tests (new: `persist.test.ts`, `workspace.test.ts`);
+  - a scripted run on `:5171` with a scratch `DATA_DIR`: the no-scene error over MCP and WS, create over WS, human and agent edits, and restarts. The same scene reopened, the deleted `box_2` wasn't reused (the next box was `box_4`), and a second server on the same folder was refused.
+

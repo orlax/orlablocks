@@ -4,6 +4,7 @@ import { boxesUnder, childrenOf, isBox, isGroup } from "../shared/tree";
 import type { GroundPoint } from "./camera";
 import { typingInField } from "./keys";
 import { Outliner } from "./Outliner";
+import { ProjectPicker } from "./ProjectPicker";
 import { ContextualBar, HINTS, TOOLS, ToolBar } from "./ToolBar";
 import { useScene } from "./useScene";
 import { Viewport, type Tool } from "./Viewport";
@@ -19,7 +20,7 @@ const title = (n: SceneNode) => (n.name ? `${n.name} (${n.id})` : n.id);
 const describe = (b: Box) => `${title(b)} · ${b.width} × ${b.depth} × ${b.height} m · y ${b.y} · ${b.rotation}°`;
 
 export function App() {
-  const { scene, history, connected, error, send } = useScene();
+  const { scene, history, open, connected, error, send } = useScene();
   const [view, setView] = useState<View>(DEFAULT_VIEW);
   const [cursor, setCursor] = useState<GroundPoint | null>(null);
   const [tool, setTool] = useState<Tool>("select");
@@ -39,8 +40,8 @@ export function App() {
 
   const nodes = scene?.nodes ?? [];
   // The key handler is installed once; it reads the current state from here.
-  const state = useRef({ nodes, selection, context });
-  state.current = { nodes, selection, context };
+  const state = useRef({ nodes, selection, context, open });
+  state.current = { nodes, selection, context, open };
 
   const activeTool: Tool = spaceHand ? "hand" : tool;
   const boxes = nodes.filter(isBox);
@@ -49,6 +50,11 @@ export function App() {
   const rooms = boxes.filter((b) => b.kind === "room").length;
   const volumes = boxes.length - rooms;
   const groups = nodes.filter(isGroup).length;
+
+  // The tab's title follows the open scene.
+  useEffect(() => {
+    document.title = open ? `${open.scene.name} — ${open.project.name}` : "Dungeon Designer";
+  }, [open]);
 
   // Tell the server what's visible so the agent's get_scene knows where to draw.
   useEffect(() => {
@@ -87,7 +93,9 @@ export function App() {
     const onKeyDown = (e: KeyboardEvent) => {
       if (typingInField(e)) return;
       const key = e.key.toLowerCase();
-      const { nodes, selection, context } = state.current;
+      const { nodes, selection, context, open } = state.current;
+      // Nothing to edit while nothing is open (the create project form is up).
+      if (!open) return;
       const mod = (e.metaKey || e.ctrlKey) && !e.altKey;
       if (mod && (key === "z" || key === "y")) {
         e.preventDefault();
@@ -195,6 +203,11 @@ export function App() {
           <i className="dot" />
           {connected ? "connected" : "offline"}
         </span>
+        {open && (
+          <span className="where">
+            {open.project.name} ▸ {open.scene.name}
+          </span>
+        )}
         <span className="coords">
           x {coord(cursor?.x)} · z {coord(cursor?.z)} m
         </span>
@@ -233,6 +246,10 @@ export function App() {
           onClear={() => send({ type: "clear" })}
         />
       </div>
+
+      {connected && open === null && (
+        <ProjectPicker error={error} onCreate={(project) => send({ type: "create_project", ...project })} />
+      )}
     </div>
   );
 }

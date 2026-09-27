@@ -188,7 +188,34 @@ export const ViewSchema = z.object({
   bounds: z.object({ x: z.number(), z: z.number(), width: z.number().positive(), depth: z.number().positive() }),
 });
 
+/** A project or scene name: trimmed, not empty. */
+export const NameSchema = z.string().trim().min(1, "a name is required").max(80, "80 characters at most");
+export const DEFAULT_SCENE_NAME = "Scene 1";
+
+/** Creates a project with its first scene, and opens that scene. */
+export const CreateProjectSchema = z.strictObject({
+  name: NameSchema,
+  description: z.string().trim().max(2000).optional(),
+  sceneName: NameSchema.optional(),
+});
+
+/** A project in the picker's list, with its scenes in creation order. `error`: its files didn't load. */
+export type ProjectSummary = {
+  id: string;
+  name: string;
+  description: string;
+  scenes: { id: string; name: string; error?: string }[];
+  error?: string;
+};
+
+/** Which scene the server has open (for every tab and the agent), or null for none. */
+export type OpenScene = {
+  project: { id: string; name: string; description: string };
+  scene: { id: string; name: string };
+};
+
 export const ClientMessageSchema = z.discriminatedUnion("type", [
+  CreateProjectSchema.extend({ type: z.literal("create_project") }),
   z.object({ type: z.literal("add_boxes"), boxes: z.array(BoxInputSchema).min(1) }),
   z.object({ type: z.literal("update_nodes"), changes: z.array(NodeUpdateSchema).min(1) }),
   z.object({ type: z.literal("remove_nodes"), ids: IdsSchema }),
@@ -207,4 +234,6 @@ export type ClientMessage = z.input<typeof ClientMessageSchema>;
 
 export type ServerMessage =
   | { type: "scene"; scene: Scene; history: HistorySummary }
+  | { type: "projects"; projects: ProjectSummary[] }
+  | { type: "opened"; open: OpenScene | null }
   | { type: "error"; message: string };

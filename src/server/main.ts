@@ -1,23 +1,41 @@
 import { createServer as createHttpServer } from "node:http";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
 import react from "@vitejs/plugin-react";
 import { createServer as createViteServer } from "vite";
 import { mountMcp } from "./mcp";
-import { createSceneStore } from "./scene";
+import { LockedError, openDataDir } from "./persist";
+import { createWorkspace } from "./workspace";
 import { attachWebSocket } from "./ws";
 
 const HOST = "127.0.0.1";
 const PORT = Number(process.env.PORT ?? 5170);
 
-const store = createSceneStore();
+// The data folder: ./data where the server runs, or DATA_DIR. Scripted checks must point DATA_DIR elsewhere.
+const DATA_DIR = path.resolve(process.env.DATA_DIR ?? "data");
+
+let data;
+try {
+  data = openDataDir(DATA_DIR);
+} catch (err) {
+  if (!(err instanceof LockedError)) throw err;
+  console.error(err.message);
+  process.exit(1);
+}
+const dataDir = data;
+process.on("exit", () => dataDir.release());
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, () => process.exit(0));
+
+const workspace = createWorkspace(dataDir);
+workspace.restore();
 
 // Pre-configured with JSON body parsing and DNS-rebinding protection for localhost.
 const app = createMcpExpressApp({ host: HOST });
 const httpServer = createHttpServer(app);
 
-mountMcp(app, store);
-attachWebSocket(httpServer, store);
+mountMcp(app, workspace);
+attachWebSocket(httpServer, workspace);
 
 const vite = await createViteServer({
   configFile: false,
@@ -31,4 +49,7 @@ app.use(vite.middlewares);
 httpServer.listen(PORT, HOST, () => {
   console.log(`Dungeon Designer editor: http://${HOST}:${PORT}`);
   console.log(`MCP endpoint:            http://${HOST}:${PORT}/mcp`);
+  const open = workspace.getOpen();
+  console.log(`Data folder:             ${DATA_DIR}`);
+  console.log(`Open scene:              ${open ? `${open.project.name} ▸ ${open.scene.name}` : "none (create a project in the editor)"}`);
 });

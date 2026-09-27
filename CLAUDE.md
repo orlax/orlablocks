@@ -1,12 +1,13 @@
 # Dungeon Designer
 
-An ideation tool for dungeon layouts: a local web editor, a local server that owns the scene, and an MCP server so Claude Code can read and edit the same scene. See `plans/` for the vision (`00-initial`), and the finished phases (`01-first-playable` with `01B-first-playable-refinements`, `02-basic-3d-editing`, `03-UX-improvements`). Each phase plan logs its progress in a final Progress section. Use the terms in `GLOSSARY.md` when naming things, and add new terms there.
+An ideation tool for dungeon layouts: a local web editor, a local server that owns the scene, and an MCP server so Claude Code can read and edit the same scene. See `plans/` for the vision (`00-initial`), the finished phases (`01-first-playable` with `01B-first-playable-refinements`, `02-basic-3d-editing`, `03-UX-improvements`), and the current one, `04-persistence`. Each phase plan logs its progress in a final Progress section. Use the terms in `GLOSSARY.md` when naming things, and add new terms there.
 
 ## Running
 
 - `npm run dev` starts one process on http://127.0.0.1:5170 that serves the editor, the editor WebSocket (`/ws`) and the MCP endpoint (`/mcp`).
 - **Start the server before starting Claude Code.** If the `dungeon-designer` MCP server shows as failed, start the server and reconnect with `/mcp`.
-- `PORT=5171 npm run dev` runs a second instance on another port, for scripted checks that shouldn't touch the main one.
+- The server saves everything in a **data folder**: `./data` where it runs (gitignored), or `DATA_DIR`. A lock file stops a second server from using the same folder.
+- `PORT=5171 DATA_DIR=<scratch>/data npm run dev` runs a second instance for scripted checks. It must have its own `DATA_DIR`, so it never touches the main one's projects.
 - `npm test` runs the unit tests, and `npm run typecheck` runs the type checker.
 
 ## Working with the scene
@@ -16,12 +17,14 @@ An ideation tool for dungeon layouts: a local web editor, a local server that ow
 - The scene's `nodes` is one flat list of boxes and **groups** (`group_1`, ...). A node is in a group when its `parent` is that group's ID. Groups have no position of their own: boxes keep absolute coordinates, and `get_scene` reports each group's derived `bounds`. To move or turn a group, use `move_nodes` / `rotate_nodes` on it (one call, one undo step).
 - `scene.selection` lists the node IDs the human has selected in the editor, so "this" means those nodes.
 - The scene's `view` is what the editor currently shows: `focus` (ground point at the screen center), `yaw` (degrees) and `bounds` (the axis-aligned box around the visible ground, `x, z` at its min corner). Before a browser connects it's focus 0,0, yaw 45, bounds -30..30 × -20..20.
-- The scene is in memory only, so restarting the server clears it.
+- The scene is one **scene** of a **project**. The server has one open scene, shared by the editor and the agent; `get_scene` reports its `project` (with a description that gives the context) and `scene`. The human creates and opens projects in the editor. With nothing open, every tool returns an error saying so.
+- Every edit is saved to disk as it happens. Don't read or edit files under `data/`: everything goes through the MCP tools or the editor, never raw file edits.
 
 ## Code layout
 
 - `src/shared/`: types and zod schemas shared by the server and the editor, plus pure box geometry (`geometry.ts`) and node-tree helpers (`tree.ts`).
 - `src/server/scene.ts`: the scene store. It's the single code path for edits, used by both the WebSocket and MCP. Every edit goes through `commit` as one undoable command.
 - `src/server/commands.ts`: ops, their inverses and the shared linear history (pure, no server dependencies).
+- `src/server/persist.ts`: file access for the data folder (the lock, slugs, atomic JSON writes). `src/server/workspace.ts`: the open scene, which it loads into the store and saves after every step.
 - `src/server/{ws,mcp,main}.ts`: transports and wiring.
 - `src/web/`: the React + three.js (react-three-fiber) editor. `camera.ts` holds the pure camera math.
