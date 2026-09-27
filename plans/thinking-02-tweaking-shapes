@@ -1,0 +1,28 @@
+thinking about having three more controls when editing shapes. 
+
+- the thickness of the walls on a room, right now they are always the same width but being able to determine how thick they should be will help to design shapes better. 
+
+- there is no concept of piramids or cones and I would like to keep things as simple as possible. but for volumes I imagine we could have two controls:
+    - top-radius? or a better name, so we can make the top extruded face smaller than the bottom one, this way a simple box can turn on a pyramid
+    and this could work for all our shapes. 
+    - bebels? so I can turn a tall smooth ciliner into a capsule? I think this could help make mountains or more organic terrain like shapes. 
+
+when describing this to an agent we could provide just those two numbers so the agent can have an idea of how it looks, part of our scene description strategy is precisely to talk about the shape concepts and not worry soo much on geometry specifics. 
+
+
+thinking about ramps/stairs. 
+
+none of our current primitives allow to easily create "stairs" or "ramps" so that we can describe a two story building room with some stairs on it. 
+things I would like for our "stairs" primitive:
+- we could reuse the shape/line code so that a stair is a type of line that spawns geometry along it? but in a more determimistic way? 
+- it could either be "smooth" or have actual steps 
+- it would be good if we can have spiral or curved stairs. 
+but more to discover. 
+
+thinking about doors/holes/windows
+
+I was thinking to have three different types of entities for then, but they are essentially just "holes" in geometry right.
+
+could we implement a third kind of shape, so we would have "room" "volume" and "hole"? I think having boolean operations to create door ways and windows or holes on the ground would be very helpful. I also dont want to overcomplicate things, so if it is simpler to have this "hole" type only for boxes I would be ok with it. 
+
+this is what our next phase can be, just trying to get our last geometry building tools. 
