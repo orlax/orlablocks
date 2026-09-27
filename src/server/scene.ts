@@ -11,8 +11,10 @@ import {
   MirrorNodesSchema,
   MoveNodesSchema,
   NodeUpdateSchema,
+  PasteNodesSchema,
   PlaceNodesSchema,
   RotateNodesSchema,
+  SNAP,
   UngroupSchema,
   type Actor,
   type Box,
@@ -27,7 +29,7 @@ import {
   type View,
 } from "../shared/scene.types";
 import type { NextId } from "../shared/project.types";
-import { boxesUnder, commonParent, copyNodes, isGroup, subtreeIds, topmost } from "../shared/tree";
+import { boxesUnder, commonParent, copyNodes, isBox, isGroup, subtreeIds, topmost } from "../shared/tree";
 import { applyOp, createHistory, invertOp, runOps, type History, type HistoryEntry, type Op } from "./commands";
 
 export class SceneError extends Error {}
@@ -93,6 +95,9 @@ export function createSceneStore() {
   const nextId = { box: 1, group: 1 };
 
   let history = createHistory();
+
+  /** The next ID for a new node of `type`. */
+  const newId = (type: SceneNode["type"]) => (type === "box" ? `box_${nextId.box++}` : `group_${nextId.group++}`);
 
   /** Tells step listeners (persistence) first, so a step is on disk before anyone sees it. */
   const step = (s: Step) => stepListeners.forEach((l) => l(s));
@@ -312,15 +317,18 @@ export function createSceneStore() {
       return scene.nodes.filter((n) => ids.has(n.id));
     },
 
-    /** Removes nodes by ID as one undoable step; a group takes everything in it. Unknown or repeated IDs reject all. */
-    removeNodes(ids: string[], actor: Actor): void {
+    /**
+     * Removes nodes by ID as one undoable step; a group takes everything in it. Unknown or repeated IDs reject all.
+     * `cut` only changes the label (the editor put the nodes on the clipboard first).
+     */
+    removeNodes(ids: string[], actor: Actor, { cut = false }: { cut?: boolean } = {}): void {
       if (ids.length === 0) throw new SceneError("ids: at least one ID is required");
       const errors: string[] = [];
       checkIds("ids", ids, errors);
       failIf(errors, "Nothing was removed.");
       const all = new Set(ids.flatMap((id) => [...subtreeIds(scene.nodes, id)]));
       const remove = scene.nodes.filter((n) => all.has(n.id)).map((n) => n.id);
-      commit(label("delete", listIds(ids), actor), actor, [{ op: "remove", ids: remove }]);
+      commit(label(cut ? "cut" : "delete", listIds(ids), actor), actor, [{ op: "remove", ids: remove }]);
     },
 
     /** Moves boxes and whole groups by a relative offset, as one step. Returns the boxes that moved. */
@@ -352,7 +360,6 @@ export function createSceneStore() {
       failIf(errors, "Nothing was copied.");
 
       const roots = topmost(scene.nodes, ids);
-      const newId = (type: SceneNode["type"]) => (type === "box" ? `box_${nextId.box++}` : `group_${nextId.group++}`);
       // After which original each root's copies go: the last node of its subtree in the list.
       const copiesAfter = new Map<string, SceneNode[]>();
       const copiedRoots: SceneNode[] = [];
@@ -394,6 +401,61 @@ export function createSceneStore() {
       if (changes.length > 0) commit(label("rotate", listIds(ids), actor), actor, [{ op: "update", changes }]);
       const turned = new Set(boxes.map((b) => b.id));
       return scene.nodes.filter((n): n is Box => turned.has(n.id));
+    },
+
+    /**
+     * Pastes a clipboard snapshot as one step: fresh IDs (names and nesting kept), centered on `focus` with the offset
+     * rounded to the 0.5 m snap (so it stays on its grid), each box keeping its y. Parent references that point
+     * outside the snapshot are dropped, so those nodes become roots, and the roots go into `parent` (null = the top
+     * level; inside a group they come last among its children). Returns the pasted roots.
+     */
+    pasteNodes(input: z.input<typeof PasteNodesSchema>, actor: Actor): SceneNode[] {
+      const { nodes: snapshot, focus, parent } = parse(PasteNodesSchema, input, "Nothing was pasted.");
+      const errors: string[] = [];
+      const seen = new Set<string>();
+      snapshot.forEach((n, i) => {
+        if (seen.has(n.id)) errors.push(`nodes[${i}].id: "${n.id}" appears more than once`);
+        seen.add(n.id);
+      });
+      const target = parent ?? undefined;
+      if (target !== undefined) {
+        const e = parentError(target);
+        if (e) errors.push(`parent: ${e}`);
+      }
+      const groups = new Set(snapshot.filter(isGroup).map((n) => n.id));
+      const nodes = snapshot.map((n): SceneNode => {
+        const { parent: p, ...rest } = n;
+        const kept = p !== undefined && groups.has(p) ? { parent: p } : {};
+        if (!isBox(n)) return { ...rest, ...kept } as SceneNode;
+        const box = { ...(rest as Box), ...kept };
+        return { ...box, width: round2(box.width), depth: round2(box.depth), height: round2(box.height), rotation: normalizeRotation(box.rotation) };
+      });
+      nodes.forEach((n, i) => {
+        if (isBox(n)) checkSizes(`nodes[${i}]`, snapshot[i] as Box, errors);
+        if (isCycle(nodes, n.id)) errors.push(`nodes[${i}].parent: "${n.id}" ends up inside itself`);
+      });
+      const boxes = nodes.filter(isBox);
+      if (boxes.length === 0) errors.push("nodes: there are no boxes to paste");
+      failIf(errors, "Nothing was pasted.");
+
+      const b = boundsOf(boxes);
+      const offset = (to: number, center: number) => round2(Math.round((to - center) / SNAP) * SNAP);
+      const dx = offset(focus.x, (b.minX + b.maxX) / 2);
+      const dz = offset(focus.z, (b.minZ + b.maxZ) / 2);
+      const pasted = copyNodes(nodes, newId, { dx, dz }).map((n, i): SceneNode => {
+        const root = nodes[i].parent === undefined;
+        return { ...n, createdBy: actor, ...(root && target !== undefined ? { parent: target } : {}) };
+      });
+
+      const add: Op = { op: "add", nodes: pasted };
+      if (target !== undefined) {
+        // Right after the last node inside the group, so they come last among its children.
+        const inside = subtreeIds(scene.nodes, target);
+        const at = scene.nodes.reduce((last, n, i) => (inside.has(n.id) ? i + 1 : last), 0);
+        add.indices = pasted.map((_, i) => at + i);
+      }
+      commit(label("paste", listIds(pasted.map((n) => n.id)), actor), actor, [add]);
+      return pasted.filter((_, i) => nodes[i].parent === undefined);
     },
 
     /**

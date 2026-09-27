@@ -60,9 +60,10 @@ export function attachWebSocket(httpServer: Server, workspace: Workspace) {
         const scene = workspace.requireScene();
         if (msg.type === "add_boxes") scene.drawBoxes(msg.boxes, "human");
         else if (msg.type === "update_nodes") scene.updateNodes(msg.changes, "human");
-        else if (msg.type === "remove_nodes") scene.removeNodes(msg.ids, "human");
+        else if (msg.type === "remove_nodes") scene.removeNodes(msg.ids, "human", { cut: msg.cut });
         else if (msg.type === "move_nodes") scene.moveNodes(withoutType(msg), "human");
         else if (msg.type === "duplicate_nodes") scene.duplicateNodes(withoutType(msg), "human");
+        else if (msg.type === "paste_nodes") scene.pasteNodes(withoutType(msg), "human");
         else if (msg.type === "mirror_nodes") scene.mirrorNodes(withoutType(msg), "human");
         else if (msg.type === "rotate_nodes") scene.rotateNodes(withoutType(msg), "human");
         else if (msg.type === "group_nodes") scene.groupNodes(withoutType(msg), "human");

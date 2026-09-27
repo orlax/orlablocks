@@ -4,7 +4,6 @@ import { z } from "zod";
 import {
   AppFileSchema,
   EditorFileSchema,
-  NodeSchema,
   ProjectFileSchema,
   SceneFileSchema,
   type AppFile,
@@ -12,7 +11,7 @@ import {
   type ProjectFile,
   type SceneFile,
 } from "../shared/project.types";
-import type { Actor, NodePatch, ProjectSummary } from "../shared/scene.types";
+import { NodeSchema, type Actor, type NodePatch, type ProjectSummary } from "../shared/scene.types";
 import type { Op } from "./commands";
 
 /**

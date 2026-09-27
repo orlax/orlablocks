@@ -121,6 +121,36 @@ const field = {
   parent: z.string().describe("ID of the group to put it in, e.g. group_1"),
 };
 
+const ActorSchema = z.enum(["human", "agent"]);
+
+const BoxSchema = z.object({
+  id: z.string(),
+  type: z.literal("box"),
+  name: z.string().optional(),
+  parent: z.string().optional(),
+  kind: BoxKindSchema,
+  x: z.number(),
+  z: z.number(),
+  y: z.number(),
+  width: z.number().positive(),
+  depth: z.number().positive(),
+  height: z.number().min(MIN_HEIGHT),
+  rotation: z.number(),
+  color: BoxColorSchema,
+  createdBy: ActorSchema,
+});
+
+const GroupSchema = z.object({
+  id: z.string(),
+  type: z.literal("group"),
+  name: z.string().optional(),
+  parent: z.string().optional(),
+  createdBy: ActorSchema,
+});
+
+/** A stored node, as in `scene.json` (and on the clipboard). */
+export const NodeSchema: z.ZodType<SceneNode> = z.discriminatedUnion("type", [BoxSchema, GroupSchema]);
+
 export const BoxInputSchema = z.strictObject({
   kind: field.kind,
   x: field.x,
@@ -171,6 +201,16 @@ export const MAX_COPIES = 100;
 export const DuplicateNodesSchema = MoveNodesSchema.extend({
   ids: IdsSchema.describe("IDs of boxes and/or groups; a group is copied with everything in it"),
   count: z.number().int().min(1).max(MAX_COPIES).optional().describe(`How many copies, 1..${MAX_COPIES}, default 1`),
+});
+export const MAX_PASTE = 1000;
+/**
+ * Pastes a clipboard snapshot: the nodes get fresh IDs, land centered on `focus` (keeping y), and their roots go
+ * into `parent` (null = the top level).
+ */
+export const PasteNodesSchema = z.strictObject({
+  nodes: z.array(NodeSchema).min(1).max(MAX_PASTE, `at most ${MAX_PASTE} nodes per paste`),
+  focus: z.object({ x: z.number(), z: z.number() }),
+  parent: z.string().nullable(),
 });
 export const RotateNodesSchema = z.strictObject({
   ids: IdsSchema.describe("IDs of boxes and/or groups; a group turns everything in it"),
@@ -256,11 +296,13 @@ export const ClientMessageSchema = z.discriminatedUnion("type", [
   OpenSceneSchema.extend({ type: z.literal("open_scene") }),
   z.object({ type: z.literal("add_boxes"), boxes: z.array(BoxInputSchema).min(1) }),
   z.object({ type: z.literal("update_nodes"), changes: z.array(NodeUpdateSchema).min(1) }),
-  z.object({ type: z.literal("remove_nodes"), ids: IdsSchema }),
+  // `cut`: the same removal, labeled "Cut" (the editor put the nodes on the clipboard first).
+  z.object({ type: z.literal("remove_nodes"), ids: IdsSchema, cut: z.boolean().optional() }),
   MoveNodesSchema.extend({ type: z.literal("move_nodes") }),
   DuplicateNodesSchema.extend({ type: z.literal("duplicate_nodes") }),
   RotateNodesSchema.extend({ type: z.literal("rotate_nodes") }),
   MirrorNodesSchema.extend({ type: z.literal("mirror_nodes") }),
+  PasteNodesSchema.extend({ type: z.literal("paste_nodes") }),
   GroupNodesSchema.extend({ type: z.literal("group_nodes") }),
   UngroupSchema.extend({ type: z.literal("ungroup") }),
   PlaceNodesSchema.extend({ type: z.literal("place_nodes") }),

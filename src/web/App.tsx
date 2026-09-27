@@ -3,6 +3,7 @@ import { ChevronDown, Map as MapIcon } from "lucide-react";
 import { DEFAULT_COLOR, DEFAULT_VIEW, type Box, type BoxColor, type BoxKind, type SceneNode, type View } from "../shared/scene.types";
 import { boxesUnder, childrenOf, isBox, isGroup } from "../shared/tree";
 import type { CameraState, GroundPoint } from "./camera";
+import { clipboardText, readClipboard } from "./clipboard";
 import { typingInField } from "./keys";
 import { Outliner } from "./Outliner";
 import { ProjectPicker } from "./ProjectPicker";
@@ -62,8 +63,8 @@ export function App() {
 
   const nodes = scene?.nodes ?? [];
   // The key handler is installed once; it reads the current state from here.
-  const state = useRef({ nodes, selection, context, open, pickerOpen });
-  state.current = { nodes, selection, context, open, pickerOpen };
+  const state = useRef({ nodes, selection, context, open, pickerOpen, view });
+  state.current = { nodes, selection, context, open, pickerOpen, view };
 
   const activeTool: Tool = spaceHand ? "hand" : tool;
   const boxes = nodes.filter(isBox);
@@ -226,6 +227,40 @@ export function App() {
       window.removeEventListener("blur", onBlur);
     };
   }, [send, duplicate]);
+
+  // Cmd/Ctrl+C / X / V through the browser's copy, cut and paste events (no permission prompt), with the system
+  // clipboard, so they work across scenes, tabs and reloads. Off while typing in a field (normal text copy and
+  // paste) and while the picker is up. Paste lands centered in the view, inside the entered group if there is one.
+  useEffect(() => {
+    const ours = (e: ClipboardEvent) => {
+      const { open, pickerOpen } = state.current;
+      return !typingInField(e) && !!open && !pickerOpen;
+    };
+    const onCopy = (e: ClipboardEvent) => {
+      const { nodes, selection } = state.current;
+      if (!ours(e) || selection.length === 0 || !e.clipboardData) return;
+      e.preventDefault();
+      e.clipboardData.setData("text/plain", clipboardText(nodes, selection));
+      if (e.type === "cut") send({ type: "remove_nodes", ids: selection, cut: true });
+    };
+    const onPaste = (e: ClipboardEvent) => {
+      if (!ours(e)) return;
+      const pasted = readClipboard(e.clipboardData?.getData("text/plain"));
+      if (!pasted) return;
+      e.preventDefault();
+      const { nodes, context, view } = state.current;
+      pendingSelect.current = { before: new Set(nodes.map((n) => n.id)), pick: copiedRoots };
+      send({ type: "paste_nodes", nodes: pasted, focus: view.focus, parent: context });
+    };
+    document.addEventListener("copy", onCopy);
+    document.addEventListener("cut", onCopy);
+    document.addEventListener("paste", onPaste);
+    return () => {
+      document.removeEventListener("copy", onCopy);
+      document.removeEventListener("cut", onCopy);
+      document.removeEventListener("paste", onPaste);
+    };
+  }, [send]);
 
   // Kind is for a single box; color applies to every box in the selection (groups included).
   const single = selectedNodes.length === 1 ? selectedNodes[0] : null;

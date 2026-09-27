@@ -219,6 +219,21 @@ Adopted as recommended (say if any should change):
 
 ## 12. Progress
 
+**Phase complete (2026-09-26).** All four increments are done, and each passed Orlando's browser check. The editor copies with Alt-drag and repeats with `Alt+J`, mirrors on world X / Z, and copies, cuts and pastes through the system clipboard across scenes and tabs. The agent copies with `move_nodes` (`copy`, `count`) and mirrors with `mirror_nodes`. It gets the conventions once, as the server's instructions, so its tool descriptions are short (9 tools).
+
+Beyond the plan:
+- the project bar is its own button at the top left, as wide as the names need, and the info-label is a status bar docked along the bottom edge (see 05.2);
+- the mirror buttons are a flip icon with the axis letter, Z's icon turned 90°, instead of letters only (decision 16, changed in 05.3);
+- the mirror's pivot rounds ties half to even, so quarter-meter widths mirror back exactly (see 05.3);
+- the node schemas moved to `scene.types.ts` (see 05.4);
+- a released drag's preview now lasts until the server's scene arrives (see 05.2).
+
+Candidates for the next phase:
+- `06`: entities and more shapes (from `thinking-01-entities`): doors, windows, floor holes, flags, notes, a human reference figure, cylinders and free-form outlines. Mirroring these needs their own `mirrorBox`-style case;
+- `07`: live arrays together with prefabs (copies that follow a source), as decided in §11;
+- from §2's deferred list: `⌘D`, paste at the cursor, Alt-drag in the outliner, mirroring as a copy;
+- a summarized scene description for the agent as scenes grow (still open from 04).
+
 ### 05.1 — Duplicate command and the agent's context (done)
 
 - **`tree.ts`:** `topmost` (the listed nodes not inside another listed node, in the given order; `groupNodes` uses it too) and `copyNodes` (fresh IDs, parents remapped inside the copied set and kept outside it, boxes offset and rounded to 2 decimals). Paste (05.4) will reuse `copyNodes` and set the roots' parent itself.
@@ -271,3 +286,15 @@ Adopted as recommended (say if any should change):
   - typecheck;
   - 160 tests (new: `geometry.test.ts`, and "scene store mirroring" in `scene.test.ts`);
   - a scripted run on `:5171` with a scratch `DATA_DIR`: 9 tools. The agent copied the lobby 20 m east twice in one `move_nodes` call. `mirror_nodes` on Z twice, on a group with rotated boxes and 2.25 × 4.75 footprints, restored the exact JSON. Axis `y` was refused. A WS mirror on X, then one undo, restored the lobby. Mirroring a single unrotated box recorded no step.
+
+### 05.4 — Copy, cut and paste (done)
+
+- **Clipboard (`src/web/clipboard.ts`):** `clipboardText` writes the selection with whole subtrees, in list order, as `{ "dungeonDesigner": "nodes", "nodes": [...] }`. `readClipboard` returns our nodes, or null for anything else: other text, other JSON, or nodes that fail the node schema (at most 1,000). Tested.
+- **App:** `copy`, `cut` and `paste` listeners on the document, so there's no permission prompt. They're off while typing in a field (`typingInField` now takes any event), in the picker, or with nothing open. Copy with nothing selected leaves the browser's default alone. Cut writes the clipboard, then sends `remove_nodes { cut: true }`. Paste sends `paste_nodes { nodes, focus: view.focus, parent: context }` and selects the pasted roots through the pending selection (the same `copiedRoots` rule as copies).
+- **Store:** `pasteNodes`, validated with zod like a file. Repeated IDs, a parent cycle, an unknown or box `parent`, and a snapshot with no boxes are all rejected. Parents pointing outside the snapshot (or at a box) are dropped, so those nodes become roots. The roots go into `parent`: in a group, right after its last node; at the top level, at the end. The offset centers the boxes' bounds on the focus, rounded to the 0.5 m snap, with y kept. Sizes are rounded and checked like drawn boxes. One `add` step, labeled `Paste box_7` or `Paste 5 nodes` (the total). `removeNodes` takes `{ cut }` for the `Cut box_3` label.
+- **Refactor:** the node schemas (`NodeSchema` and friends) moved from `project.types.ts` to `scene.types.ts`, so the paste message can use them without a circular import. `project.types.ts` and `persist.ts` import them from there.
+- **Checks:**
+  - typecheck;
+  - 166 tests (new: `clipboard.test.ts`, and "scene store paste and cut" in `scene.test.ts`);
+  - a scripted run on `:5171` with a scratch `DATA_DIR`: a nested group (lobby › hall + pillars › 2 pillars at y 2) was copied as the editor would copy it, and pasted into a new scene of the same project. It landed centered on the focus (offset snapped to 20, −10), with y kept, fresh IDs from that scene's counters, and the names and nesting intact. A second paste made a second copy. A paste into a group put the nodes inside it, and cut recorded `Cut group_5`. A malformed snapshot was refused.
+- **Not scriptable here:** the browser's clipboard events themselves (Orlando's checklist). Safari has historically fired no `copy` event when no text is selected on the page, so check `⌘C` there if you use it; Chrome fires it.

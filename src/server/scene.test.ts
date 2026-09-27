@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import type { Box } from "../shared/scene.types";
+import type { Box, SceneNode } from "../shared/scene.types";
+import { subtreeIds } from "../shared/tree";
 import { createSceneStore, SceneError } from "./scene";
 
 const boxes = (store: ReturnType<typeof createSceneStore>) => store.getScene().nodes.filter((n): n is Box => n.type === "box");
@@ -601,6 +602,87 @@ describe("scene store mirroring", () => {
     expect(() => store.mirrorNodes({ ids: ["box_9"], axis: "x" }, "human")).toThrow(/no node "box_9"/);
     // @ts-expect-error y isn't a mirror axis
     expect(() => store.mirrorNodes({ ids: ["box_1"], axis: "y" }, "human")).toThrow(SceneError);
+  });
+});
+
+describe("scene store paste and cut", () => {
+  /** lobby (group_1) holds hall (group_2) with box_1 (x 0) and box_2 (x 4); box_3 is at the top level. */
+  const setup = () => {
+    const store = createSceneStore();
+    store.drawBoxes(
+      [
+        { kind: "room", x: 0, z: 0, width: 2, depth: 2, name: "a" },
+        { kind: "volume", x: 4, z: 0, width: 2, depth: 2, y: 3, name: "b" },
+        { kind: "volume", x: 50, z: 50, width: 1, depth: 1 },
+      ],
+      "human",
+    );
+    store.groupNodes({ ids: ["box_1", "box_2"], name: "hall" }, "human");
+    store.groupNodes({ ids: ["group_1"], name: "lobby" }, "human");
+    return store;
+  };
+  /** What the editor puts on the clipboard for `ids`: their subtrees, in list order. */
+  const snapshot = (store: ReturnType<typeof createSceneStore>, ids: string[]) => {
+    const all = new Set(ids.flatMap((id) => [...subtreeIds(store.getScene().nodes, id)]));
+    return structuredClone(store.getScene().nodes.filter((n) => all.has(n.id)));
+  };
+  const node = (store: ReturnType<typeof createSceneStore>, id: string) => store.getScene().nodes.find((n) => n.id === id)!;
+
+  it("pastes with fresh IDs, names and nesting, centered on the focus (snapped offset), keeping y, as one step", () => {
+    const store = setup();
+    const clip = snapshot(store, ["group_2"]);
+    // The boxes span x -1..5, so the center is x 2, z 0; focus 10.3, -7.1 → offset 8.5 (snapped), -7.
+    const roots = store.pasteNodes({ nodes: clip, focus: { x: 10.3, z: -7.1 }, parent: null }, "human");
+    expect(roots.map((n) => n.id)).toEqual(["group_3"]);
+    expect(node(store, "group_3")).toMatchObject({ name: "lobby" });
+    expect(node(store, "group_3").parent).toBeUndefined();
+    expect(node(store, "group_4")).toMatchObject({ name: "hall", parent: "group_3" });
+    expect(node(store, "box_4")).toMatchObject({ name: "a", parent: "group_4", x: 8.5, z: -7, y: 0 });
+    expect(node(store, "box_5")).toMatchObject({ name: "b", parent: "group_4", x: 12.5, z: -7, y: 3 });
+    expect(store.getHistory().undoLabel).toBe("Paste 4 nodes");
+    store.undo();
+    expect(store.getScene().nodes).toHaveLength(5);
+  });
+
+  it("drops parents outside the snapshot, and pastes into the entered group, last among its children", () => {
+    const store = setup();
+    // box_2 alone: its parent group_1 isn't in the snapshot.
+    const [root] = store.pasteNodes({ nodes: snapshot(store, ["box_2"]), focus: { x: 0, z: 0 }, parent: null }, "human");
+    expect(root.parent).toBeUndefined();
+    expect(store.getHistory().undoLabel).toBe("Paste box_4");
+    store.pasteNodes({ nodes: snapshot(store, ["box_3"]), focus: { x: 0, z: 0 }, parent: "group_1" }, "human");
+    expect(node(store, "box_5").parent).toBe("group_1");
+    const ids = store.getScene().nodes.map((n) => n.id);
+    expect(ids.indexOf("box_5")).toBe(ids.indexOf("box_2") + 1);
+  });
+
+  it("pasting twice makes two copies; cut removes as one step labeled Cut", () => {
+    const store = setup();
+    const clip = snapshot(store, ["box_3"]);
+    store.removeNodes(["box_3"], "human", { cut: true });
+    expect(store.getHistory().undoLabel).toBe("Cut box_3");
+    store.pasteNodes({ nodes: clip, focus: { x: 0, z: 0 }, parent: null }, "human");
+    store.pasteNodes({ nodes: clip, focus: { x: 0, z: 0 }, parent: null }, "human");
+    expect(boxes(store).map((b) => [b.id, b.x, b.z]).slice(-2)).toEqual([
+      ["box_4", 0, 0],
+      ["box_5", 0, 0],
+    ]);
+  });
+
+  it("rejects repeated IDs, cycles, a bad parent, no boxes and invalid nodes, pasting nothing", () => {
+    const store = setup();
+    const before = store.getScene().nodes.length;
+    const clip = snapshot(store, ["group_2"]);
+    // Invalid nodes on purpose, so they go in untyped.
+    const paste = (nodes: unknown[], parent: string | null = null) =>
+      store.pasteNodes({ nodes: nodes as SceneNode[], focus: { x: 0, z: 0 }, parent }, "human");
+    expect(() => paste([...clip, clip[0]])).toThrow(/appears more than once/);
+    expect(() => paste(clip.map((n) => (n.id === "group_2" ? { ...n, parent: "group_1" } : n)))).toThrow(/inside itself/);
+    expect(() => paste(clip, "box_3")).toThrow(/is a box, not a group/);
+    expect(() => paste(clip.filter((n) => n.type === "group"))).toThrow(/no boxes/);
+    expect(() => paste([{ ...clip[2], width: -1 }])).toThrow(SceneError);
+    expect(() => paste([])).toThrow(SceneError);
+    expect(store.getScene().nodes).toHaveLength(before);
   });
 });
 
