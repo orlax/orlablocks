@@ -1068,3 +1068,42 @@ describe("scene store walls", () => {
     expect(store.getScene().nodes[1]).toMatchObject({ wall: 0.4 });
   });
 });
+
+describe("scene store taper and bevel", () => {
+  it("draws tapered and beveled volumes, leaving 0 out, and refuses them on rooms", () => {
+    const store = createSceneStore();
+    const [pyramid, hill, plain] = store.drawShapes(
+      [
+        { kind: "volume", x: 0, z: 0, width: 4, depth: 4, height: 3, taper: 1 },
+        { type: "cylinder", kind: "volume", x: 10, z: 0, width: 20, depth: 20, height: 8, taper: 0.6, bevel: 0.504 },
+        { kind: "volume", x: 30, z: 0, width: 2, depth: 2, taper: 0, bevel: 0 },
+      ],
+      "agent",
+    );
+    expect(pyramid).toMatchObject({ taper: 1 });
+    expect(hill).toMatchObject({ taper: 0.6, bevel: 0.5 });
+    expect(plain).not.toHaveProperty("taper");
+    expect(plain).not.toHaveProperty("bevel");
+    expect(() => store.drawShapes([{ kind: "room", x: 0, z: 0, width: 4, depth: 4, taper: 0.5 }], "agent")).toThrow(/only a volume has a taper \(this is a room\)/);
+    expect(() => store.drawShapes([{ kind: "volume", x: 0, z: 0, width: 4, depth: 4, bevel: 1.5 }], "agent")).toThrow(/bevel/);
+  });
+
+  it("changes them, clears them with 0, and drops them when a volume becomes a room", () => {
+    const store = createSceneStore();
+    const [v] = store.drawShapes([{ kind: "volume", x: 0, z: 0, width: 4, depth: 4, height: 3 }], "human");
+    store.updateNodes([{ id: v.id, taper: 0.5 }], "human");
+    expect(store.getHistory().undoLabel).toBe("Taper box_1");
+    store.updateNodes([{ id: v.id, bevel: 0.3 }], "human");
+    expect(store.getHistory().undoLabel).toBe("Bevel box_1");
+    store.updateNodes([{ id: v.id, taper: 0 }], "human");
+    expect(store.getScene().nodes[0]).not.toHaveProperty("taper");
+    expect(() => store.updateNodes([{ id: v.id, kind: "room", bevel: 0.5 }], "human")).toThrow(/only a volume has a bevel/);
+    store.updateNodes([{ id: v.id, kind: "room" }], "human");
+    expect(store.getScene().nodes[0]).not.toHaveProperty("bevel");
+    expect(store.getHistory().undoLabel).toBe("Change kind of box_1");
+    store.undo();
+    expect(store.getScene().nodes[0]).toMatchObject({ kind: "volume", bevel: 0.3 });
+    const [f] = store.convertNodes({ ids: [v.id] }, "human");
+    expect(f).toMatchObject({ bevel: 0.3 });
+  });
+});

@@ -54,6 +54,10 @@ const INSTRUCTIONS =
   `its footprint is the room's OUTSIDE, and its walls grow inward from it, \`wall\` m thick (default ${DEFAULT_WALL}, at least ${MIN_WALL}), ` +
   "so a 10 m room is 10 m across outside; two rooms that touch have two walls back to back, so overlap them by a wall's thickness to share one) " +
   `or a volume (solid, e.g. a platform or pillar; default height ${DEFAULT_HEIGHT.volume} m). Minimum height is ${MIN_HEIGHT} m. ` +
+  "A volume (of any shape) can have two fractions: `taper` 0..1 shrinks its top toward its center (1 = a point: a box " +
+  "becomes a pyramid, a cylinder a cone) and `bevel` 0..1 rounds its top edge (1 = as round as it fits: a tall cylinder " +
+  "gets a dome, a box a rounded top); together they make hills and mountains (taper 0.6, bevel 0.5). The top stays at " +
+  "y + height, the bottom stays flat. Rooms have neither; making a volume a room drops them, and making a room a volume drops its wall. " +
   `\`color\` is a palette key: ${SHAPE_COLORS.join(", ")} (default ${DEFAULT_COLOR}). ` +
   "A cylinder has exactly a box's fields, and its footprint is the ellipse inscribed in its width × depth rectangle " +
   "(width = depth for a circle, so a round room 10 m across is width 10, depth 10), centered at (x, z) and turned by `rotation` like a box. " +
@@ -150,7 +154,7 @@ function buildServer(workspace: Workspace) {
         `Add one or more shapes to the scene in a single batch; they appear live in the editor. Each has a \`type\` ` +
         `(box, the default, cylinder, freeform or line) and that type's fields. For a box or cylinder (a room or a volume) only ` +
         `kind, x, z, width and depth are required; for a free-form, kind and points; for a line, points. The rest have defaults (the kind's ` +
-        `height, y 0, rotation 0, color ${DEFAULT_COLOR} (${DEFAULT_LINE_COLOR} for a line), ${DEFAULT_WALL} m room walls, no name, top level, a smooth cylinder, ` +
+        `height, y 0, rotation 0, color ${DEFAULT_COLOR} (${DEFAULT_LINE_COLOR} for a line), ${DEFAULT_WALL} m room walls, no taper or bevel, no name, top level, a smooth cylinder, ` +
         `and a solid ${DEFAULT_THICKNESS} px line with no arrow). ` +
         `Set \`parent\` to a group's ID to draw straight into that group. ` +
         `The batch is all-or-nothing: if any shape is invalid, nothing is drawn and the error says which one.`,
@@ -175,8 +179,9 @@ function buildServer(workspace: Workspace) {
       title: "Update nodes",
       description:
         `Change existing nodes by ID in a single batch; changes appear live in the editor. ` +
-        `A box takes any of: name, parent, kind, x, z, y, width, depth, height, rotation, color, wall (a room's; null = the default); ` +
-        `a cylinder those and sides; a free-form name, parent, kind, y, height, color, wall and points (the whole outline); a line name, parent, color, ` +
+        `A box takes any of: name, parent, kind, x, z, y, width, depth, height, rotation, color, wall (a room's; null = the default), ` +
+        `taper and bevel (a volume's; 0 clears them); ` +
+        `a cylinder those and sides; a free-form name, parent, kind, y, height, color, wall, taper, bevel and points (the whole outline); a line name, parent, color, ` +
         `points (the whole path, with y), thickness, dashed and arrow. ` +
         `A group takes only name and parent. ` +
         `{ id, type: "freeform" } alone converts a box or cylinder into a free-form with a new ID; a call that converts ` +

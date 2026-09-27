@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Box, Freeform } from "../shared/scene.types";
 import { DEFAULT_CAMERA, heightOnVertical, screenRay, worldToScreen, type CameraState, type Vec3 } from "./camera";
-import { prism } from "../shared/mesh";
+import { hitMesh, prism } from "../shared/mesh";
 import { pickHit, pickLine, pickShape, rayMesh } from "./pick";
 
 const size = { width: 1200, height: 800 };
@@ -118,6 +118,19 @@ describe("pickShape with thick walls", () => {
     const ray = rayAt({ x: 0.5, y: 3, z: 4 });
     expect(pickHit(ray, [thick])!.point.y).toBeCloseTo(3);
     expect(pickHit(ray, [room])!.point.y).toBeLessThan(2.9);
+  });
+});
+
+describe("picking sloped volumes", () => {
+  const down = (x: number, z: number) => ({ origin: { x, y: 10, z }, dir: { x: 0, y: -1, z: 0 } });
+
+  it("hits a pyramid on its slope, lower toward its edge", () => {
+    const pyramid: Box = { ...volume, x: 0, z: 0, width: 4, depth: 4, height: 4, taper: 1 };
+    const m = hitMesh(pyramid)!;
+    expect(rayMesh(down(0, 0), m)).toBeCloseTo(6);
+    // At x = 1, the +x face is at height 4 × (1 − 1 / 2) = 2.
+    expect(rayMesh(down(1, 0), m)).toBeCloseTo(8);
+    expect(rayMesh(down(2.1, 0), m)).toBeNull();
   });
 });
 

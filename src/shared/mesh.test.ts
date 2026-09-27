@@ -137,3 +137,65 @@ describe("hitMesh", () => {
     expect(m.max[1]).toBeCloseTo(5);
   });
 });
+
+describe("taper and bevel", () => {
+  it("tapers a box to a pyramid and a cylinder to a cone, watertight, with the right volume", () => {
+    const pyramid = shapeMesh(box({ taper: 1 })).body!;
+    expect(watertight(pyramid)).toBe(true);
+    expect(volume(pyramid)).toBeCloseTo((4 * 2 * 3) / 3);
+    const half = shapeMesh(box({ taper: 0.5 })).body!;
+    expect(watertight(half)).toBe(true);
+    // A frustum: h/3 × (A1 + A2 + √(A1·A2)), top 2 × 1.
+    expect(volume(half)).toBeCloseTo((3 / 3) * (8 + 2 + 4));
+    const c: Cylinder = { ...base, id: "cylinder_1", type: "cylinder", kind: "volume", x: 0, z: 0, width: 4, depth: 4, height: 3, sides: 6, taper: 1 };
+    const cone = shapeMesh(c).body!;
+    expect(watertight(cone)).toBe(true);
+    // A hexagon on a radius-2 circle: area 3√3/2 × r².
+    expect(volume(cone)).toBeCloseTo(((3 * Math.sqrt(3)) / 2) * 4);
+  });
+
+  it("rounds a tall smooth cylinder's top into a dome", () => {
+    const c: Cylinder = { ...base, id: "cylinder_1", type: "cylinder", kind: "volume", x: 0, z: 0, width: 4, depth: 4, height: 5, bevel: 1 };
+    const dome = shapeMesh(c).body!;
+    expect(watertight(dome)).toBe(true);
+    // A cylinder of radius 2 and height 3, with a half-sphere of radius 2 on top.
+    const expected = Math.PI * 4 * 3 + (2 / 3) * Math.PI * 8;
+    expect(volume(dome) / expected).toBeCloseTo(1, 1);
+    // Its top is still at its height, and at the center.
+    const ys = dome.positions.filter((_, i) => i % 3 === 1);
+    expect(Math.max(...ys)).toBeCloseTo(5);
+  });
+
+  it("rounds a long box evenly, into a ridge at bevel 1", () => {
+    const ridge = shapeMesh(box({ width: 10, depth: 2, height: 4, bevel: 1 })).body!;
+    expect(watertight(ridge)).toBe(true);
+    expect(volume(ridge)).toBeGreaterThan(0);
+    expect(volume(ridge)).toBeLessThan(10 * 2 * 4);
+  });
+
+  it("tapers and bevels a concave free-form toward its centroid, watertight", () => {
+    const blob: Freeform = {
+      id: "freeform_1",
+      type: "freeform",
+      kind: "volume",
+      y: 0,
+      height: 6,
+      color: "almost-white",
+      createdBy: "human",
+      taper: 0.6,
+      bevel: 0.5,
+      points: [
+        { x: 0, z: 0 },
+        { x: 10, z: 0, out: { x: 2, z: 3 } },
+        { x: 9, z: 8 },
+        { x: 5, z: 5 },
+        { x: 0, z: 8 },
+      ],
+    };
+    const hill = shapeMesh(blob).body!;
+    expect(watertight(hill)).toBe(true);
+    expect(volume(hill)).toBeGreaterThan(0);
+    const all = shapeMesh({ ...blob, taper: 1, bevel: 1 }).body!;
+    expect(watertight(all)).toBe(true);
+  });
+});

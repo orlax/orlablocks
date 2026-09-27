@@ -25,7 +25,7 @@ import { Outliner } from "./Outliner";
 import { ProjectPicker } from "./ProjectPicker";
 import { ContextualBar, EDIT_POINTS_HINT, HINTS, TOOLS, ToolBar } from "./ToolBar";
 import { useScene } from "./useScene";
-import { Viewport, type LineStyle, type Tool } from "./Viewport";
+import { Viewport, type KindFields, type LineStyle, type Tool } from "./Viewport";
 
 /** Fixed-width number (e.g. "  12.50", " -3.00") so the info-label never jitters. */
 const coord = (n?: number) => (n === undefined ? "–".padStart(7) : n.toFixed(2).padStart(7));
@@ -50,7 +50,8 @@ const copiedRoots = (added: SceneNode[]) => {
 const title = (n: SceneNode) => (n.name ? `${n.name} (${n.id})` : n.id);
 
 /**
- * `lobby (box_3) · 6 × 4 × 3 m · wall 0.2 · y 0 · 0°` (a room's wall thickness), a cylinder's sides:
+ * `lobby (box_3) · 6 × 4 × 3 m · wall 0.2 · y 0 · 0°` (a room's wall thickness, or a volume's taper and bevel:
+ * `hill (cylinder_2) · 20 × 20 × 8 m · smooth · taper 0.6 · bevel 0.5 · y 0 · 0°`), a cylinder's sides:
  * `tower (cylinder_1) · 8 × 8 × 3 m · 8 sides · y 0 · 0°`, a free-form's points and bounds:
  * `cave (freeform_1) · 7 points · 12.3 × 8 × 3 m · y 0`, and a line's points, length and style:
  * `route (line_1) · 3 points · 14.2 m long · 3 px · dashed · arrow at the end`.
@@ -62,7 +63,10 @@ const describe = (s: Shape) => {
     const arrow = s.arrow === "end" ? " · arrow at the end" : s.arrow === "both" ? " · arrows at both ends" : "";
     return `${title(s)} · ${s.points.length} points · ${round2(length)} m long · ${s.thickness} px${s.dashed ? " · dashed" : ""}${arrow}`;
   }
-  const wall = s.kind === "room" ? ` · wall ${wallOf(s)}` : "";
+  const wall =
+    s.kind === "room"
+      ? ` · wall ${wallOf(s)}`
+      : `${s.taper !== undefined ? ` · taper ${s.taper}` : ""}${s.bevel !== undefined ? ` · bevel ${s.bevel}` : ""}`;
   if (s.type === "freeform") {
     const b = footprintBounds(s);
     return `${title(s)} · ${s.points.length} points · ${round2(b.maxX - b.minX)} × ${round2(b.maxZ - b.minZ)} × ${s.height} m${wall} · y ${s.y}`;
@@ -93,8 +97,8 @@ export function App() {
   const [nextColor, setNextColor] = useState<ShapeColor>(DEFAULT_COLOR);
   // The Cylinder tool's sides (undefined = smooth).
   const [nextSides, setNextSides] = useState<number | undefined>(undefined);
-  // The next room's wall thickness (undefined = the default).
-  const [nextWall, setNextWall] = useState<number | undefined>(undefined);
+  // The next shape's kind-specific fields: a room's wall thickness, a volume's taper and bevel (missing = the default).
+  const [nextFields, setNextFields] = useState<KindFields>({});
   // The Line tool's next line: its own color (black by default: a near-white line vanishes on the ground) and style.
   const [nextLine, setNextLine] = useState<LineStyle>({ color: DEFAULT_LINE_COLOR, thickness: DEFAULT_THICKNESS, dashed: false, arrow: "none" });
   // After Cmd+G or a copy: what to select when the result arrives (the new group, the copies).
@@ -364,9 +368,34 @@ export function App() {
           onChange: (wall: number) => send({ type: "update_nodes", changes: selectedRooms.map((r) => ({ id: r.id, wall })) }),
         }
       : undefined;
-  // The drawing tools' next room: its wall control, when the next shape is a room.
+  // The taper and bevel sliders act on every volume in the selection, showing each value when they all share it.
+  const selectedVolumes = selectedShapes.filter((s): s is ClosedShape => s.type !== "line" && s.kind === "volume");
+  const sharedOf = (f: "taper" | "bevel") =>
+    selectedVolumes.every((v) => (v[f] ?? 0) === (selectedVolumes[0][f] ?? 0)) ? (selectedVolumes[0]?.[f] ?? 0) : undefined;
+  const profileControl =
+    selectedVolumes.length > 0
+      ? {
+          taper: sharedOf("taper"),
+          bevel: sharedOf("bevel"),
+          onChange: (patch: { taper?: number; bevel?: number }) =>
+            send({ type: "update_nodes", changes: selectedVolumes.map((v) => ({ id: v.id, ...patch })) }),
+        }
+      : undefined;
+  // The drawing tools' next shape: its wall control for a room, its taper and bevel for a volume.
+  const setNext = (patch: KindFields) => setNextFields({ ...nextFields, ...patch });
   const nextWallControl =
-    nextKind === "room" ? { value: nextWall ?? DEFAULT_WALL, onChange: (wall: number) => setNextWall(wall === DEFAULT_WALL ? undefined : wall) } : undefined;
+    nextKind === "room"
+      ? { value: nextFields.wall ?? DEFAULT_WALL, onChange: (wall: number) => setNext({ wall: wall === DEFAULT_WALL ? undefined : wall }) }
+      : undefined;
+  const nextProfileControl =
+    nextKind === "volume"
+      ? {
+          taper: nextFields.taper ?? 0,
+          bevel: nextFields.bevel ?? 0,
+          onChange: (patch: { taper?: number; bevel?: number }) =>
+            setNext(Object.fromEntries(Object.entries(patch).map(([k, v]) => [k, v === 0 ? undefined : v]))),
+        }
+      : undefined;
   const lineControls =
     selectedLines.length > 0
       ? {
@@ -389,7 +418,7 @@ export function App() {
         outsideHover={outlinerHover}
         nextKind={nextKind}
         nextSides={nextSides}
-        nextWall={nextWall}
+        nextFields={nextFields}
         nextLine={nextLine}
         onSelect={setSelection}
         onDrawShape={(shape) => send({ type: "add_shapes", shapes: [{ ...shape, color: shape.type === "line" ? nextLine.color : nextColor }] })}
@@ -458,12 +487,12 @@ export function App() {
       <div className="dock">
         {error && <div className="error">{error}</div>}
         {tool === "box" && (
-          <ContextualBar kind={nextKind} onKind={setNextKind} color={nextColor} onColor={setNextColor} wall={nextWallControl}>
+          <ContextualBar kind={nextKind} onKind={setNextKind} color={nextColor} onColor={setNextColor} wall={nextWallControl} profile={nextProfileControl}>
             next box
           </ContextualBar>
         )}
         {tool === "pen" && (
-          <ContextualBar kind={nextKind} onKind={setNextKind} color={nextColor} onColor={setNextColor} wall={nextWallControl}>
+          <ContextualBar kind={nextKind} onKind={setNextKind} color={nextColor} onColor={setNextColor} wall={nextWallControl} profile={nextProfileControl}>
             next free-form
           </ContextualBar>
         )}
@@ -485,6 +514,7 @@ export function App() {
             onColor={setNextColor}
             sides={{ value: nextSides, onChange: setNextSides }}
             wall={nextWallControl}
+            profile={nextProfileControl}
           >
             next cylinder
           </ContextualBar>
@@ -503,6 +533,7 @@ export function App() {
                 : undefined
             }
             wall={wallControl}
+            profile={profileControl}
             onConvert={convertible.length > 0 ? convert : undefined}
             line={lineControls}
             editPoints={editable ? { active: editing === editable.id, onToggle: () => setEditing(editing ? null : editable.id) } : undefined}

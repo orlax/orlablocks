@@ -145,7 +145,7 @@ export function ShapeMesh({ shape, draft = false, highlight }: Props) {
   const frame = shapeFrame(shape);
   const [ox, oz] = uvOffset(shape);
   // Geometry is rebuilt only when what it's made from changes (the shape is a new object every render).
-  const key = JSON.stringify([kind, localFootprint(shape), height, ox, y, oz, kind === "room" ? wallOf(shape) : 0]);
+  const key = JSON.stringify([kind, localFootprint(shape), height, ox, y, oz, kind === "room" ? wallOf(shape) : 0, shape.taper, shape.bevel]);
 
   // An outline with no area (a stored shape is never one, but a preview can be) has no meshes: nothing to draw.
   // Rooms too narrow to have an inside come out as solid blocks (walls with no inner ring).

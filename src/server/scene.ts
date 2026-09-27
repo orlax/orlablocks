@@ -25,6 +25,7 @@ import {
   GroupNodesSchema,
   MIN_HEIGHT,
   MIN_WALL,
+  KIND_FIELDS,
   MirrorNodesSchema,
   MoveNodesSchema,
   NodeUpdateSchema,
@@ -35,6 +36,8 @@ import {
   SNAP,
   UngroupSchema,
   type Actor,
+  type KindField,
+  type ShapeKind,
   type Box,
   type Cylinder,
   type Freeform,
@@ -92,18 +95,26 @@ const FIELD_VERBS: Record<keyof NodePatch, string> = {
   color: "recolor",
   sides: "change sides of",
   wall: "change walls of",
+  taper: "taper",
+  bevel: "bevel",
   points: "reshape",
   thickness: "restyle",
   dashed: "restyle",
   arrow: "restyle",
 };
 
+/** What a kind-specific field is called in errors ("only a room has walls"). */
+const KIND_FIELD_NOUNS: Record<KindField, string> = { wall: "walls", taper: "a taper", bevel: "a bevel" };
+const kindFieldProblem = (f: KindField, kind: ShapeKind) => `only a ${KIND_FIELDS[f].join(" or a ")} has ${KIND_FIELD_NOUNS[f]} (this is a ${kind})`;
+const kindAllows = (f: KindField, kind: ShapeKind) => (KIND_FIELDS[f] as readonly ShapeKind[]).includes(kind);
+
 /**
  * One verb when every change is the same kind of edit ("move", "recolor"), "edit" otherwise. A kind change that
  * drops the fields the new kind doesn't have (a room's `wall`) is still "change kind of".
  */
 function updateVerb(patches: NodePatch[]): string {
-  const keys = (p: NodePatch) => Object.keys(p).filter((k) => !("kind" in p && k === "wall" && p.wall === undefined));
+  const dropped = (p: NodePatch, k: string) => "kind" in p && k in KIND_FIELDS && p[k as KindField] === undefined;
+  const keys = (p: NodePatch) => Object.keys(p).filter((k) => !dropped(p, k));
   const verbs = new Set(patches.flatMap((p) => keys(p).map((k) => FIELD_VERBS[k as keyof NodePatch])));
   return verbs.size === 1 ? [...verbs][0] : "edit";
 }
@@ -205,6 +216,9 @@ export function createSceneStore() {
     return w === DEFAULT_WALL ? undefined : w;
   };
 
+  /** A taper or bevel as stored: 2 decimals, and none (undefined) for 0. */
+  const fraction = (v: number | undefined) => (v === undefined || round2(v) === 0 ? undefined : round2(v));
+
   /** A free-form's points rounded to 2 decimals, or an error (as `prefix: ...`) if the outline isn't valid. */
   const checkPoints = (prefix: string, points: FootPoint[], errors: string[]) => {
     const rounded = roundPoints(points);
@@ -244,6 +258,8 @@ export function createSceneStore() {
         height: n.height,
         color: n.color,
         ...(n.wall !== undefined ? { wall: n.wall } : {}),
+        ...(n.taper !== undefined ? { taper: n.taper } : {}),
+        ...(n.bevel !== undefined ? { bevel: n.bevel } : {}),
         points: outlines[i],
         createdBy: n.createdBy,
       }),
@@ -338,8 +354,12 @@ export function createSceneStore() {
         }
         const height = d.height ?? DEFAULT_HEIGHT[d.kind];
         checkSizes(prefix, { ...(d.type === "freeform" ? {} : { width: d.width, depth: d.depth }), height }, errors);
-        if (d.wall !== undefined && d.kind !== "room") errors.push(`${prefix}.wall: only a room has walls (this is a ${d.kind})`);
+        for (const f of Object.keys(KIND_FIELDS) as KindField[]) {
+          if (d[f] !== undefined && !kindAllows(f, d.kind)) errors.push(`${prefix}.${f}: ${kindFieldProblem(f, d.kind)}`);
+        }
         const wall = d.wall !== undefined ? wallValue(`${prefix}.wall`, d.wall, errors) : undefined;
+        const taper = fraction(d.taper);
+        const bevel = fraction(d.bevel);
         const common = {
           ...(name ? { name } : {}),
           ...(d.parent !== undefined ? { parent: d.parent } : {}),
@@ -348,6 +368,8 @@ export function createSceneStore() {
           height: round2(height),
           color: d.color ?? DEFAULT_COLOR,
           ...(wall !== undefined ? { wall } : {}),
+          ...(taper !== undefined ? { taper } : {}),
+          ...(bevel !== undefined ? { bevel } : {}),
         };
         if (d.type === "freeform") return { type: "freeform" as const, ...common, points: checkPoints(prefix, d.points, errors) };
         const type = d.type ?? "box";
@@ -430,7 +452,9 @@ export function createSceneStore() {
             errors.push(`changes[${i}]: only a line has ${lineOnly.join(", ")} ("${id}" is a ${node.type})`);
           }
           if (node.type === "line") {
-            const closedOnly = (["kind", "x", "z", "y", "width", "depth", "height", "rotation", "wall"] as const).filter((k) => fields[k] !== undefined);
+            const closedOnly = (["kind", "x", "z", "y", "width", "depth", "height", "rotation", "wall", "taper", "bevel"] as const).filter(
+              (k) => fields[k] !== undefined,
+            );
             if (closedOnly.length > 0) {
               errors.push(
                 `changes[${i}]: "${id}" is a line, with no ${closedOnly.join(", ")}: change its points (they carry their own y), ` +
@@ -438,8 +462,13 @@ export function createSceneStore() {
               );
             }
           }
-          if (node.type !== "line" && fields.wall !== undefined && fields.wall !== null && (fields.kind ?? node.kind) !== "room") {
-            errors.push(`changes[${i}].wall: only a room has walls ("${id}" is a ${fields.kind ?? node.kind})`);
+          if (node.type !== "line") {
+            const kind = fields.kind ?? node.kind;
+            for (const f of Object.keys(KIND_FIELDS) as KindField[]) {
+              if (fields[f] !== undefined && fields[f] !== null && !kindAllows(f, kind)) {
+                errors.push(`changes[${i}].${f}: ${kindFieldProblem(f, kind).replace("this is", `"${id}" is`)}`);
+              }
+            }
           }
           if (node.type === "freeform") {
             const footprinted = (["x", "z", "width", "depth", "rotation"] as const).filter((k) => fields[k] !== undefined);
@@ -468,8 +497,14 @@ export function createSceneStore() {
         if (fields.color !== undefined) patch.color = fields.color;
         if (fields.sides !== undefined) patch.sides = fields.sides ?? undefined;
         if (fields.wall !== undefined) patch.wall = fields.wall === null ? undefined : wallValue(`changes[${i}].wall`, fields.wall, errors);
-        // A room that becomes something else loses its walls' thickness (undo brings it back).
-        if (fields.kind !== undefined && fields.kind !== "room" && isShape(node) && node.type !== "line" && node.wall !== undefined) patch.wall = undefined;
+        if (fields.taper !== undefined) patch.taper = fraction(fields.taper);
+        if (fields.bevel !== undefined) patch.bevel = fraction(fields.bevel);
+        // A shape that changes kind loses the fields its new kind doesn't have (undo brings them back).
+        if (fields.kind !== undefined && isShape(node) && node.type !== "line") {
+          for (const f of Object.keys(KIND_FIELDS) as KindField[]) {
+            if (!kindAllows(f, fields.kind) && node[f] !== undefined && fields[f] === undefined) patch[f] = undefined;
+          }
+        }
         if (fields.points !== undefined && node?.type === "freeform") {
           if (fields.points.some((p) => p.y !== undefined || p.in?.y !== undefined || p.out?.y !== undefined)) {
             errors.push(`changes[${i}].points: a free-form's points have no y (the free-form has its own y)`);

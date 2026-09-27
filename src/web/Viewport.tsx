@@ -4,9 +4,11 @@ import * as THREE from "three";
 import {
   DEFAULT_COLOR,
   DEFAULT_HEIGHT,
+  KIND_FIELDS,
   MIN_LINE_POINTS,
   MIN_POINTS,
   SNAP,
+  type KindField,
   type Line,
   type LinePoint,
   type Shape,
@@ -128,10 +130,18 @@ const DRAWS: Partial<Record<Tool, "box" | "cylinder">> = { box: "box", cylinder:
 /** A drawn footprint on the ground, by its center (like a box). */
 type Footprint = { x: number; z: number; width: number; depth: number };
 /** What the draft being drawn is. */
-/** The `wall` a new shape of this kind gets: the next room's thickness, for rooms only (none = the default). */
-const wallFor = (kind: ShapeKind, wall: number | undefined) => (kind === "room" && wall !== undefined ? { wall } : {});
+/** The next shape's kind-specific fields (a room's wall, a volume's taper and bevel); a missing one is the default. */
+export type KindFields = Partial<Record<KindField, number>>;
 
-type Draft = { type: "box" | "cylinder"; kind: ShapeKind; sides?: number; wall?: number };
+/** The kind-specific fields a new shape of this kind gets: only the ones its kind has. */
+const fieldsFor = (kind: ShapeKind, fields: KindFields): KindFields =>
+  Object.fromEntries(
+    Object.entries(fields).filter(
+      ([f, v]) => f in KIND_FIELDS && v !== undefined && (KIND_FIELDS[f as KindField] as readonly ShapeKind[]).includes(kind),
+    ),
+  );
+
+type Draft = { type: "box" | "cylinder"; kind: ShapeKind; sides?: number } & KindFields;
 
 /**
  * A gizmo drag in progress. A body drag only becomes `active` once the pointer moves past CLICK_PX: until then
@@ -234,8 +244,8 @@ type Props = {
   nextKind: ShapeKind;
   /** The sides the Cylinder tool draws (undefined = smooth). */
   nextSides: number | undefined;
-  /** The wall thickness of the rooms the Box, Cylinder and Pen tools draw (undefined = the default). */
-  nextWall: number | undefined;
+  /** The kind-specific fields of the shapes the Box, Cylinder and Pen tools draw (a room's wall, a volume's taper and bevel). */
+  nextFields: KindFields;
   /** How the Line tool draws the next line. */
   nextLine: LineStyle;
   onSelect: (ids: string[]) => void;
@@ -268,7 +278,7 @@ export function Viewport({
   outsideHover,
   nextKind,
   nextSides,
-  nextWall,
+  nextFields,
   nextLine,
   onSelect,
   onDrawShape,
@@ -520,7 +530,7 @@ export function Viewport({
       onNotice(`Can't close: ${problem}`);
       return;
     }
-    onDrawShape({ type: "freeform", kind: nextKind, ...wallFor(nextKind, nextWall), points: rounded });
+    onDrawShape({ type: "freeform", kind: nextKind, ...fieldsFor(nextKind, nextFields), points: rounded });
     setPen(NO_PEN);
   };
   const finishPenRef = useRef(finishPen);
@@ -734,7 +744,7 @@ export function Viewport({
         type: draws!,
         kind: nextKind,
         ...(draws === "cylinder" && nextSides !== undefined ? { sides: nextSides } : {}),
-        ...wallFor(nextKind, nextWall),
+        ...fieldsFor(nextKind, nextFields),
       };
       drawing.current = { pointerId: e.pointerId, ...shape, start: point };
       setDraft({ ...shape, ...point, width: 0, depth: 0, sx, sy });
@@ -858,7 +868,7 @@ export function Viewport({
         onDrawShape({
           type: d.type,
           ...(d.sides !== undefined ? { sides: d.sides } : {}),
-          ...(d.wall !== undefined ? { wall: d.wall } : {}),
+          ...fieldsFor(d.kind, d),
           kind: d.kind,
           x: round2(f.x),
           z: round2(f.z),
@@ -1082,7 +1092,7 @@ export function Viewport({
           selected={new Set(ghosts.length > 0 ? ghosts.map((b) => b.id) : shapesUnder(nodes, selection).map((b) => b.id))}
           hovered={new Set(shapesUnder(nodes, [hoveredId, outsideHover].filter((id) => id !== null)).map((b) => b.id))}
         />
-        {pen.points.length > 0 && <PenPreview pen={pen} kind={nextKind} wall={nextWall} line={nextLine} />}
+        {pen.points.length > 0 && <PenPreview pen={pen} kind={nextKind} fields={nextFields} line={nextLine} />}
         {editPoints && (
           <PointOverlay points={editPoints} y={editTop} closed={editClosed} selected={pointSel} bad={!!pointPreview?.problem} />
         )}
@@ -1194,7 +1204,7 @@ function Boxes({
             id: "draft",
             ...(draft.type === "cylinder" ? { type: "cylinder", sides: draft.sides } : { type: "box" }),
             kind: draft.kind,
-            ...(draft.wall !== undefined ? { wall: draft.wall } : {}),
+            ...fieldsFor(draft.kind, draft),
             x: draft.x,
             z: draft.z,
             width: draft.width,
@@ -1259,7 +1269,7 @@ function PenLabel({ pen, at }: { pen: Pen; at: { sx: number; sy: number } | null
  * could close without crossing itself, a draft of the shape at its kind's default height; for the Line tool, the
  * line as it will look (its thickness, dashes and arrows).
  */
-function PenPreview({ pen, kind, wall, line }: { pen: Pen; kind: ShapeKind; wall: number | undefined; line: LineStyle }) {
+function PenPreview({ pen, kind, fields, line }: { pen: Pen; kind: ShapeKind; fields: KindFields; line: LineStyle }) {
   const path = penPath(pen);
   const open = pen.owner === "line";
   const bad = !open && pathCrosses(path, pen.closing);
@@ -1313,7 +1323,7 @@ function PenPreview({ pen, kind, wall, line }: { pen: Pen; kind: ShapeKind; wall
             id: "pen",
             type: "freeform",
             kind,
-            ...wallFor(kind, wall),
+            ...fieldsFor(kind, fields),
             y: 0,
             height: DEFAULT_HEIGHT[kind],
             color: DEFAULT_COLOR,

@@ -562,3 +562,7 @@ body {
 .contextual-bar .thickness { display: flex; align-items: center; gap: 6px; color: var(--bar-text); }
 .contextual-bar .thickness input { width: 90px; accent-color: #8fb4f2; }
 .contextual-bar .thickness .value { min-width: 34px; font-variant-numeric: tabular-nums; color: #8fb4f2; }
+.contextual-bar .fraction { display: flex; align-items: center; gap: 4px; color: var(--bar-text); margin-right: 6px; }
+.contextual-bar .fraction .label-icon { opacity: 0.8; }
+.contextual-bar .fraction input { width: 70px; accent-color: #8fb4f2; }
+.contextual-bar .fraction .value { min-width: 30px; font-variant-numeric: tabular-nums; color: #8fb4f2; }

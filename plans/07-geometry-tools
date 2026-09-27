@@ -384,3 +384,38 @@ Adopted as recommended (say if any should change):
     - `wall: null` reset one, and making the octagon a volume dropped its wall;
     - a WS `add_shapes` drew a room with a 1 m wall, and a WS undo removed it;
   - Orlando's browser check passed.
+
+### 07.2 — Taper and bevel (done; browser check pending, Orlando is away and will check the phase at the end)
+
+- **Data:**
+  - `taper?` and `bevel?` (0..1) on boxes, cylinders and free-forms, for volumes. They're rounded to 2 decimals and left out at 0.
+  - `KIND_FIELDS` in `scene.types.ts` says which kinds each kind-specific field is for (`wall`: room; `taper`, `bevel`: volume). The store uses it for every check.
+    - A field on the wrong kind is refused (`only a volume has a taper (this is a room)`), unless the same change sets the kind.
+    - A kind change drops the fields the new kind doesn't have, and the label stays `Change kind of …`.
+    - 07.4 adds `hole` to the lists.
+  - The undo labels are `Taper box_1` and `Bevel box_1`. 0 clears a field. Convert keeps both.
+- **`mesh.ts`:**
+  - `volumeRings(shape)` is the profile: the footprint at the bottom, then either one top ring scaled by `1 − taper`, or, with a bevel, `BEVEL_SEGMENTS` (8) rings along a quarter circle. Each ring is scaled for the taper at its height, then inset by the bevel.
+    - Boxes and cylinders shrink their width and depth by the same distance (`localFootprint` with a smaller size), so the rounding is even.
+    - Free-forms scale toward their area `centroid`, with the inset read as a fraction of the outline's half smallest extent.
+  - `loft(stack)` stitches rings of the same point count into a mesh. It welds points in the same place within a ring (the tip of a cone, the ridge of a long box at bevel 1), drops the triangles that vanish, and gives a flat ring no cap. So it stays watertight.
+  - Volumes use `loft(volumeRings(...))`, and rooms keep `prism` of their wall rings.
+  - Rendering, picking and the marquee needed no change: they already run on the meshes. `ShapeMesh`'s memo key includes taper and bevel.
+- **Editor:**
+  - Two sliders on the contextual bar (`FractionSlider`, a pyramid icon and a rounded-corner icon, 0..1 in steps of 0.05, sent on release). They act on every selected volume, showing each value when all share it, and on the next volume in the Box, Cylinder and Pen tools.
+  - The Viewport's `nextWall` became `nextFields` (`KindFields`), filtered by kind through `fieldsFor`, so the drafts preview the taper and bevel.
+  - The selection info adds `· taper 0.6 · bevel 0.5`.
+- **MCP:** one paragraph on taper and bevel (what 1 means, hills, the top stays at y + height, kind changes drop fields), and mentions in `draw_shapes` and `update_nodes`. The instructions are 6.9 kB. The version stays 0.0.8.
+- **Checks:**
+  - typecheck;
+  - 248 tests. The new ones:
+    - taper and bevel meshes: the pyramid, the frustum and the hexagonal cone at their exact volumes, the dome within 10 % of a cylinder plus a half sphere, a ridge, and a concave free-form hill, all watertight;
+    - a pyramid picked on its slope;
+    - "scene store taper and bevel";
+  - the editor bundles;
+  - a scripted run on `:5171`:
+    - the agent drew a pyramid, a hill and a beveled free-form;
+    - a taper on a room was refused;
+    - making the pyramid a room dropped its taper, and undo restored it;
+    - converting the hill kept its taper and bevel.
+

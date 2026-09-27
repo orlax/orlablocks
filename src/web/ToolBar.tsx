@@ -13,6 +13,8 @@ import {
   MoveRight,
   PenTool,
   Plus,
+  Pyramid,
+  SquareRoundCorner,
   Spline,
   Redo2,
   Square,
@@ -151,6 +153,7 @@ export function ContextualBar({
   onMirror,
   sides,
   wall,
+  profile,
   onConvert,
   editPoints,
   line,
@@ -168,6 +171,8 @@ export function ContextualBar({
   sides?: { value: number | undefined; onChange: (sides: number | undefined) => void };
   /** Shows the wall control (rooms): the thickness in meters, undefined when the selected rooms differ. */
   wall?: { value: number | undefined; onChange: (wall: number) => void };
+  /** Shows the taper and bevel sliders (volumes): each value, undefined when the selected volumes differ. */
+  profile?: { taper: number | undefined; bevel: number | undefined; onChange: (patch: { taper?: number; bevel?: number }) => void };
   /** Shows Convert to free-form (the selection has boxes or cylinders). */
   onConvert?: () => void;
   /** Shows Edit points (a single free-form or line is selected): whether it's in point editing, and a toggle. */
@@ -217,6 +222,23 @@ export function ContextualBar({
         <>
           <span className="sep" />
           <WallControl {...wall} />
+        </>
+      )}
+      {profile && (
+        <>
+          <span className="sep" />
+          <FractionSlider
+            icon={Pyramid}
+            title="Taper: how much the top shrinks toward the center (1 = a point)"
+            value={profile.taper}
+            onChange={(taper) => profile.onChange({ taper })}
+          />
+          <FractionSlider
+            icon={SquareRoundCorner}
+            title="Bevel: how round the top edge is (1 = as round as it fits)"
+            value={profile.bevel}
+            onChange={(bevel) => profile.onChange({ bevel })}
+          />
         </>
       )}
       {line && (
@@ -361,6 +383,36 @@ function WallControl({ value, onChange }: { value: number | undefined; onChange:
         <Plus size={14} />
       </button>
     </div>
+  );
+}
+
+/**
+ * A 0..1 slider in steps of 0.05, with an icon and its value. It sends the value on release, so dragging it is one
+ * step. A value that differs across the selection shows as not set.
+ */
+function FractionSlider({ icon: Icon, title, value, onChange }: { icon: LucideIcon; title: string; value: number | undefined; onChange: (v: number) => void }) {
+  const [dragging, setDragging] = useState<number | null>(null);
+  const shown = dragging ?? value ?? 0;
+  const commit = () => {
+    if (dragging !== null && dragging !== value) onChange(dragging);
+    setDragging(null);
+  };
+  return (
+    <label className="fraction" title={title}>
+      <Icon size={16} className="label-icon" />
+      <input
+        type="range"
+        min={0}
+        max={1}
+        step={0.05}
+        value={shown}
+        onChange={(e) => setDragging(Number(e.target.value))}
+        onPointerUp={commit}
+        onKeyUp={commit}
+        onBlur={commit}
+      />
+      <span className="value">{value === undefined && dragging === null ? "–" : shown.toFixed(2)}</span>
+    </label>
   );
 }
 

@@ -45,6 +45,8 @@ type Footprinted = {
   rotation: number; // degrees, 0..360
   color: ShapeColor;
   wall?: number; // rooms only: the walls' thickness, grown inward from the footprint; none = DEFAULT_WALL
+  taper?: number; // volumes only: 0..1, how much the top shrinks toward the center (1 = a point); none = 0
+  bevel?: number; // volumes only: 0..1, how round the top edge is (1 = as round as it fits); none = 0
   createdBy: Actor;
 };
 
@@ -81,6 +83,8 @@ export type Freeform = {
   height: number;
   color: ShapeColor;
   wall?: number; // rooms only, as a box's
+  taper?: number; // volumes only, as a box's (toward the outline's centroid)
+  bevel?: number; // volumes only, as a box's
   points: FootPoint[];
   createdBy: Actor;
 };
@@ -135,10 +139,11 @@ export type Group = {
 export type SceneNode = Shape | Group;
 
 /**
- * The shape fields an edit can change. `wall` is for rooms (undefined = the default), `sides` for cylinders
+ * The shape fields an edit can change. `wall` is for rooms (undefined = the default), `taper` and `bevel` for
+ * volumes (undefined = 0), `sides` for cylinders
  * (undefined = smooth), `points` for free-forms and lines, `thickness`, `dashed` and `arrow` for lines.
  */
-export type ShapePatch = Partial<Pick<Footprinted, "name" | "kind" | "x" | "z" | "y" | "width" | "depth" | "height" | "rotation" | "color" | "wall">> & {
+export type ShapePatch = Partial<Pick<Footprinted, "name" | "kind" | "x" | "z" | "y" | "width" | "depth" | "height" | "rotation" | "color" | "wall" | "taper" | "bevel">> & {
   sides?: number;
   points?: FootPoint[] | LinePoint[];
   thickness?: number;
@@ -191,6 +196,12 @@ export const DEFAULT_HEIGHT: Record<ShapeKind, number> = { room: 3, volume: 0.25
  */
 export const DEFAULT_WALL = 0.2;
 export const MIN_WALL = 0.05;
+/**
+ * Which kinds each kind-specific field is for: a room's walls, a volume's taper and bevel. Changing a shape's kind
+ * drops the fields its new kind doesn't have.
+ */
+export const KIND_FIELDS = { wall: ["room"], taper: ["volume"], bevel: ["volume"] } as const satisfies Record<string, readonly ShapeKind[]>;
+export type KindField = keyof typeof KIND_FIELDS;
 /** A cylinder's side count, when it has one; without, it's smooth. */
 export const MIN_SIDES = 3;
 export const MAX_SIDES = 64;
@@ -235,6 +246,8 @@ const field = {
     .number()
     .min(MIN_WALL)
     .describe(`Rooms only: the walls' thickness in meters (>= ${MIN_WALL}, default ${DEFAULT_WALL}), grown inward from the footprint`),
+  taper: z.number().min(0).max(1).describe("Volumes only: 0 (straight sides, the default) to 1 (the top comes to a point, a pyramid or cone)"),
+  bevel: z.number().min(0).max(1).describe("Volumes only: 0 (a sharp top edge, the default) to 1 (the top edge as round as it fits, a dome)"),
 };
 
 const ActorSchema = z.enum(["human", "agent"]);
@@ -253,6 +266,8 @@ const footprinted = {
   rotation: z.number(),
   color: ShapeColorSchema,
   wall: z.number().min(MIN_WALL).optional(),
+  taper: z.number().min(0).max(1).optional(),
+  bevel: z.number().min(0).max(1).optional(),
   createdBy: ActorSchema,
 };
 const OffsetSchema = z.object({ x: z.number(), z: z.number() });
@@ -272,6 +287,8 @@ const FreeformSchema = z.object({
   height: z.number().min(MIN_HEIGHT),
   color: ShapeColorSchema,
   wall: z.number().min(MIN_WALL).optional(),
+  taper: z.number().min(0).max(1).optional(),
+  bevel: z.number().min(0).max(1).optional(),
   points: z.array(FootPointSchema).min(MIN_POINTS).max(MAX_POINTS),
   createdBy: ActorSchema,
 });
@@ -313,6 +330,8 @@ export const BoxInputSchema = z.strictObject({
   rotation: field.rotation.optional().describe("Degrees, counterclockwise seen from above. Defaults to 0 (grid-aligned)"),
   color: field.color.optional().describe(`Palette key: ${SHAPE_COLORS.join(", ")}. Defaults to ${DEFAULT_COLOR}`),
   wall: field.wall.optional(),
+  taper: field.taper.optional(),
+  bevel: field.bevel.optional(),
   name: field.name.optional(),
   parent: field.parent.optional().describe("ID of the group to put it in, e.g. group_1. Omit for the top level"),
 });
@@ -339,6 +358,8 @@ export const FreeformInputSchema = z.strictObject({
   y: BoxInputSchema.shape.y,
   color: BoxInputSchema.shape.color,
   wall: BoxInputSchema.shape.wall,
+  taper: BoxInputSchema.shape.taper,
+  bevel: BoxInputSchema.shape.bevel,
   name: field.name.optional(),
   parent: BoxInputSchema.shape.parent,
 });
@@ -408,6 +429,8 @@ export const NodeUpdateSchema = z.strictObject({
     .nullable()
     .optional()
     .describe(`Rooms only: the walls' thickness in meters (>= ${MIN_WALL}), or null for the default ${DEFAULT_WALL}`),
+  taper: field.taper.optional(),
+  bevel: field.bevel.optional(),
   points: z
     .array(
       z.strictObject({

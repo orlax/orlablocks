@@ -1,5 +1,5 @@
 import { ShapeUtils, Vector2 } from "three";
-import { fromShapeLocal, localFootprint, pointInPolygon, roomWalls, shapeFrame, signedArea2, type Point } from "./geometry";
+import { fromShapeLocal, isFootprinted, localFootprint, pointInPolygon, roomWalls, shapeFrame, signedArea2, type Point } from "./geometry";
 import type { ClosedShape } from "./scene.types";
 
 /**
@@ -76,6 +76,127 @@ export function prism(rings: Point[][], y0: number, y1: number): Mesh | null {
   return { positions, indices };
 }
 
+/** Whether a triangle's normal points up (+y): it's clockwise in x/z, since with y up x × z points down. */
+const facesUp = (a: Point, b: Point, c: Point) => signedArea2([a, b, c]) < 0;
+
+/**
+ * Rings with the same number of points stacked from the bottom up, point i of each above point i of the one below,
+ * stitched with a quad per edge and capped at the bottom and the top. A ring can shrink to a line or a point (a
+ * ridge, the tip of a cone): its points in the same place are welded into one vertex, the triangles that vanish are
+ * dropped and a flat ring gets no cap, so the mesh stays watertight. All rings are read in the bottom ring's
+ * winding.
+ */
+export function loft(stack: { ring: Point[]; y: number }[]): Mesh | null {
+  const base = stack[0].ring;
+  const area = signedArea2(base);
+  if (base.length < 3 || Math.abs(area) < 1e-12) return null;
+  // Counterclockwise in x/z, so the solid is on the left of each edge (as in `prism`).
+  const rings = stack.map(({ ring, y }) => ({ ring: area > 0 ? ring : [...ring].reverse(), y }));
+  const positions: number[] = [];
+  const indices: number[] = [];
+  const levels = rings.map(({ ring, y }) => {
+    const welded = new Map<string, number>();
+    return ring.map((p) => {
+      const key = `${Math.round(p.x * 1e7)},${Math.round(p.z * 1e7)}`;
+      let i = welded.get(key);
+      if (i === undefined) {
+        i = positions.length / 3;
+        positions.push(p.x, y, p.z);
+        welded.set(key, i);
+      }
+      return i;
+    });
+  });
+  const tri = (a: number, b: number, c: number) => {
+    if (a !== b && b !== c && a !== c) indices.push(a, b, c);
+  };
+  const n = base.length;
+  for (let k = 0; k + 1 < levels.length; k++) {
+    const [lo, hi] = [levels[k], levels[k + 1]];
+    for (let i = 0; i < n; i++) {
+      const j = (i + 1) % n;
+      tri(lo[i], hi[i], hi[j]);
+      tri(lo[i], hi[j], lo[j]);
+    }
+  }
+  const capOf = (ring: Point[], idx: number[], up: boolean) => {
+    if (Math.abs(signedArea2(ring)) < 1e-9) return;
+    for (const [a, b, c] of ShapeUtils.triangulateShape(ring.map((p) => new Vector2(p.x, p.z)), [])) {
+      const ok = facesUp(ring[a], ring[b], ring[c]) === up;
+      if (ok) tri(idx[a], idx[b], idx[c]);
+      else tri(idx[a], idx[c], idx[b]);
+    }
+  };
+  capOf(rings[0].ring, levels[0], false);
+  capOf(rings.at(-1)!.ring, levels.at(-1)!, true);
+  return { positions, indices };
+}
+
+/** How many rings round a bevel's quarter circle. */
+export const BEVEL_SEGMENTS = 8;
+
+/** A polygon's area centroid on the ground. */
+export function centroid(poly: Point[]): Point {
+  let [a, cx, cz] = [0, 0, 0];
+  for (let i = 0; i < poly.length; i++) {
+    const p = poly[i];
+    const q = poly[(i + 1) % poly.length];
+    const f = p.x * q.z - q.x * p.z;
+    a += f;
+    cx += (p.x + q.x) * f;
+    cz += (p.z + q.z) * f;
+  }
+  return Math.abs(a) < 1e-12 ? poly[0] : { x: cx / (3 * a), z: cz / (3 * a) };
+}
+
+/**
+ * The rings a volume is built from, from 0 up to its height, in its own frame. Without a taper or a bevel it's the
+ * footprint at the bottom and the top. `taper` (0..1) scales the outline toward its center linearly up the height,
+ * to 1 − taper at the top (1 = a point). `bevel` (0..1) rounds the top edge along a quarter circle of radius
+ * bevel × min(height, the top's half smallest extent), in BEVEL_SEGMENTS rings.
+ * - A box or cylinder shrinks by the same distance on its width and depth: a true inset, so the rounding is even.
+ * - A free-form scales toward its outline's area centroid (a true inset of a concave outline would change its
+ *   point count): the inset is read as a fraction of the outline's half smallest extent.
+ */
+export function volumeRings(shape: ClosedShape): { ring: Point[]; y: number }[] {
+  const base = localFootprint(shape);
+  const h = shape.height;
+  const taper = shape.taper ?? 0;
+  const bevel = shape.bevel ?? 0;
+  if (taper === 0 && bevel === 0) return [{ ring: base, y: 0 }, { ring: base, y: h }];
+  // `ringAt(k, e)`: the outline scaled by k toward its center, then inset by e meters.
+  let half: number;
+  let ringAt: (k: number, e: number) => Point[];
+  if (isFootprinted(shape)) {
+    half = Math.min(shape.width, shape.depth) / 2;
+    ringAt = (k, e) =>
+      localFootprint({ ...shape, width: Math.max(0, k * shape.width - 2 * e), depth: Math.max(0, k * shape.depth - 2 * e) });
+  } else {
+    const c = centroid(base);
+    const xs = base.map((p) => p.x);
+    const zs = base.map((p) => p.z);
+    half = Math.min(Math.max(...xs) - Math.min(...xs), Math.max(...zs) - Math.min(...zs)) / 2;
+    ringAt = (k, e) => {
+      const s = Math.max(0, k - e / half);
+      return base.map((p) => ({ x: c.x + (p.x - c.x) * s, z: c.z + (p.z - c.z) * s }));
+    };
+  }
+  const scale = (y: number) => 1 - (taper * y) / h;
+  const r = bevel * Math.min(h, scale(h) * half);
+  const stack = [{ ring: base, y: 0 }];
+  if (r < 1e-6) stack.push({ ring: ringAt(scale(h), 0), y: h });
+  else {
+    for (let j = 0; j <= BEVEL_SEGMENTS; j++) {
+      const a = (j / BEVEL_SEGMENTS) * (Math.PI / 2);
+      const y = h - r + r * Math.sin(a);
+      // The bevel's first ring is where the straight side ends; when the bevel takes the whole height it's the bottom.
+      if (j === 0 && y < 1e-6) continue;
+      stack.push({ ring: ringAt(scale(y), r * (1 - Math.cos(a))), y });
+    }
+  }
+  return stack;
+}
+
 /**
  * A flat region at height y (a room's floor, for picking): a prism with no height. Its sides are empty triangles
  * and its bottom repeats its top, which a ray test and the marquee don't mind.
@@ -93,7 +214,8 @@ export type ShapeParts = {
 const partsCache = new WeakMap<ClosedShape, ShapeParts>();
 
 /**
- * A closed shape's meshes in its own frame: a volume is its footprint extruded to its height; a room is its walls
+ * A closed shape's meshes in its own frame: a volume is its footprint extruded to its height (tapered and beveled,
+ * see `volumeRings`); a room is its walls
  * (see `roomWalls`) plus a floor slab, with no ceiling. An outline with no area (a preview can have one) gives no
  * meshes. Cached per shape object.
  */
@@ -103,7 +225,7 @@ export function shapeMesh(shape: ClosedShape): ShapeParts {
   const outline = localFootprint(shape);
   let parts: ShapeParts;
   if (Math.abs(signedArea2(outline)) < 1e-9) parts = { body: null, floor: null };
-  else if (shape.kind === "volume") parts = { body: prism([outline], 0, shape.height), floor: null };
+  else if (shape.kind === "volume") parts = { body: loft(volumeRings(shape)), floor: null };
   else parts = { body: prism(roomWalls(shape).walls, 0, shape.height), floor: prism([outline], 0, FLOOR_THICKNESS) };
   partsCache.set(shape, parts);
   return parts;
