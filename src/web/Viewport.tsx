@@ -89,7 +89,7 @@ import { typingInField } from "./keys";
 import { Lighting } from "./Lighting";
 import { marqueeHits, rectFrom, type ScreenPoint } from "./marquee";
 import { LineMesh } from "./LineMesh";
-import { pickHit, pickLine } from "./pick";
+import { pickHit, pickLine, surfaceUnder, type Surface } from "./pick";
 import {
   handleEnd,
   hitPoints,
@@ -122,6 +122,8 @@ type Pen = {
    */
   owner: "pen" | "line" | "ramp" | null;
   points: EditPoint[];
+  /** The Pen's plane: the height of the surface its first point went on (none = the ground). */
+  y?: number;
   cursor: EditPoint | null;
   closing: boolean;
   drag: { pointerId: number; index: number; sx: number; sy: number } | null;
@@ -329,9 +331,13 @@ export function Viewport({
   const wrap = useRef<HTMLDivElement>(null);
   const yawKeys = useRef(new Set<YawKey>());
   const pan = useRef<{ pointerId: number; grabbed: GroundPoint; sx: number; sy: number } | null>(null);
-  const drawing = useRef<(Draft & { pointerId: number; start: GroundPoint }) | null>(null);
+  // A footprint being drawn stands on the surface where the press was (`y`, 0 = the ground), described by `on`.
+  type OnSurface = { y: number; on: string | null };
+  const drawing = useRef<(Draft & OnSurface & { pointerId: number; start: GroundPoint }) | null>(null);
   const [panning, setPanning] = useState(false);
-  const [draft, setDraft] = useState<(Footprint & Draft & { sx: number; sy: number }) | null>(null);
+  const [draft, setDraft] = useState<(Footprint & Draft & OnSurface & { sx: number; sy: number }) | null>(null);
+  // Where a press would start a shape (a drawing tool, hovering): shown next to the cursor when it's not the ground.
+  const [landing, setLanding] = useState<{ sx: number; sy: number; text: string } | null>(null);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [pen, setPen] = useState<Pen>(NO_PEN);
   // The key listener is installed once; it reads the Pen from here.
@@ -437,11 +443,24 @@ export function Viewport({
     return { sx: e.clientX - r.left, sy: e.clientY - r.top, size: { width: r.width, height: r.height } };
   };
 
-  /** Ground point under the pointer, snapped to 0.5 m unless Cmd/Ctrl is held. */
-  const groundAt = (e: PointerEvent) => {
+  /** The flat surface under the pointer that a new box, cylinder or free-form would stand on (null: the ground). */
+  const surfaceFor = (sx: number, sy: number, size: Size) => surfaceUnder(screenRay(cam.current, size, sx, sy), pickable);
+  /** The point under the pointer on the level plane at height `y`, snapped to 0.5 m unless Cmd/Ctrl is held. */
+  const planeAt = (e: PointerEvent, y: number) => {
     const { sx, sy, size } = local(e);
-    const g = screenToGround(cam.current, size, sx, sy);
-    return { sx, sy, point: noSnap(e) ? g : { x: snap(g.x), z: snap(g.z) } };
+    const g = screenToPlane(cam.current, size, sx, sy, y);
+    return { sx, sy, point: noSnap(e) ? { x: g.x, z: g.z } : { x: snap(g.x), z: snap(g.z) } };
+  };
+  /** Where a new shape lands, for the labels: `on hall's floor · y 3`, or null for the ground. */
+  const surfaceText = (surface: Surface | null) => {
+    if (!surface) return null;
+    const n = nodes.find((b) => b.id === surface.id);
+    return `on ${n?.name ?? surface.id}'s ${surface.what} · y ${round2(surface.y)}`;
+  };
+  /** While hovering in a drawing tool: shows where a press would start a shape, when that's not the ground. */
+  const showLanding = (sx: number, sy: number, size: Size) => {
+    const text = surfaceText(surfaceFor(sx, sy, size));
+    setLanding(text ? { sx, sy, text } : null);
   };
 
   /**
@@ -480,6 +499,7 @@ export function Viewport({
   // survives the hand (Space to pan while drawing) and is dropped by any other tool.
   useEffect(() => {
     cancelDrawing();
+    setLanding(null);
     setDrag(null);
     setPointDrag(null);
     setMarquee(null);
@@ -543,8 +563,17 @@ export function Viewport({
     const p = hit ? hit.point : { ...screenToGround(cam.current, size, sx, sy), y: 0 };
     return noSnap(e) ? { x: p.x, y: round2(p.y), z: p.z } : { x: snap(p.x), y: round2(p.y), z: snap(p.z) };
   };
-  /** Where the tool puts its next point: the ground (the Pen) or the surface under the cursor (the Line tool). */
-  const placeAt = (e: PointerEvent): EditPoint => (tool === "line" || tool === "ramp" ? surfaceAt(e) : groundAt(e).point);
+  /** The Pen's plane: its first point's (once placed), else the surface under the cursor's. */
+  const penY = (e: PointerEvent) => {
+    if (pen.owner === "pen" && pen.points.length > 0) return pen.y ?? 0;
+    const { sx, sy, size } = local(e);
+    return surfaceFor(sx, sy, size)?.y ?? 0;
+  };
+  /**
+   * Where the tool puts its next point: the surface under the cursor (the Line and Ramp tools), or the Pen's plane
+   * (the surface its first point went on).
+   */
+  const placeAt = (e: PointerEvent): EditPoint => (tool === "line" || tool === "ramp" ? surfaceAt(e) : planeAt(e, penY(e)).point);
 
   /**
    * Finishes what the Pen or the Line tool drew (rounded to 2 decimals): the Pen's outline as a free-form, the
@@ -582,7 +611,7 @@ export function Viewport({
       onNotice(`Can't close: ${problem}`);
       return;
     }
-    onDrawShape({ type: "freeform", kind: nextKind, ...fieldsFor(nextKind, nextFields), points: rounded });
+    onDrawShape({ type: "freeform", kind: nextKind, ...fieldsFor(nextKind, nextFields), ...(p.y ? { y: round2(p.y) } : {}), points: rounded });
     setPen(NO_PEN);
   };
   const finishPenRef = useRef(finishPen);
@@ -600,12 +629,14 @@ export function Viewport({
       return;
     }
     e.currentTarget.setPointerCapture(e.pointerId);
+    const y = tool === "pen" ? (points.length > 0 ? own.y : penY(e)) : undefined;
     const point = placeAt(e);
+    setLanding(null);
     const last = points.at(-1);
     // A second press in the same place (a double-click) adds nothing, but can still pull out the handles.
     const same = last && last.x === point.x && last.z === point.z;
     const next = same ? points : [...points, point];
-    setPen({ ...own, points: next, drag: { pointerId: e.pointerId, index: next.length - 1, sx, sy } });
+    setPen({ ...own, ...(y ? { y } : {}), points: next, drag: { pointerId: e.pointerId, index: next.length - 1, sx, sy } });
   };
 
   /** The Pen as the cursor moves: pulling out the pressed point's handles, or showing where the next point goes. */
@@ -617,7 +648,7 @@ export function Viewport({
       // Handles aren't snapped: the out handle follows the cursor (on the plane at the point's height) and the in
       // handle mirrors it. A line's handles are 3D, flat to start with.
       const p = pen.points[d.index];
-      const g = screenToPlane(cam.current, size, sx, sy, p.y ?? 0);
+      const g = screenToPlane(cam.current, size, sx, sy, p.y ?? pen.y ?? 0);
       const flat = p.y !== undefined ? { y: 0 } : {};
       const out = { x: g.x - p.x, ...flat, z: g.z - p.z };
       const points = pen.points.map((q, i) => (i === d.index ? { ...q, in: { x: -out.x, ...flat, z: -out.z }, out } : q));
@@ -627,6 +658,8 @@ export function Viewport({
     const first = pen.points[0] && onScreen(pen.points[0]);
     const closing = tool === "pen" && pen.points.length >= 3 && !!first && Math.hypot(first.sx - sx, first.sy - sy) <= CLOSE_PX;
     setPen({ ...pen, owner: pen.owner ?? (tool as PointTool), cursor: closing ? { ...pen.points[0] } : placeAt(e), closing });
+    if (tool === "pen" && pen.points.length === 0) showLanding(sx, sy, size);
+    else setLanding(null);
   };
 
   /** What's wrong with edited points (a free-form's outline, a line's or a ramp's path), or null. */
@@ -797,15 +830,19 @@ export function Viewport({
       pan.current = { pointerId: e.pointerId, grabbed, sx, sy };
       setPanning(true);
     } else {
-      const { point } = groundAt(e);
+      const surface = surfaceFor(sx, sy, size);
+      const y = surface?.y ?? 0;
+      const { point } = planeAt(e, y);
+      const on = surfaceText(surface);
+      setLanding(null);
       const shape: Draft = {
         type: draws!,
         kind: nextKind,
         ...(draws === "cylinder" && nextSides !== undefined ? { sides: nextSides } : {}),
         ...fieldsFor(nextKind, nextFields),
       };
-      drawing.current = { pointerId: e.pointerId, ...shape, start: point };
-      setDraft({ ...shape, ...point, width: 0, depth: 0, sx, sy });
+      drawing.current = { pointerId: e.pointerId, ...shape, start: point, y, on };
+      setDraft({ ...shape, ...point, width: 0, depth: 0, sx, sy, y, on });
     }
   };
 
@@ -850,10 +887,11 @@ export function Viewport({
     }
     const d = drawing.current;
     if (d?.pointerId === e.pointerId) {
-      const { point } = groundAt(e);
-      setDraft({ type: d.type, kind: d.kind, sides: d.sides, ...footprintFrom(d.start, point, e.shiftKey, e.altKey), sx, sy });
+      const { point } = planeAt(e, d.y);
+      setDraft({ ...d, ...footprintFrom(d.start, point, e.shiftKey, e.altKey), sx, sy });
       return;
     }
+    if (DRAWS[tool]) showLanding(sx, sy, size);
     // Just hovering: in point editing, what a press would grab (for the cursor); otherwise highlight the gizmo
     // handle, or in the Select tool the box that a press would grab.
     if (editShape && tool === "select") {
@@ -921,13 +959,14 @@ export function Viewport({
     }
     const d = drawing.current;
     if (d?.pointerId === e.pointerId) {
-      const f = footprintFrom(d.start, groundAt(e).point, e.shiftKey, e.altKey);
+      const f = footprintFrom(d.start, planeAt(e, d.y).point, e.shiftKey, e.altKey);
       if (round2(f.width) > 0 && round2(f.depth) > 0) {
         onDrawShape({
           type: d.type,
           ...(d.sides !== undefined ? { sides: d.sides } : {}),
           ...fieldsFor(d.kind, d),
           kind: d.kind,
+          ...(d.y !== 0 ? { y: round2(d.y) } : {}),
           x: round2(f.x),
           z: round2(f.z),
           width: round2(f.width),
@@ -1124,6 +1163,7 @@ export function Viewport({
       onContextMenu={(e) => e.preventDefault()}
       onPointerLeave={() => {
         onCursor(null);
+        setLanding(null);
         setHoveredId(null);
         setHotPart(null);
       }}
@@ -1181,11 +1221,16 @@ export function Viewport({
       </ErrorBoundary>
       {draft && (draft.width > 0 || draft.depth > 0) && (
         <div className="draft-label" style={{ left: draft.sx + 14, top: draft.sy + 14 }}>
-          {round2(draft.width)} × {round2(draft.depth)} m
+          {round2(draft.width)} × {round2(draft.depth)} m{draft.on ? ` · ${draft.on}` : ""}
+        </div>
+      )}
+      {landing && !draft && (
+        <div className="draft-label" style={{ left: landing.sx + 14, top: landing.sy + 14 }}>
+          {landing.text}
         </div>
       )}
       {pen.points.length > 0 && pen.cursor && (
-        <PenLabel pen={pen} at={onScreen(pen.cursor)} />
+        <PenLabel pen={pen} at={onScreen({ ...pen.cursor, y: pen.cursor.y ?? pen.y })} />
       )}
       <button
         type="button"
@@ -1251,7 +1296,7 @@ function Boxes({
   cuts: Map<string, ClosedShape[]>;
   /** Whether holes show as ghosts; hidden ones still show while selected or hovered. */
   showHoles: boolean;
-  draft: (Footprint & Draft) | null;
+  draft: (Footprint & Draft & { y: number }) | null;
   /** Shape IDs to highlight: in the selection (or in a selected group), and under the cursor. */
   selected: Set<string>;
   hovered: Set<string>;
@@ -1283,7 +1328,7 @@ function Boxes({
             z: draft.z,
             width: draft.width,
             depth: draft.depth,
-            y: 0,
+            y: draft.y,
             height: DEFAULT_HEIGHT[draft.kind],
             rotation: 0,
             color: DEFAULT_COLOR,
@@ -1346,9 +1391,11 @@ function PenLabel({ pen, at }: { pen: Pen; at: { sx: number; sy: number } | null
         : n >= 3
           ? `${n} points · Enter to close`
           : count;
+  const on = pen.owner === "pen" && pen.y ? ` · y ${round2(pen.y)}` : "";
   return (
     <div className="draft-label" style={{ left: at.sx + 14, top: at.sy + 14 }}>
       {text}
+      {on}
     </div>
   );
 }
@@ -1363,14 +1410,16 @@ function PenPreview({ pen, kind, fields, line, ramp }: { pen: Pen; kind: ShapeKi
   const path = penPath(pen);
   const open = pen.owner === "line" || pen.owner === "ramp";
   const bad = !open && pathCrosses(path, pen.closing);
-  const key = JSON.stringify([path, pen.closing]);
+  // The Pen's points are flat: they're drawn just above its plane (the surface its first point went on).
+  const lift = (pen.y ?? 0) + PEN_Y;
+  const key = JSON.stringify([path, pen.closing, lift]);
 
   const { lines, dots, handleDots } = useMemo(() => {
     const segments: number[] = [];
     const add = (a: Point3, b: Point3) => segments.push(a.x, a.y, a.z, b.x, b.y, b.z);
     const edges = pen.closing ? path.length : path.length - 1;
     for (let i = 0; i < edges; i++) {
-      const samples = edgePoints(path[i], path[(i + 1) % path.length], PEN_Y);
+      const samples = edgePoints(path[i], path[(i + 1) % path.length], lift);
       for (let k = 0; k + 1 < samples.length; k++) add(samples[k], samples[k + 1]);
     }
     const handleEnds: number[] = [];
@@ -1378,15 +1427,15 @@ function PenPreview({ pen, kind, fields, line, ramp }: { pen: Pen; kind: ShapeKi
       for (const side of ["in", "out"] as const) {
         const end = handleEnd(p, side);
         if (!end) continue;
-        const e = at3(end, PEN_Y);
-        add(at3(p, PEN_Y), e);
+        const e = at3(end, lift);
+        add(at3(p, lift), e);
         handleEnds.push(e.x, e.y, e.z);
       }
     }
     const geometry = (values: number[]) => new THREE.BufferGeometry().setAttribute("position", new THREE.Float32BufferAttribute(values, 3));
     return {
       lines: geometry(segments),
-      dots: geometry(pen.points.flatMap((p) => [p.x, p.y ?? PEN_Y, p.z])),
+      dots: geometry(pen.points.flatMap((p) => [p.x, p.y ?? lift, p.z])),
       handleDots: geometry(handleEnds),
     };
   }, [key]);
@@ -1418,7 +1467,7 @@ function PenPreview({ pen, kind, fields, line, ramp }: { pen: Pen; kind: ShapeKi
             kind,
             // The drawing tools never tilt (the next shape's fields are a wall, a taper and a bevel).
             ...(fieldsFor(kind, fields) as Omit<KindFields, "pitch" | "roll">),
-            y: 0,
+            y: pen.y ?? 0,
             height: DEFAULT_HEIGHT[kind],
             color: DEFAULT_COLOR,
             points: roundPoints(path),
@@ -1443,7 +1492,7 @@ function PenPreview({ pen, kind, fields, line, ramp }: { pen: Pen; kind: ShapeKi
       {pen.closing && first && (
         <points renderOrder={22}>
           <bufferGeometry>
-            <bufferAttribute attach="attributes-position" args={[new Float32Array([first.x, PEN_Y, first.z]), 3]} />
+            <bufferAttribute attach="attributes-position" args={[new Float32Array([first.x, lift, first.z]), 3]} />
           </bufferGeometry>
           <pointsMaterial color={color} size={12} sizeAttenuation={false} depthTest={false} transparent />
         </points>

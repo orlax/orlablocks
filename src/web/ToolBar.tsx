@@ -33,9 +33,9 @@ export const TOOLS: { tool: Tool; label: string; key: string; icon: LucideIcon }
 export const HINTS: Record<Tool, string> = {
   select: `click to select (Shift adds) · drag a box to move it (Alt copies, Alt+J repeats) · ⇧X/⇧Z mirror · drag empty ground to marquee · ${MOD}A all · Space to pan`,
   hand: "drag to pan · scroll to zoom · A/D or ←/→ to rotate",
-  box: `drag to draw · Shift square · Alt from center · ${MOD} no snap · Esc to cancel`,
-  cylinder: `drag to draw · Shift circle · Alt from center · ${MOD} no snap · Esc to cancel`,
-  pen: `click for a corner · drag for a curve · click the first point or Enter to close · ⌫ removes the last point · ${MOD} no snap · Esc to cancel`,
+  box: `drag to draw, on the surface under the cursor (a top, a floor, a wall top, else the ground) · Shift square · Alt from center · ${MOD} no snap · Esc to cancel`,
+  cylinder: `drag to draw, on the surface under the cursor · Shift circle · Alt from center · ${MOD} no snap · Esc to cancel`,
+  pen: `click for a corner (the first one sets the surface it stands on) · drag for a curve · click the first point or Enter to close · ⌫ removes the last point · ${MOD} no snap · Esc to cancel`,
   line: `click to place a point on the surface under the cursor · drag for a curve · double-click or Enter to finish · ⌫ removes the last point · ${MOD} no snap · Esc to cancel`,
   ramp: `click on the floor, then on the top it climbs to (each point on the surface under the cursor) · drag for a curve · double-click or Enter to finish · ⌫ removes the last point · ${MOD} no snap · Esc to cancel`,
 };

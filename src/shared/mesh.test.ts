@@ -217,6 +217,15 @@ describe("ramps", () => {
     ...patch,
   });
 
+  it("builds the same stairs whatever way they point (a length that isn't round reads every riser right)", () => {
+    const aligned = rampMesh(ramp({ step: 0.25 }))!;
+    const turned = rampMesh(ramp({ step: 0.25, points: [{ x: 0.4, y: 0, z: 1.5 }, { x: 5.6, y: 3, z: -1.5 }] }))!;
+    expect(watertight(turned)).toBe(true);
+    expect(turned.indices.length).toBe(aligned.indices.length);
+    // The turned run is 6.0033 long, so its volume is that much bigger.
+    expect(volume(turned) / volume(aligned)).toBeCloseTo(6.0033 / 6, 3);
+  });
+
   it("makes a straight smooth ramp a watertight wedge", () => {
     const m = rampMesh(ramp({}))!;
     expect(watertight(m)).toBe(true);

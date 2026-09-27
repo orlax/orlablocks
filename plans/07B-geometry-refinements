@@ -134,7 +134,7 @@ All three are small knobs in the gizmo's style. Dragging one previews live and s
 - **Only flat surfaces count.** A hit counts only when the face under the cursor points straight up (normal y > 0.99). Tapered sides, bevels, tilted tops and ramp slopes fall through to the next surface below, and in the end to the ground. Holes and lines never count.
 - **The rest of the drag stays on that plane** (`screenToPlane` at the press's y), and the new shape's `y` is that height. The footprint preview and the snap work as on the ground.
 - **The hint says where it'll land,** for example `on box_3's top · y 9.2`, so drawing on a surface is visible, not a surprise.
-- **Alt draws on the ground** whatever is under the cursor, for when a floor shape is in the way.
+- ~~**Alt draws on the ground**~~: dropped when building, because Alt already means "from the center" in the Box and Cylinder tools. A shape drawn on a surface is moved down with the y arrow.
 - **Nothing changes on the server** (the shape just arrives with its `y`).
 
 ## 8. Increments
@@ -266,4 +266,29 @@ Each increment ends with typecheck, the tests, a bundle build and a browser chec
    - Drag the yellow height handle: the bottom stays put.
    - The taper and bevel knobs work on it too.
 5. **Nothing else changed:** move and rotate handles, the tilt rings, and the scale handles on level shapes all work as before.
+
+### 07B.4 — Drawing on surfaces (done; committed with the rotated-stairs fix, browser check with 07B.5–07B.7)
+
+**What changed:**
+- **`surfaceUnder`** (`pick.ts`) finds the flat, upward-facing surface under the cursor: the nearest volume top, room floor or wall top the ray crosses, or none for the ground.
+  - It tests the level planes themselves, not the meshes. A volume's top is its flat last ring, which is smaller with a taper, inset by a bevel, and gone at taper 1. A room's floor is its inside, and its wall top is the walls region.
+  - Tilted shapes, ramps, holes and lines are skipped. Sides and slopes aren't level faces, so the cursor falls through them to whatever is behind.
+- **Box and Cylinder tools:** a press finds the surface, and the drag stays on its level (`planeAt`). The new shape arrives with that `y`, and the draft shows there.
+- **The Pen:** its first point sets the free-form's plane (`Pen.y`). Later points, handles and the preview stay on that level, and the free-form arrives with that `y`.
+- **Labels:**
+  - While hovering in a drawing tool over a surface, a label next to the cursor says where a press would land (`on hall's floor · y 3`).
+  - The draft label adds it (`4 × 3 m · on box_3's top · y 9.2`), and the Pen's label shows `· y 9.2`.
+  - Over the ground, no label shows.
+- **Tool hints** mention the surface. The Alt override was dropped (see §7).
+
+**Verified:**
+- Typecheck, 286 unit tests and the bundle build pass.
+- The new tests find a top, a floor, a wall top, the ground, and a room's floor above another room. A tapered top counts only on its flat part. Tilted shapes, holes and a pointed top are passed through.
+
+**Browser checklist:**
+1. **Box on a box:** with the Box tool, hover over a box volume's top. The label says `on box_N's top · y …`. Drag a box there: it lands on that top, and the draft shows there while dragging.
+2. **Inside and on a room:** inside a room, a new box lands on its floor. On a wall top, it lands at the wall's height.
+3. **Cylinders and slopes:** the Cylinder tool does the same. Over a tapered hill's slope, or a tilted shape, it falls through to the ground (no label).
+4. **The Pen:** its first click on a platform's top keeps every later point, the preview and the free-form at that height, with the label showing `y …`.
+5. **Unchanged:** Line and Ramp work as before, and drawing on empty ground is unchanged.
 

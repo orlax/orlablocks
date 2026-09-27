@@ -1,5 +1,16 @@
 import type { Line, Shape } from "../shared/scene.types";
-import { isSolid, polyline } from "../shared/geometry";
+import {
+  isClosed,
+  isSolid,
+  isTilted,
+  pointInPolygon,
+  pointInRings,
+  polyline,
+  roomWalls,
+  shapeFrame,
+  toShapeLocal,
+  volumeRings,
+} from "../shared/geometry";
 import { hitMesh, type BoundedMesh } from "../shared/mesh";
 import { worldToScreen, type CameraState, type Size, type Vec3 } from "./camera";
 
@@ -110,3 +121,41 @@ export function pickLine(cam: CameraState, size: Size, sx: number, sy: number, s
   }
   return best && { id: best.id, point: best.point };
 }
+
+/** A flat surface a new shape can stand on: a volume's top, a room's floor or the top of its walls. */
+export type Surface = { id: string; y: number; what: "top" | "floor" | "wall top" };
+
+/**
+ * The flat, upward-facing surface under the ray, where the drawing tools start a shape: the nearest volume top,
+ * room floor or wall top the ray crosses, or null for the ground. Only level faces count: a tilted shape, a taper's
+ * or bevel's slope, a ramp and the shapes' sides are passed through to whatever flat surface lies behind them. Holes
+ * and lines are never stood on.
+ */
+export function surfaceUnder(ray: Ray, shapes: Shape[]): Surface | null {
+  const { origin: o, dir: d } = ray;
+  if (d.y >= 0) return null;
+  let best: (Surface & { t: number }) | null = null;
+  const consider = (id: string, y: number, what: Surface["what"], inside: (p: { x: number; z: number }) => boolean, frame: { x: number; z: number; rotation: number }) => {
+    const t = (y - o.y) / d.y;
+    if (t < 0 || (best && t >= best.t)) return;
+    const p = toShapeLocal(frame, { x: o.x + d.x * t, z: o.z + d.z * t });
+    if (inside(p)) best = { id, y, what, t };
+  };
+  for (const s of shapes) {
+    if (!isClosed(s) || s.kind === "hole" || isTilted(s)) continue;
+    const frame = shapeFrame(s);
+    if (s.kind === "room") {
+      const { inner, walls } = roomWalls(s);
+      consider(s.id, s.y, "floor", (p) => pointInRings(inner, p), frame);
+      consider(s.id, s.y + s.height, "wall top", (p) => pointInRings(walls, p), frame);
+    } else {
+      // The flat part of the top: the last ring (smaller with a taper, inset by a bevel; none once it's a point).
+      const top = volumeRings(s).at(-1)!.ring;
+      consider(s.id, s.y + s.height, "top", (p) => pointInPolygon(top, p), frame);
+    }
+  }
+  // (`best` is only assigned in the closure, so TypeScript can't see it change.)
+  const found = best as (Surface & { t: number }) | null;
+  return found && { id: found.id, y: found.y, what: found.what };
+}
+

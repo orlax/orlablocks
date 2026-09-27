@@ -166,7 +166,8 @@ export function rampMesh(ramp: Ramp): Mesh | null {
   const risers: number[] = [];
   const topAt = (s: number, side: -1 | 1): number => {
     let i = 0;
-    while (i + 2 < pts.length && (side < 0 ? edgeS[i + 1] < s : edgeS[i + 1] <= s)) i++;
+    // Tolerances well above the rounding of `cuts` (1e-7), so a riser or a point is never read as the wrong side.
+    while (i + 2 < pts.length && (side < 0 ? edgeS[i + 1] < s - 1e-6 : edgeS[i + 1] <= s + 1e-6)) i++;
     const [y0, y1] = [pts[i].y, pts[i + 1].y];
     const rise = y1 - y0;
     if (ramp.step === undefined || Math.abs(rise) < 1e-9) return smoothAt(s);
@@ -174,7 +175,7 @@ export function rampMesh(ramp: Ramp): Mesh | null {
     const len = edgeS[i + 1] - edgeS[i];
     const f = len > 0 ? (s - edgeS[i]) / len : 0;
     // Which tread s is on, seen from the side asked for (a riser belongs to both).
-    let k = Math.floor(f * n + (side < 0 ? -1e-9 : 1e-9));
+    let k = Math.floor(f * n + (side < 0 ? -1e-6 : 1e-6));
     k = Math.max(0, Math.min(n - 1, k));
     return rise > 0 ? y0 + (rise * (k + 1)) / n : y0 + (rise * k) / n;
   };

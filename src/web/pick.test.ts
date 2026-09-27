@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Box, Freeform } from "../shared/scene.types";
 import { DEFAULT_CAMERA, heightOnVertical, screenRay, worldToScreen, type CameraState, type Vec3 } from "./camera";
 import { hitMesh, prism } from "../shared/mesh";
-import { pickHit, pickLine, pickShape, rayMesh } from "./pick";
+import { pickHit, pickLine, pickShape, rayMesh, surfaceUnder } from "./pick";
 
 const size = { width: 1200, height: 800 };
 const cam: CameraState = { ...DEFAULT_CAMERA, yaw: 30, distance: 60 };
@@ -185,3 +185,28 @@ describe("pickLine", () => {
     expect(pickLine(cam, size, s.sx, s.sy + 40, [line])).toBeNull();
   });
 });
+
+describe("surfaceUnder", () => {
+  it("finds a volume's top, a room's floor and its wall tops, else the ground", () => {
+    expect(surfaceUnder(rayAt({ x: 5, y: 1, z: 4 }), [room, volume])).toEqual({ id: "volume_1", y: 1, what: "top" });
+    expect(surfaceUnder(rayAt({ x: 1.5, y: 0, z: 6.5 }), [room, volume])).toEqual({ id: "room_1", y: 0, what: "floor" });
+    expect(surfaceUnder(rayAt({ x: 9.9, y: 3, z: 4 }), [room, volume])).toEqual({ id: "room_1", y: 3, what: "wall top" });
+    expect(surfaceUnder(rayAt({ x: 30, y: 0, z: 30 }), [room, volume])).toBeNull();
+  });
+
+  it("stands on the nearest level face: a box's top above the floor it sits on", () => {
+    const upper: Box = { ...room, id: "room_2", y: 3 };
+    expect(surfaceUnder(rayAt({ x: 1.5, y: 3, z: 6.5 }), [room, upper])).toEqual({ id: "room_2", y: 3, what: "floor" });
+  });
+
+  it("only counts the flat part of a tapered or beveled top, and passes through slopes, tilts and holes", () => {
+    const hill: Box = { ...volume, width: 4, depth: 4, height: 2, taper: 0.5 };
+    // The top is 2 × 2 around the center: aiming at its middle hits it, at the slope near the base doesn't.
+    expect(surfaceUnder(rayAt({ x: 5, y: 2, z: 4 }), [hill])?.what).toBe("top");
+    expect(surfaceUnder(rayAt({ x: 6.8, y: 0.2, z: 4 }), [hill])).toBeNull();
+    expect(surfaceUnder(rayAt({ x: 5, y: 1, z: 4 }), [{ ...volume, pitch: 20 }])).toBeNull();
+    expect(surfaceUnder(rayAt({ x: 5, y: 1, z: 4 }), [{ ...volume, kind: "hole" }])).toBeNull();
+    expect(surfaceUnder(rayAt({ x: 5, y: 1, z: 4 }), [{ ...volume, taper: 1 }])).toBeNull();
+  });
+});
+
