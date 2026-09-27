@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ComponentProps } from "react";
 import { ChevronDown, Eye, EyeOff, Map as MapIcon } from "lucide-react";
 import {
   DEFAULT_COLOR,
@@ -16,6 +16,7 @@ import {
   type Shape,
   type ShapeColor,
   type ShapeKind,
+  type ShapePatch,
   type SceneNode,
   type View,
 } from "../shared/scene.types";
@@ -25,6 +26,7 @@ import type { CameraState, GroundPoint } from "./camera";
 import { clipboardText, readClipboard } from "./clipboard";
 import { ErrorPanel } from "./ErrorPanel";
 import { reportError } from "./errors";
+import { Inspector, type InspectorProps } from "./Inspector";
 import { highlightedText, typingInField } from "./keys";
 import { Outliner } from "./Outliner";
 import { ProjectPicker } from "./ProjectPicker";
@@ -55,18 +57,18 @@ const copiedRoots = (added: SceneNode[]) => {
 const title = (n: SceneNode) => (n.name ? `${n.name} (${n.id})` : n.id);
 
 /**
- * `lobby (box_3) · 6 × 4 × 3 m · wall 0.2 · y 0 · 0°` (a room's wall thickness, or a volume's taper and bevel:
- * `hill (cylinder_2) · 20 × 20 × 8 m · smooth · taper 0.6 · bevel 0.5 · y 0 · 0°`), a cylinder's sides:
- * `tower (cylinder_1) · 8 × 8 × 3 m · 8 sides · y 0 · 0°`, a free-form's points and bounds:
- * `cave (freeform_1) · 7 points · 12.3 × 8 × 3 m · y 0`, and a line's points, length and style:
- * `route (line_1) · 3 points · 14.2 m long · 3 px · dashed · arrow at the end`.
+ * A shape's numbers, for the inspector (its title is the header): `6 × 4 × 3 m · wall 0.2 · y 0 · 0°` (a room's
+ * wall thickness, or a volume's taper and bevel: `20 × 20 × 8 m · smooth · taper 0.6 · bevel 0.5 · y 0 · 0°`), a
+ * cylinder's sides: `8 × 8 × 3 m · 8 sides · y 0 · 0°`, a free-form's points and bounds:
+ * `7 points · 12.3 × 8 × 3 m · y 0`, and a line's points, length and style:
+ * `3 points · 14.2 m long · 3 px · dashed · arrow at the end`.
  */
-const describe = (s: Shape) => {
+const details = (s: Shape) => {
   if (s.type === "line") {
     const path = polyline(s);
     const length = path.slice(1).reduce((sum, p, i) => sum + Math.hypot(p.x - path[i].x, p.y - path[i].y, p.z - path[i].z), 0);
     const arrow = s.arrow === "end" ? " · arrow at the end" : s.arrow === "both" ? " · arrows at both ends" : "";
-    return `${title(s)} · ${s.points.length} points · ${round2(length)} m long · ${s.thickness} px${s.dashed ? " · dashed" : ""}${arrow}`;
+    return `${s.points.length} points · ${round2(length)} m long · ${s.thickness} px${s.dashed ? " · dashed" : ""}${arrow}`;
   }
   if (s.type === "ramp") {
     const stations = rampStations(s);
@@ -74,7 +76,7 @@ const describe = (s: Shape) => {
     const rise = round2(Math.max(...ys) - Math.min(...ys));
     const steps = s.step === undefined ? 0 : s.points.slice(1).reduce((n, p, i) => n + (p.y === s.points[i].y ? 0 : Math.max(1, Math.round(Math.abs(p.y - s.points[i].y) / s.step!))), 0);
     const how = s.step === undefined ? "smooth" : `${steps} steps of ${s.step}`;
-    return `${title(s)} · ${s.points.length} points · ${round2(stations.at(-1)!.s)} m long · ${s.width} m wide · rises ${rise} m · ${how} · ${s.base}`;
+    return `${s.points.length} points · ${round2(stations.at(-1)!.s)} m long · ${s.width} m wide · rises ${rise} m · ${how} · ${s.base}`;
   }
   const wall =
     s.kind === "room"
@@ -82,11 +84,11 @@ const describe = (s: Shape) => {
       : `${s.taper !== undefined ? ` · taper ${s.taper}` : ""}${s.bevel !== undefined ? ` · bevel ${s.bevel}` : ""}`;
   if (s.type === "freeform") {
     const b = footprintBounds(s);
-    return `${title(s)} · ${s.points.length} points · ${round2(b.maxX - b.minX)} × ${round2(b.maxZ - b.minZ)} × ${s.height} m${wall} · y ${s.y}`;
+    return `${s.points.length} points · ${round2(b.maxX - b.minX)} × ${round2(b.maxZ - b.minZ)} × ${s.height} m${wall} · y ${s.y}`;
   }
   const sides = s.type === "cylinder" ? (s.sides !== undefined ? ` · ${s.sides} sides` : " · smooth") : "";
   const tilt = `${s.pitch ? ` · pitch ${s.pitch}°` : ""}${s.roll ? ` · roll ${s.roll}°` : ""}`;
-  return `${title(s)} · ${s.width} × ${s.depth} × ${s.height} m${sides}${wall}${tilt} · y ${s.y} · ${s.rotation}°`;
+  return `${s.width} × ${s.depth} × ${s.height} m${sides}${wall}${tilt} · y ${s.y} · ${s.rotation}°`;
 };
 
 export function App() {
@@ -123,6 +125,9 @@ export function App() {
   const [nextRamp, setNextRamp] = useState<RampStyle>({ kind: "volume", width: DEFAULT_RAMP_WIDTH, base: "solid", color: DEFAULT_COLOR });
   // Whether holes show as ghosts (off: only what they cut away shows).
   const [showHoles, setShowHoles] = useState(true);
+  // The inspector's sliders while held: their values on the shapes, before they're sent. Cleared when the next scene
+  // (the sent value) arrives, when the selection changes, and on an error.
+  const [preview, setPreview] = useState<Record<string, ShapePatch> | null>(null);
   // A one-off message in the info-label, in place of the tool hint.
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -163,6 +168,8 @@ export function App() {
     if (editing !== null && (selection.length !== 1 || selection[0] !== editing)) setEditing(null);
   }, [editing, selection]);
   useEffect(() => setEditing(null), [tool]);
+
+  useEffect(() => setPreview(null), [scene, selection, error]);
 
   // Errors from the server go to the error log too, since the dock only shows the latest one until the next scene.
   useEffect(() => {
@@ -349,11 +356,8 @@ export function App() {
   const sharedColor =
     selectedShapes.length > 0 && selectedShapes.every((b) => b.color === selectedShapes[0].color) ? selectedShapes[0].color : null;
   const contextNode = context !== null ? nodes.find((n) => n.id === context) : undefined;
-  const selectionInfo = singleShape
-    ? describe(singleShape)
-    : single
-      ? `${title(single)} · ${selectedShapes.length} shapes`
-      : `${selectedNodes.length} selected`;
+  const selectionTitle = single ? title(single) : `${selectedNodes.length} selected`;
+  const selectionInfo = singleShape ? details(singleShape) : `${selectedShapes.length} shape${selectedShapes.length === 1 ? "" : "s"}`;
   // What Convert to free-form converts: every box and cylinder in the selection (groups included).
   // A tilted shape can't convert (a free-form's outline is on the ground).
   const convertible = selectedShapes.filter((s) => (s.type === "box" || s.type === "cylinder") && !isTilted(s));
@@ -401,6 +405,8 @@ export function App() {
           bevel: sharedOf("bevel"),
           onChange: (patch: { taper?: number; bevel?: number }) =>
             send({ type: "update_nodes", changes: selectedVolumes.map((v) => ({ id: v.id, ...patch })) }),
+          onPreview: (patch: { taper?: number; bevel?: number } | null) =>
+            setPreview(patch && Object.fromEntries(selectedVolumes.map((v) => [v.id, patch]))),
         }
       : undefined;
   // The tilt fields act on every box and cylinder volume or hole in the selection, each around its own center.
@@ -451,9 +457,62 @@ export function App() {
       ? {
           style: { thickness: shared("thickness"), dashed: shared("dashed"), arrow: shared("arrow") },
           onChange: (patch: Partial<LineStyle>) => send({ type: "update_nodes", changes: selectedLines.map((l) => ({ id: l.id, ...patch })) }),
+          onPreview: (patch: { thickness: number } | null) => setPreview(patch && Object.fromEntries(selectedLines.map((l) => [l.id, patch]))),
           onReverse: () => send({ type: "update_nodes", changes: selectedLines.map((l) => ({ id: l.id, points: reversePoints(l.points) })) }),
         }
       : undefined;
+
+  // The contextual bar (kind and colors) and the inspector (every other field): for the drawing tool's next shape,
+  // or for the selection in the Select tool.
+  const nextTitle: Partial<Record<Tool, string>> = { box: "next box", cylinder: "next cylinder", pen: "next free-form", line: "next line", ramp: "next ramp" };
+  const closedTool = tool === "box" || tool === "cylinder" || tool === "pen";
+  const selecting = tool === "select" && selectedNodes.length > 0;
+  const bar: ComponentProps<typeof ContextualBar> | null = closedTool
+    ? { kind: nextKind, onKind: setNextKind, color: nextColor, onColor: setNextColor }
+    : tool === "line"
+      ? { kind: null, color: nextLine.color, onColor: (color) => setNextLine({ ...nextLine, color }) }
+      : tool === "ramp"
+        ? { kind: null, color: nextRamp.color, onColor: (color) => setNextRamp({ ...nextRamp, color }) }
+        : selecting
+          ? {
+              kind: singleClosed?.kind ?? null,
+              kindDisabled: !singleClosed,
+              onKind: !selectedShapes.some(isClosed)
+                ? undefined
+                : (kind) => singleClosed && send({ type: "update_nodes", changes: [{ id: singleClosed.id, kind }] }),
+              color: sharedColor,
+              onColor: (color) => send({ type: "update_nodes", changes: selectedShapes.map((b) => ({ id: b.id, color })) }),
+            }
+          : null;
+  const inspector: InspectorProps | null = closedTool
+    ? {
+        title: nextTitle[tool]!,
+        sides: tool === "cylinder" ? { value: nextSides, onChange: setNextSides } : undefined,
+        wall: nextWallControl,
+        profile: nextProfileControl,
+      }
+    : tool === "line"
+      ? { title: "next line", line: { style: nextLine, onChange: (patch) => setNextLine({ ...nextLine, ...patch }) } }
+      : tool === "ramp"
+        ? { title: "next ramp", ramp: { style: nextRamp, onChange: (patch) => setNextRamp({ ...nextRamp, ...patch }) } }
+        : selecting
+          ? {
+              title: contextNode ? `${contextNode.name ?? contextNode.id} › ${selectionTitle}` : selectionTitle,
+              info: editing && editable ? `editing points · ${selectionInfo}` : selectionInfo,
+              sides:
+                singleShape?.type === "cylinder"
+                  ? { value: singleShape.sides, onChange: (sides) => send({ type: "update_nodes", changes: [{ id: singleShape.id, sides: sides ?? null }] }) }
+                  : undefined,
+              wall: wallControl,
+              profile: profileControl,
+              tilt: tiltControl,
+              line: lineControls,
+              ramp: rampControls,
+              onMirror: (axis) => send({ type: "mirror_nodes", ids: selection, axis }),
+              onConvert: convertible.length > 0 ? convert : undefined,
+              editPoints: editable ? { active: editing === editable.id, onToggle: () => setEditing(editing ? null : editable.id) } : undefined,
+            }
+          : null;
 
   return (
     <div className="app">
@@ -472,6 +531,7 @@ export function App() {
         nextLine={nextLine}
         nextRamp={nextRamp}
         showHoles={showHoles}
+        preview={preview}
         onSelect={setSelection}
         onDrawShape={(shape) =>
           send({
@@ -554,79 +614,7 @@ export function App() {
 
       <div className="dock">
         {error && <div className="error">{error}</div>}
-        {tool === "box" && (
-          <ContextualBar kind={nextKind} onKind={setNextKind} color={nextColor} onColor={setNextColor} wall={nextWallControl} profile={nextProfileControl}>
-            next box
-          </ContextualBar>
-        )}
-        {tool === "pen" && (
-          <ContextualBar kind={nextKind} onKind={setNextKind} color={nextColor} onColor={setNextColor} wall={nextWallControl} profile={nextProfileControl}>
-            next free-form
-          </ContextualBar>
-        )}
-        {tool === "line" && (
-          <ContextualBar
-            kind={null}
-            color={nextLine.color}
-            onColor={(color) => setNextLine({ ...nextLine, color })}
-            line={{ style: nextLine, onChange: (patch) => setNextLine({ ...nextLine, ...patch }) }}
-          >
-            next line
-          </ContextualBar>
-        )}
-        {tool === "ramp" && (
-          <ContextualBar
-            kind={null}
-            color={nextRamp.color}
-            onColor={(color) => setNextRamp({ ...nextRamp, color })}
-            ramp={{ style: nextRamp, onChange: (patch) => setNextRamp({ ...nextRamp, ...patch }) }}
-          >
-            next ramp
-          </ContextualBar>
-        )}
-        {tool === "cylinder" && (
-          <ContextualBar
-            kind={nextKind}
-            onKind={setNextKind}
-            color={nextColor}
-            onColor={setNextColor}
-            sides={{ value: nextSides, onChange: setNextSides }}
-            wall={nextWallControl}
-            profile={nextProfileControl}
-          >
-            next cylinder
-          </ContextualBar>
-        )}
-        {tool === "select" && selectedNodes.length > 0 && (
-          <ContextualBar
-            kind={singleClosed?.kind ?? null}
-            kindDisabled={!singleClosed}
-            onKind={
-              !selectedShapes.some(isClosed) ? undefined : (kind) => singleClosed && send({ type: "update_nodes", changes: [{ id: singleClosed.id, kind }] })
-            }
-            color={sharedColor}
-            onColor={(color) => send({ type: "update_nodes", changes: selectedShapes.map((b) => ({ id: b.id, color })) })}
-            onMirror={(axis) => send({ type: "mirror_nodes", ids: selection, axis })}
-            sides={
-              singleShape?.type === "cylinder"
-                ? { value: singleShape.sides, onChange: (sides) => send({ type: "update_nodes", changes: [{ id: singleShape.id, sides: sides ?? null }] }) }
-                : undefined
-            }
-            wall={wallControl}
-            profile={profileControl}
-            tilt={tiltControl}
-            onConvert={convertible.length > 0 ? convert : undefined}
-            line={lineControls}
-            ramp={rampControls}
-            editPoints={editable ? { active: editing === editable.id, onToggle: () => setEditing(editing ? null : editable.id) } : undefined}
-          >
-            {editing && editable
-              ? `editing ${describe(editable)}`
-              : contextNode
-                ? `in ${contextNode.name ?? contextNode.id} › ${selectionInfo}`
-                : selectionInfo}
-          </ContextualBar>
-        )}
+        {bar && <ContextualBar {...bar} />}
         <ToolBar
           tool={activeTool}
           onTool={setTool}
@@ -637,6 +625,8 @@ export function App() {
           onClear={() => send({ type: "clear" })}
         />
       </div>
+
+      {inspector && <Inspector {...inspector} />}
 
       <ErrorPanel />
 

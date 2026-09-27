@@ -269,6 +269,8 @@ type Props = {
   nextRamp: RampStyle;
   /** Whether holes show as ghosts (off: only the result shows, and hidden holes can't be clicked). */
   showHoles: boolean;
+  /** Values held in the inspector (a slider being dragged), shown on their shapes before they're sent. */
+  preview: Record<string, ShapePatch> | null;
   onSelect: (ids: string[]) => void;
   onDrawShape: (shape: ShapeInput) => void;
   /** One gizmo drag: one `update_nodes`, so one undo step. */
@@ -303,6 +305,7 @@ export function Viewport({
   nextLine,
   nextRamp,
   showHoles,
+  preview,
   onSelect,
   onDrawShape,
   onUpdate,
@@ -371,7 +374,8 @@ export function Viewport({
   const override = drag?.active ? drag : pending;
   const moved = (b: Shape): Shape => (override?.patches[b.id] ? ({ ...b, ...override.patches[b.id] } as Shape) : b);
   const pointPreview = pointDrag && (pointDrag.active || pointDrag.inserted) ? pointDrag : null;
-  const shown = (override && !override.copy ? boxes.map(moved) : boxes).map((b) =>
+  const previewed = preview ? boxes.map((b) => (preview[b.id] ? ({ ...b, ...preview[b.id] } as Shape) : b)) : boxes;
+  const shown = (override && !override.copy ? previewed.map(moved) : previewed).map((b) =>
     pointPreview && !pointPreview.problem && b.id === editing ? ({ ...b, points: roundPoints(pointPreview.points) } as Shape) : b,
   );
   const ghosts = override?.copy ? override.origin.map((b) => ({ ...moved(b), id: `${b.id}:copy` }) as Shape) : [];

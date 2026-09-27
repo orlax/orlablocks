@@ -38,7 +38,7 @@
 ### Out
 - Semantics, prefabs and room/door concepts (08).
 - New shape types or new fields.
-- Moving selection info, the outliner or the error panel into the inspector.
+- Moving the outliner or the error panel into the inspector.
 
 ## 4. Fixes (07B.1)
 
@@ -187,3 +187,42 @@ Each increment ends with typecheck, the tests, a bundle build and a browser chec
 3. Put a second room group beside `room` (both in one parent) with its wall where the door is. The door cuts that wall too.
 4. Select a ramp: the controls have no volume/hole buttons, and the Ramp tool has none either.
 5. With a shape selected, highlight text in the error panel and press Cmd+C. The text is copied, not the shape. Click in the view and press Cmd+C: the shape is copied again.
+
+### 07B.2 — Inspector (done; checked in the browser by Orlando)
+
+**What changed:**
+- **The contextual bar** (`ToolBar.tsx`) has only the kind toggle and the swatches. Lines and ramps get only the swatches.
+- **The inspector** (`Inspector.tsx`, new) is a floating panel, top right below the error panel.
+  - **Header:** what it shows (`lobby (box_3)`, `3 selected`, `next box`, or `lobby › box_3` in an entered group) and a collapse button.
+  - **Moving it:** drag the header to move it; double-clicking the header puts it back top right. Its position and collapsed state are saved per viewer (localStorage, in try/catch), and it's clamped on screen, also after a resize.
+  - **Body:** the read-only numbers, then the sections: Shape, Walls, Profile, Tilt, Ramp, Line and Actions (mirror X / Z, Convert to free-form, Edit points).
+  - **Went further than §5,** following "everything else goes to the inspector": the selection's read-only numbers and actions moved in too, not only the fields.
+- **Fields in rows:** each field has a label on the left.
+  - One `NumberField` (− / value / +, Enter or blur to send, Esc to cancel) replaces the wall, angle and meters fields.
+  - One `Slider` replaces the taper, bevel and line thickness sliders.
+- **Live previews:**
+  - While a taper, bevel or line thickness slider is held, its value shows on the selected shapes, holes cut live.
+  - How: `App` keeps `preview` (id → patch) and the viewport applies it under any gizmo drag.
+  - The preview clears when the next scene arrives (so there's no flicker back), when the selection changes, or on an error. A release with no change ends it at once.
+- **The selection info** lost its title (`details` in `App.tsx`), because the inspector's header names the shape.
+
+**Verified:** typecheck, 275 unit tests and the bundle build pass. Nothing changed on the server.
+
+**Browser checklist:**
+1. With nothing selected in Select, there's no inspector and no contextual bar. In the Hand tool, neither shows.
+2. **Box tool:** the bar shows only kind and colors. The inspector says `next box` with Walls for a room, or Profile for a volume or hole.
+3. **Cylinder, Line and Ramp tools:** the Cylinder tool adds Shape (sides), the Line tool shows Line, and the Ramp tool shows Ramp.
+4. **One box:** select a box volume. The header names it, and the numbers, Profile, Tilt and Actions show.
+5. **Live preview:** drag the taper slider. The box tapers live, a hole cutting it re-cuts live, and one undo step is made on release.
+6. **Fields:**
+   - Tilt fields and Reset tilt work.
+   - Wall thickness, − / + and typing work, with Esc cancelling.
+   - Ramp width, smooth or steps, base and Reverse work.
+   - Line thickness previews live, and dashes, arrows and Reverse work.
+7. **Actions:** mirror X / Z, Convert to free-form, and Edit points / Done work.
+8. **Moving it:**
+   - Drag the inspector somewhere, reload, and it's still there. Shrink the window and it stays on screen.
+   - Double-click the header and it goes back top right.
+   - Collapse it and reload, and it stays collapsed.
+9. **In a group:** enter a group (double-click) and select a child. The header reads `group › child`.
+
