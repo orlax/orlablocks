@@ -26,8 +26,26 @@ const tempRoot = () => {
   roots.push(root);
   return root;
 };
+const sceneDir = (root: string) => path.join(root, "projects", "castle", "scenes", "entrance");
 const sceneJson = (root: string, project: string, scene: string) =>
   JSON.parse(fs.readFileSync(path.join(root, "projects", project, "scenes", scene, "scene.json"), "utf8"));
+const logLines = (root: string) =>
+  fs.readFileSync(path.join(sceneDir(root), "history.jsonl"), "utf8").trimEnd().split("\n").map((l) => JSON.parse(l));
+
+/** A server start with Castle ▸ Entrance created and open. */
+function startWithScene(root: string) {
+  const s = start(root);
+  s.workspace.createProject({ name: "Castle", sceneName: "Entrance" });
+  return { ...s, store: s.workspace.requireScene() };
+}
+const quietly = <T>(fn: () => T): T => {
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    return fn();
+  } finally {
+    warn.mockRestore();
+  }
+};
 
 describe("workspace", () => {
   it("starts with nothing open, and refuses scene work until a project exists", () => {
@@ -92,9 +110,6 @@ describe("workspace", () => {
     expect(reopened.getScene().nodes[0]).toMatchObject({ kind: "room", width: 6, createdBy: "agent" });
     const [box] = reopened.drawBoxes([{ kind: "room", x: 10, z: 0, width: 2, depth: 2 }], "human");
     expect(box.id).toBe("box_3");
-    // History isn't saved yet (04.2): undo stops at the restart.
-    reopened.undo();
-    expect(reopened.getHistory().canUndo).toBe(false);
   });
 
   it("starts with nothing open when the last scene's folder was deleted by hand", () => {
@@ -122,5 +137,133 @@ describe("workspace", () => {
     expect(() => second.workspace.openScene("castle", "entrance")).toThrow(/didn't load/);
     expect(fs.readFileSync(file, "utf8")).toBe('{"name": "Entrance", "nodes": "broken"}');
     warn.mockRestore();
+  });
+
+  describe("history log", () => {
+    it("appends one line per commit, undo and redo, numbered like scene.json", () => {
+      const root = tempRoot();
+      const { store } = startWithScene(root);
+      store.drawBoxes([{ kind: "room", x: 0, z: 0, width: 6, depth: 4 }], "agent");
+      store.undo();
+      store.redo();
+      const lines = logLines(root);
+      expect(lines.map((l) => [l.seq, l.type])).toEqual([[1, "commit"], [2, "undo"], [3, "redo"]]);
+      expect(lines[0]).toMatchObject({ label: "Agent: draw box_1", actor: "agent" });
+      expect(sceneJson(root, "castle", "entrance").seq).toBe(3);
+    });
+
+    it("keeps undo and redo across a restart, labels included", () => {
+      const root = tempRoot();
+      const first = startWithScene(root);
+      first.store.drawBoxes([{ kind: "room", x: 0, z: 0, width: 6, depth: 4 }], "human");
+      first.store.moveNodes({ ids: ["box_1"], dx: 2 }, "agent");
+      first.store.drawBoxes([{ kind: "volume", x: 9, z: 0, width: 1, depth: 1 }], "human");
+      first.store.undo();
+      first.stop();
+
+      const { workspace } = start(root);
+      const store = workspace.requireScene();
+      expect(store.getHistory()).toEqual({ canUndo: true, canRedo: true, undoLabel: "Agent: move box_1", redoLabel: "Draw box_2" });
+      store.redo();
+      expect(store.getScene().nodes.map((n) => n.id)).toEqual(["box_1", "box_2"]);
+      store.undo();
+      store.undo();
+      expect(store.getScene().nodes[0]).toMatchObject({ x: 0 });
+      store.undo();
+      expect(store.getScene().nodes).toEqual([]);
+      expect(store.getHistory().canUndo).toBe(false);
+    });
+
+    it("undoing a first rename or a grouping after a restart removes the name and the parent", () => {
+      const root = tempRoot();
+      const first = startWithScene(root);
+      first.store.drawBoxes([{ kind: "room", x: 0, z: 0, width: 6, depth: 4 }, { kind: "room", x: 8, z: 0, width: 4, depth: 4 }], "human");
+      first.store.updateNodes([{ id: "box_1", name: "lobby" }], "human");
+      first.store.groupNodes({ ids: ["box_1", "box_2"] }, "human");
+      first.stop();
+
+      const store = start(root).workspace.requireScene();
+      store.undo();
+      expect(store.getScene().nodes.map((n) => n.id)).toEqual(["box_1", "box_2"]);
+      expect(store.getScene().nodes[0]).not.toHaveProperty("parent");
+      store.undo();
+      expect(store.getScene().nodes[0]).not.toHaveProperty("name");
+    });
+
+    it("applies the last step when a crash left scene.json one step behind the log", () => {
+      const root = tempRoot();
+      const first = startWithScene(root);
+      first.store.drawBoxes([{ kind: "room", x: 0, z: 0, width: 6, depth: 4 }], "human");
+      const before = fs.readFileSync(path.join(sceneDir(root), "scene.json"), "utf8");
+      first.store.drawBoxes([{ kind: "room", x: 8, z: 0, width: 4, depth: 4 }], "agent");
+      first.stop();
+      // The crash: the log got step 2, scene.json didn't.
+      fs.writeFileSync(path.join(sceneDir(root), "scene.json"), before);
+
+      const { workspace } = quietly(() => start(root));
+      const store = workspace.requireScene();
+      expect(store.getScene().nodes.map((n) => n.id)).toEqual(["box_1", "box_2"]);
+      expect(sceneJson(root, "castle", "entrance")).toMatchObject({ seq: 2, nextId: { box: 3, group: 1 } });
+      expect(store.drawBoxes([{ kind: "room", x: 20, z: 0, width: 2, depth: 2 }], "human")[0].id).toBe("box_3");
+      store.undo();
+      store.undo();
+      expect(store.getScene().nodes.map((n) => n.id)).toEqual(["box_1"]);
+    });
+
+    it("catches up a missed undo too", () => {
+      const root = tempRoot();
+      const first = startWithScene(root);
+      first.store.drawBoxes([{ kind: "room", x: 0, z: 0, width: 6, depth: 4 }], "human");
+      const before = fs.readFileSync(path.join(sceneDir(root), "scene.json"), "utf8");
+      first.store.undo();
+      first.stop();
+      fs.writeFileSync(path.join(sceneDir(root), "scene.json"), before);
+
+      const store = quietly(() => start(root)).workspace.requireScene();
+      expect(store.getScene().nodes).toEqual([]);
+      expect(store.getHistory()).toMatchObject({ canUndo: false, canRedo: true });
+    });
+
+    it("refuses to open when the log is behind scene.json, and writes over neither file", () => {
+      const root = tempRoot();
+      const first = startWithScene(root);
+      first.store.drawBoxes([{ kind: "room", x: 0, z: 0, width: 6, depth: 4 }], "human");
+      first.store.drawBoxes([{ kind: "room", x: 8, z: 0, width: 4, depth: 4 }], "human");
+      first.stop();
+      const log = path.join(sceneDir(root), "history.jsonl");
+      const shortLog = `${fs.readFileSync(log, "utf8").split("\n")[0]}\n`;
+      fs.writeFileSync(log, shortLog);
+      const sceneBefore = fs.readFileSync(path.join(sceneDir(root), "scene.json"), "utf8");
+
+      const { workspace } = quietly(() => start(root));
+      expect(workspace.getOpen()).toBeNull();
+      expect(() => workspace.openScene("castle", "entrance")).toThrow(/ends at step 1, but scene.json is at step 2/);
+      expect(fs.readFileSync(log, "utf8")).toBe(shortLog);
+      expect(fs.readFileSync(path.join(sceneDir(root), "scene.json"), "utf8")).toBe(sceneBefore);
+    });
+
+    it("refuses to open when a log line doesn't load", () => {
+      const root = tempRoot();
+      const first = startWithScene(root);
+      first.store.drawBoxes([{ kind: "room", x: 0, z: 0, width: 6, depth: 4 }], "human");
+      first.stop();
+      fs.appendFileSync(path.join(sceneDir(root), "history.jsonl"), '{"seq": 2, "type": "und');
+      const { workspace } = quietly(() => start(root));
+      expect(() => workspace.openScene("castle", "entrance")).toThrow(/history\.jsonl line 2/);
+    });
+
+    it("opens a scene saved before the log existed, with an empty history that continues from its seq", () => {
+      const root = tempRoot();
+      const first = startWithScene(root);
+      first.store.drawBoxes([{ kind: "room", x: 0, z: 0, width: 6, depth: 4 }], "human");
+      first.stop();
+      fs.rmSync(path.join(sceneDir(root), "history.jsonl"));
+
+      const store = start(root).workspace.requireScene();
+      expect(store.getScene().nodes).toHaveLength(1);
+      expect(store.getHistory().canUndo).toBe(false);
+      store.drawBoxes([{ kind: "room", x: 8, z: 0, width: 4, depth: 4 }], "human");
+      expect(logLines(root).map((l) => l.seq)).toEqual([2]);
+    });
   });
 });

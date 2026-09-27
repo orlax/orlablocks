@@ -24,7 +24,8 @@ import type { Workspace } from "./workspace";
 const CONVENTIONS =
   "The scene is one scene of a project (a project holds several scenes, e.g. one per level); get_scene reports " +
   "which project and scene are open, and the project's description gives the context. You only see the open scene: " +
-  "the human opens and switches scenes in the editor. Every change is saved as it happens (there's no save step). " +
+  "the human opens and switches scenes in the editor. Every change is saved as it happens (there's no save step), " +
+  "and the undo history survives server restarts. " +
   "Units are meters; decimals are allowed and kept to 2 places. The world is 3D with y up and the ground at y = 0. " +
   "The scene is a flat list of nodes: boxes and groups. " +
   "A box's footprint is CENTERED at (x, z), with `width` along the box's local x and " +

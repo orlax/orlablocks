@@ -1,8 +1,17 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { z } from "zod";
-import { AppFileSchema, ProjectFileSchema, SceneFileSchema, type AppFile, type ProjectFile, type SceneFile } from "../shared/project.types";
-import type { ProjectSummary } from "../shared/scene.types";
+import { z } from "zod";
+import {
+  AppFileSchema,
+  NodeSchema,
+  ProjectFileSchema,
+  SceneFileSchema,
+  type AppFile,
+  type ProjectFile,
+  type SceneFile,
+} from "../shared/project.types";
+import type { Actor, NodePatch, ProjectSummary } from "../shared/scene.types";
+import type { Op } from "./commands";
 
 /**
  * File access for the data folder (plan 04 §3), and nothing else: no scene logic. Writes are synchronous and
@@ -13,6 +22,50 @@ import type { ProjectSummary } from "../shared/scene.types";
 export const SEMANTIC_FOLDERS = ["abilities", "entities", "rules"] as const;
 
 export class LockedError extends Error {}
+
+/**
+ * One line of `history.jsonl`: a new step with its ops and inverse, or an undo / redo of an existing one. `seq`
+ * counts every line, so it matches `scene.json`'s `seq` once that step is saved there.
+ */
+export type HistoryLine = { seq: number; at: number } & (
+  | { type: "commit"; label: string; actor: Actor; ops: Op[]; inverse: Op[] }
+  | { type: "undo" }
+  | { type: "redo" }
+);
+
+/**
+ * In an update patch, a key set to undefined removes that field (e.g. undoing a first rename removes the name).
+ * JSON drops undefined keys, so the log writes them as null and reads null back as undefined.
+ */
+const PatchSchema = z
+  .record(z.string(), z.unknown())
+  .transform((patch) => Object.fromEntries(Object.entries(patch).map(([k, v]) => [k, v === null ? undefined : v])) as NodePatch);
+
+const encodePatch = (patch: NodePatch) =>
+  Object.fromEntries(Object.keys(patch).map((k) => [k, (patch as Record<string, unknown>)[k] ?? null]));
+const encodeOps = (ops: Op[]) =>
+  ops.map((op) => (op.op === "update" ? { ...op, changes: op.changes.map((c) => ({ id: c.id, patch: encodePatch(c.patch) })) } : op));
+
+const OpSchema = z.discriminatedUnion("op", [
+  z.object({ op: z.literal("add"), nodes: z.array(NodeSchema), indices: z.array(z.number().int().min(0)).optional() }),
+  z.object({ op: z.literal("remove"), ids: z.array(z.string()) }),
+  z.object({ op: z.literal("update"), changes: z.array(z.object({ id: z.string(), patch: PatchSchema })) }),
+  z.object({ op: z.literal("order"), ids: z.array(z.string()) }),
+]);
+
+const HistoryLineSchema = z.discriminatedUnion("type", [
+  z.object({
+    seq: z.number().int().min(1),
+    at: z.number(),
+    type: z.literal("commit"),
+    label: z.string(),
+    actor: z.enum(["human", "agent"]),
+    ops: z.array(OpSchema),
+    inverse: z.array(OpSchema),
+  }),
+  z.object({ seq: z.number().int().min(1), at: z.number(), type: z.literal("undo") }),
+  z.object({ seq: z.number().int().min(1), at: z.number(), type: z.literal("redo") }),
+]);
 
 /** "Castle Dungeon!" → "castle-dungeon". Accents are dropped; anything left empty becomes `fallback`. */
 export function slugify(name: string, fallback: string): string {
@@ -95,6 +148,7 @@ export function openDataDir(root: string) {
   const projectDir = (project: string) => path.join(projectsDir, project);
   const scenesDir = (project: string) => path.join(projectDir(project), "scenes");
   const sceneFile = (project: string, scene: string) => path.join(scenesDir(project), scene, "scene.json");
+  const historyFile = (project: string, scene: string) => path.join(scenesDir(project), scene, "history.jsonl");
   const appFile = path.join(root, "app.json");
 
   return {
@@ -181,6 +235,37 @@ export function openDataDir(root: string) {
 
     writeScene(project: string, scene: string, file: SceneFile): void {
       writeJson(sceneFile(project, scene), file);
+    },
+
+    /** Adds one line to the scene's history log. Lines are never rewritten. */
+    appendHistory(project: string, scene: string, line: HistoryLine): void {
+      const encoded = line.type === "commit" ? { ...line, ops: encodeOps(line.ops), inverse: encodeOps(line.inverse) } : line;
+      fs.appendFileSync(historyFile(project, scene), `${JSON.stringify(encoded)}\n`);
+    },
+
+    /**
+     * The scene's history log, or null if it has none (a new scene, or one saved before the log existed). Throws
+     * an Error naming the first line that doesn't load.
+     */
+    readHistory(project: string, scene: string): HistoryLine[] | null {
+      const file = historyFile(project, scene);
+      if (!fs.existsSync(file)) return null;
+      const lines = fs.readFileSync(file, "utf8").split("\n");
+      if (lines.at(-1) === "") lines.pop();
+      return lines.map((text, i) => {
+        let data: unknown;
+        try {
+          data = JSON.parse(text);
+        } catch (err) {
+          throw new Error(`${file} line ${i + 1}: ${(err as Error).message}`);
+        }
+        const result = HistoryLineSchema.safeParse(data);
+        if (!result.success) {
+          const issue = result.error.issues[0];
+          throw new Error(`${file} line ${i + 1}: ${issue.path.map(String).join(".") || "(line)"}: ${issue.message}`);
+        }
+        return result.data as HistoryLine;
+      });
     },
   };
 }

@@ -36,7 +36,8 @@ Shared vocabulary for this project, for humans and agents alike. Use these names
 - **data folder**: where the server saves everything: `./data` where it runs (gitignored), or `DATA_DIR`. It holds `app.json` (the last open scene), `projects/`, and a `.lock` so only one server uses it (from 04).
 - **elevation (`y`)**: the height of a box's bottom above the ground, in meters. 0 = on the ground; negative is below ground (from 03).
 - **group**: a node that contains other nodes (via their `parent`), with ID `group_N`. It has no position of its own: its bounds come from its boxes (`get_scene` reports them as `bounds`), and moving, rotating or deleting it acts on everything inside as one command. A group left empty disappears in the same command (from 03).
-- **history**: the single linear list of commands shared by the human and the agent. Undo reverts the latest command, whoever made it (from 02).
+- **history**: the single linear list of commands shared by the human and the agent. Undo reverts the latest command, whoever made it (from 02) From 04 it's per scene and survives restarts, rebuilt from the **history log**.
+- **history log**: a scene's `history.jsonl`, append-only, one line per step (`commit` with its ops and inverse, `undo`, `redo`), numbered by `seq`. `scene.json` records the `seq` it includes. The log is written first, so after a crash it can be one step ahead, and opening the scene applies that step (from 04).
 - **name**: an optional human-friendly label on any node ("lobby"). Not unique. Tools still take IDs (from 03).
 - **node**: anything in the scene's flat list: a box or a group. Each has an `id`, an optional `name` and an optional `parent` (from 03).
 - **op**: the smallest reversible scene change (`add`, `remove`, `update`, and `order` for the outliner's reordering) inside a command.

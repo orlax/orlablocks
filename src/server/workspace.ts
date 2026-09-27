@@ -1,9 +1,72 @@
 import { z } from "zod";
 import { CreateProjectSchema, DEFAULT_SCENE_NAME, type OpenScene, type ProjectSummary } from "../shared/scene.types";
-import type { DataDir } from "./persist";
-import { createSceneStore, SceneError, type SceneStore } from "./scene";
+import type { NextId, SceneFile } from "../shared/project.types";
+import { applyOp, createHistory, type HistoryEntry } from "./commands";
+import type { DataDir, HistoryLine } from "./persist";
+import { createSceneStore, SceneError, type SceneStore, type Step } from "./scene";
 
 export const NO_SCENE_OPEN = "No scene is open. Ask the human to create or open a project in the editor.";
+
+/** The history step a log line records. */
+const stepOf = (line: HistoryLine) =>
+  line.type === "commit"
+    ? { type: "commit" as const, entry: { label: line.label, actor: line.actor, at: line.at, ops: line.ops, inverse: line.inverse } }
+    : { type: line.type };
+
+/** The log line for a step the store just took. */
+const lineOf = (seq: number, step: Step): HistoryLine =>
+  step.type === "commit" ? { seq, type: "commit", ...step.entry } : { seq, type: step.type, at: Date.now() };
+
+/** ID counters raised past every node an entry adds (for a step `scene.json` missed). */
+function raisedNextId(nextId: NextId, entry: HistoryEntry): NextId {
+  const next = { ...nextId };
+  for (const op of [...entry.ops, ...entry.inverse]) {
+    if (op.op !== "add") continue;
+    for (const node of op.nodes) {
+      const match = /^(box|group)_(\d+)$/.exec(node.id);
+      if (match) {
+        const kind = match[1] as keyof NextId;
+        next[kind] = Math.max(next[kind], Number(match[2]) + 1);
+      }
+    }
+  }
+  return next;
+}
+
+/**
+ * Rebuilds the history from the log and checks it against `scene.json`. They agree when the log ends at the
+ * scene's `seq`. A crash between the two writes leaves the log exactly one step ahead: that step is applied to the
+ * nodes here (`caughtUp`). Anything else is an Error, and the scene doesn't open.
+ */
+export function restoreScene(file: SceneFile, lines: HistoryLine[] | null) {
+  const history = createHistory();
+  let { nodes, nextId, seq } = file;
+  if (!lines || lines.length === 0) return { nodes, nextId, seq, history, caughtUp: false };
+
+  lines.forEach((line, i) => {
+    if (i > 0 && line.seq !== lines[i - 1].seq + 1) {
+      throw new Error(`history.jsonl: step ${line.seq} follows step ${lines[i - 1].seq}`);
+    }
+  });
+  const last = lines.at(-1)!.seq;
+  if (last !== file.seq && last !== file.seq + 1) {
+    throw new Error(`history.jsonl ends at step ${last}, but scene.json is at step ${file.seq}`);
+  }
+  for (const line of lines) {
+    let entry: HistoryEntry;
+    try {
+      entry = history.replay(stepOf(line));
+    } catch (err) {
+      throw new Error(`history.jsonl step ${line.seq}: ${(err as Error).message}`);
+    }
+    if (line.seq > file.seq) {
+      nodes = (line.type === "undo" ? entry.inverse : entry.ops).reduce(applyOp, nodes);
+      nextId = raisedNextId(nextId, entry);
+      seq = line.seq;
+    }
+  }
+  return { nodes, nextId, seq, history, caughtUp: seq !== file.seq };
+}
 
 /**
  * The open scene (plan 04 §4): one per server, shared by every tab and the agent, or none. Loads a scene's files
@@ -17,18 +80,24 @@ export function createWorkspace(data: DataDir) {
 
   const publicOpen = (): OpenScene | null => (open ? { project: open.project, scene: open.scene } : null);
 
-  store.onStep(() => {
+  const writeScene = () => {
+    if (!open) return;
+    data.writeScene(open.project.id, open.scene.id, {
+      name: open.scene.name,
+      createdAt: open.createdAt,
+      seq: open.seq,
+      nextId: store.getNextId(),
+      nodes: store.getScene().nodes,
+    });
+  };
+
+  // The log first, then the state: a crash in between leaves the log one step ahead, which opening repairs.
+  store.onStep((step) => {
     if (!open) return;
     open.seq += 1;
-    const { nodes } = store.getScene();
     try {
-      data.writeScene(open.project.id, open.scene.id, {
-        name: open.scene.name,
-        createdAt: open.createdAt,
-        seq: open.seq,
-        nextId: store.getNextId(),
-        nodes,
-      });
+      data.appendHistory(open.project.id, open.scene.id, lineOf(open.seq, step));
+      writeScene();
     } catch (err) {
       console.error("Saving the scene failed", err);
       throw new SceneError(`The change was made but not saved: ${(err as Error).message}`);
@@ -45,17 +114,22 @@ export function createWorkspace(data: DataDir) {
     if (!data.sceneExists(project, scene)) throw new SceneError(`No scene "${scene}" in project "${project}"`);
     let loaded;
     try {
-      loaded = { project: data.readProject(project), scene: data.readScene(project, scene) };
+      const file = data.readScene(project, scene);
+      loaded = { project: data.readProject(project), file, ...restoreScene(file, data.readHistory(project, scene)) };
     } catch (err) {
       throw new SceneError(`The scene didn't load, so it wasn't opened:\n${(err as Error).message}`);
     }
     open = {
       project: { id: project, name: loaded.project.name, description: loaded.project.description },
-      scene: { id: scene, name: loaded.scene.name },
-      createdAt: loaded.scene.createdAt,
-      seq: loaded.scene.seq,
+      scene: { id: scene, name: loaded.file.name },
+      createdAt: loaded.file.createdAt,
+      seq: loaded.seq,
     };
-    store.load({ nodes: loaded.scene.nodes, nextId: loaded.scene.nextId });
+    store.load({ nodes: loaded.nodes, nextId: loaded.nextId, history: loaded.history });
+    if (loaded.caughtUp) {
+      console.warn(`${project}/${scene}: scene.json missed the last step in history.jsonl; applied it`);
+      writeScene();
+    }
     data.writeApp({ lastOpen: { project, scene } });
     const current = publicOpen();
     openedListeners.forEach((l) => l(current));

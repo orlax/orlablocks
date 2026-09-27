@@ -291,7 +291,7 @@ Adopted as recommended (say if any should change):
 
 ## 12. Progress
 
-### 04.1 — Projects and scenes on disk (done, pending Orlando's browser check)
+### 04.1 — Projects and scenes on disk (done)
 
 - **Data folder:** `./data` or `DATA_DIR`, gitignored. `.lock` holds the server's PID, and a second server on the same folder exits with a message. A lock left by a process that's gone is taken over. The lock is released on exit (`SIGINT`, `SIGTERM`, `SIGHUP`).
 - **`persist.ts`** does file access only: slugs (accents dropped, `-2`, `-3` when taken), atomic JSON writes (a temp file, then a rename), reading with the zod schemas in `src/shared/project.types.ts`, and listing projects and scenes (a file that doesn't load is reported with its error, not thrown).
@@ -312,4 +312,20 @@ Adopted as recommended (say if any should change):
   - typecheck;
   - 124 tests (new: `persist.test.ts`, `workspace.test.ts`);
   - a scripted run on `:5171` with a scratch `DATA_DIR`: the no-scene error over MCP and WS, create over WS, human and agent edits, and restarts. The same scene reopened, the deleted `box_2` wasn't reused (the next box was `box_4`), and a second server on the same folder was refused.
+
+### 04.2 — History log and undo across restarts (done)
+
+- **`history.jsonl`:** every commit, undo and redo appends one line, then `scene.json` is written. A commit line holds the label, actor, time, ops and inverse. Undo and redo lines are markers.
+- **Undefined in patches:** an update patch uses `undefined` to mean "remove this field" (undoing a first rename or a grouping), but JSON drops undefined keys. The log writes those as `null` and reads `null` back as undefined. Without this, undo after a restart would have left the name or parent in place. Tested.
+- **Replay on open** (`restoreScene` in `workspace.ts`, and `createHistory().replay` in `commands.ts`) rebuilds both stacks by the same rules as push / undo / redo, without applying ops, and keeps the 200-entry limit. The nodes come from `scene.json`.
+- **Consistency:**
+  - `seq` must be consecutive in the log, and the log must end at `scene.seq` or one step past it.
+  - One step past means a crash between the two writes. The step (commit, undo or redo) is applied, the ID counters are raised past any node it adds, and `scene.json` is written again with a warning in the server log.
+  - Anything else refuses to open the scene, and both files are left as they are. That includes a log that's behind, a line that doesn't parse, and an undo with nothing to undo.
+- A scene with no `history.jsonl` (saved in 04.1) opens with an empty history, and its log starts at the next `seq`.
+- MCP conventions text: the undo history survives restarts.
+- **Checks:**
+  - typecheck;
+  - 134 tests (the new ones: replay, labels across a restart, the undefined-patch round trip, catching up a missed commit and a missed undo, the log behind, a broken line, a scene without a log);
+  - a scripted run on `:5171` with a scratch `DATA_DIR`. Draw, rename, move, draw, undo, then restart. Undo and redo carried over with their labels, and undoing the rename after the restart removed the name.
 

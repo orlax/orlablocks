@@ -135,4 +135,28 @@ describe("history", () => {
     expect(history.undo(boxes)).toBeNull();
     expect(boxes.map((b) => b.id)).toEqual(["room_1"]);
   });
+
+  it("replay rebuilds both stacks by the same rules, without touching nodes", () => {
+    const a: HistoryEntry = { label: "a", actor: "human", at: 1, ops: [], inverse: [] };
+    const b: HistoryEntry = { label: "b", actor: "agent", at: 2, ops: [], inverse: [] };
+    const history = createHistory();
+    history.replay({ type: "commit", entry: a });
+    history.replay({ type: "commit", entry: b });
+    expect(history.replay({ type: "undo" })).toBe(b);
+    expect(history.summary()).toEqual({ canUndo: true, canRedo: true, undoLabel: "a", redoLabel: "b" });
+    expect(history.replay({ type: "redo" })).toBe(b);
+    history.replay({ type: "undo" });
+    history.replay({ type: "commit", entry: a });
+    expect(history.summary()).toMatchObject({ canRedo: false });
+    expect(() => history.replay({ type: "redo" })).toThrow(/nothing to redo/);
+  });
+
+  it("replay keeps the history limit", () => {
+    const history = createHistory(2);
+    for (const label of ["a", "b", "c"]) history.replay({ type: "commit", entry: { label, actor: "human", at: 0, ops: [], inverse: [] } });
+    history.replay({ type: "undo" });
+    history.replay({ type: "undo" });
+    expect(() => history.replay({ type: "undo" })).toThrow(/nothing to undo/);
+  });
 });
+

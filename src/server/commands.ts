@@ -102,17 +102,21 @@ export function runOps(nodes: SceneNode[], ops: Op[]): { nodes: SceneNode[]; inv
   return { nodes: current, inverse };
 }
 
+export type History = ReturnType<typeof createHistory>;
+
 export function createHistory(limit = HISTORY_LIMIT) {
   const undoStack: HistoryEntry[] = [];
   const redoStack: HistoryEntry[] = [];
 
+  /** Records a new entry. Any new edit clears the redo stack. */
+  const push = (entry: HistoryEntry): void => {
+    undoStack.push(entry);
+    if (undoStack.length > limit) undoStack.shift();
+    redoStack.length = 0;
+  };
+
   return {
-    /** Records a new entry. Any new edit clears the redo stack. */
-    push(entry: HistoryEntry): void {
-      undoStack.push(entry);
-      if (undoStack.length > limit) undoStack.shift();
-      redoStack.length = 0;
-    },
+    push,
 
     /** Reverts the latest entry, whoever made it. */
     undo(nodes: SceneNode[]): { nodes: SceneNode[]; entry: HistoryEntry } | null {
@@ -127,6 +131,23 @@ export function createHistory(limit = HISTORY_LIMIT) {
       if (!entry) return null;
       undoStack.push(entry);
       return { nodes: entry.ops.reduce(applyOp, nodes), entry };
+    },
+
+    /**
+     * Rebuilds the stacks from the history log, one step at a time, by the same rules as push / undo / redo but
+     * without touching any nodes. Returns the entry the step pushed or moved. Throws if an undo or redo has nothing
+     * to move (a log that doesn't match itself).
+     */
+    replay(step: { type: "commit"; entry: HistoryEntry } | { type: "undo" } | { type: "redo" }): HistoryEntry {
+      if (step.type === "commit") {
+        push(step.entry);
+        return step.entry;
+      }
+      const [from, to] = step.type === "undo" ? [undoStack, redoStack] : [redoStack, undoStack];
+      const entry = from.pop();
+      if (!entry) throw new Error(`${step.type} with nothing to ${step.type}`);
+      to.push(entry);
+      return entry;
     },
 
     summary(): HistorySummary {

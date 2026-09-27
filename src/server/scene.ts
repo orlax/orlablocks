@@ -26,7 +26,7 @@ import {
 } from "../shared/scene.types";
 import type { NextId } from "../shared/project.types";
 import { ancestry, boxesUnder, commonParent, isGroup, subtreeIds } from "../shared/tree";
-import { applyOp, createHistory, invertOp, runOps, type HistoryEntry, type Op } from "./commands";
+import { applyOp, createHistory, invertOp, runOps, type History, type HistoryEntry, type Op } from "./commands";
 
 export class SceneError extends Error {}
 
@@ -175,14 +175,14 @@ export function createSceneStore() {
     },
 
     /**
-     * Replaces the whole scene with a saved one (opening a scene): its nodes and ID counters, an empty history and
-     * no selection. Broadcasts; isn't a step.
+     * Replaces the whole scene with a saved one (opening a scene): its nodes, ID counters and history (rebuilt from
+     * the log; empty if none), and no selection. Broadcasts; isn't a step.
      */
-    load(saved: { nodes: SceneNode[]; nextId: NextId }): void {
+    load(saved: { nodes: SceneNode[]; nextId: NextId; history?: History }): void {
       scene.nodes = saved.nodes;
       scene.selection = [];
       Object.assign(nextId, saved.nextId);
-      history = createHistory();
+      history = saved.history ?? createHistory();
       emit();
     },
 
