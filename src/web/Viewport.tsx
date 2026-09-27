@@ -34,6 +34,8 @@ import {
   type Size,
 } from "./camera";
 import {
+  canCopy,
+  dragOffset,
   dragUpdate,
   effectiveChanges,
   gizmoAnchor,
@@ -69,10 +71,14 @@ type Footprint = { x: number; z: number; width: number; depth: number };
 /**
  * A gizmo drag in progress. A body drag only becomes `active` once the pointer moves past CLICK_PX: until then
  * it's a click, which sets the selection to `clickSelection` on release. Handle drags are active right away.
+ * `ids` are the dragged boxes, `nodeIds` the selected nodes they came from (what a copy copies). `copy`: `Alt` is
+ * held on a move drag, so the originals stay and copies follow the cursor.
  */
 type Drag = GizmoDrag & {
   pointerId: number;
   ids: string[];
+  nodeIds: string[];
+  copy: boolean;
   clickSelection?: string[];
   sx0: number;
   sy0: number;
@@ -120,6 +126,8 @@ type Props = {
   onDrawBox: (box: BoxInput) => void;
   /** One gizmo drag: one `update_nodes`, so one undo step. */
   onUpdate: (changes: NodeUpdate[]) => void;
+  /** One Alt-drag: copies the nodes by the drag's offset, one undo step. */
+  onDuplicate: (copy: { ids: string[]; dx: number; dy: number; dz: number }) => void;
   onCursor: (point: GroundPoint | null) => void;
   /** Reports the view (for the agent) and the camera (saved for the scene), throttled. */
   onViewChange: (view: View, camera: CameraState) => void;
@@ -142,6 +150,7 @@ export function Viewport({
   onSelect,
   onDrawBox,
   onUpdate,
+  onDuplicate,
   onCursor,
   onViewChange,
   cameraRestore,
@@ -164,7 +173,7 @@ export function Viewport({
   const [hotPart, setHotPart] = useState<GizmoPart | null>(null);
   const [drag, setDrag] = useState<Drag | null>(null);
   // After releasing a drag, keep showing its result until the server's scene arrives (no flicker back).
-  const [pending, setPending] = useState<Record<string, BoxPatch> | null>(null);
+  const [pending, setPending] = useState<{ origin: Box[]; patches: Record<string, BoxPatch>; copy: boolean } | null>(null);
   // The marquee: dragging empty ground in the Select tool. It becomes `active` past CLICK_PX (before that it's a
   // click, which deselects). `base` is the selection it started from, restored by Esc and added to with Shift.
   const [marquee, setMarquee] = useState<{
@@ -184,9 +193,14 @@ export function Viewport({
   onSelectRef.current = onSelect;
 
   const boxes = nodes.filter(isBox);
-  // What's on screen: the server's boxes, with the drag in progress (or just released) applied locally.
-  const override = drag?.active ? drag.patches : pending;
-  const shown = override ? boxes.map((b) => (override[b.id] ? { ...b, ...override[b.id] } : b)) : boxes;
+  const boxesRef = useRef(boxes);
+  boxesRef.current = boxes;
+  // What's on screen: the server's boxes, with the drag in progress (or just released) applied locally. A copy
+  // leaves the originals where they are and shows the copies (`ghosts`) where the drag puts them.
+  const override = drag?.active ? drag : pending;
+  const moved = (b: Box) => (override?.patches[b.id] ? { ...b, ...override.patches[b.id] } : b);
+  const shown = override && !override.copy ? boxes.map(moved) : boxes;
+  const ghosts = override?.copy ? override.origin.map((b) => ({ ...moved(b), id: `${b.id}:copy` })) : [];
   /** The boxes (as shown) in or under the given nodes. */
   const shownUnder = (ids: string[]) => {
     const under = new Set(boxesUnder(nodes, ids).map((b) => b.id));
@@ -195,7 +209,8 @@ export function Viewport({
 
   // The transform gizmo: on the selection, in the Select tool only. Height and scale are for a single box (not a
   // group); move and rotate work on any selection.
-  const selectedBoxes = tool === "select" ? shownUnder(selection) : [];
+  // While copying, the copies carry the selection (they become it on release).
+  const selectedBoxes = tool !== "select" ? [] : ghosts.length > 0 ? ghosts : shownUnder(selection);
   const single =
     selection.length === 1 && selectedBoxes.length === 1 && selectedBoxes[0].id === selection[0] ? selectedBoxes[0] : undefined;
   const gizmo =
@@ -249,17 +264,34 @@ export function Viewport({
   }, [tool]);
 
   // A new scene from the server: the released drag is now real, and a drag whose boxes vanished (undo, Clear,
-  // another tab) is cancelled.
+  // another tab) is cancelled. Keyed on `nodes`, which only changes when a scene arrives.
   useEffect(() => {
     setPending(null);
-    setDrag((d) => (d && d.ids.every((id) => boxes.some((b) => b.id === id)) ? d : null));
-  }, [boxes]);
+    setDrag((d) => (d && d.ids.every((id) => boxesRef.current.some((b) => b.id === id)) ? d : null));
+  }, [nodes]);
 
-  const startDrag = (e: PointerEvent, gizmoDrag: GizmoDrag, extra: { active: boolean; clickSelection?: string[] }) => {
+  const startDrag = (
+    e: PointerEvent,
+    gizmoDrag: GizmoDrag,
+    extra: { active: boolean; nodeIds: string[]; clickSelection?: string[] },
+  ) => {
     const { sx, sy } = local(e);
     e.currentTarget.setPointerCapture(e.pointerId);
     const ids = gizmoDrag.origin.map((b) => b.id);
-    setDrag({ ...gizmoDrag, ...extra, pointerId: e.pointerId, ids, sx0: sx, sy0: sy, patches: {}, label: "", sx, sy });
+    setDrag({ ...gizmoDrag, ...extra, pointerId: e.pointerId, ids, copy: false, sx0: sx, sy0: sy, patches: {}, label: "", sx, sy });
+  };
+
+  /**
+   * The drag with the cursor at (sx, sy). `Alt` on a move drag makes it a copy, and a copy's bottom can snap onto
+   * the originals' tops (copy a room upward for a second floor).
+   */
+  const dragTo = (d: Drag, sx: number, sy: number, keys: { shiftKey: boolean; altKey: boolean; metaKey: boolean; ctrlKey: boolean }): Drag => {
+    const copy = keys.altKey && canCopy(d.part);
+    const others = copy ? boxesRef.current : boxesRef.current.filter((b) => !d.ids.includes(b.id));
+    const mods = { shift: keys.shiftKey, alt: keys.altKey, snap: !noSnap(keys) };
+    const size = { width: wrap.current!.clientWidth, height: wrap.current!.clientHeight };
+    const { patches, label } = dragUpdate(d, cam.current, size, sx, sy, mods, others);
+    return { ...d, active: true, copy, patches, label, sx, sy };
   };
 
   // Select tool: a gizmo handle drags it. Pressing a box selects it (unless it's already selected) and dragging
@@ -273,7 +305,7 @@ export function Viewport({
     if (e.button === 0 && tool === "select") {
       const part = gizmoAt(sx, sy, size);
       if (part) {
-        startDrag(e, startHandleDrag(cam.current, size, sx, sy, part, selectedBoxes), { active: true });
+        startDrag(e, startHandleDrag(cam.current, size, sx, sy, part, selectedBoxes), { active: true, nodeIds: selection });
         return;
       }
       const hit = pickHit(screenRay(cam.current, size, sx, sy), shown);
@@ -292,7 +324,7 @@ export function Viewport({
           clickSelection = [target];
         }
         if (!wasSelected) onSelect(ids);
-        startDrag(e, startBodyDrag(shownUnder(ids), hit.point), { active: false, clickSelection });
+        startDrag(e, startBodyDrag(shownUnder(ids), hit.point), { active: false, nodeIds: ids, clickSelection });
         return;
       }
       e.currentTarget.setPointerCapture(e.pointerId);
@@ -321,10 +353,7 @@ export function Viewport({
 
     if (drag?.pointerId === e.pointerId) {
       if (!drag.active && Math.hypot(sx - drag.sx0, sy - drag.sy0) < CLICK_PX) return;
-      const others = boxes.filter((b) => !drag.ids.includes(b.id));
-      const mods = { shift: e.shiftKey, alt: e.altKey, snap: !noSnap(e) };
-      const { patches, label } = dragUpdate(drag, cam.current, size, sx, sy, mods, others);
-      setDrag({ ...drag, active: true, patches, label, sx, sy });
+      setDrag(dragTo(drag, sx, sy, e));
       setHoveredId(null);
       return;
     }
@@ -363,11 +392,18 @@ export function Viewport({
 
   const onPointerUp = (e: PointerEvent) => {
     if (drag?.pointerId === e.pointerId) {
-      if (drag.active) {
+      // `Alt` counts at release: pressing or releasing it mid-drag switches between move and copy.
+      if (drag.active && e.altKey && canCopy(drag.part)) {
+        const offset = dragOffset(drag.origin, drag.patches);
+        if (offset.dx !== 0 || offset.dy !== 0 || offset.dz !== 0) {
+          onDuplicate({ ids: drag.nodeIds, ...offset });
+          setPending({ origin: drag.origin, patches: drag.patches, copy: true });
+        }
+      } else if (drag.active) {
         const changes = effectiveChanges(drag.origin, drag.patches);
         if (changes.length > 0) {
           onUpdate(changes);
-          setPending(drag.patches);
+          setPending({ origin: drag.origin, patches: drag.patches, copy: false });
         }
       } else if (drag.clickSelection) {
         onSelect(drag.clickSelection);
@@ -428,6 +464,23 @@ export function Viewport({
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, []);
 
+  // Pressing or releasing Alt mid-drag switches between move and copy right away, without waiting for the pointer
+  // to move.
+  useEffect(() => {
+    const onAlt = (e: KeyboardEvent) => {
+      const d = dragRef.current;
+      if (e.key !== "Alt" || !d?.active || !canCopy(d.part)) return;
+      e.preventDefault();
+      setDrag(dragTo(d, d.sx, d.sy, e));
+    };
+    window.addEventListener("keydown", onAlt);
+    window.addEventListener("keyup", onAlt);
+    return () => {
+      window.removeEventListener("keydown", onAlt);
+      window.removeEventListener("keyup", onAlt);
+    };
+  }, []);
+
   // Wheel zoom around the focus point. A native listener, because React's wheel listener is passive
   // and can't stop the browser from zooming the page on a trackpad pinch.
   useEffect(() => {
@@ -476,6 +529,7 @@ export function Viewport({
     if (activePart && isScalePart(activePart)) {
       return scaleBox && size ? `resize-${scaleCursor(cam.current, size, scaleBox, activePart)}` : "moving";
     }
+    if (drag?.active && drag.copy) return "copying";
     if (activePart === "rotate") return "rotating";
     if (activePart === "y" || activePart === "height") return "resizing";
     if (activePart) return "moving";
@@ -516,9 +570,9 @@ export function Viewport({
         <Grid cam={cam} />
         <OriginAxes />
         <Boxes
-          boxes={shown}
+          boxes={[...shown, ...ghosts]}
           draft={draft}
-          selected={new Set(boxesUnder(nodes, selection).map((b) => b.id))}
+          selected={new Set(ghosts.length > 0 ? ghosts.map((b) => b.id) : boxesUnder(nodes, selection).map((b) => b.id))}
           hovered={new Set(boxesUnder(nodes, [hoveredId, outsideHover].filter((id) => id !== null)).map((b) => b.id))}
         />
         {gizmo && (
@@ -549,7 +603,7 @@ export function Viewport({
       )}
       {drag?.active && (
         <div className="draft-label" style={{ left: drag.sx + 14, top: drag.sy + 14 }}>
-          {drag.label}
+          {drag.copy ? `${drag.label} · copy` : drag.label}
         </div>
       )}
     </div>

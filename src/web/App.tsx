@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ChevronDown, Map as MapIcon } from "lucide-react";
 import { DEFAULT_COLOR, DEFAULT_VIEW, type Box, type BoxColor, type BoxKind, type SceneNode, type View } from "../shared/scene.types";
 import { boxesUnder, childrenOf, isBox, isGroup } from "../shared/tree";
 import type { CameraState, GroundPoint } from "./camera";
@@ -12,6 +13,21 @@ import { Viewport, type Tool } from "./Viewport";
 /** Fixed-width number (e.g. "  12.50", " -3.00") so the info-label never jitters. */
 const coord = (n?: number) => (n === undefined ? "–".padStart(7) : n.toFixed(2).padStart(7));
 
+
+/** How long a one-off message (like Alt+J's "Alt-drag a copy first") replaces the tool hint. */
+const NOTICE_MS = 2500;
+
+/**
+ * What to select once the server's next scene arrives: the nodes it added, as chosen by `pick`. `before` holds
+ * every node ID from when the edit was sent.
+ */
+type PendingSelect = { before: Set<string>; pick: (added: SceneNode[], nodes: SceneNode[]) => string[] };
+
+/** The copies' roots among newly added nodes: a copy keeps its original's parent, so it's the ones whose parent is old. */
+const copiedRoots = (added: SceneNode[]) => {
+  const ids = new Set(added.map((n) => n.id));
+  return added.filter((n) => n.parent === undefined || !ids.has(n.parent)).map((n) => n.id);
+};
 
 /** `lobby (group_1)` or just `box_3`. */
 const title = (n: SceneNode) => (n.name ? `${n.name} (${n.id})` : n.id);
@@ -37,8 +53,12 @@ export function App() {
   // The next box's style in the Box tool, remembered while the tab is open.
   const [nextKind, setNextKind] = useState<BoxKind>("room");
   const [nextColor, setNextColor] = useState<BoxColor>(DEFAULT_COLOR);
-  // After Cmd+G: the grouped IDs and the groups that existed then, so the new group can be selected when it arrives.
-  const pendingGroup = useRef<{ ids: string[]; before: Set<string> } | null>(null);
+  // After Cmd+G or a copy: what to select when the result arrives (the new group, the copies).
+  const pendingSelect = useRef<PendingSelect | null>(null);
+  // The last Alt-drag copy's offset (world axes), which Alt+J repeats. Forgotten when the scene changes.
+  const lastCopy = useRef<{ dx: number; dy: number; dz: number } | null>(null);
+  // A one-off message in the info-label, in place of the tool hint.
+  const [notice, setNotice] = useState<string | null>(null);
 
   const nodes = scene?.nodes ?? [];
   // The key handler is installed once; it reads the current state from here.
@@ -63,8 +83,24 @@ export function App() {
     setSelection(restore.selection);
     setContext(null);
     setOutlinerHover(null);
-    pendingGroup.current = null;
+    pendingSelect.current = null;
+    lastCopy.current = null;
   }, [restore]);
+
+  useEffect(() => {
+    if (!notice) return;
+    const t = setTimeout(() => setNotice(null), NOTICE_MS);
+    return () => clearTimeout(t);
+  }, [notice]);
+
+  /** Copies nodes by an offset (one step) and selects the copies when they arrive. */
+  const duplicate = useCallback(
+    (ids: string[], offset: { dx: number; dy: number; dz: number }) => {
+      pendingSelect.current = { before: new Set(state.current.nodes.map((n) => n.id)), pick: copiedRoots };
+      send({ type: "duplicate_nodes", ids, ...offset });
+    },
+    [send],
+  );
 
   // The tab's title follows the open scene.
   useEffect(() => {
@@ -84,20 +120,18 @@ export function App() {
   }, [connected, selectionKey, send]);
 
   // A new scene: drop selected nodes that went away (undo, Clear, the agent, another tab), leave an entered group
-  // that went away, and select the group Cmd+G just made.
+  // that went away, and select what Cmd+G or a copy just made.
   useEffect(() => {
     if (!scene) return;
     const ids = new Set(scene.nodes.map((n) => n.id));
     setSelection((sel) => (sel.every((id) => ids.has(id)) ? sel : sel.filter((id) => ids.has(id))));
     setContext((c) => (c !== null && !ids.has(c) ? null : c));
-    const pending = pendingGroup.current;
+    const pending = pendingSelect.current;
     if (pending) {
-      const made = scene.nodes.find(
-        (n) => isGroup(n) && !pending.before.has(n.id) && scene.nodes.some((c) => c.parent === n.id && pending.ids.includes(c.id)),
-      );
-      if (made) {
-        pendingGroup.current = null;
-        setSelection([made.id]);
+      const made = pending.pick(scene.nodes.filter((n) => !pending.before.has(n.id)), scene.nodes);
+      if (made.length > 0) {
+        pendingSelect.current = null;
+        setSelection(made);
       }
     }
   }, [scene]);
@@ -127,7 +161,16 @@ export function App() {
         e.preventDefault();
         if (selection.length === 0) return;
         if (!e.shiftKey) {
-          pendingGroup.current = { ids: selection, before: new Set(nodes.filter(isGroup).map((n) => n.id)) };
+          const grouped = selection;
+          pendingSelect.current = {
+            before: new Set(nodes.map((n) => n.id)),
+            // The new group that holds the grouped nodes.
+            pick: (added, next) =>
+              added
+                .filter((n) => isGroup(n) && next.some((c) => c.parent === n.id && grouped.includes(c.id)))
+                .slice(0, 1)
+                .map((n) => n.id),
+          };
           send({ type: "group_nodes", ids: selection });
           return;
         }
@@ -143,6 +186,13 @@ export function App() {
         // Also keeps a focused button from being pressed by Space.
         e.preventDefault();
         if (!e.repeat) setSpaceHand(true);
+        return;
+      }
+      // Alt+J repeats the last copy's offset on the current selection. Matched on the code: on a Mac, Alt+J types ∆.
+      if (e.altKey && !e.metaKey && !e.ctrlKey && e.code === "KeyJ") {
+        e.preventDefault();
+        if (lastCopy.current && selection.length > 0) duplicate(selection, lastCopy.current);
+        else setNotice("Alt-drag a copy first");
         return;
       }
       if (e.metaKey || e.ctrlKey || e.altKey) return;
@@ -171,7 +221,7 @@ export function App() {
       window.removeEventListener("keyup", onKeyUp);
       window.removeEventListener("blur", onBlur);
     };
-  }, [send]);
+  }, [send, duplicate]);
 
   // Kind is for a single box; color applies to every box in the selection (groups included).
   const single = selectedNodes.length === 1 ? selectedNodes[0] : null;
@@ -198,6 +248,10 @@ export function App() {
         onSelect={setSelection}
         onDrawBox={(box) => send({ type: "add_boxes", boxes: [{ ...box, color: nextColor }] })}
         onUpdate={(changes) => send({ type: "update_nodes", changes })}
+        onDuplicate={({ ids, ...offset }) => {
+          lastCopy.current = offset;
+          duplicate(ids, offset);
+        }}
         onCursor={setCursor}
         onViewChange={(v, c) => {
           setView(v);
@@ -219,24 +273,29 @@ export function App() {
         onPlace={(ids, parent, before) => send({ type: "place_nodes", ids, parent, before })}
       />
 
+      {open && (
+        <button
+          type="button"
+          className="project-bar"
+          title="Projects and scenes"
+          onClick={() => {
+            clearError();
+            setPickerOpen(true);
+          }}
+        >
+          <MapIcon size={14} className="icon" />
+          <span className="where">
+            {open.project.name} ▸ {open.scene.name}
+          </span>
+          <ChevronDown size={14} className="icon" />
+        </button>
+      )}
+
       <div className="info-label">
         <span className={connected ? "conn" : "conn offline"}>
           <i className="dot" />
           {connected ? "connected" : "offline"}
         </span>
-        {open && (
-          <button
-            type="button"
-            className="where"
-            title="Projects and scenes"
-            onClick={() => {
-              clearError();
-              setPickerOpen(true);
-            }}
-          >
-            {open.project.name} ▸ {open.scene.name}
-          </button>
-        )}
         <span className="coords">
           x {coord(cursor?.x)} · z {coord(cursor?.z)} m
         </span>
@@ -244,7 +303,7 @@ export function App() {
         <span className="sep" />
         <span className="counts">{scene ? `${rooms} rooms · ${volumes} volumes · ${groups} groups` : "—"}</span>
         <span className="sep" />
-        <span className="hint">{HINTS[activeTool]}</span>
+        <span className={notice ? "hint notice" : "hint"}>{notice ?? HINTS[activeTool]}</span>
       </div>
 
       <div className="dock">

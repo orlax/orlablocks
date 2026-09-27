@@ -3,6 +3,8 @@
   --bar-text: #d8dbe2;
   --muted: #8a8f9c;
   --canvas: #f7f6f2;
+  /* The info-label's height: it's docked along the bottom edge, and the view ends above it. */
+  --status-h: 28px;
 }
 
 * { box-sizing: border-box; }
@@ -18,16 +20,18 @@ body {
 
 .app { position: fixed; inset: 0; }
 
-/* The 3D view fills the window. The hand tool pans on drag, the Select tool picks, the Box tool draws. */
+/* The 3D view fills the window above the info-label. The hand tool pans on drag, the Select tool picks, the Box
+   tool draws. */
 .viewport {
   position: absolute;
-  inset: 0;
+  inset: 0 0 var(--status-h) 0;
   cursor: grab;
   touch-action: none;
   user-select: none;
 }
 .viewport.selecting { cursor: default; }
 .viewport.moving { cursor: move; }
+.viewport.copying { cursor: copy; }
 /* A curved arrow, since CSS has no rotate cursor. */
 .viewport.rotating {
   cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke-linecap='round' stroke-linejoin='round'%3E%3Cg stroke='white' stroke-width='4'%3E%3Cpath d='M21 12a9 9 0 1 1-9-9c2.5 0 4.9 1 6.7 2.7L21 8'/%3E%3Cpath d='M21 3v5h-5'/%3E%3C/g%3E%3Cg stroke='black' stroke-width='2'%3E%3Cpath d='M21 12a9 9 0 1 1-9-9c2.5 0 4.9 1 6.7 2.7L21 8'/%3E%3Cpath d='M21 3v5h-5'/%3E%3C/g%3E%3C/svg%3E") 12 12, crosshair;
@@ -65,7 +69,7 @@ body {
   position: fixed;
   left: 16px;
   right: 16px;
-  bottom: 16px;
+  bottom: calc(var(--status-h) + 16px);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -140,13 +144,13 @@ body {
 .contextual-bar button.swatch:hover { transform: scale(1.12); }
 .contextual-bar button.swatch.active { outline: 2px solid #8fb4f2; outline-offset: 2px; }
 
-/* The outliner: a collapsible tree panel on the left, below the info-label. */
+/* The outliner: a collapsible tree panel on the left, below the project bar. */
 .outliner {
   position: fixed;
   top: 52px;
   left: 12px;
   width: 240px;
-  max-height: calc(100vh - 170px);
+  max-height: calc(100vh - 170px - var(--status-h));
   display: flex;
   flex-direction: column;
   border-radius: 10px;
@@ -217,23 +221,49 @@ body {
   outline: none;
 }
 
-/* Status row across the top: connection, cursor, yaw, counts and the current tool's hint. The numbers are
-   monospace with fixed widths so they never jitter. */
-.info-label {
+/* The project bar: the open project and scene, top left above the outliner, opening the picker. It grows with the
+   names (never narrower than the outliner), and only very long names get an ellipsis. */
+.project-bar {
   position: fixed;
   top: 12px;
   left: 12px;
-  right: 12px;
+  min-width: 240px;
+  max-width: min(640px, calc(100vw - 24px));
+  height: 30px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--bar-bg);
+  color: var(--bar-text);
+  font: 600 12px/1.4 system-ui, sans-serif;
+  text-align: left;
+  cursor: pointer;
+}
+.project-bar:hover { background: rgba(44, 47, 56, 0.95); }
+.project-bar .icon { flex: none; color: var(--muted); }
+.project-bar .where { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Status bar docked along the bottom edge, full width: connection, cursor, yaw, counts and the current tool's
+   hint. The numbers are monospace with fixed widths so they never jitter. */
+.info-label {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: var(--status-h);
   display: flex;
   align-items: center;
   gap: 14px;
-  padding: 6px 12px;
-  border-radius: 8px;
-  background: var(--bar-bg);
+  padding: 0 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  background: #1e2026;
   color: var(--muted);
   font: 11px/1.4 ui-monospace, monospace;
   white-space: pre;
-  pointer-events: none;
+  user-select: none;
 }
 .info-label .sep { height: 12px; }
 .info-label .counts { color: var(--bar-text); }
@@ -245,6 +275,7 @@ body {
   font: 12px/1.4 system-ui, sans-serif;
   text-align: right;
 }
+.info-label .hint.notice { color: #f0c96a; }
 .info-label .conn { color: #7fc98f; }
 .info-label .conn.offline { color: #e05555; }
 .info-label .dot {
@@ -269,18 +300,6 @@ body {
 }
 
 /* Which project and scene are open, first in the info-label. It opens the project picker. */
-.info-label .where {
-  margin: -3px -6px;
-  padding: 2px 6px;
-  border: 0;
-  border-radius: 5px;
-  background: transparent;
-  color: var(--bar-text);
-  font: 600 12px/1.4 system-ui, sans-serif;
-  cursor: pointer;
-  pointer-events: auto;
-}
-.info-label .where:hover { background: rgba(255, 255, 255, 0.1); }
 
 /* Modals (the project picker): centered on a dimmed backdrop, above everything. */
 .modal-backdrop {

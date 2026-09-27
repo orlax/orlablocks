@@ -4,6 +4,8 @@ import { boundsOf, footprintBounds } from "../shared/geometry";
 import { DEFAULT_CAMERA, worldToScreen, type CameraState, type Vec3 } from "./camera";
 import {
   ARROW,
+  canCopy,
+  dragOffset,
   dragUpdate,
   effectiveChanges,
   elevationTargets,
@@ -277,5 +279,20 @@ describe("effectiveChanges", () => {
     const a = box({});
     const b = box({ id: "box_2" });
     expect(effectiveChanges([a, b], { box_1: { x: 0, z: 0 }, box_2: { x: 1, z: 0 } })).toEqual([{ id: "box_2", x: 1, z: 0 }]);
+  });
+});
+
+describe("copy drags", () => {
+  it("only move drags copy", () => {
+    expect(["body", "x", "y", "z"].every((p) => canCopy(p as "x"))).toBe(true);
+    expect(["rotate", "height", "scale:1:1"].some((p) => canCopy(p as "x"))).toBe(false);
+  });
+
+  it("reads the drag's offset from the first box, on world axes", () => {
+    const a = box({ id: "box_1", x: 1.1, y: 0, z: -2 });
+    const b = box({ id: "box_2", x: 5, y: 0, z: 0 });
+    expect(dragOffset([a, b], { box_1: { x: 5.2, z: -2 }, box_2: { x: 9.1, z: 0 } })).toEqual({ dx: 4.1, dy: 0, dz: 0 });
+    expect(dragOffset([a], { box_1: { y: 3 } })).toEqual({ dx: 0, dy: 3, dz: 0 });
+    expect(dragOffset([a], {})).toEqual({ dx: 0, dy: 0, dz: 0 });
   });
 });

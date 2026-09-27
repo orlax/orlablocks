@@ -359,3 +359,13 @@ export function effectiveChanges(origin: Box[], patches: Record<string, BoxPatch
     return changed ? [{ id: box.id, ...patch }] : [];
   });
 }
+
+/** The drags that `Alt` turns into a copy: the move drags (body, x/z arrows, y arrow). Scale keeps `Alt` = from the center. */
+export const canCopy = (part: DragPart) => part === "body" || part === "x" || part === "y" || part === "z";
+
+/** How far a move drag has taken the boxes (world axes, 2 decimals), from the first box's patch. */
+export function dragOffset(origin: Box[], patches: Record<string, BoxPatch>): { dx: number; dy: number; dz: number } {
+  const box = origin[0];
+  const p = patches[box.id] ?? {};
+  return { dx: round2((p.x ?? box.x) - box.x), dy: round2((p.y ?? box.y) - box.y), dz: round2((p.z ?? box.z) - box.z) };
+}

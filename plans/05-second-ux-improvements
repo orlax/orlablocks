@@ -233,3 +233,19 @@ Adopted as recommended (say if any should change):
   - typecheck;
   - 151 tests (new: `topmost` and `copyNodes` in `tree.test.ts`, "scene store copies" in `scene.test.ts`);
   - a scripted run on `:5171` with a scratch `DATA_DIR`: `initialize` returns the instructions, and `tools/list` has the short descriptions and `copy` / `count` on `move_nodes`. One `move_nodes` call with `copy: true, count: 2` copied a nested group (lobby › pillars › 2 pillars, plus the hall) 20 m and 40 m east. The copies kept the names and nesting, got new IDs and sat right after the original. One WS undo removed both copies, and a WS `duplicate_nodes` copied a box. After a restart, the scene reopened with the copy, and undo removed it.
+
+### 05.2 — Alt-drag and Alt+J (done)
+
+- **`gizmo.ts`:** `canCopy(part)` (body, x, z, y) and `dragOffset(origin, patches)`, the drag's world offset from the first box. Both tested.
+- **Viewport:**
+  - The drag records `copy` (Alt held on a move drag), from every pointer move and from Alt's own keydown and keyup, so toggling Alt without moving the pointer updates the preview. The release uses `e.altKey`, so Alt counts at release.
+  - While copying, the originals are drawn where they are, and ghost copies (`box_3:copy`) follow the cursor with the selection highlight and the gizmo. The label adds `· copy` and the cursor becomes `copy`.
+  - A copy's elevation snapping includes the originals, so the y arrow snaps a copied room onto its own wall top.
+  - On release it sends `duplicate_nodes` with the selected node IDs (a group is copied as a group), unless the offset is zero. The ghosts stay until the server's scene arrives.
+  - Fixed on the way: the "new scene arrived" effect depended on `boxes`, a fresh array every render, so the released drag's preview was dropped on the next render instead of when the scene arrived. It now depends on `nodes`.
+- **App:**
+  - Cmd+G's "select the new group when it arrives" became a general pending selection (`before` + `pick`). Copies use it too: the added nodes whose parent isn't also new are the copied roots.
+  - The last Alt-drag offset is kept in a ref, reset when a scene opens. `Alt+J` (matched on `e.code === "KeyJ"`) duplicates the selection by it. With no offset or no selection, the info-label shows "Alt-drag a copy first" in yellow for 2.5 s.
+  - The Select tool's hint mentions `Alt` copies and `Alt+J` repeats.
+- **Checks:** typecheck; 153 tests; the editor bundles with `vite build`. The server side is unchanged from 05.1 (already checked there), so the rest is Orlando's browser checklist.
+- **Beyond the plan (Orlando's request):** the project bar moved out of the info-label into its own button at the top left: a map icon, `Castle ▸ Entrance` (cut off with an ellipsis when long) and a chevron. It grows with the names, from the outliner's 240 px up to 640 px, so the full scene name shows. The info-label now holds status only, as a solid status bar docked along the bottom edge, full width and 28 px tall (`--status-h`). The 3D view ends above it, so the screen center (the reported focus point) stays true and clicks on the bar don't reach the scene. The dock (tool-bar, contextual bar) and the outliner's max height moved up by the bar's height.
