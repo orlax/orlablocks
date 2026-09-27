@@ -214,3 +214,22 @@ Adopted as recommended (say if any should change):
 14. **The paste offset is rounded to the 0.5 m snap,** so pasted geometry stays on its grid.
 15. **Pasting inside an entered group** puts the nodes into that group.
 16. **Mirror button labels** are X and Z in the axis colors, not flip icons: they're world axes, and the camera turns.
+
+---
+
+## 12. Progress
+
+### 05.1 — Duplicate command and the agent's context (done)
+
+- **`tree.ts`:** `topmost` (the listed nodes not inside another listed node, in the given order; `groupNodes` uses it too) and `copyNodes` (fresh IDs, parents remapped inside the copied set and kept outside it, boxes offset and rounded to 2 decimals). Paste (05.4) will reuse `copyNodes` and set the roots' parent itself.
+- **Store:** `duplicateNodes({ ids, dx, dy, dz, count })`, one step with one `add` op carrying `indices`. Each root's copies go right after the last node of its original subtree in the list (copy 1, copy 2...). IDs are handed out copy by copy, and within a copy in the order the roots were given. `createdBy` is the actor. Returns the copied roots.
+- **Labels:** `Copy box_3`, `Copy box_3 ×3`, and a single named node reads `Agent: copy lobby (group_2)`.
+- **Protocol:** `{ type: "duplicate_nodes", ids, dx?, dy?, dz?, count? }`. The editor doesn't send it yet (Alt-drag is 05.2).
+- **MCP:**
+  - `move_nodes` gains `copy` and `count` and returns `{ copies }` (the copied roots). `count` without `copy` is an error, so a mistaken call doesn't silently move.
+  - The conventions text is now the server's `instructions` (about 3,200 characters, sent once), with a new paragraph on copying. The 8 tool descriptions are 86–498 characters each, down from about 3,100 each, so roughly 5,500 fewer tokens in the agent's context.
+  - Server version 0.0.6. **Restart the server and reconnect with `/mcp`.**
+- **Checks:**
+  - typecheck;
+  - 151 tests (new: `topmost` and `copyNodes` in `tree.test.ts`, "scene store copies" in `scene.test.ts`);
+  - a scripted run on `:5171` with a scratch `DATA_DIR`: `initialize` returns the instructions, and `tools/list` has the short descriptions and `copy` / `count` on `move_nodes`. One `move_nodes` call with `copy: true, count: 2` copied a nested group (lobby › pillars › 2 pillars, plus the hall) 20 m and 40 m east. The copies kept the names and nesting, got new IDs and sat right after the original. One WS undo removed both copies, and a WS `duplicate_nodes` copied a box. After a restart, the scene reopened with the copy, and undo removed it.

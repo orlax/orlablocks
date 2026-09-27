@@ -8,7 +8,9 @@ import {
   BoxInputSchema,
   DEFAULT_COLOR,
   DEFAULT_HEIGHT,
+  DuplicateNodesSchema,
   GroupNodesSchema,
+  MAX_COPIES,
   MIN_HEIGHT,
   MoveNodesSchema,
   NodeUpdateSchema,
@@ -19,9 +21,13 @@ import {
   type Scene,
 } from "../shared/scene.types";
 import { boxesUnder, isGroup } from "../shared/tree";
+import { SceneError } from "./scene";
 import type { Workspace } from "./workspace";
 
-const CONVENTIONS =
+/** Sent once when a client connects (the server's `instructions`), instead of repeating it in every tool description. */
+const INSTRUCTIONS =
+  "Dungeon Designer: an ideation tool for dungeon layouts. The human edits the same scene in a local 3D editor, " +
+  "and you read and edit it with these tools. " +
   "The scene is one scene of a project (a project holds several scenes, e.g. one per level); get_scene reports " +
   "which project and scene are open, and the project's description gives the context. You only see the open scene: " +
   "the human opens and switches scenes in the editor. Every change is saved as it happens (there's no save step), " +
@@ -43,6 +49,9 @@ const CONVENTIONS =
   "action: move_nodes, rotate_nodes and remove_nodes on a group act on everything in it. A group left empty disappears. " +
   "Every node has a server-assigned ID (box_1, group_1, ..., never reused), an optional `name` for people " +
   '("lobby"; not unique, tools always take IDs, so resolve names to IDs with get_scene), and records who created it (human or agent). ' +
+  "To repeat things (a row of pillars, a second wing, another floor), copy them with move_nodes and copy: true " +
+  "(count for several, each offset further) instead of retyping boxes with draw_boxes: copies get new IDs and keep " +
+  "their names, structure and parent group. " +
   "The scene's `selection` lists the IDs of the nodes the human has selected in the editor: when they say " +
   '"this" or "these", they mean the selection. ' +
   "The scene's `view` is what the editor window currently shows: `focus` is the ground point at the screen center, " +
@@ -77,7 +86,7 @@ function describeScene(open: OpenScene, scene: Scene) {
 }
 
 function buildServer(workspace: Workspace) {
-  const server = new McpServer({ name: "dungeon-designer", version: "0.0.5" });
+  const server = new McpServer({ name: "dungeon-designer", version: "0.0.6" }, { instructions: INSTRUCTIONS });
   // Every tool reads or edits the open scene, and fails with a clear message while nothing is open.
   const store = () => workspace.requireScene();
 
@@ -85,7 +94,7 @@ function buildServer(workspace: Workspace) {
     "get_scene",
     {
       title: "Get scene",
-      description: `Return the open scene as JSON: its project (id, name, description) and scene (id, name), the visible view, the editor's selection and every node (boxes and groups). ${CONVENTIONS}`,
+      description: `Return the open scene as JSON: its project (id, name, description) and scene (id, name), the visible view, the editor's selection and every node (boxes and groups).`,
     },
     async () => {
       const scene = store().getScene();
@@ -101,7 +110,7 @@ function buildServer(workspace: Workspace) {
         `Add one or more boxes (rooms and/or volumes) to the scene in a single batch; they appear live in the editor. ` +
         `Only kind, x, z, width and depth are required; the rest have defaults (the kind's height, y 0, rotation 0, color ${DEFAULT_COLOR}, no name, top level). ` +
         `Set \`parent\` to a group's ID to draw straight into that group. ` +
-        `The batch is all-or-nothing: if any box is invalid, nothing is drawn and the error says which one. ${CONVENTIONS}`,
+        `The batch is all-or-nothing: if any box is invalid, nothing is drawn and the error says which one.`,
       inputSchema: { boxes: z.array(BoxInputSchema).min(1) },
     },
     async ({ boxes }) => {
@@ -125,7 +134,7 @@ function buildServer(workspace: Workspace) {
         `A box takes any of: name, parent, kind, x, z, y, width, depth, height, rotation, color. A group takes only name and parent. ` +
         `Values are absolute (x: 4 moves the center to x = 4); to shift boxes or whole groups by an offset, use move_nodes instead. ` +
         `An empty name removes the name; parent null moves a node to the top level. ` +
-        `The batch is all-or-nothing: an unknown ID or an invalid value rejects it and nothing changes. ${CONVENTIONS}`,
+        `The batch is all-or-nothing: an unknown ID or an invalid value rejects it and nothing changes.`,
       inputSchema: { changes: z.array(NodeUpdateSchema).min(1) },
     },
     async ({ changes }) => json({ updated: store().updateNodes(changes, "agent") }),
@@ -137,7 +146,7 @@ function buildServer(workspace: Workspace) {
       title: "Remove nodes",
       description:
         `Delete nodes by ID in a single batch; a group is deleted with everything in it. They disappear live in the editor, ` +
-        `and the human can undo it. All-or-nothing: an unknown ID rejects it and nothing is removed. ${CONVENTIONS}`,
+        `and the human can undo it. All-or-nothing: an unknown ID rejects it and nothing is removed.`,
       inputSchema: { ids: z.array(z.string()).min(1).describe("IDs of existing nodes, e.g. box_3 or group_1") },
     },
     async ({ ids }) => {
@@ -152,10 +161,20 @@ function buildServer(workspace: Workspace) {
       title: "Move nodes",
       description:
         `Shift boxes and/or whole groups by a relative offset (dx, dy, dz in meters; +x is east). ` +
-        `This is the way to move a group: one call moves everything in it, keeping its layout. ${CONVENTIONS}`,
-      inputSchema: MoveNodesSchema.shape,
+        `This is the way to move a group: one call moves everything in it, keeping its layout. ` +
+        `With copy: true the nodes stay in place and \`count\` copies are added instead (default 1), copy i offset by ` +
+        `i × (dx, dy, dz), so count makes a row; a zero offset copies in place. Copies get new IDs, keep their names, ` +
+        `nesting and parent group, and are returned (their roots).`,
+      inputSchema: MoveNodesSchema.extend({
+        copy: z.boolean().optional().describe("Leave the nodes in place and add copies at the offset"),
+        count: DuplicateNodesSchema.shape.count.describe(`With copy: how many copies, 1..${MAX_COPIES}, default 1`),
+      }).shape,
     },
-    async (input) => json({ moved: store().moveNodes(input, "agent") }),
+    async ({ copy, count, ...move }) => {
+      if (copy) return json({ copies: store().duplicateNodes({ ...move, count }, "agent") });
+      if (count !== undefined) throw new SceneError("count only applies with copy: true. Nothing was moved.");
+      return json({ moved: store().moveNodes(move, "agent") });
+    },
   );
 
   server.registerTool(
@@ -164,7 +183,7 @@ function buildServer(workspace: Workspace) {
       title: "Rotate nodes",
       description:
         `Turn boxes and/or whole groups by \`degrees\` (counterclockwise seen from above) around the vertical axis through ` +
-        `the center of their combined bounds: every box's center orbits that point and its rotation grows by the same angle. ${CONVENTIONS}`,
+        `the center of their combined bounds: every box's center orbits that point and its rotation grows by the same angle.`,
       inputSchema: RotateNodesSchema.shape,
     },
     async (input) => json({ rotated: store().rotateNodes(input, "agent") }),
@@ -176,7 +195,7 @@ function buildServer(workspace: Workspace) {
       title: "Group nodes",
       description:
         `Put boxes and/or groups in a new group, optionally named. The group is created inside the deepest group that ` +
-        `held them all. Returns the new group (use its ID with move_nodes, rotate_nodes, or as a parent in draw_boxes). ${CONVENTIONS}`,
+        `held them all. Returns the new group (use its ID with move_nodes, rotate_nodes, or as a parent in draw_boxes).`,
       inputSchema: GroupNodesSchema.shape,
     },
     async (input) => json({ group: store().groupNodes(input, "agent") }),
@@ -186,7 +205,7 @@ function buildServer(workspace: Workspace) {
     "ungroup",
     {
       title: "Ungroup",
-      description: `Dissolve groups; their contents stay where they are and move up to the group's parent. ${CONVENTIONS}`,
+      description: "Dissolve groups; their contents stay where they are and move up to the group's parent.",
       inputSchema: UngroupSchema.shape,
     },
     async (input) => json({ freed: store().ungroup(input, "agent") }),

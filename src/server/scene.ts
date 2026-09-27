@@ -5,6 +5,7 @@ import {
   DEFAULT_COLOR,
   DEFAULT_HEIGHT,
   DEFAULT_VIEW,
+  DuplicateNodesSchema,
   GroupNodesSchema,
   MIN_HEIGHT,
   MoveNodesSchema,
@@ -25,7 +26,7 @@ import {
   type View,
 } from "../shared/scene.types";
 import type { NextId } from "../shared/project.types";
-import { ancestry, boxesUnder, commonParent, isGroup, subtreeIds } from "../shared/tree";
+import { boxesUnder, commonParent, copyNodes, isGroup, subtreeIds, topmost } from "../shared/tree";
 import { applyOp, createHistory, invertOp, runOps, type History, type HistoryEntry, type Op } from "./commands";
 
 export class SceneError extends Error {}
@@ -43,6 +44,12 @@ const listIds = (ids: string[], plural = "nodes") => (ids.length <= 3 ? ids.join
 function label(verb: string, what: string, actor: Actor): string {
   const text = `${verb} ${what}`;
   return actor === "agent" ? `Agent: ${text}` : text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+/** "lobby (group_1)" for one named node, else as `listIds`. */
+function describeIds(nodes: SceneNode[], ids: string[]): string {
+  const name = ids.length === 1 ? nodes.find((n) => n.id === ids[0])?.name : undefined;
+  return name ? `${name} (${ids[0]})` : listIds(ids);
 }
 
 const FIELD_VERBS: Record<keyof NodePatch, string> = {
@@ -332,6 +339,45 @@ export function createSceneStore() {
     },
 
     /**
+     * Copies boxes and whole groups with fresh IDs, as one step: copy i (1..count) is offset by i × (dx, dy, dz).
+     * A listed node inside another listed node is copied as part of it. Copies keep their names and their
+     * original's parent, and go right after the original's subtree in the list (copy 1, copy 2, ...). Returns the
+     * copied roots.
+     */
+    duplicateNodes(input: z.input<typeof DuplicateNodesSchema>, actor: Actor): SceneNode[] {
+      const { ids, dx = 0, dy = 0, dz = 0, count = 1 } = parse(DuplicateNodesSchema, input, "Nothing was copied.");
+      const errors: string[] = [];
+      checkIds("ids", ids, errors);
+      failIf(errors, "Nothing was copied.");
+
+      const roots = topmost(scene.nodes, ids);
+      const newId = (type: SceneNode["type"]) => (type === "box" ? `box_${nextId.box++}` : `group_${nextId.group++}`);
+      // After which original each root's copies go: the last node of its subtree in the list.
+      const copiesAfter = new Map<string, SceneNode[]>();
+      const copiedRoots: SceneNode[] = [];
+      const subtrees = roots.map((id) => {
+        const inside = subtreeIds(scene.nodes, id);
+        return { id, nodes: scene.nodes.filter((n) => inside.has(n.id)) };
+      });
+      for (let i = 1; i <= count; i++) {
+        for (const { id, nodes } of subtrees) {
+          const copies = copyNodes(nodes, newId, { dx: dx * i, dy: dy * i, dz: dz * i }).map((n) => ({ ...n, createdBy: actor }));
+          copiedRoots.push(copies[nodes.findIndex((n) => n.id === id)]);
+          const last = nodes.at(-1)!.id;
+          copiesAfter.set(last, [...(copiesAfter.get(last) ?? []), ...copies]);
+        }
+      }
+      const next = scene.nodes.flatMap((n) => [n, ...(copiesAfter.get(n.id) ?? [])]);
+      const added = new Set([...copiesAfter.values()].flat().map((n) => n.id));
+      const indices: number[] = [];
+      const nodes = next.filter((n, index) => added.has(n.id) && indices.push(index));
+
+      const times = count > 1 ? ` ×${count}` : "";
+      commit(label("copy", describeIds(scene.nodes, roots) + times, actor), actor, [{ op: "add", nodes, indices }]);
+      return copiedRoots;
+    },
+
+    /**
      * Turns boxes and whole groups around the vertical axis through the center of their combined bounds, as one
      * step: each center orbits it and the angle is added to each rotation. Returns the boxes that turned.
      */
@@ -358,8 +404,7 @@ export function createSceneStore() {
       const errors: string[] = [];
       checkIds("ids", ids, errors);
       failIf(errors, "Nothing was grouped.");
-      const listed = new Set(ids);
-      const members = ids.filter((id) => !ancestry(scene.nodes, id).slice(1).some((a) => listed.has(a)));
+      const members = topmost(scene.nodes, ids);
       const parent = commonParent(scene.nodes, members);
       const trimmed = name?.trim();
       const group: Group = {

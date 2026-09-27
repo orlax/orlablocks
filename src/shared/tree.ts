@@ -1,3 +1,4 @@
+import { round2 } from "./geometry";
 import type { Box, Group, SceneNode } from "./scene.types";
 
 /**
@@ -63,4 +64,33 @@ export function commonParent(nodes: SceneNode[], ids: string[]): string | undefi
   const parents = ids.map((id) => ancestry(nodes, id).slice(1));
   if (parents.some((p) => p.length === 0)) return undefined;
   return parents[0].find((g) => parents.every((p) => p.includes(g)));
+}
+
+/** The `ids` that aren't inside another listed node, in the given order: the roots of a group or a copy. */
+export function topmost(nodes: SceneNode[], ids: string[]): string[] {
+  const listed = new Set(ids);
+  return ids.filter((id) => !ancestry(nodes, id).slice(1).some((a) => listed.has(a)));
+}
+
+/**
+ * Copies of `source` (a set of nodes, each root with its subtree) with fresh IDs from `newId`, in the same order.
+ * `parent` references inside the set are remapped to the copies; the others are kept, so a copied root stays in
+ * its original's group. Boxes are offset by `dx, dy, dz` (2 decimals). Names and everything else are kept.
+ */
+export function copyNodes(
+  source: SceneNode[],
+  newId: (type: SceneNode["type"]) => string,
+  { dx = 0, dy = 0, dz = 0 }: { dx?: number; dy?: number; dz?: number } = {},
+): SceneNode[] {
+  const ids = new Map(source.map((n) => [n.id, newId(n.type)]));
+  return source.map((n) => {
+    const copy: SceneNode = { ...n, id: ids.get(n.id)! };
+    if (n.parent !== undefined && ids.has(n.parent)) copy.parent = ids.get(n.parent);
+    if (isBox(copy)) {
+      copy.x = round2(copy.x + dx);
+      copy.y = round2(copy.y + dy);
+      copy.z = round2(copy.z + dz);
+    }
+    return copy;
+  });
 }

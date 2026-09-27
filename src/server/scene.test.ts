@@ -478,6 +478,77 @@ describe("scene store groups", () => {
   });
 });
 
+describe("scene store copies", () => {
+  /** lobby (group_1) holds box_1 and hall (group_2) with box_2; box_3 is at the top level. */
+  const setup = () => {
+    const store = createSceneStore();
+    store.drawBoxes(
+      [0, 10, 20].map((x) => ({ kind: "volume" as const, x, z: 0, width: 2, depth: 2, height: 1 })),
+      "human",
+    );
+    store.updateNodes([{ id: "box_2", name: "pillar" }], "human");
+    store.groupNodes({ ids: ["box_2"], name: "hall" }, "human");
+    store.groupNodes({ ids: ["box_1", "group_1"], name: "lobby" }, "human");
+    return store;
+  };
+  const ids = (store: ReturnType<typeof createSceneStore>) => store.getScene().nodes.map((n) => n.id);
+  const node = (store: ReturnType<typeof createSceneStore>, id: string) => store.getScene().nodes.find((n) => n.id === id)!;
+
+  it("copies a nested group with new IDs, names and structure, right after the original, as one step", () => {
+    const store = setup();
+    expect(ids(store)).toEqual(["group_2", "box_1", "group_1", "box_2", "box_3"]);
+    const copies = store.duplicateNodes({ ids: ["group_2"], dx: 20 }, "agent");
+    expect(copies.map((n) => n.id)).toEqual(["group_3"]);
+    expect(ids(store)).toEqual(["group_2", "box_1", "group_1", "box_2", "group_3", "box_4", "group_4", "box_5", "box_3"]);
+    expect(node(store, "group_3")).toMatchObject({ name: "lobby", createdBy: "agent" });
+    expect(node(store, "group_3").parent).toBeUndefined();
+    expect(node(store, "group_4")).toMatchObject({ name: "hall", parent: "group_3" });
+    expect(node(store, "box_5")).toMatchObject({ name: "pillar", parent: "group_4", x: 30, createdBy: "agent" });
+    expect(node(store, "box_2")).toMatchObject({ x: 10, parent: "group_1" });
+    expect(store.getHistory().undoLabel).toBe("Agent: copy lobby (group_2)");
+    store.undo();
+    expect(ids(store)).toEqual(["group_2", "box_1", "group_1", "box_2", "box_3"]);
+    store.redo();
+    expect(ids(store)).toContain("box_5");
+  });
+
+  it("makes a row with count, copy i offset by i times the offset, and never reuses IDs", () => {
+    const store = setup();
+    const copies = store.duplicateNodes({ ids: ["box_3"], dx: 0.25, dy: 3, count: 3 }, "human");
+    expect(copies.map((n) => [n.id, (n as Box).x, (n as Box).y])).toEqual([
+      ["box_4", 20.25, 3],
+      ["box_5", 20.5, 6],
+      ["box_6", 20.75, 9],
+    ]);
+    expect(ids(store).slice(-4)).toEqual(["box_3", "box_4", "box_5", "box_6"]);
+    expect(store.getHistory().undoLabel).toBe("Copy box_3 ×3");
+    store.undo();
+    expect(store.duplicateNodes({ ids: ["box_3"] }, "human").map((n) => n.id)).toEqual(["box_7"]);
+  });
+
+  it("keeps a copied box in its original's group, and copies a node listed with its ancestor once", () => {
+    const store = setup();
+    const [copy] = store.duplicateNodes({ ids: ["box_2"], dz: 4 }, "human");
+    expect(copy).toMatchObject({ id: "box_4", parent: "group_1", z: 4 });
+    expect(ids(store)).toEqual(["group_2", "box_1", "group_1", "box_2", "box_4", "box_3"]);
+    const copies = store.duplicateNodes({ ids: ["box_1", "group_2"] }, "human");
+    expect(copies.map((n) => n.id)).toEqual(["group_3"]);
+    expect(store.getScene().nodes.filter((n) => n.parent === "group_3").map((n) => n.id)).toEqual(["box_5", "group_4"]);
+  });
+
+  it("rejects unknown or repeated IDs and bad counts, copying nothing", () => {
+    const store = setup();
+    const before = ids(store);
+    expect(() => store.duplicateNodes({ ids: ["box_9"] }, "agent")).toThrow(SceneError);
+    expect(() => store.duplicateNodes({ ids: ["box_1", "box_1"] }, "agent")).toThrow(/more than once/);
+    expect(() => store.duplicateNodes({ ids: ["box_1"], count: 0 }, "agent")).toThrow(SceneError);
+    expect(() => store.duplicateNodes({ ids: ["box_1"], count: 101 }, "agent")).toThrow(SceneError);
+    expect(() => store.duplicateNodes({ ids: ["box_1"], count: 1.5 }, "agent")).toThrow(SceneError);
+    expect(ids(store)).toEqual(before);
+    expect(store.getHistory().undoLabel).toBe("Group box_1, group_1 as group_2");
+  });
+});
+
 describe("scene store placing (outliner drag and drop)", () => {
   /** box_1..box_4 at the top level; group_1 holds box_2 and box_3. */
   const setup = () => {

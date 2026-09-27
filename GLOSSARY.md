@@ -34,6 +34,7 @@ Shared vocabulary for this project, for humans and agents alike. Use these names
 - **actor**: who made a change, either `human` (the editor) or `agent` (MCP). Stored on each box as `createdBy`. Not shown in the view since the graybox look.
 - **box**: a footprint plus a height: `{ id, type: "box", name?, kind, x, z, y, width, depth, height, rotation, color, createdBy }` in meters. `x, z` is the footprint's **center** (from 03, it was the min corner in 02), `width` and `depth` run along the box's own axes, and it rises from `y` to `y + height`. Its kind is either **room** or **volume** and can change. Its ID is `box_N`, never reused (from 03, it was per kind in 02).
 - **command**: one user-level edit and one undo step. It's made of ops, records its actor, and stores its inverse (from 02).
+- **copy (duplicate)**: a node copied with its whole subtree: new IDs, the same names, structure and parent group, offset by `dx, dy, dz` (`count` copies make a row, copy i offset i times). It goes right after its original in the list, and every copy call is one step (`Copy group_1 ×3`). The store's `duplicateNodes`, the `duplicate_nodes` message, and `move_nodes` with `copy: true` for the agent (from 05).
 - **data folder**: where the server saves everything: `./data` where it runs (gitignored), or `DATA_DIR`. It holds `app.json` (the last open scene), `projects/`, and a `.lock` so only one server uses it (from 04).
 - **editor state**: a scene's `editor.json`: the camera (focus, yaw, zoom distance) and the selection. It's written 500 ms after they stop changing, and right away before switching scenes or stopping the server. It's restored when the scene opens. It isn't design data and isn't undoable (from 04).
 - **elevation (`y`)**: the height of a box's bottom above the ground, in meters. 0 = on the ground; negative is below ground (from 03).
@@ -59,5 +60,6 @@ Shared vocabulary for this project, for humans and agents alike. Use these names
 
 ## System
 
-- **MCP server / tools**: the `/mcp` endpoint Claude Code connects to. Current tools: `get_scene`, `draw_boxes`, `update_nodes`, `remove_nodes`, `move_nodes`, `rotate_nodes`, `group_nodes`, `ungroup`.
+- **MCP server / tools**: the `/mcp` endpoint Claude Code connects to. Current tools: `get_scene`, `draw_boxes`, `update_nodes`, `remove_nodes`, `move_nodes` (with `copy`, from 05), `rotate_nodes`, `group_nodes`, `ungroup`.
+- **server instructions**: the conventions text (units, boxes, groups, IDs, the view, copying) the MCP server sends once when a client connects, instead of repeating it in every tool description (from 05).
 - **server**: the single local process (`npm run dev`) that owns the open scene, saves it in the data folder, and serves the editor, the WebSocket (`/ws`) and MCP (`/mcp`).

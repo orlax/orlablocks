@@ -166,6 +166,12 @@ export const MoveNodesSchema = z.strictObject({
   dy: z.number().optional().describe("Meters up, default 0"),
   dz: z.number().optional().describe("Meters along +z, default 0"),
 });
+export const MAX_COPIES = 100;
+/** Copies nodes (whole groups included) with new IDs; copy i (1..count) is offset by i × (dx, dy, dz). */
+export const DuplicateNodesSchema = MoveNodesSchema.extend({
+  ids: IdsSchema.describe("IDs of boxes and/or groups; a group is copied with everything in it"),
+  count: z.number().int().min(1).max(MAX_COPIES).optional().describe(`How many copies, 1..${MAX_COPIES}, default 1`),
+});
 export const RotateNodesSchema = z.strictObject({
   ids: IdsSchema.describe("IDs of boxes and/or groups; a group turns everything in it"),
   degrees: z.number().describe("Counterclockwise seen from above, around the center of the nodes' combined bounds"),
@@ -248,6 +254,7 @@ export const ClientMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("update_nodes"), changes: z.array(NodeUpdateSchema).min(1) }),
   z.object({ type: z.literal("remove_nodes"), ids: IdsSchema }),
   MoveNodesSchema.extend({ type: z.literal("move_nodes") }),
+  DuplicateNodesSchema.extend({ type: z.literal("duplicate_nodes") }),
   RotateNodesSchema.extend({ type: z.literal("rotate_nodes") }),
   GroupNodesSchema.extend({ type: z.literal("group_nodes") }),
   UngroupSchema.extend({ type: z.literal("ungroup") }),

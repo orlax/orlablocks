@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Box, Group, SceneNode } from "./scene.types";
-import { ancestry, boxesUnder, childrenOf, commonParent, selectableAt, subtreeIds } from "./tree";
+import { ancestry, boxesUnder, childrenOf, commonParent, copyNodes, selectableAt, subtreeIds, topmost } from "./tree";
 
 const group = (id: string, parent?: string): Group => ({ id, type: "group", createdBy: "human", ...(parent ? { parent } : {}) });
 const box = (id: string, parent?: string): Box => ({
@@ -50,5 +50,23 @@ describe("tree", () => {
     expect(commonParent(nodes, ["box_2", "box_3"])).toBe("group_2");
     expect(commonParent(nodes, ["box_2", "box_1"])).toBe("group_1");
     expect(commonParent(nodes, ["box_2", "box_4"])).toBeUndefined();
+  });
+
+  it("keeps only the listed nodes that aren't inside another listed node, in the given order", () => {
+    expect(topmost(nodes, ["box_4", "box_3", "group_1", "group_2"])).toEqual(["box_4", "group_1"]);
+  });
+
+  it("copies a subtree with fresh IDs, remapping parents inside it and keeping the others", () => {
+    let n = 10;
+    const source = nodes.filter((x) => subtreeIds(nodes, "group_2").has(x.id)).map((x) => (x.id === "box_2" ? { ...x, name: "pillar", x: 0.1 } : x));
+    const copies = copyNodes(source, (type) => `${type}_${n++}`, { dx: 0.2, dz: -1 });
+    // box_2, group_2, box_3 → box_10, group_11, box_12; group_2's own parent (group_1) is outside the set.
+    expect(copies.map((c) => [c.id, c.parent])).toEqual([
+      ["box_10", "group_11"],
+      ["group_11", "group_1"],
+      ["box_12", "group_11"],
+    ]);
+    expect(copies[0]).toMatchObject({ name: "pillar", x: 0.3, y: 0, z: -1 });
+    expect(source[0].id).toBe("box_2");
   });
 });
