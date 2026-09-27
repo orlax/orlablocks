@@ -504,13 +504,72 @@ The agent drew the shrine taking +z as south, because nothing declared north. No
 - **The view:** a compass rose at the bottom right (`CompassRose`). `CompassSync` turns it every frame, from where -z projects on screen at the focus point, so it's exact under the pitch. Clicking it sets yaw 0 (north-up), and a press on it never reaches the view (no marquee, no deselect).
 - **Checks:** typecheck, the 214 tests, the bundle, and a scripted `initialize` and `get_scene` on `:5171` (the instructions sentence and `compass: { north: "-z", east: "+x", south: "+z", west: "-x" }`). Orlando's browser check passed.
 
+### 06.5 — Lines and the Line tool (done)
+
+- **Types:**
+  - `Line` is `{ color, points: LinePoint[], thickness, dashed, arrow }`, and a `LinePoint` is `{ x, y, z, in?, out? }` with 3D handles (`Offset3`).
+  - `Shape` now includes lines, as §3 defines a shape. The code that needs a footprint, a kind or a height takes `ClosedShape` (box, cylinder, free-form) and checks `isClosed`. `isFootprinted` is now explicitly box or cylinder, so a line never counts.
+  - Limits: `MIN_LINE_POINTS` 2, thickness 1..12 (default 3), and `DEFAULT_LINE_COLOR` black.
+  - `ShapeInputSchema` gains a `line` branch. `update_nodes` takes `thickness`, `dashed` and `arrow`, and `points` with an optional `y`. The store requires y on a line's points and refuses it on a free-form's.
+  - `nextId` gains `line`, defaulting to 1: the 06.4 check's scene reopened and drew `line_1`.
+- **`geometry.ts`:**
+  - `sampleEdge3` / `polyline` sample a line in 3D. `groundPoints` gives the footprint or the polyline, for bounds and oriented frames. `verticalRange` gives a closed shape's elevation and top, or a line's lowest and highest point (curves included). `boundsOf` uses it.
+  - `mapPoints` / `roundPoints` keep and round y on points and handles. `moveShape` moves a line up through its points (it has no `y` field).
+  - `splitEdge` works in 3D. `reversePoints` swaps each point's handles, so the path keeps its shape. `lineProblem` refuses fewer than 2 points or neighbors in the same place; a line may cross itself.
+- **The store:**
+  - `drawShapes` draws lines with their defaults. `updateNodes` changes style (`Restyle line_1`) and points (`Reshape line_1`). It refuses a closed shape's fields on a line, and a line's fields on anything else.
+  - Paste checks a line's points. Convert refuses lines.
+- **Rendering (`LineMesh.tsx`):**
+  - three's `Line2` / `LineMaterial`: constant width on screen, and dashes in world units scaled with the thickness.
+  - It's drawn twice, normally and at 30 % over everything, so a line behind a wall stays visible, fainter. Lifted 2 cm so it isn't hidden in the surface it's on.
+  - Cone arrowheads at the ends, sized in screen pixels from the thickness every frame. No shadows.
+  - A line always keeps its own color, so you can see the one you picked. Selected, it gets a blue halo (6 px wider, 45 %, drawn over everything) and blue rings on its points. Hovered, it gets a yellow halo. This changed after Orlando's first try: turning the line blue hid its color.
+- **Picking and the marquee:**
+  - `pickLine` finds the nearest line within `max(6, thickness / 2 + 4)` px of its projected path, with the 3D point on it (what a body drag grabs). The view checks lines before shapes (`hitAt`). Rays ignore lines.
+  - The marquee tests a line's projected path.
+- **The gizmo:**
+  - A line gets the body drag, the x/y/z arrows and the rotate handle, but no scale or height handles.
+  - Elevation snapping ignores lines as targets. `topOf` / `verticalRange` replace `y + height`.
+- **The Line tool (`L`):**
+  - It shares the Pen's point placing, now with a y per point. `Pen.owner` says which tool the points belong to, and switching to the other tool drops them.
+  - Each press lands on the surface under the cursor (`surfaceAt`: `pickHit` over the closed shapes, else the ground), with x/z snapped and y from the surface.
+  - Handles are pulled out on the plane at the point's height, flat to start with.
+  - A double-click (whose second press adds nothing) or `Enter` finishes, and `Backspace` / `Esc` work as with the Pen.
+  - The preview draws the line in the contextual bar's style.
+- **The contextual bar:**
+  - The Line tool's bar has color (its own, black at first), a thickness slider (sent on release, so one step), a dashes toggle and the arrow choice (none, end, both).
+  - With lines selected, the same controls apply to every selected line (a value they don't share shows as not set), plus **Reverse**.
+  - The kind toggle is hidden when only lines are selected.
+- **Point editing on lines:**
+  - `points.ts` takes open paths (`closed` false: no closing edge, and an end point's smooth handles run along its one edge) and points with their own y. `removePoints` takes the minimum (2 for a line).
+  - A point is dragged on the plane at its own height.
+  - The first selected point gets a green **y arrow** (the gizmo's). Dragging it raises or lowers the selected points, snapping to the ground and to the tops under the point (`Cmd/Ctrl` free), with a `y … m` label.
+- **App:**
+  - The counts add `· N lines` when there are any.
+  - The selection info reads `path (line_1) · 3 points · 8.5 m long · 3 px · dashed · arrow at the end`.
+  - The outliner shows a waypoints icon for lines.
+- **MCP:**
+  - The instructions describe lines: absolute x/y/z, 3D handles, a jump arc as 2 points with an `out` handle, the defaults, and no kind, x, z, y, height or rotation.
+  - `draw_shapes` and `update_nodes` mention lines, and the `draw_shapes` totals count them.
+  - The server version stays 0.0.7. **Restart the server and reconnect with `/mcp`.**
+- **Checks:**
+  - typecheck;
+  - 226 tests. The new ones: "lines" in `geometry.test.ts`, "scene store lines", point edits on a line in `points.test.ts`, and `pickLine`;
+  - the editor bundles;
+  - a scripted run on `:5171`, reusing 06.4's scratch folder:
+    - the agent drew a round shrine, a curved pool and a dashed path with an end arrow in one `draw_shapes` call (totals: `lines: 1`);
+    - a path without y and `height` on a line got plain errors;
+    - `move_nodes` dy raised the points, a mirror flipped a 3D handle's x, and `copy` + `count` made `line_2` and `line_3`;
+    - a WS `add_shapes` drew `line_4`;
+  - Orlando's browser check passed (after the highlight change above).
+
 ### Notes for the next session (updated 2026-09-27)
 
 **Where things stand:**
 - 06.1, 06.2 and 06.3 are committed, one commit each, and their browser checklists passed.
 - 06.4 is committed, and its browser check passed.
 - **Side mission, done: the compass.** Orlando settled north = -z (with +x east, as the tools already said), fixed for every scene, and a rose in the lower right. See the Compass section below.
-- **Next is 06.5, lines and the Line tool (§7).** Point editing is written for free-forms, but the drag, the hit-testing and the overlay work on a list of points, so lines can reuse them. A line adds the y arrow on the selected point.
+- 06.5 is committed, and its browser check passed. What's left of phase 06 is the acceptance test (§12).
 
 **06.4, how I planned it (built as described in the 06.4 section, with the differences noted there):**
 - **Entering the mode:** today a double-click in the Select tool enters a group (`onDoubleClick` in `Viewport.tsx`). Make a double-click on a free-form (the node itself, once it's selected at its level) enter point editing instead. Keep it as Viewport state next to `context`, or lift it to App like `context` if the contextual bar needs it (it does: `editing freeform_1`).

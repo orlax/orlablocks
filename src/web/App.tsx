@@ -1,7 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ChevronDown, Map as MapIcon } from "lucide-react";
-import { DEFAULT_COLOR, DEFAULT_VIEW, type Shape, type ShapeColor, type ShapeKind, type SceneNode, type View } from "../shared/scene.types";
-import { footprintBounds, round2 } from "../shared/geometry";
+import {
+  DEFAULT_COLOR,
+  DEFAULT_LINE_COLOR,
+  DEFAULT_THICKNESS,
+  DEFAULT_VIEW,
+  type Line,
+  type Shape,
+  type ShapeColor,
+  type ShapeKind,
+  type SceneNode,
+  type View,
+} from "../shared/scene.types";
+import { footprintBounds, polyline, reversePoints, round2 } from "../shared/geometry";
 import { shapesUnder, childrenOf, isShape, isGroup } from "../shared/tree";
 import type { CameraState, GroundPoint } from "./camera";
 import { clipboardText, readClipboard } from "./clipboard";
@@ -12,7 +23,7 @@ import { Outliner } from "./Outliner";
 import { ProjectPicker } from "./ProjectPicker";
 import { ContextualBar, EDIT_POINTS_HINT, HINTS, TOOLS, ToolBar } from "./ToolBar";
 import { useScene } from "./useScene";
-import { Viewport, type Tool } from "./Viewport";
+import { Viewport, type LineStyle, type Tool } from "./Viewport";
 
 /** Fixed-width number (e.g. "  12.50", " -3.00") so the info-label never jitters. */
 const coord = (n?: number) => (n === undefined ? "–".padStart(7) : n.toFixed(2).padStart(7));
@@ -38,9 +49,16 @@ const title = (n: SceneNode) => (n.name ? `${n.name} (${n.id})` : n.id);
 
 /**
  * `lobby (box_3) · 6 × 4 × 3 m · y 0 · 0°`, a cylinder's sides: `tower (cylinder_1) · 8 × 8 × 3 m · 8 sides · y 0 · 0°`,
- * and a free-form's points and bounds: `cave (freeform_1) · 7 points · 12.3 × 8 × 3 m · y 0`.
+ * a free-form's points and bounds: `cave (freeform_1) · 7 points · 12.3 × 8 × 3 m · y 0`, and a line's points,
+ * length and style: `route (line_1) · 3 points · 14.2 m long · 3 px · dashed · arrow at the end`.
  */
 const describe = (s: Shape) => {
+  if (s.type === "line") {
+    const path = polyline(s);
+    const length = path.slice(1).reduce((sum, p, i) => sum + Math.hypot(p.x - path[i].x, p.y - path[i].y, p.z - path[i].z), 0);
+    const arrow = s.arrow === "end" ? " · arrow at the end" : s.arrow === "both" ? " · arrows at both ends" : "";
+    return `${title(s)} · ${s.points.length} points · ${round2(length)} m long · ${s.thickness} px${s.dashed ? " · dashed" : ""}${arrow}`;
+  }
   if (s.type === "freeform") {
     const b = footprintBounds(s);
     return `${title(s)} · ${s.points.length} points · ${round2(b.maxX - b.minX)} × ${round2(b.maxZ - b.minZ)} × ${s.height} m · y ${s.y}`;
@@ -71,6 +89,8 @@ export function App() {
   const [nextColor, setNextColor] = useState<ShapeColor>(DEFAULT_COLOR);
   // The Cylinder tool's sides (undefined = smooth).
   const [nextSides, setNextSides] = useState<number | undefined>(undefined);
+  // The Line tool's next line: its own color (black by default: a near-white line vanishes on the ground) and style.
+  const [nextLine, setNextLine] = useState<LineStyle>({ color: DEFAULT_LINE_COLOR, thickness: DEFAULT_THICKNESS, dashed: false, arrow: "none" });
   // After Cmd+G or a copy: what to select when the result arrives (the new group, the copies).
   const pendingSelect = useRef<PendingSelect | null>(null);
   // The last Alt-drag copy's offset (world axes), which Alt+J repeats. Forgotten when the scene changes.
@@ -87,8 +107,9 @@ export function App() {
   const boxes = nodes.filter(isShape);
   const selectedNodes = nodes.filter((n) => selection.includes(n.id));
   const selectedShapes = shapesUnder(nodes, selection);
-  const rooms = boxes.filter((b) => b.kind === "room").length;
-  const volumes = boxes.length - rooms;
+  const rooms = boxes.filter((b) => b.type !== "line" && b.kind === "room").length;
+  const volumes = boxes.filter((b) => b.type !== "line" && b.kind === "volume").length;
+  const lines = boxes.filter((b) => b.type === "line").length;
   const groups = nodes.filter(isGroup).length;
 
   // A scene opened (here, in another tab, or when this tab connected): close the picker, drop the local state that
@@ -320,7 +341,22 @@ export function App() {
     };
     send({ type: "convert_nodes", ids });
   };
-  const editable = singleShape?.type === "freeform" ? singleShape : null;
+  const editable = singleShape?.type === "freeform" || singleShape?.type === "line" ? singleShape : null;
+  // Kind is for closed shapes: hidden when only lines are selected, disabled unless a single closed shape is.
+  const singleClosed = singleShape && singleShape.type !== "line" ? singleShape : null;
+  const selectedLines = selectedShapes.filter((s): s is Line => s.type === "line");
+  const onlyLines = selectedShapes.length > 0 && selectedLines.length === selectedShapes.length;
+  // The selected lines' style: each value when they all share it.
+  const shared = <K extends keyof LineStyle>(k: K) =>
+    selectedLines.every((l) => l[k] === selectedLines[0][k]) ? selectedLines[0]?.[k] : undefined;
+  const lineControls =
+    selectedLines.length > 0
+      ? {
+          style: { thickness: shared("thickness"), dashed: shared("dashed"), arrow: shared("arrow") },
+          onChange: (patch: Partial<LineStyle>) => send({ type: "update_nodes", changes: selectedLines.map((l) => ({ id: l.id, ...patch })) }),
+          onReverse: () => send({ type: "update_nodes", changes: selectedLines.map((l) => ({ id: l.id, points: reversePoints(l.points) })) }),
+        }
+      : undefined;
 
   return (
     <div className="app">
@@ -335,8 +371,9 @@ export function App() {
         outsideHover={outlinerHover}
         nextKind={nextKind}
         nextSides={nextSides}
+        nextLine={nextLine}
         onSelect={setSelection}
-        onDrawShape={(shape) => send({ type: "add_shapes", shapes: [{ ...shape, color: nextColor }] })}
+        onDrawShape={(shape) => send({ type: "add_shapes", shapes: [{ ...shape, color: shape.type === "line" ? nextLine.color : nextColor }] })}
         onUpdate={(changes) => send({ type: "update_nodes", changes })}
         onDuplicate={({ ids, ...offset }) => {
           lastCopy.current = offset;
@@ -392,7 +429,9 @@ export function App() {
         </span>
         <span className="coords">yaw {`${Math.round(view.yaw)}°`.padStart(4)}</span>
         <span className="sep" />
-        <span className="counts">{scene ? `${rooms} rooms · ${volumes} volumes · ${groups} groups` : "—"}</span>
+        <span className="counts">
+          {scene ? `${rooms} rooms · ${volumes} volumes${lines > 0 ? ` · ${lines} line${lines === 1 ? "" : "s"}` : ""} · ${groups} groups` : "—"}
+        </span>
         <span className="sep" />
         <span className={notice ? "hint notice" : "hint"}>{notice ?? (editing && activeTool === "select" ? EDIT_POINTS_HINT : HINTS[activeTool])}</span>
       </div>
@@ -409,6 +448,16 @@ export function App() {
             next free-form
           </ContextualBar>
         )}
+        {tool === "line" && (
+          <ContextualBar
+            kind={null}
+            color={nextLine.color}
+            onColor={(color) => setNextLine({ ...nextLine, color })}
+            line={{ style: nextLine, onChange: (patch) => setNextLine({ ...nextLine, ...patch }) }}
+          >
+            next line
+          </ContextualBar>
+        )}
         {tool === "cylinder" && (
           <ContextualBar
             kind={nextKind}
@@ -422,9 +471,9 @@ export function App() {
         )}
         {tool === "select" && selectedNodes.length > 0 && (
           <ContextualBar
-            kind={singleShape?.kind ?? null}
-            kindDisabled={!singleShape}
-            onKind={(kind) => singleShape && send({ type: "update_nodes", changes: [{ id: singleShape.id, kind }] })}
+            kind={singleClosed?.kind ?? null}
+            kindDisabled={!singleClosed}
+            onKind={onlyLines ? undefined : (kind) => singleClosed && send({ type: "update_nodes", changes: [{ id: singleClosed.id, kind }] })}
             color={sharedColor}
             onColor={(color) => send({ type: "update_nodes", changes: selectedShapes.map((b) => ({ id: b.id, color })) })}
             onMirror={(axis) => send({ type: "mirror_nodes", ids: selection, axis })}
@@ -434,6 +483,7 @@ export function App() {
                 : undefined
             }
             onConvert={convertible.length > 0 ? convert : undefined}
+            line={lineControls}
             editPoints={editable ? { active: editing === editable.id, onToggle: () => setEditing(editing ? null : editable.id) } : undefined}
           >
             {editing && editable

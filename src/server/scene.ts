@@ -5,6 +5,7 @@ import {
   mirrorAcross,
   moveShape,
   normalizeDeg,
+  lineProblem,
   outlineProblem,
   rotateAround,
   round2,
@@ -16,6 +17,8 @@ import {
   ConvertNodesSchema,
   DEFAULT_COLOR,
   DEFAULT_HEIGHT,
+  DEFAULT_LINE_COLOR,
+  DEFAULT_THICKNESS,
   DEFAULT_VIEW,
   DuplicateNodesSchema,
   GroupNodesSchema,
@@ -33,6 +36,7 @@ import {
   type Box,
   type Cylinder,
   type Freeform,
+  type LinePoint,
   type Shape,
   type FootPoint,
   type ShapePatch,
@@ -86,6 +90,9 @@ const FIELD_VERBS: Record<keyof NodePatch, string> = {
   color: "recolor",
   sides: "change sides of",
   points: "reshape",
+  thickness: "restyle",
+  dashed: "restyle",
+  arrow: "restyle",
 };
 
 /** One verb when every change is the same kind of edit ("move", "recolor"), "edit" otherwise. */
@@ -239,6 +246,14 @@ export function createSceneStore() {
     return made;
   };
 
+  /** A line's points rounded to 2 decimals, or an error (as `prefix: ...`) if the path isn't valid. */
+  const checkLinePoints = (prefix: string, points: LinePoint[], errors: string[]) => {
+    const rounded = roundPoints(points);
+    const problem = lineProblem(rounded);
+    if (problem) errors.push(`${prefix}.points: ${problem}`);
+    return rounded;
+  };
+
   /** Shape patches that change something, as update changes. */
   const effectiveShapeChanges = (boxes: Shape[], patches: Record<string, ShapePatch>) =>
     boxes.flatMap((box) => {
@@ -288,14 +303,26 @@ export function createSceneStore() {
           return null;
         }
         const d = result.data;
-        const height = d.height ?? DEFAULT_HEIGHT[d.kind];
         const prefix = `shapes[${i}]`;
-        checkSizes(prefix, { ...(d.type === "freeform" ? {} : { width: d.width, depth: d.depth }), height }, errors);
         if (d.parent !== undefined) {
           const e = parentError(d.parent);
           if (e) errors.push(`${prefix}.parent: ${e}`);
         }
         const name = d.name?.trim();
+        if (d.type === "line") {
+          return {
+            type: "line" as const,
+            ...(name ? { name } : {}),
+            ...(d.parent !== undefined ? { parent: d.parent } : {}),
+            color: d.color ?? DEFAULT_LINE_COLOR,
+            points: checkLinePoints(prefix, d.points, errors),
+            thickness: round2(d.thickness ?? DEFAULT_THICKNESS),
+            dashed: d.dashed ?? false,
+            arrow: d.arrow ?? "none",
+          };
+        }
+        const height = d.height ?? DEFAULT_HEIGHT[d.kind];
+        checkSizes(prefix, { ...(d.type === "freeform" ? {} : { width: d.width, depth: d.depth }), height }, errors);
         const common = {
           ...(name ? { name } : {}),
           ...(d.parent !== undefined ? { parent: d.parent } : {}),
@@ -377,8 +404,21 @@ export function createSceneStore() {
           if (fields.sides !== undefined && node.type !== "cylinder") {
             errors.push(`changes[${i}].sides: only a cylinder has sides ("${id}" is a ${node.type})`);
           }
-          if (fields.points !== undefined && node.type !== "freeform") {
-            errors.push(`changes[${i}].points: only a free-form has points ("${id}" is a ${node.type})`);
+          if (fields.points !== undefined && node.type !== "freeform" && node.type !== "line") {
+            errors.push(`changes[${i}].points: only free-forms and lines have points ("${id}" is a ${node.type})`);
+          }
+          const lineOnly = (["thickness", "dashed", "arrow"] as const).filter((k) => fields[k] !== undefined);
+          if (node.type !== "line" && lineOnly.length > 0) {
+            errors.push(`changes[${i}]: only a line has ${lineOnly.join(", ")} ("${id}" is a ${node.type})`);
+          }
+          if (node.type === "line") {
+            const closedOnly = (["kind", "x", "z", "y", "width", "depth", "height", "rotation"] as const).filter((k) => fields[k] !== undefined);
+            if (closedOnly.length > 0) {
+              errors.push(
+                `changes[${i}]: "${id}" is a line, with no ${closedOnly.join(", ")}: change its points (they carry their own y), ` +
+                  `or use move_nodes / rotate_nodes`,
+              );
+            }
           }
           if (node.type === "freeform") {
             const footprinted = (["x", "z", "width", "depth", "rotation"] as const).filter((k) => fields[k] !== undefined);
@@ -406,7 +446,25 @@ export function createSceneStore() {
         if (fields.kind !== undefined) patch.kind = fields.kind;
         if (fields.color !== undefined) patch.color = fields.color;
         if (fields.sides !== undefined) patch.sides = fields.sides ?? undefined;
-        if (fields.points !== undefined && node?.type === "freeform") patch.points = checkPoints(`changes[${i}]`, fields.points, errors);
+        if (fields.points !== undefined && node?.type === "freeform") {
+          if (fields.points.some((p) => p.y !== undefined || p.in?.y !== undefined || p.out?.y !== undefined)) {
+            errors.push(`changes[${i}].points: a free-form's points have no y (the free-form has its own y)`);
+          }
+          const flat = fields.points.map(({ y: _y, in: pin, out: pout, ...p }) => ({
+            ...p,
+            ...(pin ? { in: { x: pin.x, z: pin.z } } : {}),
+            ...(pout ? { out: { x: pout.x, z: pout.z } } : {}),
+          }));
+          patch.points = checkPoints(`changes[${i}]`, flat, errors);
+        }
+        if (fields.points !== undefined && node?.type === "line") {
+          const missing = fields.points.findIndex((p) => p.y === undefined || (p.in && p.in.y === undefined) || (p.out && p.out.y === undefined));
+          if (missing >= 0) errors.push(`changes[${i}].points[${missing}]: a line's points (and handles) need a y`);
+          else patch.points = checkLinePoints(`changes[${i}]`, fields.points as LinePoint[], errors);
+        }
+        if (fields.thickness !== undefined) patch.thickness = round2(fields.thickness);
+        if (fields.dashed !== undefined) patch.dashed = fields.dashed;
+        if (fields.arrow !== undefined) patch.arrow = fields.arrow;
         if (fields.name !== undefined) patch.name = fields.name.trim() || undefined;
         if (fields.parent !== undefined) patch.parent = parent;
 
@@ -558,8 +616,12 @@ export function createSceneStore() {
         const { parent: p, ...rest } = n;
         const kept = p !== undefined && groups.has(p) ? { parent: p } : {};
         if (!isShape(n)) return { ...rest, ...kept } as SceneNode;
+        if (n.type === "line") {
+          return { ...(rest as typeof n), ...kept, thickness: round2(n.thickness), points: checkLinePoints(`nodes[${i}]`, n.points, errors) };
+        }
         const shape = { ...(rest as Shape), ...kept, height: round2(n.height) } as Shape;
-        if (!isFootprinted(shape)) return { ...shape, points: checkPoints(`nodes[${i}]`, shape.points, errors) };
+        if (shape.type === "freeform") return { ...shape, points: checkPoints(`nodes[${i}]`, shape.points, errors) };
+        if (shape.type === "line") return shape;
         return { ...shape, width: round2(shape.width), depth: round2(shape.depth), rotation: normalizeRotation(shape.rotation) };
       });
       nodes.forEach((n, i) => {

@@ -2,10 +2,10 @@ import { useEffect, useMemo } from "react";
 import * as THREE from "three";
 import { toCreasedNormals } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { isFootprinted, localFootprint, pointInPolygon, roomWalls, shapeFrame, signedArea2, type Point } from "../shared/geometry";
-import { PALETTE, WALL_THICKNESS, type Shape, type ShapeColor } from "../shared/scene.types";
+import { PALETTE, WALL_THICKNESS, type ClosedShape, type ShapeColor } from "../shared/scene.types";
 
 type Props = {
-  shape: Shape;
+  shape: ClosedShape;
   /** The live preview while drawing: translucent blue, so it reads as not-yet-placed. */
   draft?: boolean;
   highlight?: "hover" | "selected";
@@ -36,9 +36,9 @@ function tileTexture() {
   return texture;
 }
 
-const SELECT_COLOR = "#3d7be0";
+export const SELECT_COLOR = "#3d7be0";
 /** Hover (what a click would select): a yellow tint, the same kind of overlay as the selection's blue. */
-const HOVER_COLOR = "#f5c518";
+export const HOVER_COLOR = "#f5c518";
 
 // Graybox materials: matte, tiled every meter, in the box's palette color. Shared per color, made on first use.
 let shared: ReturnType<typeof createShared> | null = null;
@@ -141,7 +141,7 @@ const CREASE = (30 * Math.PI) / 180;
  * with other shapes), its half size for a rotated one (tiles start at a corner). A free-form's frame is the
  * world's, so its tiles always line up with the grid.
  */
-function uvOffset(shape: Shape): [number, number] {
+function uvOffset(shape: ClosedShape): [number, number] {
   if (!isFootprinted(shape)) return [0, 0];
   return shape.rotation === 0 ? [shape.x, shape.z] : [shape.width / 2, shape.depth / 2];
 }

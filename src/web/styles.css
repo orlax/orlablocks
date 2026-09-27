@@ -555,3 +555,8 @@ body {
 .compass text { font: 700 9px/1 system-ui, sans-serif; text-anchor: middle; dominant-baseline: central; }
 .compass .n { fill: #f07a70; }
 .compass .dir { fill: var(--muted); font-weight: 600; }
+/* A line's style on the contextual bar: the thickness slider, dashes, arrows, Reverse. */
+.contextual-bar .line-controls { display: flex; align-items: center; gap: 6px; }
+.contextual-bar .thickness { display: flex; align-items: center; gap: 6px; color: var(--bar-text); }
+.contextual-bar .thickness input { width: 90px; accent-color: #8fb4f2; }
+.contextual-bar .thickness .value { min-width: 34px; font-variant-numeric: tabular-nums; color: #8fb4f2; }

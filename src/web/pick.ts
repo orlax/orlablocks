@@ -1,6 +1,6 @@
-import { WALL_THICKNESS, type Shape } from "../shared/scene.types";
-import { footprint, pointInRings, ringsInWorld, roomWalls, type Point } from "../shared/geometry";
-import type { Vec3 } from "./camera";
+import { WALL_THICKNESS, type ClosedShape, type Line, type Shape } from "../shared/scene.types";
+import { footprint, isClosed, pointInRings, polyline, ringsInWorld, roomWalls, type Point } from "../shared/geometry";
+import { worldToScreen, type CameraState, type Size, type Vec3 } from "./camera";
 
 type Ray = { origin: Vec3; dir: Vec3 };
 
@@ -13,10 +13,11 @@ export function pickShape(ray: Ray, boxes: Shape[]): string | null {
   return pickHit(ray, boxes)?.id ?? null;
 }
 
-/** Like pickShape, plus the world point where the ray hits the shape. */
+/** Like pickShape, plus the world point where the ray hits the shape. Lines aren't hit by rays (see `pickLine`). */
 export function pickHit(ray: Ray, boxes: Shape[]): { id: string; point: Vec3 } | null {
   let best: { id: string; t: number } | null = null;
   for (const box of boxes) {
+    if (!isClosed(box)) continue;
     const t = hitDistance(ray, box);
     if (t !== null && (!best || t < best.t)) best = { id: box.id, t };
   }
@@ -57,7 +58,38 @@ export function prismCrossings({ origin: o, dir: d }: Ray, rings: Point[][], y0:
   return out.sort((p, q) => p.t - q.t);
 }
 
-function hitDistance(ray: Ray, shape: Shape): number | null {
+/** How close (px) to a line's path on screen a click picks it: more for a thick line. */
+export const lineHitPx = (line: Line) => Math.max(6, line.thickness / 2 + 4);
+
+/**
+ * The line nearest the cursor on screen, within its hit distance, and the point on it nearest the cursor (in 3D,
+ * interpolated along the segment). Lines are drawn over the shapes, so the view checks them first.
+ */
+export function pickLine(cam: CameraState, size: Size, sx: number, sy: number, shapes: Shape[]): { id: string; point: Vec3 } | null {
+  let best: { id: string; point: Vec3; d: number } | null = null;
+  for (const line of shapes) {
+    if (line.type !== "line") continue;
+    const path = polyline(line);
+    const screen = path.map((p) => worldToScreen(cam, size, p));
+    for (let i = 0; i + 1 < path.length; i++) {
+      const a = screen[i];
+      const b = screen[i + 1];
+      if (!a || !b) continue;
+      const dx = b.sx - a.sx;
+      const dy = b.sy - a.sy;
+      const len2 = dx * dx + dy * dy;
+      const u = len2 === 0 ? 0 : Math.max(0, Math.min(1, ((sx - a.sx) * dx + (sy - a.sy) * dy) / len2));
+      const d = Math.hypot(sx - (a.sx + dx * u), sy - (a.sy + dy * u));
+      if (d <= lineHitPx(line) && (!best || d < best.d)) {
+        const [p, q] = [path[i], path[i + 1]];
+        best = { id: line.id, point: { x: p.x + (q.x - p.x) * u, y: p.y + (q.y - p.y) * u, z: p.z + (q.z - p.z) * u }, d };
+      }
+    }
+  }
+  return best && { id: best.id, point: best.point };
+}
+
+function hitDistance(ray: Ray, shape: ClosedShape): number | null {
   const { origin: o } = ray;
   const y0 = shape.y;
   const y1 = shape.y + shape.height;

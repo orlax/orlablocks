@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Box, Freeform } from "../shared/scene.types";
 import { DEFAULT_CAMERA, heightOnVertical, screenRay, worldToScreen, type CameraState, type Vec3 } from "./camera";
-import { pickShape, prismCrossings } from "./pick";
+import { pickLine, pickShape, prismCrossings } from "./pick";
 
 const size = { width: 1200, height: 800 };
 const cam: CameraState = { ...DEFAULT_CAMERA, yaw: 30, distance: 60 };
@@ -119,5 +119,17 @@ describe("worldToScreen and heightOnVertical", () => {
       const s = worldToScreen(cam, size, { x: 5, y: h, z: 4 })!;
       expect(heightOnVertical(cam, size, s.sx, s.sy, 5, 4)).toBeCloseTo(h);
     }
+  });
+});
+
+describe("pickLine", () => {
+  const line = { id: "line_1", type: "line" as const, color: "black" as const, points: [{ x: 0, y: 1, z: 0 }, { x: 10, y: 1, z: 0 }], thickness: 3, dashed: false, arrow: "none" as const, createdBy: "human" as const };
+
+  it("picks a line near its path on screen, with the point on it", () => {
+    const s = worldToScreen(cam, size, { x: 5, y: 1, z: 0 })!;
+    const hit = pickLine(cam, size, s.sx + 3, s.sy, [line]);
+    expect(hit?.id).toBe("line_1");
+    expect(hit!.point.y).toBeCloseTo(1);
+    expect(pickLine(cam, size, s.sx, s.sy + 40, [line])).toBeNull();
   });
 });

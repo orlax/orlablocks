@@ -83,8 +83,37 @@ export type Freeform = {
   createdBy: Actor;
 };
 
+/** An offset in 3D, e.g. a line point's bezier handle relative to its point. */
+export type Offset3 = { x: number; y: number; z: number };
+
+/** A line's point, in absolute world x/y/z, with optional bezier handles (offsets from the point, in 3D). */
+export type LinePoint = { x: number; y: number; z: number; in?: Offset3; out?: Offset3 };
+
+export type LineArrow = "none" | "end" | "both";
+
+/**
+ * A line: an open path of points (2 or more) in absolute world x/y/z, for annotations (a jump arc, a patrol
+ * route). The edge from point i to point i + 1 curves when i has `out` or i + 1 has `in`, as on a free-form. It has
+ * no kind, elevation or height: its points carry their own y. `thickness` is in screen pixels (constant at any
+ * zoom), `arrow` "end" points at the last point.
+ */
+export type Line = {
+  id: string; // "line_1", ...
+  type: "line";
+  name?: string;
+  parent?: string;
+  color: ShapeColor;
+  points: LinePoint[];
+  thickness: number;
+  dashed: boolean;
+  arrow: LineArrow;
+  createdBy: Actor;
+};
+
+/** A closed shape: one with a footprint, a kind (room or volume), an elevation and a height. */
+export type ClosedShape = Box | Cylinder | Freeform;
 /** Anything drawn: every node that isn't a group. */
-export type Shape = Box | Cylinder | Freeform;
+export type Shape = ClosedShape | Line;
 export type ShapeType = Shape["type"];
 
 /**
@@ -103,10 +132,16 @@ export type Group = {
 /** Anything in the scene's flat list. (Not `Node`, which is the DOM's.) */
 export type SceneNode = Shape | Group;
 
-/** The shape fields an edit can change. `sides` is for cylinders (undefined = smooth), `points` for free-forms. */
+/**
+ * The shape fields an edit can change. `sides` is for cylinders (undefined = smooth), `points` for free-forms and
+ * lines, `thickness`, `dashed` and `arrow` for lines.
+ */
 export type ShapePatch = Partial<Pick<Footprinted, "name" | "kind" | "x" | "z" | "y" | "width" | "depth" | "height" | "rotation" | "color">> & {
   sides?: number;
-  points?: FootPoint[];
+  points?: FootPoint[] | LinePoint[];
+  thickness?: number;
+  dashed?: boolean;
+  arrow?: LineArrow;
 };
 /** What an update op can change on any node: shape fields (shapes only), `name` and `parent`. */
 export type NodePatch = ShapePatch & { parent?: string };
@@ -158,8 +193,16 @@ export const SMOOTH_SEGMENTS = 64;
 /** A free-form's outline has at least this many points, and at most this many. */
 export const MIN_POINTS = 3;
 export const MAX_POINTS = 500;
-/** How many straight segments each curved edge of a free-form is drawn, picked and checked with. */
+/** How many straight segments each curved edge of a free-form or a line is drawn, picked and checked with. */
 export const CURVE_SEGMENTS = 16;
+/** A line has at least this many points (and at most MAX_POINTS). */
+export const MIN_LINE_POINTS = 2;
+/** A line's thickness in screen pixels. New lines default to black: a near-white line vanishes on the ground. */
+export const MIN_THICKNESS = 1;
+export const MAX_THICKNESS = 12;
+export const DEFAULT_THICKNESS = 3;
+export const DEFAULT_LINE_COLOR: ShapeColor = "black";
+export const LINE_ARROWS = ["none", "end", "both"] as const;
 
 export const ShapeKindSchema = z.enum(["room", "volume"]);
 export const ShapeColorSchema = z.enum(SHAPE_COLORS);
@@ -202,6 +245,8 @@ const footprinted = {
   createdBy: ActorSchema,
 };
 const OffsetSchema = z.object({ x: z.number(), z: z.number() });
+const Offset3Schema = z.object({ x: z.number(), y: z.number(), z: z.number() });
+const LinePointSchema = z.object({ x: z.number(), y: z.number(), z: z.number(), in: Offset3Schema.optional(), out: Offset3Schema.optional() });
 const FootPointSchema = z.object({ x: z.number(), z: z.number(), in: OffsetSchema.optional(), out: OffsetSchema.optional() });
 const BoxSchema = z.object({ ...footprinted, type: z.literal("box") });
 const CylinderSchema = z.object({ ...footprinted, type: z.literal("cylinder"), sides: z.number().int().min(MIN_SIDES).max(MAX_SIDES).optional() });
@@ -219,6 +264,19 @@ const FreeformSchema = z.object({
   createdBy: ActorSchema,
 });
 
+const LineSchema = z.object({
+  id: z.string(),
+  type: z.literal("line"),
+  name: z.string().optional(),
+  parent: z.string().optional(),
+  color: ShapeColorSchema,
+  points: z.array(LinePointSchema).min(MIN_LINE_POINTS).max(MAX_POINTS),
+  thickness: z.number().min(MIN_THICKNESS).max(MAX_THICKNESS),
+  dashed: z.boolean(),
+  arrow: z.enum(LINE_ARROWS),
+  createdBy: ActorSchema,
+});
+
 const GroupSchema = z.object({
   id: z.string(),
   type: z.literal("group"),
@@ -228,7 +286,7 @@ const GroupSchema = z.object({
 });
 
 /** A stored node, as in `scene.json` (and on the clipboard). */
-export const NodeSchema: z.ZodType<SceneNode> = z.discriminatedUnion("type", [BoxSchema, CylinderSchema, FreeformSchema, GroupSchema]);
+export const NodeSchema: z.ZodType<SceneNode> = z.discriminatedUnion("type", [BoxSchema, CylinderSchema, FreeformSchema, LineSchema, GroupSchema]);
 
 export const BoxInputSchema = z.strictObject({
   kind: field.kind,
@@ -271,9 +329,39 @@ export const FreeformInputSchema = z.strictObject({
   parent: BoxInputSchema.shape.parent,
 });
 
+const Offset3InputSchema = z.strictObject({ x: z.number(), y: z.number(), z: z.number() });
+const LinePointInputSchema = z.strictObject({
+  x: z.number().describe("World x, meters"),
+  y: z.number().describe("World y (height), meters: 0 = the ground, a platform's top to start from it"),
+  z: z.number().describe("World z, meters"),
+  in: Offset3InputSchema.optional().describe("Bezier handle toward the previous point, as a 3D offset from this point"),
+  out: Offset3InputSchema.optional().describe("Bezier handle toward the next point, as a 3D offset from this point"),
+});
+const lineField = {
+  thickness: z.number().min(MIN_THICKNESS).max(MAX_THICKNESS).describe(`Screen pixels, ${MIN_THICKNESS}..${MAX_THICKNESS} (constant at any zoom)`),
+  dashed: z.boolean().describe("Dashed instead of solid"),
+  arrow: z.enum(LINE_ARROWS).describe("Arrowheads: none, end (at the last point) or both"),
+};
+
+/** A line for `draw_shapes`: its points, and optional style. */
+export const LineInputSchema = z.strictObject({
+  type: z.literal("line").describe("An open path of 3D points, for annotations (a route, a jump arc)"),
+  points: z
+    .array(LinePointInputSchema)
+    .min(MIN_LINE_POINTS)
+    .max(MAX_POINTS)
+    .describe(`The path, ${MIN_LINE_POINTS}..${MAX_POINTS} points in absolute world x/y/z (it doesn't close)`),
+  color: field.color.optional().describe(`Palette key: ${SHAPE_COLORS.join(", ")}. Defaults to ${DEFAULT_LINE_COLOR}`),
+  thickness: lineField.thickness.optional().describe(`Screen pixels, ${MIN_THICKNESS}..${MAX_THICKNESS}. Defaults to ${DEFAULT_THICKNESS}`),
+  dashed: lineField.dashed.optional().describe("Dashed instead of solid. Defaults to false"),
+  arrow: lineField.arrow.optional().describe("Arrowheads: none (the default), end (at the last point) or both"),
+  name: field.name.optional(),
+  parent: BoxInputSchema.shape.parent,
+});
+
 /**
- * A new shape for `draw_shapes`: its `type` (box, the default, cylinder or freeform) and that type's fields. Boxes
- * and cylinders share every field; `sides` is for cylinders only (the store rejects it on a box).
+ * A new shape for `draw_shapes`: its `type` (box, the default, cylinder, freeform or line) and that type's fields.
+ * Boxes and cylinders share every field; `sides` is for cylinders only (the store rejects it on a box).
  */
 export const ShapeInputSchema = z.discriminatedUnion("type", [
   BoxInputSchema.extend({
@@ -281,6 +369,7 @@ export const ShapeInputSchema = z.discriminatedUnion("type", [
     sides: field.sides.optional(),
   }),
   FreeformInputSchema,
+  LineInputSchema,
 ]);
 export type ShapeInput = z.input<typeof ShapeInputSchema>;
 
@@ -301,7 +390,23 @@ export const NodeUpdateSchema = z.strictObject({
   rotation: field.rotation.optional(),
   color: field.color.optional(),
   sides: field.sides.nullable().optional().describe(`Cylinders only: ${MIN_SIDES}..${MAX_SIDES} sides, or null to make it smooth`),
-  points: PointsSchema.optional().describe("Free-forms only: the whole new outline (it replaces the old one)"),
+  points: z
+    .array(
+      z.strictObject({
+        x: z.number(),
+        y: z.number().optional().describe("Lines only (a free-form's points have none: it has its own y)"),
+        z: z.number(),
+        in: z.strictObject({ x: z.number(), y: z.number().optional(), z: z.number() }).optional(),
+        out: z.strictObject({ x: z.number(), y: z.number().optional(), z: z.number() }).optional(),
+      }),
+    )
+    .min(MIN_LINE_POINTS)
+    .max(MAX_POINTS)
+    .optional()
+    .describe("Free-forms and lines: the whole new outline or path (it replaces the old one), points as in draw_shapes"),
+  thickness: lineField.thickness.optional().describe(`Lines only: ${MIN_THICKNESS}..${MAX_THICKNESS} screen pixels`),
+  dashed: lineField.dashed.optional().describe("Lines only: dashed or solid"),
+  arrow: lineField.arrow.optional().describe("Lines only: none, end or both"),
   name: field.name.optional().describe('A label for people, e.g. "lobby". Not unique. An empty string removes it'),
   parent: field.parent
     .nullable()

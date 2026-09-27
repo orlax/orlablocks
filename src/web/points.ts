@@ -1,12 +1,19 @@
-import { CURVE_SEGMENTS, MIN_POINTS, type FootPoint, type Offset } from "../shared/scene.types";
-import { sampleEdge, type Point } from "../shared/geometry";
+import { CURVE_SEGMENTS, type FootPoint, type Offset } from "../shared/scene.types";
+import { sampleEdge, sampleEdge3, type Point } from "../shared/geometry";
 import { worldToScreen, type CameraState, type Size } from "./camera";
 
 /**
- * Pure math for point editing (a free-form's points and handles): what's under the cursor, and what each edit does
- * to the outline. Points are shown and dragged on the shape's top face (elevation `y`). The edits return new point
- * lists and never round; the caller rounds before sending.
+ * Pure math for point editing (a free-form's or a line's points and handles): what's under the cursor, and what
+ * each edit does to the points. A free-form's points are shown and dragged on its top face (elevation `y`); a
+ * line's points have their own y (and its handles are 3D). A free-form's outline is `closed` (the last point joins
+ * the first), a line's path isn't. The edits return new point lists and never round; the caller rounds before
+ * sending.
  */
+
+/** A free-form's point, or a line's (with y, and 3D handles). */
+export type EditPoint = FootPoint & { y?: number; in?: Offset & { y?: number }; out?: Offset & { y?: number } };
+/** Where a point is in 3D: its own y, or the free-form's top. */
+export const pointY = (p: EditPoint, y: number) => p.y ?? y;
 
 /** How close (px) the pointer must be to a point or a handle's end to grab it. */
 export const POINT_HIT_PX = 8;
@@ -18,9 +25,10 @@ export type HandleSide = "in" | "out";
 export type PointPart = { type: "point"; index: number } | { type: "handle"; index: number; side: HandleSide } | { type: "edge"; index: number; t: number };
 
 /** Where a handle's end is, in world x/z. */
-export const handleEnd = (p: FootPoint, side: HandleSide): Point | null => {
+export const handleEnd = (p: EditPoint, side: HandleSide): (Point & { y?: number }) | null => {
   const h = p[side];
-  return h ? { x: p.x + h.x, z: p.z + h.z } : null;
+  if (!h) return null;
+  return { x: p.x + h.x, z: p.z + h.z, ...(p.y !== undefined ? { y: p.y + (h.y ?? 0) } : {}) };
 };
 
 /**
@@ -32,12 +40,13 @@ export function hitPoints(
   size: Size,
   sx: number,
   sy: number,
-  points: FootPoint[],
+  points: EditPoint[],
   y: number,
   selected: number[],
+  closed = true,
 ): PointPart | null {
-  const screen = (p: Point) => worldToScreen(cam, size, { x: p.x, y, z: p.z });
-  const distance = (p: Point) => {
+  const screen = (p: Point & { y?: number }) => worldToScreen(cam, size, { x: p.x, y: p.y ?? y, z: p.z });
+  const distance = (p: Point & { y?: number }) => {
     const s = screen(p);
     return s ? Math.hypot(s.sx - sx, s.sy - sy) : Infinity;
   };
@@ -61,8 +70,10 @@ export function hitPoints(
   if (best) return best.part;
 
   for (const [index, p] of points.entries()) {
+    if (!closed && index === points.length - 1) break;
     const next = points[(index + 1) % points.length];
-    const samples = [...sampleEdge(p, next), next].map(screen);
+    const edge = p.y !== undefined && next.y !== undefined ? sampleEdge3(p as never, next as never) : sampleEdge(p, next);
+    const samples = [...edge, next].map(screen);
     // A straight edge is one segment (t is its fraction); a curved one CURVE_SEGMENTS, sampled at even t.
     const segments = samples.length - 1;
     for (let k = 0; k < segments; k++) {
@@ -86,25 +97,38 @@ function segmentDistance(px: number, py: number, a: { sx: number; sy: number }, 
   return { d: Math.hypot(px - (a.sx + dx * u), py - (a.sy + dy * u)), u };
 }
 
-/** The points at `indices` moved by (dx, dz), their handles with them. */
-export const movePoints = (points: FootPoint[], indices: number[], dx: number, dz: number): FootPoint[] =>
-  points.map((p, i) => (indices.includes(i) ? { ...p, x: p.x + dx, z: p.z + dz } : p));
+/** The points at `indices` moved by (dx, dz) (and a line's up by dy), their handles with them. */
+export const movePoints = <P extends EditPoint>(points: P[], indices: number[], dx: number, dz: number, dy = 0): P[] =>
+  points.map((p, i) =>
+    indices.includes(i) ? { ...p, x: p.x + dx, z: p.z + dz, ...(p.y !== undefined ? { y: p.y + dy } : {}) } : p,
+  );
 
 /**
  * Point `index`'s `side` handle set to `offset` (from the point). Unless `independent`, the opposite handle, if
  * the point has one, turns to stay in line with it (pointing the other way, keeping its own length), so a smooth
  * point stays smooth. `Alt` makes it independent: a corner between two curves.
  */
-export function moveHandle(points: FootPoint[], index: number, side: HandleSide, offset: Offset, independent: boolean): FootPoint[] {
+export function moveHandle<P extends EditPoint>(
+  points: P[],
+  index: number,
+  side: HandleSide,
+  offset: Offset & { y?: number },
+  independent: boolean,
+): P[] {
   const other: HandleSide = side === "in" ? "out" : "in";
   return points.map((p, i) => {
     if (i !== index) return p;
-    const next: FootPoint = { ...p, [side]: offset };
+    const next: P = { ...p, [side]: offset };
     const opposite = p[other];
-    const len = Math.hypot(offset.x, offset.z);
+    const oy = offset.y ?? 0;
+    const len = Math.hypot(offset.x, oy, offset.z);
     if (!independent && opposite && len > 0) {
-      const keep = Math.hypot(opposite.x, opposite.z);
-      next[other] = { x: (-offset.x / len) * keep, z: (-offset.z / len) * keep };
+      const keep = Math.hypot(opposite.x, opposite.y ?? 0, opposite.z);
+      next[other] = {
+        x: (-offset.x / len) * keep,
+        ...(opposite.y !== undefined ? { y: (-oy / len) * keep } : {}),
+        z: (-offset.z / len) * keep,
+      };
     }
     return next;
   });
@@ -112,27 +136,34 @@ export function moveHandle(points: FootPoint[], index: number, side: HandleSide,
 
 /**
  * Point `index` switched between corner and smooth: a corner (no handles) gets handles along the direction from
- * its previous neighbor to its next (a third of the shorter edge to them, each way); a point with any handle
- * drops them.
+ * its previous neighbor to its next (a third of the shorter edge to them, each way; at an open path's end, along
+ * its one edge); a point with any handle drops them.
  */
-export function togglePoint(points: FootPoint[], index: number): FootPoint[] {
+export function togglePoint<P extends EditPoint>(points: P[], index: number, closed = true): P[] {
   const p = points[index];
-  if (p.in || p.out) return points.map((q, i) => (i === index ? { x: q.x, z: q.z } : q));
-  const prev = points[(index - 1 + points.length) % points.length];
-  const next = points[(index + 1) % points.length];
-  let dir = { x: next.x - prev.x, z: next.z - prev.z };
-  let len = Math.hypot(dir.x, dir.z);
+  const bare = ({ in: _i, out: _o, ...rest }: P) => rest as P;
+  if (p.in || p.out) return points.map((q, i) => (i === index ? bare(q) : q));
+  const at = (k: number) => (closed ? points[(k + points.length) % points.length] : points[Math.max(0, Math.min(points.length - 1, k))]);
+  const prev = at(index - 1);
+  const next = at(index + 1);
+  const v = (a: EditPoint, b: EditPoint) => ({ x: b.x - a.x, y: (b.y ?? 0) - (a.y ?? 0), z: b.z - a.z });
+  const norm = (d: { x: number; y: number; z: number }) => Math.hypot(d.x, d.y, d.z);
+  let dir = v(prev, next);
+  let len = norm(dir);
   if (len === 0) {
-    dir = { x: next.x - p.x, z: next.z - p.z };
-    len = Math.hypot(dir.x, dir.z) || 1;
+    dir = v(p, next);
+    len = norm(dir) || 1;
   }
-  const reach = Math.min(Math.hypot(p.x - prev.x, p.z - prev.z), Math.hypot(next.x - p.x, next.z - p.z)) / 3;
-  const out = { x: (dir.x / len) * reach, z: (dir.z / len) * reach };
-  return points.map((q, i) => (i === index ? { x: q.x, z: q.z, in: { x: -out.x, z: -out.z }, out } : q));
+  const edges = [norm(v(prev, p)), norm(v(p, next))].filter((d) => d > 0);
+  const reach = Math.min(...edges) / 3;
+  const has3d = p.y !== undefined;
+  const out = { x: (dir.x / len) * reach, ...(has3d ? { y: (dir.y / len) * reach } : {}), z: (dir.z / len) * reach };
+  const opposite = { x: -out.x, ...(has3d ? { y: -(out.y ?? 0) } : {}), z: -out.z };
+  return points.map((q, i) => (i === index ? { ...bare(q), in: opposite, out } : q));
 }
 
-/** The outline without the points at `indices`, or null if that would leave fewer than MIN_POINTS. */
-export function removePoints(points: FootPoint[], indices: number[]): FootPoint[] | null {
+/** The points without the ones at `indices`, or null if that would leave fewer than `min` (3 for a free-form, 2 for a line). */
+export function removePoints<P extends EditPoint>(points: P[], indices: number[], min: number): P[] | null {
   const left = points.filter((_, i) => !indices.includes(i));
-  return left.length >= MIN_POINTS ? left : null;
+  return left.length >= min ? left : null;
 }

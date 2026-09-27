@@ -1,5 +1,19 @@
 import { differenceD, EndType, FillRule, inflatePathsD, JoinType, type PathD } from "@countertype/clipper2-ts";
-import { CURVE_SEGMENTS, MIN_POINTS, SMOOTH_SEGMENTS, type Box, type Cylinder, type FootPoint, type Offset, type Shape, type ShapePatch } from "./scene.types";
+import {
+  CURVE_SEGMENTS,
+  MIN_LINE_POINTS,
+  MIN_POINTS,
+  SMOOTH_SEGMENTS,
+  type Box,
+  type ClosedShape,
+  type Cylinder,
+  type FootPoint,
+  type Line,
+  type LinePoint,
+  type Offset,
+  type Shape,
+  type ShapePatch,
+} from "./scene.types";
 
 /**
  * Pure shape geometry shared by the server (group moves and rotations) and the editor (picking, the marquee, the
@@ -10,6 +24,8 @@ import { CURVE_SEGMENTS, MIN_POINTS, SMOOTH_SEGMENTS, type Box, type Cylinder, t
 
 /** A point on the ground. */
 export type Point = { x: number; z: number };
+/** A point in 3D. */
+export type Point3 = { x: number; y: number; z: number };
 
 export type Bounds = { minX: number; maxX: number; minY: number; maxY: number; minZ: number; maxZ: number };
 
@@ -27,10 +43,13 @@ export const sameValue = (a: unknown, b: unknown) =>
 export const round2 = (n: number) => Math.round(n * 100) / 100 + 0;
 export const normalizeDeg = (deg: number) => ((deg % 360) + 360) % 360;
 
-/** Boxes and cylinders: a center, a size and a rotation of their own (free-forms have only points). */
-export const isFootprinted = (shape: Shape): shape is Box | Cylinder => shape.type !== "freeform";
+/** Boxes and cylinders: a center, a size and a rotation of their own (free-forms and lines have only points). */
+export const isFootprinted = (shape: Shape): shape is Box | Cylinder => shape.type === "box" || shape.type === "cylinder";
 
-/** A shape's rotation (a free-form's is always 0: turning it turns its points). */
+/** Boxes, cylinders and free-forms: a footprint, a kind, an elevation and a height (lines have none). */
+export const isClosed = (shape: Shape): shape is ClosedShape => shape.type !== "line";
+
+/** A shape's rotation (a free-form's or a line's is always 0: turning it turns its points). */
 export const rotationOf = (shape: Shape) => (isFootprinted(shape) ? shape.rotation : 0);
 
 /** The frame's local axes on the ground, in world x/z: `ex` along its width, `ez` along its depth. */
@@ -53,7 +72,7 @@ export function fromShapeLocal(frame: { x: number; z: number; rotation: number }
   return { x: frame.x + l.x * ex.x + l.z * ez.x, z: frame.z + l.x * ex.z + l.z * ez.z };
 }
 
-/** A cubic bezier's point at t. */
+/** A cubic bezier's point at t (on the ground). */
 function bezier(p0: Point, p1: Point, p2: Point, p3: Point, t: number): Point {
   const u = 1 - t;
   const a = u * u * u;
@@ -61,6 +80,31 @@ function bezier(p0: Point, p1: Point, p2: Point, p3: Point, t: number): Point {
   const c = 3 * u * t * t;
   const d = t * t * t;
   return { x: a * p0.x + b * p1.x + c * p2.x + d * p3.x, z: a * p0.z + b * p1.z + c * p2.z + d * p3.z };
+}
+
+/** A cubic bezier's point at t, in 3D. */
+function bezier3(p0: Point3, p1: Point3, p2: Point3, p3: Point3, t: number): Point3 {
+  const u = 1 - t;
+  const [a, b, c, d] = [u * u * u, 3 * u * u * t, 3 * u * t * t, t * t * t];
+  return {
+    x: a * p0.x + b * p1.x + c * p2.x + d * p3.x,
+    y: a * p0.y + b * p1.y + c * p2.y + d * p3.y,
+    z: a * p0.z + b * p1.z + c * p2.z + d * p3.z,
+  };
+}
+
+/** A line's edge from `a` to `b` in 3D, as `sampleEdge` does on the ground: its start, then points along a curve. */
+export function sampleEdge3(a: LinePoint, b: LinePoint): Point3[] {
+  if (!a.out && !b.in) return [{ x: a.x, y: a.y, z: a.z }];
+  const c1 = a.out ? { x: a.x + a.out.x, y: a.y + a.out.y, z: a.z + a.out.z } : a;
+  const c2 = b.in ? { x: b.x + b.in.x, y: b.y + b.in.y, z: b.z + b.in.z } : b;
+  return Array.from({ length: CURVE_SEGMENTS }, (_, i) => bezier3(a, c1, c2, b, i / CURVE_SEGMENTS));
+}
+
+/** A line as a 3D polyline: every edge sampled, then the last point. */
+export function polyline(line: Line): Point3[] {
+  const { points } = line;
+  return [...points.slice(0, -1).flatMap((p, i) => sampleEdge3(p, points[i + 1])), { ...points.at(-1)! }].map((p) => ({ x: p.x, y: p.y, z: p.z }));
 }
 
 /**
@@ -97,7 +141,7 @@ export function sampleOutline(points: FootPoint[]): { polygon: Point[]; edge: nu
  *   4, every axis). A smooth one is drawn and picked with SMOOTH_SEGMENTS corners.
  * - A free-form: its sampled outline; its frame is the world's.
  */
-export function localFootprint(shape: Shape): Point[] {
+export function localFootprint(shape: ClosedShape): Point[] {
   if (shape.type === "freeform") return sampleOutline(shape.points).polygon;
   const hw = shape.width / 2;
   const hd = shape.depth / 2;
@@ -117,13 +161,16 @@ export function localFootprint(shape: Shape): Point[] {
 }
 
 /** Where a shape's own frame sits in the world and how it's turned (degrees). `localFootprint` is in this frame. */
-export const shapeFrame = (shape: Shape) => (isFootprinted(shape) ? { x: shape.x, z: shape.z, rotation: shape.rotation } : { x: 0, z: 0, rotation: 0 });
+export const shapeFrame = (shape: ClosedShape) => (isFootprinted(shape) ? { x: shape.x, z: shape.z, rotation: shape.rotation } : { x: 0, z: 0, rotation: 0 });
 
 /** The shape's footprint in world x/z. */
-export const footprint = (shape: Shape): Point[] => {
+export const footprint = (shape: ClosedShape): Point[] => {
   const frame = shapeFrame(shape);
   return localFootprint(shape).map((p) => fromShapeLocal(frame, p));
 };
+
+/** Where a shape covers the ground, as points to take bounds of: a closed shape's footprint, a line's polyline. */
+export const groundPoints = (shape: Shape): Point[] => (isClosed(shape) ? footprint(shape) : polyline(shape));
 
 /** Twice the signed area of a polygon in the x/z plane (shoelace); the sign gives its winding. */
 export function signedArea2(poly: Point[]): number {
@@ -209,8 +256,8 @@ export function offsetRings(poly: Point[], d: number, convex: boolean): Point[][
  * have one) and `walls`, the region between them as rings (outer ones counterclockwise in x/z, holes the other
  * way). Cached per shape object, since picking asks for it on every pointer move.
  */
-const wallCache = new WeakMap<Shape, { outer: Point[][]; inner: Point[][]; walls: Point[][] }>();
-export function roomWalls(shape: Shape, half: number): { outer: Point[][]; inner: Point[][]; walls: Point[][] } {
+const wallCache = new WeakMap<ClosedShape, { outer: Point[][]; inner: Point[][]; walls: Point[][] }>();
+export function roomWalls(shape: ClosedShape, half: number): { outer: Point[][]; inner: Point[][]; walls: Point[][] } {
   const cached = wallCache.get(shape);
   if (cached) return cached;
   const local = localFootprint(shape);
@@ -226,7 +273,7 @@ export function roomWalls(shape: Shape, half: number): { outer: Point[][]; inner
 }
 
 /** Rings in the shape's own frame (from `roomWalls`) in world x/z. */
-export function ringsInWorld(shape: Shape, rings: Point[][]): Point[][] {
+export function ringsInWorld(shape: ClosedShape, rings: Point[][]): Point[][] {
   if (!isFootprinted(shape)) return rings;
   const frame = shapeFrame(shape);
   return rings.map((r) => r.map((p) => fromShapeLocal(frame, p)));
@@ -244,7 +291,7 @@ function polygonBounds(poly: Point[]) {
  * cylinder's from its true ellipse, not the drawn polygon), from the sampled outline for a free-form.
  */
 export function footprintBounds(shape: Shape): { minX: number; maxX: number; minZ: number; maxZ: number } {
-  if (!isFootprinted(shape) || (shape.type === "cylinder" && shape.sides !== undefined)) return polygonBounds(footprint(shape));
+  if (!isFootprinted(shape) || (shape.type === "cylinder" && shape.sides !== undefined)) return polygonBounds(groundPoints(shape));
   const a = (shape.rotation * Math.PI) / 180;
   const cos = Math.abs(Math.cos(a));
   const sin = Math.abs(Math.sin(a));
@@ -264,10 +311,18 @@ export function boundsOf(shapes: Shape[]): Bounds {
     b.maxX = Math.max(b.maxX, f.maxX);
     b.minZ = Math.min(b.minZ, f.minZ);
     b.maxZ = Math.max(b.maxZ, f.maxZ);
-    b.minY = Math.min(b.minY, shape.y);
-    b.maxY = Math.max(b.maxY, shape.y + shape.height);
+    const [y0, y1] = verticalRange(shape);
+    b.minY = Math.min(b.minY, y0);
+    b.maxY = Math.max(b.maxY, y1);
   }
   return b;
+}
+
+/** A shape's bottom and top: a closed shape's elevation and top, a line's lowest and highest point (curves included). */
+export function verticalRange(shape: Shape): [number, number] {
+  if (isClosed(shape)) return [shape.y, shape.y + shape.height];
+  const ys = polyline(shape).map((p) => p.y);
+  return [Math.min(...ys), Math.max(...ys)];
 }
 
 /** The rectangle the gizmo's scale and rotate handles sit on: a box's or cylinder's own, a free-form's world-axis bounds. */
@@ -277,30 +332,57 @@ export function handleFrame(shape: Shape): Frame {
   return { x: (b.minX + b.maxX) / 2, z: (b.minZ + b.maxZ) / 2, width: b.maxX - b.minX, depth: b.maxZ - b.minZ, rotation: 0 };
 }
 
-/** A point that moves with the shape (a box's center, a free-form's first point), for measuring how far a drag took it. */
-export const anchorOf = (shape: Shape) =>
-  isFootprinted(shape) ? { x: shape.x, y: shape.y, z: shape.z } : { x: shape.points[0].x, y: shape.y, z: shape.points[0].z };
+/**
+ * A point that moves with the shape (a box's center, a free-form's or a line's first point), for measuring how far
+ * a drag took it.
+ */
+export const anchorOf = (shape: Shape) => {
+  if (isFootprinted(shape)) return { x: shape.x, y: shape.y, z: shape.z };
+  const p = shape.points[0];
+  return { x: p.x, y: shape.type === "line" ? shape.points[0].y : shape.y, z: p.z };
+};
 
-/** Points (and their handles) with every value rounded to 2 decimals; a handle that rounds to nothing is dropped. */
-export function roundPoints(points: FootPoint[]): FootPoint[] {
-  const handle = (h: Offset | undefined) => {
+/** A point's or a handle's y, when it has one (a line's): rounded along with x and z. */
+type MaybeY = { y?: number };
+const roundY = <T extends MaybeY>(v: T): MaybeY => (v.y !== undefined ? { y: round2(v.y) } : {});
+
+/**
+ * Points (and their handles) with every value rounded to 2 decimals; a handle that rounds to nothing is dropped.
+ * Works for a free-form's points and a line's (which also have y).
+ */
+export function roundPoints<P extends FootPoint>(points: P[]): P[] {
+  const handle = (h: (Offset & MaybeY) | undefined) => {
     if (!h) return undefined;
-    const r = { x: round2(h.x), z: round2(h.z) };
-    return r.x === 0 && r.z === 0 ? undefined : r;
+    const r = { x: round2(h.x), ...roundY(h), z: round2(h.z) };
+    return r.x === 0 && r.z === 0 && (r.y ?? 0) === 0 ? undefined : r;
   };
   return points.map((p) => {
-    const out: FootPoint = { x: round2(p.x), z: round2(p.z) };
+    const out: FootPoint & MaybeY = { x: round2(p.x), ...roundY(p as P & MaybeY), z: round2(p.z) };
     const i = handle(p.in);
     const o = handle(p.out);
     if (i) out.in = i;
     if (o) out.out = o;
-    return out;
+    return out as P;
   });
 }
 
-/** Every point (with its handles) through `f`, which maps a position; handles map through `h`, which maps an offset. */
-const mapPoints = (points: FootPoint[], f: (p: Point) => Point, h: (o: Offset) => Offset): FootPoint[] =>
-  roundPoints(points.map((p) => ({ ...f(p), ...(p.in ? { in: h(p.in) } : {}), ...(p.out ? { out: h(p.out) } : {}) })));
+/**
+ * Every point (with its handles) through `f`, which maps a ground position; handles map through `h`, which maps a
+ * ground offset. A line's y (on its points and handles) is kept, unless `dy` shifts its points up.
+ */
+const mapPoints = <P extends FootPoint>(points: P[], f: (p: Point) => Point, h: (o: Offset) => Offset, dy = 0): P[] =>
+  roundPoints(
+    points.map((p) => {
+      const q = p as P & MaybeY;
+      return {
+        ...p,
+        ...f(p),
+        ...(q.y !== undefined ? { y: q.y + dy } : {}),
+        ...(p.in ? { in: { ...p.in, ...h(p.in) } } : {}),
+        ...(p.out ? { out: { ...p.out, ...h(p.out) } } : {}),
+      };
+    }),
+  );
 
 /**
  * The frame around `shapes`' footprints, turned by `angle` degrees: the smallest rectangle in axes turned that way
@@ -316,7 +398,7 @@ export function orientedFrame(shapes: Shape[], angle: number): Frame {
   const { ex, ez } = shapeAxes({ rotation: angle });
   let [u0, u1, v0, v1] = [Infinity, -Infinity, Infinity, -Infinity];
   for (const shape of shapes) {
-    for (const p of footprint(shape)) {
+    for (const p of groundPoints(shape)) {
       const u = p.x * ex.x + p.z * ex.z;
       const v = p.x * ez.x + p.z * ez.z;
       [u0, u1, v0, v1] = [Math.min(u0, u), Math.max(u1, u), Math.min(v0, v), Math.max(v1, v)];
@@ -364,35 +446,57 @@ export function toFreeformPoints(shape: Box | Cylinder): FootPoint[] {
  * is split with de Casteljau, so the shape doesn't change: the neighbors' handles shorten and the new point gets
  * handles along the curve. On a straight edge the new point is a corner. Not rounded.
  */
-export function splitEdge(points: FootPoint[], i: number, t: number): FootPoint[] {
+export function splitEdge<P extends FootPoint>(points: P[], i: number, t: number): P[] {
+  // Points and handles are ground points, or 3D ones on a line (a missing y reads as 0 and stays missing).
+  type V = Point & MaybeY;
+  const has3d = (points[0] as P & MaybeY).y !== undefined;
   const a = points[i];
   const j = (i + 1) % points.length;
   const b = points[j];
-  const lerp = (p: Point, q: Point) => ({ x: p.x + (q.x - p.x) * t, z: p.z + (q.z - p.z) * t });
-  const offset = (p: Point, from: Point): Offset | undefined => {
-    const o = { x: p.x - from.x, z: p.z - from.z };
-    return o.x === 0 && o.z === 0 ? undefined : o;
+  const v = (p: V): V => (has3d ? { x: p.x, y: p.y ?? 0, z: p.z } : { x: p.x, z: p.z });
+  const plus = (p: V, o: V): V => v({ x: p.x + o.x, y: (p.y ?? 0) + (o.y ?? 0), z: p.z + o.z });
+  const lerp = (p: V, q: V): V => v({ x: p.x + (q.x - p.x) * t, y: (p.y ?? 0) + ((q.y ?? 0) - (p.y ?? 0)) * t, z: p.z + (q.z - p.z) * t });
+  const offset = (p: V, from: V): V | undefined => {
+    const o = v({ x: p.x - from.x, y: (p.y ?? 0) - (from.y ?? 0), z: p.z - from.z });
+    return o.x === 0 && o.z === 0 && (o.y ?? 0) === 0 ? undefined : o;
   };
-  const withHandle = (p: FootPoint, side: "in" | "out", h: Offset | undefined): FootPoint => {
+  const withHandle = (p: V & { in?: V; out?: V }, side: "in" | "out", h: V | undefined) => {
     const { [side]: _old, ...rest } = p;
     return h ? { ...rest, [side]: h } : rest;
   };
-  let inserted: FootPoint;
-  let [na, nb] = [a, b];
+  let inserted: V & { in?: V; out?: V };
+  let [na, nb]: (V & { in?: V; out?: V })[] = [a, b];
   if (!a.out && !b.in) inserted = lerp(a, b);
   else {
-    const p1 = a.out ? { x: a.x + a.out.x, z: a.z + a.out.z } : a;
-    const p2 = b.in ? { x: b.x + b.in.x, z: b.z + b.in.z } : b;
+    const p1 = a.out ? plus(a, a.out) : v(a);
+    const p2 = b.in ? plus(b, b.in) : v(b);
     const [p01, p12, p23] = [lerp(a, p1), lerp(p1, p2), lerp(p2, b)];
     const [p012, p123] = [lerp(p01, p12), lerp(p12, p23)];
     const m = lerp(p012, p123);
-    inserted = withHandle(withHandle({ x: m.x, z: m.z }, "in", offset(p012, m)), "out", offset(p123, m));
+    inserted = withHandle(withHandle(m, "in", offset(p012, m)), "out", offset(p123, m));
     na = withHandle(a, "out", a.out && offset(p01, a));
     nb = withHandle(b, "in", b.in && offset(p23, b));
   }
-  const next = points.map((p, k) => (k === i ? na : k === j ? nb : p));
-  next.splice(i + 1, 0, inserted);
+  const next = points.map((p, k) => (k === i ? na : k === j ? nb : p)) as P[];
+  next.splice(i + 1, 0, inserted as P);
   return next;
+}
+
+/** A line's points in the other order, each point's handles swapped (in ↔ out), so the path's shape doesn't change. */
+export const reversePoints = (points: LinePoint[]): LinePoint[] =>
+  [...points].reverse().map(({ in: i, out: o, ...p }) => ({ ...p, ...(o ? { in: o } : {}), ...(i ? { out: i } : {}) }));
+
+/**
+ * What's wrong with a line's path, or null if it's fine: fewer than 2 points, or two neighbors in the same place
+ * (a line may cross itself). Points are named by their index.
+ */
+export function lineProblem(points: LinePoint[]): string | null {
+  if (points.length < MIN_LINE_POINTS) return `a line needs at least ${MIN_LINE_POINTS} points`;
+  for (let i = 0; i + 1 < points.length; i++) {
+    const [p, q] = [points[i], points[i + 1]];
+    if (p.x === q.x && p.y === q.y && p.z === q.z) return `points ${i} and ${i + 1} are in the same place`;
+  }
+  return null;
 }
 
 /**
@@ -401,6 +505,11 @@ export function splitEdge(points: FootPoint[], i: number, t: number): FootPoint[
  */
 export function moveShape(shape: Shape, dx: number, dy: number, dz: number): ShapePatch {
   const patch: ShapePatch = {};
+  if (shape.type === "line") {
+    // A line has no elevation of its own: moving it up moves its points.
+    if (dx !== 0 || dy !== 0 || dz !== 0) patch.points = mapPoints(shape.points, (p) => ({ x: p.x + dx, z: p.z + dz }), (o) => o, dy);
+    return patch;
+  }
   if (dy !== 0) patch.y = round2(shape.y + dy);
   if (!isFootprinted(shape)) {
     if (dx !== 0 || dz !== 0) patch.points = mapPoints(shape.points, (p) => ({ x: p.x + dx, z: p.z + dz }), (o) => o);
@@ -424,7 +533,7 @@ export function rotateShape(shape: Shape, pivot: Point, degrees: number): ShapeP
     const t = turn({ x: p.x - pivot.x, z: p.z - pivot.z });
     return { x: pivot.x + t.x, z: pivot.z + t.z };
   };
-  if (!isFootprinted(shape)) return { points: mapPoints(shape.points, orbit, turn) };
+  if (!isFootprinted(shape)) return { points: mapPoints<FootPoint>(shape.points, orbit, turn) };
   const c = orbit(shape);
   return { x: round2(c.x), z: round2(c.z), rotation: round2(normalizeDeg(shape.rotation + degrees)) % 360 };
 }
@@ -440,6 +549,7 @@ export function rotateAround(shapes: Shape[], pivot: Point, degrees: number): Re
  */
 export function resizeShape(shape: Shape, from: Frame, to: { x: number; z: number; width: number; depth: number }): ShapePatch {
   if (isFootprinted(shape)) return { x: to.x, z: to.z, width: to.width, depth: to.depth };
+  if (shape.type === "line") return {}; // lines have no scale handles
   const sx = from.width > 0 ? to.width / from.width : 1;
   const sz = from.depth > 0 ? to.depth / from.depth : 1;
   const target = { ...to, rotation: from.rotation };
@@ -486,9 +596,10 @@ function round2HalfEven(n: number): number {
  */
 export function mirrorShape(shape: Shape, axis: MirrorAxis, sum: number): ShapePatch {
   if (!isFootprinted(shape)) {
+    const points: FootPoint[] = shape.points;
     return axis === "x"
-      ? { points: mapPoints(shape.points, (p) => ({ x: sum - p.x, z: p.z }), (o) => ({ x: -o.x, z: o.z })) }
-      : { points: mapPoints(shape.points, (p) => ({ x: p.x, z: sum - p.z }), (o) => ({ x: o.x, z: -o.z })) };
+      ? { points: mapPoints(points, (p) => ({ x: sum - p.x, z: p.z }), (o) => ({ x: -o.x, z: o.z })) }
+      : { points: mapPoints(points, (p) => ({ x: p.x, z: sum - p.z }), (o) => ({ x: o.x, z: -o.z })) };
   }
   const odd = shape.type === "cylinder" && shape.sides !== undefined && shape.sides % 2 === 1;
   const rotation = round2(normalizeDeg(axis === "x" && odd ? 180 - shape.rotation : -shape.rotation)) % 360;

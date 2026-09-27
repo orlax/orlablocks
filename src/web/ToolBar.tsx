@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
+  ArrowLeftRight,
   Box as BoxIcon,
   Circle,
   Cylinder,
@@ -7,6 +8,8 @@ import {
   Hand,
   Minus,
   MousePointer2,
+  MoveHorizontal,
+  MoveRight,
   PenTool,
   Plus,
   Spline,
@@ -15,11 +18,23 @@ import {
   SquareDashed,
   Trash2,
   Undo2,
+  Waypoints,
   type LucideIcon,
 } from "lucide-react";
 import type { MirrorAxis } from "../shared/geometry";
-import { MAX_SIDES, MIN_SIDES, PALETTE, SHAPE_COLORS, type HistorySummary, type ShapeColor, type ShapeKind } from "../shared/scene.types";
-import type { Tool } from "./Viewport";
+import {
+  MAX_SIDES,
+  MAX_THICKNESS,
+  MIN_SIDES,
+  MIN_THICKNESS,
+  PALETTE,
+  SHAPE_COLORS,
+  type HistorySummary,
+  type LineArrow,
+  type ShapeColor,
+  type ShapeKind,
+} from "../shared/scene.types";
+import type { LineStyle, Tool } from "./Viewport";
 
 export const MOD = /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl+";
 
@@ -29,6 +44,7 @@ export const TOOLS: { tool: Tool; label: string; key: string; icon: LucideIcon }
   { tool: "box", label: "Box", key: "b", icon: BoxIcon },
   { tool: "cylinder", label: "Cylinder", key: "c", icon: Cylinder },
   { tool: "pen", label: "Pen (free-form)", key: "p", icon: PenTool },
+  { tool: "line", label: "Line", key: "l", icon: Waypoints },
 ];
 
 /** What each tool does and its modifiers, shown in the info-label. */
@@ -38,11 +54,12 @@ export const HINTS: Record<Tool, string> = {
   box: `drag to draw · Shift square · Alt from center · ${MOD} no snap · Esc to cancel`,
   cylinder: `drag to draw · Shift circle · Alt from center · ${MOD} no snap · Esc to cancel`,
   pen: `click for a corner · drag for a curve · click the first point or Enter to close · ⌫ removes the last point · ${MOD} no snap · Esc to cancel`,
+  line: `click to place a point on the surface under the cursor · drag for a curve · double-click or Enter to finish · ⌫ removes the last point · ${MOD} no snap · Esc to cancel`,
 };
 
 /** The hint while editing a free-form's points (the Select tool, after double-clicking it). */
 export const EDIT_POINTS_HINT =
-  `drag a point or handle (Alt breaks a smooth point) · Shift-click adds points · click an edge to add a point · ` +
+  `drag a point or handle (Alt breaks a smooth point; a line's point: its green arrow raises it) · Shift-click adds points · click an edge to add a point · ` +
   `double-click a point: corner ↔ smooth · ⌫ deletes points · ${MOD} no snap · Esc or click outside to finish`;
 
 /**
@@ -132,11 +149,13 @@ export function ContextualBar({
   sides,
   onConvert,
   editPoints,
+  line,
   children,
 }: {
   kind: ShapeKind | null;
   kindDisabled?: boolean;
-  onKind: (kind: ShapeKind) => void;
+  /** Shows the kind toggle (not for lines, which have no kind). */
+  onKind?: (kind: ShapeKind) => void;
   color: ShapeColor | null;
   onColor: (color: ShapeColor) => void;
   /** Shows the X / Z mirror buttons (the Select tool). */
@@ -145,26 +164,32 @@ export function ContextualBar({
   sides?: { value: number | undefined; onChange: (sides: number | undefined) => void };
   /** Shows Convert to free-form (the selection has boxes or cylinders). */
   onConvert?: () => void;
-  /** Shows Edit points (a single free-form is selected): whether it's in point editing, and a toggle. */
+  /** Shows Edit points (a single free-form or line is selected): whether it's in point editing, and a toggle. */
   editPoints?: { active: boolean; onToggle: () => void };
+  /** Shows the line controls (the Line tool, selected lines): thickness, dashes, arrows, and Reverse if given. */
+  line?: { style: Partial<LineStyle>; onChange: (patch: Partial<LineStyle>) => void; onReverse?: () => void };
   children?: ReactNode;
 }) {
   return (
     <div className="contextual-bar">
-      <div className="segmented">
-        {KINDS.map(({ kind: k, label, icon: Icon }) => (
-          <button
-            key={k}
-            className={k === kind ? "active" : ""}
-            disabled={kindDisabled}
-            title={kindDisabled ? `${label}: select a single shape to change its kind` : label}
-            onClick={() => onKind(k)}
-          >
-            <Icon size={16} />
-          </button>
-        ))}
-      </div>
-      <span className="sep" />
+      {onKind && (
+        <>
+          <div className="segmented">
+            {KINDS.map(({ kind: k, label, icon: Icon }) => (
+              <button
+                key={k}
+                className={k === kind ? "active" : ""}
+                disabled={kindDisabled}
+                title={kindDisabled ? `${label}: select a single shape to change its kind` : label}
+                onClick={() => onKind(k)}
+              >
+                <Icon size={16} />
+              </button>
+            ))}
+          </div>
+          <span className="sep" />
+        </>
+      )}
       <div className="swatches">
         {SHAPE_COLORS.map((c) => (
           <button
@@ -180,6 +205,12 @@ export function ContextualBar({
         <>
           <span className="sep" />
           <SidesControl {...sides} />
+        </>
+      )}
+      {line && (
+        <>
+          <span className="sep" />
+          <LineControls {...line} />
         </>
       )}
       {onMirror && (
@@ -271,6 +302,60 @@ function SidesControl({ value, onChange }: { value: number | undefined; onChange
       <button title="One side more" disabled={!smooth && value >= MAX_SIDES} onClick={() => set(smooth ? last : value + 1)}>
         <Plus size={14} />
       </button>
+    </div>
+  );
+}
+
+const ARROWS: { arrow: LineArrow; label: string; icon: LucideIcon }[] = [
+  { arrow: "none", label: "No arrows", icon: Minus },
+  { arrow: "end", label: "Arrow at the end", icon: MoveRight },
+  { arrow: "both", label: "Arrows at both ends", icon: MoveHorizontal },
+];
+
+/**
+ * A line's style: a thickness slider (screen pixels), a dashes toggle, the arrow choice and, for selected lines,
+ * Reverse (which flips the arrow's direction). A value that differs across the selection shows as not set. The
+ * slider sends its value on release, so dragging it is one step.
+ */
+function LineControls({ style, onChange, onReverse }: { style: Partial<LineStyle>; onChange: (patch: Partial<LineStyle>) => void; onReverse?: () => void }) {
+  // The slider's value while it's being dragged; null = show the style's.
+  const [dragging, setDragging] = useState<number | null>(null);
+  const thickness = dragging ?? style.thickness ?? MIN_THICKNESS;
+  const commit = () => {
+    if (dragging !== null && dragging !== style.thickness) onChange({ thickness: dragging });
+    setDragging(null);
+  };
+  return (
+    <div className="line-controls">
+      <label className="thickness" title={`Thickness: ${thickness} px on screen`}>
+        <input
+          type="range"
+          min={MIN_THICKNESS}
+          max={MAX_THICKNESS}
+          step={1}
+          value={thickness}
+          onChange={(e) => setDragging(Number(e.target.value))}
+          onPointerUp={commit}
+          onKeyUp={commit}
+          onBlur={commit}
+        />
+        <span className="value">{style.thickness === undefined && dragging === null ? "–" : `${thickness} px`}</span>
+      </label>
+      <button className={style.dashed ? "labeled active" : "labeled"} title="Dashed" onClick={() => onChange({ dashed: !style.dashed })}>
+        - - -
+      </button>
+      <div className="segmented">
+        {ARROWS.map(({ arrow, label, icon: Icon }) => (
+          <button key={arrow} className={style.arrow === arrow ? "active" : ""} title={label} onClick={() => onChange({ arrow })}>
+            <Icon size={16} />
+          </button>
+        ))}
+      </div>
+      {onReverse && (
+        <button className="labeled" title="Reverse: the line runs the other way (so does its arrow)" onClick={onReverse}>
+          <ArrowLeftRight size={16} /> Reverse
+        </button>
+      )}
     </div>
   );
 }

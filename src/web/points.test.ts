@@ -61,7 +61,35 @@ describe("point edits", () => {
   });
 
   it("removes points, but never below 3", () => {
-    expect(removePoints(square, [0])).toHaveLength(3);
-    expect(removePoints(square, [0, 1])).toBeNull();
+    expect(removePoints(square, [0], 3)).toHaveLength(3);
+    expect(removePoints(square, [0, 1], 3)).toBeNull();
+  });
+});
+
+describe("point edits on a line (open, 3D)", () => {
+  const path = [
+    { x: 0, y: 0, z: 0 },
+    { x: 4, y: 2, z: 0, in: { x: -1, y: 0, z: 0 }, out: { x: 1, y: 0, z: 0 } },
+    { x: 8, y: 0, z: 0 },
+  ];
+
+  it("finds a point at its own height, and no closing edge", () => {
+    const s = worldToScreen(cam, size, { x: 4, y: 2, z: 0 })!;
+    expect(hitPoints(cam, size, s.sx, s.sy, path, 0, [], false)).toEqual({ type: "point", index: 1 });
+    // Halfway along the closing edge (8,0,0) → (0,0,0) there's nothing: the path is open.
+    const back = worldToScreen(cam, size, { x: 4, y: 0, z: 0 })!;
+    expect(hitPoints(cam, size, back.sx, back.sy, path, 0, [], false)?.type).not.toBe("edge");
+  });
+
+  it("raises points, keeps a 3D handle in line, and makes an end smooth along its one edge", () => {
+    expect(movePoints(path, [0], 0, 0, 1.5)[0]).toEqual({ x: 0, y: 1.5, z: 0 });
+    const [, p] = moveHandle(path, 1, "out", { x: 0, y: 2, z: 0 }, false);
+    expect(p.in!.y).toBeCloseTo(-1);
+    expect(p.in!.x).toBeCloseTo(0);
+    const end = togglePoint(path, 2, false)[2];
+    expect(end.out!.x).toBeGreaterThan(0);
+    expect(end.out!.y).toBeLessThan(0);
+    expect(removePoints(path, [0], 2)).toHaveLength(2);
+    expect(removePoints(path, [0, 1], 2)).toBeNull();
   });
 });

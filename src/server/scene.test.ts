@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { Box, Freeform, SceneNode } from "../shared/scene.types";
+import type { Box, Freeform, Line, SceneNode } from "../shared/scene.types";
 import { subtreeIds } from "../shared/tree";
 import { createSceneStore, SceneError } from "./scene";
 
@@ -35,8 +35,8 @@ describe("scene store", () => {
       ],
       "human",
     );
-    expect(room.height).toBe(3);
-    expect(volume.height).toBe(0.25);
+    expect((room as Box).height).toBe(3);
+    expect((volume as Box).height).toBe(0.25);
     expect(room).toMatchObject({ type: "box", y: 0, rotation: 0, color: "almost-white" });
     expect("name" in room).toBe(false);
   });
@@ -97,7 +97,7 @@ describe("scene store", () => {
       /shapes\[0\]\.height/,
     );
     const [ok] = store.drawShapes([{ kind: "volume", x: 0, z: 0, width: 1, depth: 1, height: 0.05 }], "agent");
-    expect(ok.height).toBe(0.05);
+    expect((ok as Box).height).toBe(0.05);
   });
 
   it("keeps non-integer values, rounded to 2 decimals", () => {
@@ -749,7 +749,7 @@ describe("scene store cylinders", () => {
     expect(round).toMatchObject({ type: "cylinder", height: 3, name: "shrine" });
     expect(round).not.toHaveProperty("sides");
     expect(octagon).toMatchObject({ type: "cylinder", sides: 8, height: 0.25 });
-    expect(store.getNextId()).toEqual({ box: 2, group: 1, cylinder: 3, freeform: 1 });
+    expect(store.getNextId()).toEqual({ box: 2, group: 1, cylinder: 3, freeform: 1, line: 1 });
     expect(store.getHistory().undoLabel).toBe("Agent: draw box_1, cylinder_1, cylinder_2");
   });
 
@@ -843,7 +843,7 @@ describe("scene store free-forms", () => {
     expect(() => store.updateNodes([{ id: f.id, x: 3 }], "agent")).toThrow(/is a free-form, with no x of its own/);
     expect(() => store.updateNodes([{ id: f.id, points: [l[0], l[1], l[0], l[1]] }], "agent")).toThrow(/points/);
     const [b] = store.drawShapes([{ kind: "room", x: 20, z: 0, width: 2, depth: 2 }], "human");
-    expect(() => store.updateNodes([{ id: b.id, points: l }], "agent")).toThrow(/only a free-form has points/);
+    expect(() => store.updateNodes([{ id: b.id, points: l }], "agent")).toThrow(/only free-forms and lines have points/);
     store.undo();
     store.undo();
     expect((store.getScene().nodes[0] as Freeform).points).toEqual(l);
@@ -950,5 +950,61 @@ describe("scene store rotate pivot", () => {
       expect(p.x).toBeCloseTo(l[i].x, 1);
       expect(p.z).toBeCloseTo(l[i].z, 1);
     });
+  });
+});
+
+describe("scene store lines", () => {
+  const jump = [
+    { x: 0, y: 2, z: 0, out: { x: 2, y: 2, z: 0 } },
+    { x: 6, y: 0, z: 0 },
+  ];
+
+  it("draws a line with its defaults: black, 3 px, solid, no arrow", () => {
+    const store = createSceneStore();
+    const [l] = store.drawShapes([{ type: "line", points: jump }], "agent");
+    expect(l).toMatchObject({ id: "line_1", type: "line", color: "black", thickness: 3, dashed: false, arrow: "none" });
+    expect(store.getHistory().undoLabel).toBe("Agent: draw line_1");
+    const [m] = store.drawShapes([{ type: "line", points: jump, dashed: true, arrow: "both", thickness: 6, color: "red", name: "jump" }], "agent");
+    expect(m).toMatchObject({ id: "line_2", dashed: true, arrow: "both", thickness: 6, color: "red", name: "jump" });
+  });
+
+  it("refuses a path with one point, repeated neighbors, a missing y and a closed shape's fields", () => {
+    const store = createSceneStore();
+    expect(() => store.drawShapes([{ type: "line", points: jump.slice(0, 1) }], "agent")).toThrow(/points/);
+    expect(() => store.drawShapes([{ type: "line", points: [jump[1], { x: 6, y: 0, z: 0 }] }], "agent")).toThrow(/in the same place/);
+    expect(() => store.drawShapes([{ type: "line", points: [{ x: 0, z: 0 }, { x: 1, z: 0 }] } as never], "agent")).toThrow(/y/);
+    expect(() => store.drawShapes([{ type: "line", points: jump, kind: "room" } as never], "agent")).toThrow(/kind/);
+    expect(() => store.drawShapes([{ type: "line", points: jump, thickness: 20 }], "agent")).toThrow(/thickness/);
+  });
+
+  it("updates a line's style and points, and refuses what it doesn't have", () => {
+    const store = createSceneStore();
+    const [l] = store.drawShapes([{ type: "line", points: jump }], "human");
+    store.updateNodes([{ id: l.id, dashed: true, arrow: "end", thickness: 5 }], "human");
+    expect(store.getHistory().undoLabel).toBe("Restyle line_1");
+    expect(store.getScene().nodes[0]).toMatchObject({ dashed: true, arrow: "end", thickness: 5 });
+    store.updateNodes([{ id: l.id, points: [...jump, { x: 6, y: 0, z: 5 }] }], "human");
+    expect((store.getScene().nodes[0] as Line).points).toHaveLength(3);
+    expect(() => store.updateNodes([{ id: l.id, points: [{ x: 0, z: 0 }, { x: 3, z: 0 }] }], "agent")).toThrow(/need a y/);
+    expect(() => store.updateNodes([{ id: l.id, height: 2 }], "agent")).toThrow(/is a line, with no height/);
+    const [b] = store.drawShapes([{ kind: "room", x: 20, z: 0, width: 2, depth: 2 }], "human");
+    expect(() => store.updateNodes([{ id: b.id, dashed: true }], "agent")).toThrow(/only a line has dashed/);
+    const [f] = store.drawShapes([{ type: "freeform", kind: "room", points: [{ x: 0, z: 0 }, { x: 4, z: 0 }, { x: 0, z: 4 }] }], "human");
+    expect(() => store.updateNodes([{ id: f.id, points: [{ x: 0, y: 1, z: 0 }, { x: 4, z: 0 }, { x: 0, z: 4 }] }], "agent")).toThrow(/have no y/);
+  });
+
+  it("moves (up too), copies, groups and pastes lines through their points", () => {
+    const store = createSceneStore();
+    const [l] = store.drawShapes([{ type: "line", points: jump }], "human");
+    store.moveNodes({ ids: [l.id], dx: 1, dy: 1 }, "agent");
+    expect((store.getScene().nodes[0] as Line).points[0]).toEqual({ x: 1, y: 3, z: 0, out: { x: 2, y: 2, z: 0 } });
+    const [copy] = store.duplicateNodes({ ids: [l.id], dz: 5 }, "agent");
+    expect(copy.id).toBe("line_2");
+    expect((copy as Line).points[1]).toEqual({ x: 7, y: 1, z: 5 });
+    const group = store.groupNodes({ ids: [l.id, copy.id] }, "agent");
+    store.rotateNodes({ ids: [group.id], degrees: 90 }, "agent");
+    const [pasted] = store.pasteNodes({ nodes: [store.getScene().nodes.find((n) => n.id === l.id)!], focus: { x: 50, z: 0 }, parent: null }, "human");
+    expect(pasted).toMatchObject({ id: "line_3", type: "line" });
+    expect(() => store.convertNodes({ ids: [l.id] }, "agent")).toThrow(/is a line; only boxes and cylinders convert/);
   });
 });

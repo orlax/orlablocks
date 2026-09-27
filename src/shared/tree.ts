@@ -84,7 +84,7 @@ export function copyNodes(
 ): SceneNode[] {
   const ids = new Map(source.map((n) => [n.id, newId(n.type)]));
   return source.map((n) => {
-    const copy: SceneNode = isShape(n) ? { ...n, ...moveShape(n, dx, dy, dz), id: ids.get(n.id)! } : { ...n, id: ids.get(n.id)! };
+    const copy: SceneNode = isShape(n) ? ({ ...n, ...moveShape(n, dx, dy, dz), id: ids.get(n.id)! } as SceneNode) : { ...n, id: ids.get(n.id)! };
     if (n.parent !== undefined && ids.has(n.parent)) copy.parent = ids.get(n.parent);
     return copy;
   });

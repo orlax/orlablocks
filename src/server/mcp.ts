@@ -20,6 +20,10 @@ import {
   UngroupSchema,
   MAX_SIDES,
   MIN_SIDES,
+  DEFAULT_LINE_COLOR,
+  DEFAULT_THICKNESS,
+  MAX_THICKNESS,
+  MIN_THICKNESS,
   WALL_THICKNESS,
   type OpenScene,
   type Scene,
@@ -67,6 +71,13 @@ const INSTRUCTIONS =
   "its 4 corners, a sided cylinder its corners, a smooth one 4 smooth points that are still a true circle or oval), " +
   "then edit the new free-form's points. The free-form gets a NEW ID (the result maps each old ID to it) and keeps " +
   "the name, group, kind, color, y, height and place in the list. Don't compute circle handles by hand. " +
+  "A line (type: line) is an annotation, not geometry: an open path of `points` in ABSOLUTE world x/y/z (2 or more; " +
+  "it doesn't close), for a route, a patrol, a jump arc or a pointer. Each point has its own y (0 = the ground; " +
+  "a platform's top to start on it), and bezier handles `in` / `out` are 3D offsets { x, y, z } from the point, as on " +
+  "a free-form (a jump arc from a platform is 2 points with an `out` handle pulling up on the first). It has " +
+  `\`color\` (default ${DEFAULT_LINE_COLOR}), \`thickness\` in screen pixels (${MIN_THICKNESS}..${MAX_THICKNESS}, default ${DEFAULT_THICKNESS}), ` +
+  "`dashed` (default false) and `arrow`: none (default), end (an arrowhead at the last point) or both. It has no " +
+  "kind, x, z, y, height or rotation; move_nodes, rotate_nodes and mirror_nodes change its points. " +
   "A group (type: group) is a container with NO position of its own: its shapes keep absolute world coordinates, " +
   "and a node is in a group when its `parent` is that group's ID (groups can nest). get_scene adds each group's " +
   "derived `bounds` (center x/z, bottom y, width, depth, height, axis-aligned) for reference. Groups are a unit of " +
@@ -135,9 +146,10 @@ function buildServer(workspace: Workspace) {
       title: "Draw shapes",
       description:
         `Add one or more shapes to the scene in a single batch; they appear live in the editor. Each has a \`type\` ` +
-        `(box, the default, cylinder or freeform) and that type's fields. For a box or cylinder (a room or a volume) only ` +
-        `kind, x, z, width and depth are required; for a free-form, kind and points. The rest have defaults (the kind's ` +
-        `height, y 0, rotation 0, color ${DEFAULT_COLOR}, no name, top level, and a smooth cylinder). ` +
+        `(box, the default, cylinder, freeform or line) and that type's fields. For a box or cylinder (a room or a volume) only ` +
+        `kind, x, z, width and depth are required; for a free-form, kind and points; for a line, points. The rest have defaults (the kind's ` +
+        `height, y 0, rotation 0, color ${DEFAULT_COLOR} (${DEFAULT_LINE_COLOR} for a line), no name, top level, a smooth cylinder, ` +
+        `and a solid ${DEFAULT_THICKNESS} px line with no arrow). ` +
         `Set \`parent\` to a group's ID to draw straight into that group. ` +
         `The batch is all-or-nothing: if any shape is invalid, nothing is drawn and the error says which one.`,
       inputSchema: { shapes: z.array(ShapeInputSchema).min(1) },
@@ -146,8 +158,9 @@ function buildServer(workspace: Workspace) {
       const created = store().drawShapes(shapes, "agent");
       const all = store().getScene().nodes;
       const totals = {
-        rooms: all.filter((n) => isShape(n) && n.kind === "room").length,
-        volumes: all.filter((n) => isShape(n) && n.kind === "volume").length,
+        rooms: all.filter((n) => isShape(n) && n.type !== "line" && n.kind === "room").length,
+        volumes: all.filter((n) => isShape(n) && n.type !== "line" && n.kind === "volume").length,
+        lines: all.filter((n) => n.type === "line").length,
         groups: all.filter(isGroup).length,
       };
       return json({ created, totals });
@@ -161,7 +174,8 @@ function buildServer(workspace: Workspace) {
       description:
         `Change existing nodes by ID in a single batch; changes appear live in the editor. ` +
         `A box takes any of: name, parent, kind, x, z, y, width, depth, height, rotation, color; a cylinder those and sides; ` +
-        `a free-form name, parent, kind, y, height, color and points (the whole outline). ` +
+        `a free-form name, parent, kind, y, height, color and points (the whole outline); a line name, parent, color, ` +
+        `points (the whole path, with y), thickness, dashed and arrow. ` +
         `A group takes only name and parent. ` +
         `{ id, type: "freeform" } alone converts a box or cylinder into a free-form with a new ID; a call that converts ` +
         `only converts (edit the new free-form in a second call). ` +

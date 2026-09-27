@@ -15,6 +15,7 @@ import {
   selectionFrame,
   shapeAxes,
   toShapeLocal,
+  verticalRange,
   type Bounds,
   type Frame,
 } from "../shared/geometry";
@@ -74,12 +75,14 @@ export const AXES: Record<"x" | "y" | "z", Vec3> = {
 };
 
 const snapTo = (n: number, step: number) => Math.round(n / step) * step;
+/** A shape's top: a closed shape's, or a line's highest point. */
+const topOf = (shape: Shape) => verticalRange(shape)[1];
 
 /** Where a scale handle sits: on the top face's corner or edge midpoint, of the shape's handle frame (or `f`). */
 export function scaleHandlePoint(shape: Shape, part: ScalePart, f: Frame = handleFrame(shape)): Vec3 {
   const [sx, sz] = signs(part);
   const p = fromShapeLocal(f, { x: (sx * f.width) / 2, z: (sz * f.depth) / 2 });
-  return { x: p.x, y: shape.y + shape.height, z: p.z };
+  return { x: p.x, y: topOf(shape), z: p.z };
 }
 
 /**
@@ -93,7 +96,7 @@ export function scaleCursor(
   part: ScalePart,
   f: Frame = handleFrame(box),
 ): "ns" | "ew" | "nwse" | "nesw" {
-  const c = worldToScreen(cam, size, { x: f.x, y: box.y + box.height, z: f.z });
+  const c = worldToScreen(cam, size, { x: f.x, y: topOf(box), z: f.z });
   const h = worldToScreen(cam, size, scaleHandlePoint(box, part, f));
   if (!c || !h) return "nwse";
   const deg = ((Math.atan2(h.sy - c.sy, h.sx - c.sx) * 180) / Math.PI + 180) % 180; // 0..180, screen y down
@@ -191,9 +194,10 @@ export function hitGizmo(
 export function elevationTargets(moving: Bounds, others: Shape[]): number[] {
   const targets = [0];
   for (const box of others) {
+    if (box.type === "line") continue;
     const f = footprintBounds(box);
     const overlaps = f.minX < moving.maxX && f.maxX > moving.minX && f.minZ < moving.maxZ && f.maxZ > moving.minZ;
-    if (overlaps) targets.push(round2(box.y + box.height));
+    if (overlaps) targets.push(round2(topOf(box)));
   }
   return targets;
 }
@@ -240,7 +244,7 @@ export function startHandleDrag(
   if (isScalePart(part)) {
     const shape = origin[0];
     const [hx, hz] = signs(part);
-    const l = toShapeLocal(frame, screenToPlane(cam, size, sx, sy, shape.y + shape.height));
+    const l = toShapeLocal(frame, screenToPlane(cam, size, sx, sy, topOf(shape)));
     return { part, origin, bounds, frame, grab: { x: l.x - (hx * frame.width) / 2, y: 0, z: l.z - (hz * frame.depth) / 2 } };
   }
   const axis = part === "height" ? AXES.y : AXES[part];
@@ -290,6 +294,7 @@ export function dragUpdate(
 
   if (part === "height") {
     const box = origin[0];
+    if (box.type === "line") return { patches, label: "" };
     const s = paramOnLine(cam, size, sx, sy, anchor, AXES.y);
     const raw = box.height + s - (drag.grab as number);
     const height = round2(Math.max(MIN_HEIGHT, mods.snap ? snapTo(raw, HEIGHT_SNAP) : raw));
@@ -358,7 +363,7 @@ function scaleUpdate(
   const box = drag.frame;
   const grab = drag.grab as Vec3;
   const [hx, hz] = signs(part);
-  const l = toShapeLocal(box, screenToPlane(cam, size, sx, sy, shape.y + shape.height));
+  const l = toShapeLocal(box, screenToPlane(cam, size, sx, sy, topOf(shape)));
   // Where the dragged handle should be, in the box's frame.
   const tx = l.x - grab.x;
   const tz = l.z - grab.z;

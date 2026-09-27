@@ -5,7 +5,11 @@ import {
   footprintBounds,
   handleFrame,
   mirrorAcross,
+  lineProblem,
   orientedFrame,
+  polyline,
+  reversePoints,
+  verticalRange,
   rotateAround,
   sampleOutline,
   splitEdge,
@@ -23,7 +27,7 @@ import {
   sampleEdge,
   signedArea2,
 } from "./geometry";
-import { CURVE_SEGMENTS, type Box, type Cylinder, type FootPoint, type Freeform } from "./scene.types";
+import { CURVE_SEGMENTS, type Box, type Cylinder, type FootPoint, type Freeform, type Line, type LinePoint } from "./scene.types";
 
 const box = (patch: Partial<Box>): Box => ({
   id: "box_1",
@@ -429,5 +433,62 @@ describe("oriented frames (the Figma-style rotate pivot)", () => {
     const b = boundsOf([{ ...turned, ...patch } as Freeform]);
     expect(b.maxZ - b.minZ).toBeCloseTo(12, 1);
     expect(b.maxX - b.minX).toBeCloseTo(6, 1);
+  });
+});
+
+describe("lines", () => {
+  const arc: LinePoint[] = [
+    { x: 0, y: 2, z: 0, out: { x: 1, y: 2, z: 0 } },
+    { x: 6, y: 0, z: 0, in: { x: -1, y: 1, z: 0 } },
+    { x: 6, y: 0, z: 4 },
+  ];
+  const line: Line = { id: "line_1", type: "line", color: "black", points: arc, thickness: 3, dashed: false, arrow: "end", createdBy: "human" };
+
+  it("samples curved edges in 3D and ends on the last point; a curve's bounds include its bulge", () => {
+    const path = polyline(line);
+    expect(path).toHaveLength(CURVE_SEGMENTS + 2);
+    expect(path.at(-1)).toEqual({ x: 6, y: 0, z: 4 });
+    const [bottom, top] = verticalRange(line);
+    expect(bottom).toBe(0);
+    expect(top).toBeGreaterThan(2);
+    expect(boundsOf([line]).maxX).toBe(6);
+  });
+
+  it("moves (up too), turns and mirrors through its points, keeping their y", () => {
+    const up = moveShape(line, 1, 0.5, 0).points as LinePoint[];
+    expect(up[0]).toEqual({ x: 1, y: 2.5, z: 0, out: { x: 1, y: 2, z: 0 } });
+    const turned = rotateShape(line, { x: 0, z: 0 }, 90).points as LinePoint[];
+    // +x turns to -z (counterclockwise seen from above); y stays.
+    expect(turned[1]).toMatchObject({ x: 0, y: 0, z: -6 });
+    expect(turned[0].out).toEqual({ x: 0, y: 2, z: -1 });
+    const mirrored = mirrorAcross([line], "x")[line.id].points as LinePoint[];
+    expect(mirrored[0]).toEqual({ x: 6, y: 2, z: 0, out: { x: -1, y: 2, z: 0 } });
+    const twice = mirrorAcross([{ ...line, points: mirrored }], "x")[line.id].points;
+    expect(twice).toEqual(arc);
+  });
+
+  it("reverses without changing the path's shape", () => {
+    const back = reversePoints(arc);
+    expect(back[0]).toEqual({ x: 6, y: 0, z: 4 });
+    expect(back[1]).toEqual({ x: 6, y: 0, z: 0, out: { x: -1, y: 1, z: 0 } });
+    expect(back[2]).toEqual({ x: 0, y: 2, z: 0, in: { x: 1, y: 2, z: 0 } });
+    expect(polyline({ ...line, points: back }).reverse()[5].y).toBeCloseTo(polyline(line)[5].y);
+  });
+
+  it("finds what's wrong with a path: too few points, or neighbors in the same place", () => {
+    expect(lineProblem(arc)).toBeNull();
+    expect(lineProblem(arc.slice(0, 1))).toMatch(/at least 2/);
+    expect(lineProblem([arc[0], { x: 0, y: 2, z: 0 }])).toMatch(/points 0 and 1 are in the same place/);
+    // A line may cross itself.
+    expect(lineProblem([{ x: 0, y: 0, z: 0 }, { x: 4, y: 0, z: 4 }, { x: 4, y: 0, z: 0 }, { x: 0, y: 0, z: 4 }])).toBeNull();
+  });
+
+  it("splits a curved 3D edge without changing the path", () => {
+    const split = splitEdge(arc, 0, 0.5);
+    expect(split).toHaveLength(4);
+    const mid = polyline({ ...line, points: arc })[CURVE_SEGMENTS / 2];
+    expect(split[1].x).toBeCloseTo(mid.x);
+    expect(split[1].y).toBeCloseTo(mid.y);
+    expect(split[1].in!.y).toBeDefined();
   });
 });

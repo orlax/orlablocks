@@ -1,6 +1,6 @@
-import { WALL_THICKNESS, type Shape } from "../shared/scene.types";
+import { WALL_THICKNESS, type ClosedShape, type Shape } from "../shared/scene.types";
 import { worldToScreen, type CameraState, type Size } from "./camera";
-import { footprint, ringsInWorld, roomWalls } from "../shared/geometry";
+import { footprint, isClosed, polyline, ringsInWorld, roomWalls } from "../shared/geometry";
 
 /**
  * The marquee: which shapes a screen rectangle touches. Exact: a shape is a vertical prism over its footprint, so
@@ -24,7 +24,7 @@ export const rectFrom = (a: ScreenPoint, b: ScreenPoint): ScreenRect => ({
  * quad per side. A concave outline's inside isn't a face, so a rect in a crescent's hollow misses it. Null if any
  * corner is behind the camera.
  */
-export function shapeFaces(cam: CameraState, size: Size, shape: Shape): ScreenPoint[][] | null {
+export function shapeFaces(cam: CameraState, size: Size, shape: ClosedShape): ScreenPoint[][] | null {
   const outlines = shape.kind === "room" ? ringsInWorld(shape, roomWalls(shape, WALL_THICKNESS / 2).outer) : [footprint(shape)];
   const faces: ScreenPoint[][] = [];
   for (const outline of outlines) {
@@ -92,9 +92,25 @@ export function polygonOverlapsRect(poly: ScreenPoint[], rect: ScreenRect): bool
   });
 }
 
-/** The IDs of the shapes the rect touches on screen, in scene order. */
+/** Whether a line's path on screen touches the rect: a point inside it, or a segment crossing its edge. */
+function pathOverlapsRect(path: ScreenPoint[], rect: ScreenRect): boolean {
+  if (path.some((p) => p.sx >= rect.x0 && p.sx <= rect.x1 && p.sy >= rect.y0 && p.sy <= rect.y1)) return true;
+  const corners: ScreenPoint[] = [
+    { sx: rect.x0, sy: rect.y0 },
+    { sx: rect.x1, sy: rect.y0 },
+    { sx: rect.x1, sy: rect.y1 },
+    { sx: rect.x0, sy: rect.y1 },
+  ];
+  return path.some((p, i) => i + 1 < path.length && corners.some((c, j) => segmentsCross(p, path[i + 1], c, corners[(j + 1) % 4])));
+}
+
+/** The IDs of the shapes the rect touches on screen, in scene order: a closed shape's faces, a line's path. */
 export function marqueeHits(cam: CameraState, size: Size, boxes: Shape[], rect: ScreenRect): string[] {
   return boxes
-    .filter((b) => shapeFaces(cam, size, b)?.some((face) => polygonOverlapsRect(face, rect)) ?? false)
+    .filter((b) => {
+      if (isClosed(b)) return shapeFaces(cam, size, b)?.some((face) => polygonOverlapsRect(face, rect)) ?? false;
+      const path = polyline(b).map((p) => worldToScreen(cam, size, p));
+      return path.every((p) => p !== null) && pathOverlapsRect(path, rect);
+    })
     .map((b) => b.id);
 }

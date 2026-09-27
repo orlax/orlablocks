@@ -4,7 +4,11 @@ import * as THREE from "three";
 import {
   DEFAULT_COLOR,
   DEFAULT_HEIGHT,
+  MIN_LINE_POINTS,
+  MIN_POINTS,
   SNAP,
+  type Line,
+  type LinePoint,
   type Shape,
   type ShapeKind,
   type ShapePatch,
@@ -16,15 +20,19 @@ import {
 } from "../shared/scene.types";
 import {
   boundsOf,
+  isClosed,
   isFootprinted,
+  lineProblem,
   outlineProblem,
   pathCrosses,
   roundPoints,
   sameValue,
   sampleEdge,
+  sampleEdge3,
   selectionFrame,
   splitEdge,
   type Point,
+  type Point3,
 } from "../shared/geometry";
 import { shapesUnder, isShape, selectableAt } from "../shared/tree";
 import { ShapeMesh } from "./ShapeMesh";
@@ -35,6 +43,7 @@ import {
   FOV_DEG,
   MAX_DISTANCE,
   panTo,
+  paramOnLine,
   rotateBy,
   screenRay,
   screenToGround,
@@ -48,15 +57,18 @@ import {
   type Size,
 } from "./camera";
 import {
+  AXES,
   canCopy,
   dragOffset,
   dragUpdate,
   effectiveChanges,
+  elevationTargets,
   gizmoAnchor,
   hitGizmo,
   isScalePart,
   SCALE_PARTS,
   scaleCursor,
+  snapElevation,
   startBodyDrag,
   startHandleDrag,
   type GizmoDrag,
@@ -67,8 +79,20 @@ import { Grid } from "./Grid";
 import { typingInField } from "./keys";
 import { Lighting } from "./Lighting";
 import { marqueeHits, rectFrom, type ScreenPoint } from "./marquee";
-import { pickShape, pickHit } from "./pick";
-import { handleEnd, hitPoints, movePoints, moveHandle, removePoints, togglePoint, type HandleSide, type PointPart } from "./points";
+import { LineMesh } from "./LineMesh";
+import { pickHit, pickLine } from "./pick";
+import {
+  handleEnd,
+  hitPoints,
+  movePoints,
+  moveHandle,
+  pointY,
+  removePoints,
+  togglePoint,
+  type EditPoint,
+  type HandleSide,
+  type PointPart,
+} from "./points";
 import { TransformGizmo } from "./TransformGizmo";
 
 const BACKGROUND = "#f7f6f2";
@@ -82,13 +106,22 @@ const CLOSE_PX = 10;
  * The Pen's outline in progress: the points placed so far (world x/z, unrounded), where the cursor is (the next
  * point, snapped like one), and the point whose handle a press-and-drag is pulling out.
  */
-type Pen = { points: FootPoint[]; cursor: Point | null; closing: boolean; drag: { pointerId: number; index: number; sx: number; sy: number } | null };
-const NO_PEN: Pen = { points: [], cursor: null, closing: false, drag: null };
+type Pen = {
+  /** The tool the points belong to: the Pen (a closed free-form, on the ground) or the Line tool (open, points in 3D). */
+  owner: "pen" | "line" | null;
+  points: EditPoint[];
+  cursor: EditPoint | null;
+  closing: boolean;
+  drag: { pointerId: number; index: number; sx: number; sy: number } | null;
+};
+const NO_PEN: Pen = { owner: null, points: [], cursor: null, closing: false, drag: null };
+/** The Line tool's style for the next line, from the contextual bar. */
+export type LineStyle = Pick<Line, "color" | "thickness" | "dashed" | "arrow">;
 
 type YawKey = "left" | "right";
 const YAW_KEYS: Record<string, YawKey> = { a: "left", arrowleft: "left", d: "right", arrowright: "right" };
 
-export type Tool = "select" | "hand" | "box" | "cylinder" | "pen";
+export type Tool = "select" | "hand" | "box" | "cylinder" | "pen" | "line";
 /** The tools that drag a footprint on the ground, and the shape type each draws. */
 const DRAWS: Partial<Record<Tool, "box" | "cylinder">> = { box: "box", cylinder: "cylinder" };
 
@@ -128,7 +161,9 @@ type Drag = GizmoDrag & {
  */
 type PointDrag = {
   pointerId: number;
-  mode: "points" | "handle";
+  /** points: move the selected points on the plane at `planeY`; handle: one handle; y: a line's selected points up or down. */
+  mode: "points" | "handle" | "y";
+  planeY: number;
   index: number;
   side?: HandleSide;
   indices: number[];
@@ -140,9 +175,12 @@ type PointDrag = {
   sy: number;
   active: boolean;
   inserted: boolean;
-  points: FootPoint[];
+  points: EditPoint[];
   problem: string | null;
   clickSelection?: number[];
+  /** A y drag: where along the vertical the cursor started, and the grabbed point's y then. */
+  grabY?: number;
+  label?: string;
 };
 
 /**
@@ -193,6 +231,8 @@ type Props = {
   nextKind: ShapeKind;
   /** The sides the Cylinder tool draws (undefined = smooth). */
   nextSides: number | undefined;
+  /** How the Line tool draws the next line. */
+  nextLine: LineStyle;
   onSelect: (ids: string[]) => void;
   onDrawShape: (shape: ShapeInput) => void;
   /** One gizmo drag: one `update_nodes`, so one undo step. */
@@ -223,6 +263,7 @@ export function Viewport({
   outsideHover,
   nextKind,
   nextSides,
+  nextLine,
   onSelect,
   onDrawShape,
   onUpdate,
@@ -280,6 +321,7 @@ export function Viewport({
   const [pointSel, setPointSel] = useState<number[]>([]);
   const [pointDrag, setPointDrag] = useState<PointDrag | null>(null);
   const [hotPoint, setHotPoint] = useState<PointPart | null>(null);
+  const [hotY, setHotY] = useState(false);
 
   const boxes = nodes.filter(isShape);
   const boxesRef = useRef(boxes);
@@ -288,16 +330,24 @@ export function Viewport({
   // leaves the originals where they are and shows the copies (`ghosts`) where the drag puts them. A point edit in
   // progress shows too, while its outline is valid.
   const override = drag?.active ? drag : pending;
-  const moved = (b: Shape) => (override?.patches[b.id] ? { ...b, ...override.patches[b.id] } : b);
+  const moved = (b: Shape): Shape => (override?.patches[b.id] ? ({ ...b, ...override.patches[b.id] } as Shape) : b);
   const pointPreview = pointDrag && (pointDrag.active || pointDrag.inserted) ? pointDrag : null;
   const shown = (override && !override.copy ? boxes.map(moved) : boxes).map((b) =>
     pointPreview && !pointPreview.problem && b.id === editing ? ({ ...b, points: roundPoints(pointPreview.points) } as Shape) : b,
   );
-  const ghosts = override?.copy ? override.origin.map((b) => ({ ...moved(b), id: `${b.id}:copy` })) : [];
-  // The free-form in point editing, as shown.
-  const editShape = editing !== null ? shown.find((b) => b.id === editing && b.type === "freeform") : undefined;
-  const editPoints = editShape?.type === "freeform" ? (pointPreview?.points ?? editShape.points) : null;
-  const editTop = editShape ? editShape.y + editShape.height : 0;
+  const ghosts = override?.copy ? override.origin.map((b) => ({ ...moved(b), id: `${b.id}:copy` }) as Shape) : [];
+  // The free-form or line in point editing, as shown. A free-form's points sit on its top face (`editTop`); a
+  // line's carry their own y, and its path is open.
+  const editShape = editing !== null ? shown.find((b) => b.id === editing && (b.type === "freeform" || b.type === "line")) : undefined;
+  const editPoints: EditPoint[] | null =
+    editShape?.type === "freeform" || editShape?.type === "line" ? (pointPreview?.points ?? editShape.points) : null;
+  const editTop = editShape?.type === "freeform" ? editShape.y + editShape.height : 0;
+  const editClosed = editShape?.type !== "line";
+  // A line's selected point has a y arrow to raise or lower it (and the other selected points with it).
+  const yArrow =
+    tool === "select" && editShape?.type === "line" && editPoints && pointSel.length > 0 && editPoints[pointSel[0]]
+      ? { x: editPoints[pointSel[0]].x, y: pointY(editPoints[pointSel[0]], 0), z: editPoints[pointSel[0]].z }
+      : null;
   /** The boxes (as shown) in or under the given nodes. */
   const shownUnder = (ids: string[]) => {
     const under = new Set(shapesUnder(nodes, ids).map((b) => b.id));
@@ -310,6 +360,8 @@ export function Viewport({
   const selectedBoxes = tool !== "select" || editShape ? [] : ghosts.length > 0 ? ghosts : shownUnder(selection);
   const single =
     selection.length === 1 && selectedBoxes.length === 1 && selectedBoxes[0].id === selection[0] ? selectedBoxes[0] : undefined;
+  // Height and scale handles are for a single closed shape (a line has neither).
+  const scalable = single && isClosed(single) ? single : undefined;
   // The selection frame turns with the selection: live while rotating, then as far as it was turned.
   const selectionKey = selection.join(",");
   const frameTurn = drag?.active && drag.turn !== undefined ? drag.turn : turn?.key === selectionKey ? turn.angle : 0;
@@ -318,9 +370,9 @@ export function Viewport({
     frame && selectedBoxes.length > 0
       ? {
           anchor: gizmoAnchor(boundsOf(selectedBoxes), frame),
-          parts: (single ? ["x", "y", "z", "rotate", "height", ...SCALE_PARTS] : ["x", "y", "z", "rotate"]) as GizmoPart[],
+          parts: (scalable ? ["x", "y", "z", "rotate", "height", ...SCALE_PARTS] : ["x", "y", "z", "rotate"]) as GizmoPart[],
           boxes: selectedBoxes,
-          box: single,
+          box: scalable,
           frame,
         }
       : null;
@@ -345,15 +397,23 @@ export function Viewport({
     const inside = context === null ? null : selectableAt(nodes, id, context);
     return inside !== null ? { id: inside, leaves: false } : { id: selectableAt(nodes, id, null) ?? id, leaves: context !== null };
   };
+  /**
+   * The shape under the cursor and the point where it's hit: a line first (they're drawn over everything, picked
+   * within a few px of their path on screen), else the first closed shape the ray hits.
+   */
+  const hitAt = (sx: number, sy: number, size: Size) =>
+    pickLine(cam.current, size, sx, sy, shown) ?? pickHit(screenRay(cam.current, size, sx, sy), shown);
   const pickAt = (sx: number, sy: number, size: Size) => {
-    const id = pickShape(screenRay(cam.current, size, sx, sy), shown);
-    return id === null ? null : resolve(id).id;
+    const id = hitAt(sx, sy, size)?.id;
+    return id === undefined ? null : resolve(id).id;
   };
   const gizmoAt = (sx: number, sy: number, size: Size) =>
     gizmo ? hitGizmo(cam.current, size, sx, sy, gizmo.anchor, gizmo.parts, gizmo.boxes, gizmo.frame) : null;
-  /** The point, handle or edge of the edited free-form under the cursor. */
+  /** The point, handle or edge of the edited free-form or line under the cursor. */
   const pointAt = (sx: number, sy: number, size: Size) =>
-    editPoints ? hitPoints(cam.current, size, sx, sy, editPoints, editTop, pointSel) : null;
+    editPoints ? hitPoints(cam.current, size, sx, sy, editPoints, editTop, pointSel, editClosed) : null;
+  /** Whether the cursor is on a line point's y arrow. */
+  const yArrowAt = (sx: number, sy: number, size: Size) => !!yArrow && hitGizmo(cam.current, size, sx, sy, yArrow, ["y"]) === "y";
 
   const cancelDrawing = () => {
     drawing.current = null;
@@ -361,15 +421,14 @@ export function Viewport({
   };
 
   // Switching tools (or holding Space) mid-drag drops the unfinished footprint, gizmo drag or marquee (keeping
-  // whatever the marquee has selected so far). The Pen's outline takes many clicks, so it survives the hand (Space
-  // to pan while drawing) and is dropped by any other tool.
+  // whatever the marquee has selected so far). The Pen's outline (or the Line tool's path) takes many clicks, so it
+  // survives the hand (Space to pan while drawing) and is dropped by any other tool.
   useEffect(() => {
     cancelDrawing();
     setDrag(null);
     setPointDrag(null);
     setMarquee(null);
-    if (tool === "hand" || tool === "pen") setPen((p) => ({ ...p, cursor: null, closing: false, drag: null }));
-    else setPen(NO_PEN);
+    setPen((p) => (tool === "hand" || tool === p.owner ? { ...p, cursor: null, closing: false, drag: null } : NO_PEN));
   }, [tool]);
 
   // A new scene from the server: the released drag is now real, and a drag whose boxes vanished (undo, Clear,
@@ -415,16 +474,41 @@ export function Viewport({
     return { ...d, active: true, copy, patches, label, turn, sx, sy };
   };
 
-  /** A ground point's position on screen. */
-  const onScreen = (p: Point) =>
-    worldToScreen(cam.current, { width: wrap.current!.clientWidth, height: wrap.current!.clientHeight }, { x: p.x, y: 0, z: p.z });
+  /** A point's position on screen (a free-form's at ground level, a line's at its own y). */
+  const onScreen = (p: Point & { y?: number }) =>
+    worldToScreen(cam.current, { width: wrap.current!.clientWidth, height: wrap.current!.clientHeight }, { x: p.x, y: p.y ?? 0, z: p.z });
 
   /**
-   * Draws the Pen's outline as a free-form (rounded to 2 decimals), unless it isn't valid: then the status bar says
-   * why and the outline stays, to fix with Backspace.
+   * The Line tool's point under the cursor: on the surface there (a volume's top, a room's floor or wall top; lines
+   * don't count), else on the ground. x and z snap to 0.5 m unless Cmd/Ctrl; y comes from the surface.
    */
-  const finishPen = (points: FootPoint[]) => {
-    const rounded = roundPoints(points);
+  const surfaceAt = (e: PointerEvent): LinePoint => {
+    const { sx, sy, size } = local(e);
+    const hit = pickHit(screenRay(cam.current, size, sx, sy), shown);
+    const p = hit ? hit.point : { ...screenToGround(cam.current, size, sx, sy), y: 0 };
+    return noSnap(e) ? { x: p.x, y: round2(p.y), z: p.z } : { x: snap(p.x), y: round2(p.y), z: snap(p.z) };
+  };
+  /** Where the tool puts its next point: the ground (the Pen) or the surface under the cursor (the Line tool). */
+  const placeAt = (e: PointerEvent): EditPoint => (tool === "line" ? surfaceAt(e) : groundAt(e).point);
+
+  /**
+   * Finishes what the Pen or the Line tool drew (rounded to 2 decimals): the Pen's outline as a free-form, the
+   * Line tool's path as a line in the contextual bar's style. Unless it isn't valid: then the status bar says why
+   * and the points stay, to fix with Backspace.
+   */
+  const finishPen = (p: Pen) => {
+    if (p.owner === "line") {
+      const rounded = roundPoints(p.points as LinePoint[]);
+      const problem = rounded.length < MIN_LINE_POINTS ? `a line needs at least ${MIN_LINE_POINTS} points` : lineProblem(rounded);
+      if (problem) {
+        onNotice(`Can't finish: ${problem}`);
+        return;
+      }
+      onDrawShape({ type: "line", points: rounded, thickness: nextLine.thickness, dashed: nextLine.dashed, arrow: nextLine.arrow });
+      setPen(NO_PEN);
+      return;
+    }
+    const rounded = roundPoints(p.points);
     const problem = outlineProblem(rounded);
     if (problem) {
       onNotice(`Can't close: ${problem}`);
@@ -436,23 +520,24 @@ export function Viewport({
   const finishPenRef = useRef(finishPen);
   finishPenRef.current = finishPen;
 
-  // Pen: a press adds a corner at the (snapped) ground point, and dragging before release pulls out its handles
-  // (a smooth point). Pressing the first point (with 3 or more) closes the outline.
+  // Pen and Line tool: a press adds a corner at the (snapped) point, and dragging before release pulls out its
+  // handles (a smooth point). With the Pen, pressing the first point (with 3 or more) closes the outline.
   const penDown = (e: PointerEvent) => {
     const { sx, sy } = local(e);
-    const { points } = pen;
+    const own = pen.owner === tool ? pen : { ...NO_PEN, owner: tool as "pen" | "line" };
+    const { points } = own;
     const first = points[0] && onScreen(points[0]);
-    if (points.length >= 3 && first && Math.hypot(first.sx - sx, first.sy - sy) <= CLOSE_PX) {
-      finishPen(points);
+    if (tool === "pen" && points.length >= 3 && first && Math.hypot(first.sx - sx, first.sy - sy) <= CLOSE_PX) {
+      finishPen(own);
       return;
     }
     e.currentTarget.setPointerCapture(e.pointerId);
-    const { point } = groundAt(e);
+    const point = placeAt(e);
     const last = points.at(-1);
     // A second press in the same place (a double-click) adds nothing, but can still pull out the handles.
     const same = last && last.x === point.x && last.z === point.z;
-    const next = same ? points : [...points, { x: point.x, z: point.z }];
-    setPen({ ...pen, points: next, drag: { pointerId: e.pointerId, index: next.length - 1, sx, sy } });
+    const next = same ? points : [...points, point];
+    setPen({ ...own, points: next, drag: { pointerId: e.pointerId, index: next.length - 1, sx, sy } });
   };
 
   /** The Pen as the cursor moves: pulling out the pressed point's handles, or showing where the next point goes. */
@@ -461,28 +546,34 @@ export function Viewport({
     const d = pen.drag;
     if (d?.pointerId === e.pointerId) {
       if (Math.hypot(sx - d.sx, sy - d.sy) < CLICK_PX) return;
-      // Handles aren't snapped: the out handle follows the cursor and the in handle mirrors it.
-      const g = screenToGround(cam.current, size, sx, sy);
+      // Handles aren't snapped: the out handle follows the cursor (on the plane at the point's height) and the in
+      // handle mirrors it. A line's handles are 3D, flat to start with.
       const p = pen.points[d.index];
-      const out = { x: g.x - p.x, z: g.z - p.z };
-      const points = pen.points.map((q, i) => (i === d.index ? { x: q.x, z: q.z, in: { x: -out.x, z: -out.z }, out } : q));
+      const g = screenToPlane(cam.current, size, sx, sy, p.y ?? 0);
+      const flat = p.y !== undefined ? { y: 0 } : {};
+      const out = { x: g.x - p.x, ...flat, z: g.z - p.z };
+      const points = pen.points.map((q, i) => (i === d.index ? { ...q, in: { x: -out.x, ...flat, z: -out.z }, out } : q));
       setPen({ ...pen, points, cursor: null });
       return;
     }
     const first = pen.points[0] && onScreen(pen.points[0]);
-    const closing = pen.points.length >= 3 && !!first && Math.hypot(first.sx - sx, first.sy - sy) <= CLOSE_PX;
-    setPen({ ...pen, cursor: closing ? { ...pen.points[0] } : groundAt(e).point, closing });
+    const closing = tool === "pen" && pen.points.length >= 3 && !!first && Math.hypot(first.sx - sx, first.sy - sy) <= CLOSE_PX;
+    setPen({ ...pen, owner: pen.owner ?? (tool as "pen" | "line"), cursor: closing ? { ...pen.points[0] } : placeAt(e), closing });
   };
 
+  /** What's wrong with edited points (a free-form's outline, a line's path), or null. */
+  const pointsProblem = (points: EditPoint[]) =>
+    editClosed ? outlineProblem(roundPoints(points)) : lineProblem(roundPoints(points as LinePoint[]));
+
   /**
-   * Sends an edited outline (rounded) as one step, and shows it until the server's scene arrives. Refused, with
-   * the reason in the status bar, if it isn't a valid outline. Returns whether it was kept.
+   * Sends edited points (rounded) as one step, and shows them until the server's scene arrives. Refused, with the
+   * reason in the status bar, if they aren't a valid outline or path. Returns whether they were kept.
    */
-  const commitPoints = (points: FootPoint[], verb: string): boolean => {
+  const commitPoints = (points: EditPoint[], verb: string): boolean => {
     const original = boxesRef.current.find((b) => b.id === editing);
-    if (original?.type !== "freeform") return false;
+    if (original?.type !== "freeform" && original?.type !== "line") return false;
     const rounded = roundPoints(points);
-    const problem = outlineProblem(rounded);
+    const problem = pointsProblem(points);
     if (problem) {
       onNotice(`Can't ${verb}: ${problem}`);
       return false;
@@ -498,26 +589,35 @@ export function Viewport({
   const pointDown = (e: PointerEvent, part: PointPart, sx: number, sy: number, size: Size) => {
     if (!editPoints) return;
     e.currentTarget.setPointerCapture(e.pointerId);
-    const grab = screenToPlane(cam.current, size, sx, sy, editTop);
-    const base = { pointerId: e.pointerId, grab, sx0: sx, sy0: sy, sx, sy, active: false, problem: null };
+    // Points are dragged on the plane at their height: a free-form's top, a line point's own y.
+    const start = part.type === "edge" ? splitEdge(editPoints, part.index, part.t) : editPoints;
+    const index = part.type === "edge" ? part.index + 1 : part.index;
+    const planeY = pointY(start[index], editTop);
+    const grab = screenToPlane(cam.current, size, sx, sy, planeY);
+    const base = { pointerId: e.pointerId, planeY, grab, sx0: sx, sy0: sy, sx, sy, active: false, problem: null, start, points: start };
     if (part.type === "handle") {
-      const { index, side } = part;
-      setPointDrag({ ...base, mode: "handle", index, side, indices: [], start: editPoints, points: editPoints, inserted: false });
+      setPointDrag({ ...base, mode: "handle", index, side: part.side, indices: [], inserted: false });
       return;
     }
     if (part.type === "edge") {
-      const start = splitEdge(editPoints, part.index, part.t);
-      const index = part.index + 1;
       setPointSel([index]);
-      setPointDrag({ ...base, mode: "points", index, indices: [index], start, points: start, inserted: true });
+      setPointDrag({ ...base, mode: "points", index, indices: [index], inserted: true });
       return;
     }
-    const { index } = part;
     const was = pointSel.includes(index);
     const indices = was ? pointSel : e.shiftKey ? [...pointSel, index] : [index];
     const clickSelection = e.shiftKey ? (was ? pointSel.filter((i) => i !== index) : indices) : [index];
     if (!was) setPointSel(indices);
-    setPointDrag({ ...base, mode: "points", index, indices, start: editPoints, points: editPoints, inserted: false, clickSelection });
+    setPointDrag({ ...base, mode: "points", index, indices, inserted: false, clickSelection });
+  };
+
+  /** A press on a line point's y arrow: raises or lowers the selected points. */
+  const yArrowDown = (e: PointerEvent, sx: number, sy: number, size: Size) => {
+    if (!editPoints || !yArrow) return;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const grabY = paramOnLine(cam.current, size, sx, sy, yArrow, AXES.y);
+    const base = { pointerId: e.pointerId, planeY: yArrow.y, grab: yArrow, sx0: sx, sy0: sy, sx, sy, active: true, problem: null };
+    setPointDrag({ ...base, mode: "y", index: pointSel[0], indices: pointSel, start: editPoints, points: editPoints, inserted: false, grabY });
   };
 
   /**
@@ -526,19 +626,29 @@ export function Viewport({
    */
   const pointMove = (d: PointDrag, e: PointerEvent, sx: number, sy: number, size: Size) => {
     if (!d.active && Math.hypot(sx - d.sx0, sy - d.sy0) < CLICK_PX) return;
-    const p = screenToPlane(cam.current, size, sx, sy, editTop);
     const q = d.start[d.index];
-    let points: FootPoint[];
+    if (d.mode === "y") {
+      // The grabbed point's y follows the cursor along the vertical, snapping to the ground and the tops under it.
+      const from = pointY(q, 0);
+      const raw = from + paramOnLine(cam.current, size, sx, sy, { x: q.x, y: from, z: q.z }, AXES.y) - d.grabY!;
+      const near = { minX: q.x - 0.01, maxX: q.x + 0.01, minY: from, maxY: from, minZ: q.z - 0.01, maxZ: q.z + 0.01 };
+      const y = snapElevation(raw, elevationTargets(near, boxesRef.current), !noSnap(e));
+      const points = movePoints(d.start, d.indices, 0, 0, y - from);
+      setPointDrag({ ...d, points, problem: pointsProblem(points), sx, sy, label: `y ${y.toFixed(2)} m` });
+      return;
+    }
+    const p = screenToPlane(cam.current, size, sx, sy, d.planeY);
+    let points: EditPoint[];
     if (d.mode === "handle" && d.side) {
       const h = q[d.side]!;
-      points = moveHandle(d.start, d.index, d.side, { x: h.x + p.x - d.grab.x, z: h.z + p.z - d.grab.z }, e.altKey);
+      points = moveHandle(d.start, d.index, d.side, { ...h, x: h.x + p.x - d.grab.x, z: h.z + p.z - d.grab.z }, e.altKey);
     } else {
       let x = q.x + p.x - d.grab.x;
       let z = q.z + p.z - d.grab.z;
       if (!noSnap(e)) [x, z] = [snap(x), snap(z)];
       points = movePoints(d.start, d.indices, x - q.x, z - q.z);
     }
-    setPointDrag({ ...d, active: true, points, problem: outlineProblem(roundPoints(points)), sx, sy });
+    setPointDrag({ ...d, active: true, points, problem: pointsProblem(points), sx, sy });
   };
 
   // Select tool: a gizmo handle drags it. Pressing a box selects it (unless it's already selected) and dragging
@@ -553,12 +663,16 @@ export function Viewport({
       // In point editing, a press grabs a point, a handle or an edge. Pressing the free-form elsewhere deselects
       // the points; pressing anything else leaves point editing (empty ground does only that).
       if (editShape) {
+        if (yArrowAt(sx, sy, size)) {
+          yArrowDown(e, sx, sy, size);
+          return;
+        }
         const part = pointAt(sx, sy, size);
         if (part) {
           pointDown(e, part, sx, sy, size);
           return;
         }
-        const hit = pickHit(screenRay(cam.current, size, sx, sy), shown);
+        const hit = hitAt(sx, sy, size);
         if (hit?.id === editShape.id) {
           setPointSel([]);
           return;
@@ -571,7 +685,7 @@ export function Viewport({
         startDrag(e, startHandleDrag(cam.current, size, sx, sy, part, selectedBoxes, gizmo?.frame), { active: true, nodeIds: selection });
         return;
       }
-      const hit = pickHit(screenRay(cam.current, size, sx, sy), shown);
+      const hit = hitAt(sx, sy, size);
       if (hit) {
         const { id: target, leaves } = resolve(hit.id);
         if (leaves) onContext(null);
@@ -595,12 +709,12 @@ export function Viewport({
       setMarquee({ pointerId: e.pointerId, start, end: start, additive: e.shiftKey, base: selection, active: false });
       return;
     }
-    if (e.button === 0 && tool === "pen") {
+    if (e.button === 0 && (tool === "pen" || tool === "line")) {
       penDown(e);
       return;
     }
     const draws = DRAWS[tool];
-    const panButton = e.button === 1 || (e.button === 0 && !draws && tool !== "pen");
+    const panButton = e.button === 1 || (e.button === 0 && !draws && tool !== "pen" && tool !== "line");
     const drawButton = e.button === 0 && !!draws;
     if (!panButton && !drawButton) return;
     e.currentTarget.setPointerCapture(e.pointerId);
@@ -651,7 +765,7 @@ export function Viewport({
       invalidate();
       return;
     }
-    if (tool === "pen") {
+    if (tool === "pen" || tool === "line") {
       penMove(e);
       return;
     }
@@ -664,7 +778,9 @@ export function Viewport({
     // Just hovering: in point editing, what a press would grab (for the cursor); otherwise highlight the gizmo
     // handle, or in the Select tool the box that a press would grab.
     if (editShape && tool === "select") {
-      setHotPoint(pointAt(sx, sy, size));
+      const onY = yArrowAt(sx, sy, size);
+      setHotY(onY);
+      setHotPoint(onY ? null : pointAt(sx, sy, size));
       setHotPart(null);
       setHoveredId(null);
       return;
@@ -746,21 +862,27 @@ export function Viewport({
   // (the box itself, or a subgroup). On a free-form that's selected at its own level, it enters point editing, and
   // there a double-click on a point switches it between corner and smooth.
   const onDoubleClick = (e: MouseEvent) => {
+    // The Line tool: a double-click finishes the line (its second press added nothing).
+    if (tool === "line") {
+      if (pen.owner === "line" && pen.points.length > 0) finishPen(pen);
+      return;
+    }
     if (tool !== "select") return;
     const { sx, sy, size } = local(e);
     if (editShape && editPoints) {
       const part = pointAt(sx, sy, size);
       if (part?.type !== "point") return;
       const smooth = !!(editPoints[part.index].in || editPoints[part.index].out);
-      if (commitPoints(togglePoint(editPoints, part.index), smooth ? "make it a corner" : "make it smooth")) setPointSel([part.index]);
+      if (commitPoints(togglePoint(editPoints, part.index, editClosed), smooth ? "make it a corner" : "make it smooth")) setPointSel([part.index]);
       return;
     }
-    const id = pickShape(screenRay(cam.current, size, sx, sy), shown);
-    if (id === null) return;
+    const id = hitAt(sx, sy, size)?.id;
+    if (id === undefined) return;
     const target = resolve(id).id;
     if (target === id) {
       // Already the shape itself.
-      if (shown.find((b) => b.id === id)?.type === "freeform") {
+      const type = shown.find((b) => b.id === id)?.type;
+      if (type === "freeform" || type === "line") {
         onSelect([id]);
         onEditing(id);
       }
@@ -772,8 +894,8 @@ export function Viewport({
 
   // In point editing: Esc cancels a point drag, or else leaves point editing; Delete / Backspace removes the
   // selected points (never fewer than 3). Neither reaches the app, which would deselect or delete the free-form.
-  const editKeys = useRef({ editing, pointSel, pointDrag, editPoints, commitPoints, onEditing, onNotice });
-  editKeys.current = { editing, pointSel, pointDrag, editPoints, commitPoints, onEditing, onNotice };
+  const editKeys = useRef({ editing, pointSel, pointDrag, editPoints, editClosed, commitPoints, onEditing, onNotice });
+  editKeys.current = { editing, pointSel, pointDrag, editPoints, editClosed, commitPoints, onEditing, onNotice };
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       const k = editKeys.current;
@@ -787,9 +909,9 @@ export function Viewport({
         return;
       }
       if (k.pointSel.length === 0 || !k.editPoints || k.pointDrag) return;
-      const left = removePoints(k.editPoints, k.pointSel);
+      const left = removePoints(k.editPoints, k.pointSel, k.editClosed ? MIN_POINTS : MIN_LINE_POINTS);
       if (!left) {
-        k.onNotice("A free-form needs at least 3 points");
+        k.onNotice(k.editClosed ? `A free-form needs at least ${MIN_POINTS} points` : `A line needs at least ${MIN_LINE_POINTS} points`);
         return;
       }
       if (k.commitPoints(left, k.pointSel.length === 1 ? "delete that point" : "delete those points")) setPointSel([]);
@@ -810,7 +932,7 @@ export function Viewport({
       e.preventDefault();
       e.stopImmediatePropagation();
       if (e.key === "Escape") setPen(NO_PEN);
-      else if (e.key === "Enter") finishPenRef.current(points);
+      else if (e.key === "Enter") finishPenRef.current(penRef.current);
       else setPen({ ...penRef.current, points: points.slice(0, -1), drag: null });
     };
     window.addEventListener("keydown", onKeyDown, true);
@@ -894,7 +1016,8 @@ export function Viewport({
   const scaleBox = drag?.active ? drag.origin[0] : gizmo?.box;
   const size = wrap.current ? { width: wrap.current.clientWidth, height: wrap.current.clientHeight } : null;
   const cursorClass = (() => {
-    if (pointDrag?.active) return "moving";
+    if (pointDrag?.active) return pointDrag.mode === "y" ? "resizing" : "moving";
+    if (editShape && tool === "select" && hotY) return "resizing";
     if (editShape && tool === "select" && hotPoint) return hotPoint.type === "edge" ? "adding" : "moving";
     if (activePart && isScalePart(activePart)) {
       return scaleBox && size ? `resize-${scaleCursor(cam.current, size, scaleBox, activePart, drag?.active ? drag.frame : gizmo?.frame)}` : "moving";
@@ -904,7 +1027,7 @@ export function Viewport({
     if (activePart === "y" || activePart === "height") return "resizing";
     if (activePart) return "moving";
     if (panning) return "panning";
-    return DRAWS[tool] || tool === "pen" ? "drawing" : tool === "select" ? "selecting" : "";
+    return DRAWS[tool] || tool === "pen" || tool === "line" ? "drawing" : tool === "select" ? "selecting" : "";
   })();
 
   return (
@@ -947,8 +1070,20 @@ export function Viewport({
           selected={new Set(ghosts.length > 0 ? ghosts.map((b) => b.id) : shapesUnder(nodes, selection).map((b) => b.id))}
           hovered={new Set(shapesUnder(nodes, [hoveredId, outsideHover].filter((id) => id !== null)).map((b) => b.id))}
         />
-        {pen.points.length > 0 && <PenPreview pen={pen} kind={nextKind} />}
-        {editPoints && <PointOverlay points={editPoints} y={editTop} selected={pointSel} bad={!!pointPreview?.problem} />}
+        {pen.points.length > 0 && <PenPreview pen={pen} kind={nextKind} line={nextLine} />}
+        {editPoints && (
+          <PointOverlay points={editPoints} y={editTop} closed={editClosed} selected={pointSel} bad={!!pointPreview?.problem} />
+        )}
+        {yArrow && (
+          <TransformGizmo
+            anchor={yArrow}
+            parts={["y"]}
+            boxes={[]}
+            frame={{ x: yArrow.x, z: yArrow.z, width: 0, depth: 0, rotation: 0 }}
+            hot={pointDrag?.mode === "y" || hotY ? "y" : null}
+            cam={cam}
+          />
+        )}
         {gizmo && (
           <TransformGizmo
             anchor={gizmo.anchor}
@@ -1004,6 +1139,7 @@ export function Viewport({
       {pointDrag?.active && (
         <div className={pointDrag.problem ? "draft-label bad" : "draft-label"} style={{ left: pointDrag.sx + 14, top: pointDrag.sy + 14 }}>
           {pointDrag.problem ??
+            pointDrag.label ??
             (pointDrag.mode === "points"
               ? `x ${round2(pointDrag.points[pointDrag.index].x).toFixed(2)} · z ${round2(pointDrag.points[pointDrag.index].z).toFixed(2)}`
               : pointDrag.side === "in"
@@ -1036,9 +1172,10 @@ function Boxes({
   useEffect(() => invalidate(), [boxes, draft, selectedKey, hoveredKey]);
   return (
     <>
-      {boxes.map((b) => (
-        <ShapeMesh key={b.id} shape={b} highlight={selected.has(b.id) ? "selected" : hovered.has(b.id) ? "hover" : undefined} />
-      ))}
+      {boxes.map((b) => {
+        const highlight = selected.has(b.id) ? "selected" : hovered.has(b.id) ? "hover" : undefined;
+        return b.type === "line" ? <LineMesh key={b.id} line={b} highlight={highlight} /> : <ShapeMesh key={b.id} shape={b} highlight={highlight} />;
+      })}
       {draft && draft.width > 0 && draft.depth > 0 && (
         <ShapeMesh
           shape={{
@@ -1071,11 +1208,31 @@ const PEN_Y = 0.02;
 /** The path the Pen would draw now: the placed points, then the cursor as the next one (unless it's closing). */
 const penPath = (pen: Pen) => (pen.cursor && !pen.closing ? [...pen.points, pen.cursor] : pen.points);
 
-/** Next to the cursor: how many points, and what Enter or a click on the first point does. */
+/**
+ * The edge from `a` to `b` as 3D points, both ends included: a line's in 3D, a free-form's at height `y` (curves
+ * sampled either way).
+ */
+function edgePoints(a: EditPoint, b: EditPoint, y: number): Point3[] {
+  if (a.y !== undefined && b.y !== undefined) return [...sampleEdge3(a as LinePoint, b as LinePoint), { x: b.x, y: b.y, z: b.z }];
+  return [...sampleEdge(a, b), b].map((p) => ({ x: p.x, y, z: p.z }));
+}
+const at3 = (p: EditPoint, y: number): Point3 => ({ x: p.x, y: p.y ?? y, z: p.z });
+
+/** Next to the cursor: how many points, and what finishes (Enter, a click on the first point, a double-click). */
 function PenLabel({ pen, at }: { pen: Pen; at: { sx: number; sy: number } | null }) {
   if (!at) return null;
   const n = pen.points.length;
-  const text = pen.closing ? "click to close" : n >= 3 ? `${n} points · Enter to close` : `${n} point${n === 1 ? "" : "s"}`;
+  const count = `${n} point${n === 1 ? "" : "s"}`;
+  const text =
+    pen.owner === "line"
+      ? n >= 1
+        ? `${count} · double-click or Enter to finish`
+        : count
+      : pen.closing
+        ? "click to close"
+        : n >= 3
+          ? `${n} points · Enter to close`
+          : count;
   return (
     <div className="draft-label" style={{ left: at.sx + 14, top: at.sy + 14 }}>
       {text}
@@ -1084,36 +1241,39 @@ function PenLabel({ pen, at }: { pen: Pen; at: { sx: number; sy: number } | null
 }
 
 /**
- * The Pen's preview: the path's edges (curves sampled), each point as a square (the first one bigger once a click
- * there would close the outline), the handles of smooth points, and, once the outline could close without
- * crossing itself, a draft of the shape at its kind's default height.
+ * The Pen's (or the Line tool's) preview: the path's edges (curves sampled), each point as a square (the first one
+ * bigger once a click there would close the outline), the handles of smooth points. For the Pen, once the outline
+ * could close without crossing itself, a draft of the shape at its kind's default height; for the Line tool, the
+ * line as it will look (its thickness, dashes and arrows).
  */
-function PenPreview({ pen, kind }: { pen: Pen; kind: ShapeKind }) {
+function PenPreview({ pen, kind, line }: { pen: Pen; kind: ShapeKind; line: LineStyle }) {
   const path = penPath(pen);
-  const bad = pathCrosses(path, pen.closing);
+  const open = pen.owner === "line";
+  const bad = !open && pathCrosses(path, pen.closing);
   const key = JSON.stringify([path, pen.closing]);
 
   const { lines, dots, handleDots } = useMemo(() => {
     const segments: number[] = [];
-    const add = (a: Point, b: Point) => segments.push(a.x, PEN_Y, a.z, b.x, PEN_Y, b.z);
+    const add = (a: Point3, b: Point3) => segments.push(a.x, a.y, a.z, b.x, b.y, b.z);
     const edges = pen.closing ? path.length : path.length - 1;
     for (let i = 0; i < edges; i++) {
-      const b = path[(i + 1) % path.length];
-      const samples = [...sampleEdge(path[i], b), b];
+      const samples = edgePoints(path[i], path[(i + 1) % path.length], PEN_Y);
       for (let k = 0; k + 1 < samples.length; k++) add(samples[k], samples[k + 1]);
     }
     const handleEnds: number[] = [];
     for (const p of pen.points) {
-      for (const h of [p.in, p.out]) {
-        if (!h) continue;
-        add(p, { x: p.x + h.x, z: p.z + h.z });
-        handleEnds.push(p.x + h.x, PEN_Y, p.z + h.z);
+      for (const side of ["in", "out"] as const) {
+        const end = handleEnd(p, side);
+        if (!end) continue;
+        const e = at3(end, PEN_Y);
+        add(at3(p, PEN_Y), e);
+        handleEnds.push(e.x, e.y, e.z);
       }
     }
     const geometry = (values: number[]) => new THREE.BufferGeometry().setAttribute("position", new THREE.Float32BufferAttribute(values, 3));
     return {
       lines: geometry(segments),
-      dots: geometry(pen.points.flatMap((p) => [p.x, PEN_Y, p.z])),
+      dots: geometry(pen.points.flatMap((p) => [p.x, p.y ?? PEN_Y, p.z])),
       handleDots: geometry(handleEnds),
     };
   }, [key]);
@@ -1129,7 +1289,8 @@ function PenPreview({ pen, kind }: { pen: Pen; kind: ShapeKind }) {
 
   const color = bad ? PEN_BAD_COLOR : PEN_COLOR;
   // Only a valid outline gets a draft (not while the cursor still sits on the point just placed, say).
-  const closable = path.length >= 3 && outlineProblem(roundPoints(path)) === null;
+  const closable = !open && path.length >= 3 && outlineProblem(roundPoints(path)) === null;
+  const drawable = open && path.length >= MIN_LINE_POINTS && lineProblem(roundPoints(path as LinePoint[])) === null;
   const first = pen.points[0];
   return (
     <>
@@ -1147,6 +1308,9 @@ function PenPreview({ pen, kind }: { pen: Pen; kind: ShapeKind }) {
           }}
           draft
         />
+      )}
+      {drawable && (
+        <LineMesh line={{ id: "line-draft", type: "line", ...line, points: roundPoints(path as LinePoint[]), createdBy: "human" }} />
       )}
       <lineSegments geometry={lines} renderOrder={20}>
         <lineBasicMaterial color={color} depthTest={false} transparent />
@@ -1174,20 +1338,32 @@ const POINT_COLOR = "#3d7be0";
 const POINT_FILL = "#ffffff";
 
 /**
- * Point editing's overlay on the free-form's top face (`y`): its outline, every point as a square (hollow, or
- * filled when selected), and each selected point's handles as dots on thin stems. Drawn over everything, at a
- * constant size on screen.
+ * Point editing's overlay: the outline (a free-form's, `closed`, on its top face at `y`) or path (a line's, at its
+ * points' own heights), every point as a square (hollow, or filled when selected), and each selected point's
+ * handles as dots on thin stems. Drawn over everything, at a constant size on screen.
  */
-function PointOverlay({ points, y, selected, bad }: { points: FootPoint[]; y: number; selected: number[]; bad: boolean }) {
-  const key = JSON.stringify([points, y, selected]);
+function PointOverlay({
+  points,
+  y,
+  closed,
+  selected,
+  bad,
+}: {
+  points: EditPoint[];
+  y: number;
+  closed: boolean;
+  selected: number[];
+  bad: boolean;
+}) {
+  const key = JSON.stringify([points, y, closed, selected]);
   const { lines, all, hollow, ends } = useMemo(() => {
     const segments: number[] = [];
-    const add = (a: Point, b: Point) => segments.push(a.x, y, a.z, b.x, y, b.z);
-    points.forEach((p, i) => {
-      const next = points[(i + 1) % points.length];
-      const samples = [...sampleEdge(p, next), next];
+    const add = (a: Point3, b: Point3) => segments.push(a.x, a.y, a.z, b.x, b.y, b.z);
+    const edges = closed ? points.length : points.length - 1;
+    for (let i = 0; i < edges; i++) {
+      const samples = edgePoints(points[i], points[(i + 1) % points.length], y);
       for (let k = 0; k + 1 < samples.length; k++) add(samples[k], samples[k + 1]);
-    });
+    }
     const handleEnds: number[] = [];
     for (const i of selected) {
       const p = points[i];
@@ -1195,15 +1371,16 @@ function PointOverlay({ points, y, selected, bad }: { points: FootPoint[]; y: nu
       for (const side of ["in", "out"] as const) {
         const end = handleEnd(p, side);
         if (!end) continue;
-        add(p, end);
-        handleEnds.push(end.x, y, end.z);
+        const e = at3(end, y);
+        add(at3(p, y), e);
+        handleEnds.push(e.x, e.y, e.z);
       }
     }
     const geometry = (values: number[]) => new THREE.BufferGeometry().setAttribute("position", new THREE.Float32BufferAttribute(values, 3));
     return {
       lines: geometry(segments),
-      all: geometry(points.flatMap((p) => [p.x, y, p.z])),
-      hollow: geometry(points.flatMap((p, i) => (selected.includes(i) ? [] : [p.x, y, p.z]))),
+      all: geometry(points.flatMap((p) => [p.x, p.y ?? y, p.z])),
+      hollow: geometry(points.flatMap((p, i) => (selected.includes(i) ? [] : [p.x, p.y ?? y, p.z]))),
       ends: geometry(handleEnds),
     };
   }, [key]);
