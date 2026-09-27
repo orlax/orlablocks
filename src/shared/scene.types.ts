@@ -47,6 +47,8 @@ type Footprinted = {
   wall?: number; // rooms only: the walls' thickness, grown inward from the footprint; none = DEFAULT_WALL
   taper?: number; // volumes only: 0..1, how much the top shrinks toward the center (1 = a point); none = 0
   bevel?: number; // volumes only: 0..1, how round the top edge is (1 = as round as it fits); none = 0
+  pitch?: number; // volumes only: degrees around the local x axis through the center (+ leans the top toward local +z); none = 0
+  roll?: number; // volumes only: degrees around the local z axis through the center (+ leans the top toward local -x); none = 0
   createdBy: Actor;
 };
 
@@ -85,6 +87,8 @@ export type Freeform = {
   wall?: number; // rooms only, as a box's
   taper?: number; // volumes only, as a box's (toward the outline's centroid)
   bevel?: number; // volumes only, as a box's
+  pitch?: undefined; // a free-form never tilts (its points are on the ground)
+  roll?: undefined;
   points: FootPoint[];
   createdBy: Actor;
 };
@@ -140,10 +144,10 @@ export type SceneNode = Shape | Group;
 
 /**
  * The shape fields an edit can change. `wall` is for rooms (undefined = the default), `taper` and `bevel` for
- * volumes (undefined = 0), `sides` for cylinders
+ * volumes (undefined = 0), `pitch` and `roll` for box and cylinder volumes (undefined = 0), `sides` for cylinders
  * (undefined = smooth), `points` for free-forms and lines, `thickness`, `dashed` and `arrow` for lines.
  */
-export type ShapePatch = Partial<Pick<Footprinted, "name" | "kind" | "x" | "z" | "y" | "width" | "depth" | "height" | "rotation" | "color" | "wall" | "taper" | "bevel">> & {
+export type ShapePatch = Partial<Pick<Footprinted, "name" | "kind" | "x" | "z" | "y" | "width" | "depth" | "height" | "rotation" | "color" | "wall" | "taper" | "bevel" | "pitch" | "roll">> & {
   sides?: number;
   points?: FootPoint[] | LinePoint[];
   thickness?: number;
@@ -200,7 +204,15 @@ export const MIN_WALL = 0.05;
  * Which kinds each kind-specific field is for: a room's walls, a volume's taper and bevel. Changing a shape's kind
  * drops the fields its new kind doesn't have.
  */
-export const KIND_FIELDS = { wall: ["room"], taper: ["volume"], bevel: ["volume"] } as const satisfies Record<string, readonly ShapeKind[]>;
+export const KIND_FIELDS = {
+  wall: ["room"],
+  taper: ["volume"],
+  bevel: ["volume"],
+  pitch: ["volume"],
+  roll: ["volume"],
+} as const satisfies Record<string, readonly ShapeKind[]>;
+/** The tilt fields: only boxes and cylinders have them (a free-form's points are on the ground). */
+export const TILT_FIELDS = ["pitch", "roll"] as const;
 export type KindField = keyof typeof KIND_FIELDS;
 /** A cylinder's side count, when it has one; without, it's smooth. */
 export const MIN_SIDES = 3;
@@ -248,6 +260,12 @@ const field = {
     .describe(`Rooms only: the walls' thickness in meters (>= ${MIN_WALL}, default ${DEFAULT_WALL}), grown inward from the footprint`),
   taper: z.number().min(0).max(1).describe("Volumes only: 0 (straight sides, the default) to 1 (the top comes to a point, a pyramid or cone)"),
   bevel: z.number().min(0).max(1).describe("Volumes only: 0 (a sharp top edge, the default) to 1 (the top edge as round as it fits, a dome)"),
+  pitch: z
+    .number()
+    .describe("Box and cylinder volumes only: degrees around the shape's own x axis through its center; + leans the top toward local +z. Default 0"),
+  roll: z
+    .number()
+    .describe("Box and cylinder volumes only: degrees around the shape's own z axis through its center; + leans the top toward local -x. Default 0"),
 };
 
 const ActorSchema = z.enum(["human", "agent"]);
@@ -268,6 +286,8 @@ const footprinted = {
   wall: z.number().min(MIN_WALL).optional(),
   taper: z.number().min(0).max(1).optional(),
   bevel: z.number().min(0).max(1).optional(),
+  pitch: z.number().optional(),
+  roll: z.number().optional(),
   createdBy: ActorSchema,
 };
 const OffsetSchema = z.object({ x: z.number(), z: z.number() });
@@ -332,6 +352,8 @@ export const BoxInputSchema = z.strictObject({
   wall: field.wall.optional(),
   taper: field.taper.optional(),
   bevel: field.bevel.optional(),
+  pitch: field.pitch.optional(),
+  roll: field.roll.optional(),
   name: field.name.optional(),
   parent: field.parent.optional().describe("ID of the group to put it in, e.g. group_1. Omit for the top level"),
 });
@@ -431,6 +453,8 @@ export const NodeUpdateSchema = z.strictObject({
     .describe(`Rooms only: the walls' thickness in meters (>= ${MIN_WALL}), or null for the default ${DEFAULT_WALL}`),
   taper: field.taper.optional(),
   bevel: field.bevel.optional(),
+  pitch: field.pitch.optional(),
+  roll: field.roll.optional(),
   points: z
     .array(
       z.strictObject({

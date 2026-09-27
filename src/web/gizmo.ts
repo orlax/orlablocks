@@ -15,11 +15,12 @@ import {
   selectionFrame,
   shapeAxes,
   toShapeLocal,
+  toWorld3,
   verticalRange,
   type Bounds,
   type Frame,
 } from "../shared/geometry";
-import { paramOnLine, screenToPlane, worldToScreen, type CameraState, type Size, type Vec3 } from "./camera";
+import { paramOnLine, screenRay, screenToPlane, worldToScreen, type CameraState, type Size, type Vec3 } from "./camera";
 
 /**
  * Pure math for the transform gizmo: where its handles are, which one the cursor is on, and what a drag does.
@@ -29,7 +30,9 @@ import { paramOnLine, screenToPlane, worldToScreen, type CameraState, type Size,
 type Sign = -1 | 0 | 1;
 /** A footprint scale handle on the top face, by its side in the box's local frame: `scale:1:-1` is the +x, -z corner. */
 export type ScalePart = `scale:${Sign}:${Sign}`;
-export type GizmoPart = "x" | "y" | "z" | "height" | "rotate" | ScalePart;
+/** `pitch` and `roll` are the tilt rings of a single box or cylinder volume. */
+export type TiltPart = "pitch" | "roll";
+export type GizmoPart = "x" | "y" | "z" | "height" | "rotate" | TiltPart | ScalePart;
 export type DragPart = GizmoPart | "body";
 
 /** The gizmo keeps a roughly constant size on screen: its world size grows with the camera distance. */
@@ -51,6 +54,8 @@ export const ROTATE_OFFSET = 0.75;
 export const ROTATE_RADIUS = 0.3;
 /** Rotation snap, degrees. */
 export const ROTATE_SNAP = 15;
+/** The tilt rings' radius, in gizmo units, around the shape's center. */
+export const TILT_RADIUS = 1.5;
 
 /** The 4 corners, then the 4 edge midpoints. */
 export const SCALE_PARTS: ScalePart[] = [
@@ -122,6 +127,76 @@ export function rotateHandlePlacement(
   return { point: { x: corner.x + out.x * offset, y, z: corner.z + out.z * offset }, inward: { x: -out.x, z: -out.z } };
 }
 
+const dot = (a: Vec3, b: Vec3) => a.x * b.x + a.y * b.y + a.z * b.z;
+const cross = (a: Vec3, b: Vec3): Vec3 => ({ x: a.y * b.z - a.z * b.y, y: a.z * b.x - a.x * b.z, z: a.x * b.y - a.y * b.x });
+const unit = (a: Vec3): Vec3 => {
+  const l = Math.hypot(a.x, a.y, a.z) || 1;
+  return { x: a.x / l, y: a.y / l, z: a.z / l };
+};
+
+/**
+ * A tilt ring of a box or cylinder: a circle around its center, square to the axis it turns around. `pitch` turns
+ * around the shape's own x axis as turned by its rotation (it stays level); `roll` around its own z axis as tilted
+ * by its pitch. `u` and `v` span the ring's plane, with v = axis × u, so a right-handed turn goes from u toward v.
+ */
+export function tiltRing(shape: Shape, part: TiltPart): { center: Vec3; axis: Vec3; u: Vec3; v: Vec3 } {
+  if (!isFootprinted(shape)) throw new Error("only boxes and cylinders tilt");
+  const center = toWorld3(shape, { x: 0, y: shape.height / 2, z: 0 });
+  let axis: Vec3;
+  if (part === "pitch") {
+    const { ex } = shapeAxes(shape);
+    axis = { x: ex.x, y: 0, z: ex.z };
+  } else {
+    const tip = toWorld3(shape, { x: 0, y: shape.height / 2, z: 1 });
+    axis = unit({ x: tip.x - center.x, y: tip.y - center.y, z: tip.z - center.z });
+  }
+  // Any direction square to the axis: from up, or from x when the axis is (nearly) vertical.
+  const seed = Math.abs(axis.y) < 0.9 ? { x: 0, y: 1, z: 0 } : { x: 1, y: 0, z: 0 };
+  const u = unit(cross(cross(axis, seed), axis));
+  return { center, axis, u, v: cross(axis, u) };
+}
+
+/** Points around a tilt ring, in the world, for drawing it and for hit testing it on screen. */
+export function tiltRingPoints(ring: ReturnType<typeof tiltRing>, scale: number, n = 48): Vec3[] {
+  const r = TILT_RADIUS * scale;
+  return Array.from({ length: n }, (_, i) => {
+    const a = (i / n) * 2 * Math.PI;
+    const [c, s] = [Math.cos(a) * r, Math.sin(a) * r];
+    return { x: ring.center.x + ring.u.x * c + ring.v.x * s, y: ring.center.y + ring.u.y * c + ring.v.y * s, z: ring.center.z + ring.u.z * c + ring.v.z * s };
+  });
+}
+
+/**
+ * The cursor's angle around a tilt ring's axis, in degrees (from u toward v): where the cursor's ray meets the
+ * ring's plane. When the plane is seen edge-on, the cursor's offset on screen is read in the plane's projected axes
+ * instead.
+ */
+function ringAngle(cam: CameraState, size: Size, sx: number, sy: number, ring: ReturnType<typeof tiltRing>): number {
+  const { origin: o, dir: d } = screenRay(cam, size, sx, sy);
+  const facing = dot(d, ring.axis);
+  if (Math.abs(facing) > 0.15) {
+    const t = dot({ x: ring.center.x - o.x, y: ring.center.y - o.y, z: ring.center.z - o.z }, ring.axis) / facing;
+    const p = { x: o.x + d.x * t - ring.center.x, y: o.y + d.y * t - ring.center.y, z: o.z + d.z * t - ring.center.z };
+    return (Math.atan2(dot(p, ring.v), dot(p, ring.u)) * 180) / Math.PI;
+  }
+  const c = worldToScreen(cam, size, ring.center);
+  const cu = worldToScreen(cam, size, add(ring.center, ring.u, 1));
+  const cv = worldToScreen(cam, size, add(ring.center, ring.v, 1));
+  if (!c || !cu || !cv) return 0;
+  // Solve cursor − c = a·U + b·V on screen.
+  const [ux, uy, vx, vy] = [cu.sx - c.sx, cu.sy - c.sy, cv.sx - c.sx, cv.sy - c.sy];
+  const [px, py] = [sx - c.sx, sy - c.sy];
+  const det = ux * vy - uy * vx;
+  if (Math.abs(det) < 1e-9) return 0;
+  return (Math.atan2((ux * py - uy * px) / det, (px * vy - py * vx) / det) * 180) / Math.PI;
+}
+
+/** An angle as a tilt is stored: -180..180 (180 rather than -180), 2 decimals, and none (undefined) for 0. */
+export function tiltValue(deg: number): number | undefined {
+  const a = round2(normalizeDeg(deg + 180) - 180);
+  return a === 0 ? undefined : a === -180 ? 180 : a;
+}
+
 /** The angle of a ground vector in degrees, counterclockwise seen from above (the rotation convention). */
 const angleOf = (x: number, z: number) => (Math.atan2(-z, x) * 180) / Math.PI;
 
@@ -173,6 +248,16 @@ export function hitGizmo(
   }
   const box = boxes.length === 1 ? boxes[0] : undefined;
   if (box) {
+    for (const part of ["pitch", "roll"] as const) {
+      if (!parts.includes(part)) continue;
+      const screen = tiltRingPoints(tiltRing(box, part), scale).map((p) => worldToScreen(cam, size, p));
+      for (let i = 0; i < screen.length; i++) {
+        const [a, b] = [screen[i], screen[(i + 1) % screen.length]];
+        if (!a || !b) continue;
+        const d = segmentDistance(sx, sy, a, b);
+        if (d <= HANDLE_HIT_PX && (!best || d < best.d)) best = { part, d };
+      }
+    }
     for (const part of parts.filter(isScalePart)) {
       const p = worldToScreen(cam, size, scaleHandlePoint(box, part, frame));
       const d = p ? Math.hypot(p.sx - sx, p.sy - sy) : Infinity;
@@ -235,6 +320,9 @@ export function startHandleDrag(
   frame: Frame = selectionFrame(origin),
 ): GizmoDrag {
   const bounds = boundsOf(origin);
+  if (part === "pitch" || part === "roll") {
+    return { part, origin, bounds, frame, grab: ringAngle(cam, size, sx, sy, tiltRing(origin[0], part)) };
+  }
   if (part === "rotate") {
     // The cursor's angle around the pivot (the selection frame's center), on the plane of its top.
     const p = screenToPlane(cam, size, sx, sy, bounds.maxY);
@@ -290,6 +378,18 @@ export function dragUpdate(
     Object.assign(patches, rotateAround(origin, anchor, delta));
     const turn = round2(normalizeDeg(frame.rotation + delta)) % 360;
     return { patches, label: `${turn}°`, turn };
+  }
+
+  if (part === "pitch" || part === "roll") {
+    const box = origin[0];
+    if (!isFootprinted(box)) return { patches, label: "" };
+    let delta = normalizeDeg(ringAngle(cam, size, sx, sy, tiltRing(box, part)) - (drag.grab as number));
+    if (delta > 180) delta -= 360;
+    const before = box[part] ?? 0;
+    const raw = before + delta;
+    const next = tiltValue(mods.snap ? snapTo(raw, ROTATE_SNAP) : raw);
+    patches[box.id] = { [part]: next };
+    return { patches, label: `${part} ${next ?? 0}°` };
   }
 
   if (part === "height") {

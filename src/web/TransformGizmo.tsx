@@ -13,8 +13,11 @@ import {
   ROTATE_RADIUS,
   SCALE_HANDLE,
   scaleHandlePoint,
+  TILT_RADIUS,
+  tiltRing,
   type GizmoPart,
   type ScalePart,
+  type TiltPart,
 } from "./gizmo";
 
 const COLORS: Record<"x" | "y" | "z" | "height", { base: string; hot: string }> = {
@@ -45,6 +48,11 @@ const ringTipGeometry = new THREE.ConeGeometry(0.11, 0.24, 16)
   .translate(0.06, 0, ROTATE_RADIUS);
 const ROTATE_COLOR = { base: "#9b59d0", hot: "#c08ef0" };
 
+// The tilt rings: full circles around the shape's center, in the colors of the axis they turn around (pitch: its
+// own x, red; roll: its own z, blue). The torus lies in its x/y plane, square to its +z.
+const tiltGeometry = new THREE.TorusGeometry(TILT_RADIUS, 0.035, 8, 64);
+const TILT_COLORS: Record<TiltPart, { base: string; hot: string }> = { pitch: COLORS.x, roll: COLORS.z };
+
 /** Turns the +y arrow to point along each axis. */
 const ARROW_ROTATION: Record<"x" | "y" | "z", [number, number, number]> = {
   x: [0, 0, -Math.PI / 2],
@@ -54,7 +62,8 @@ const ARROW_ROTATION: Record<"x" | "y" | "z", [number, number, number]> = {
 
 /**
  * The transform gizmo on the selection: world-axis move arrows (x red, y green, z blue) from the top center and,
- * for a single box, the height handle there and the 8 scale handles on the top face's corners and edges. A constant size on screen and drawn over everything (no depth
+ * for a single box, the height handle there and the 8 scale handles on the top face's corners and edges, and for a
+ * single box or cylinder volume the two tilt rings (pitch red, roll blue) around its center. A constant size on screen and drawn over everything (no depth
  * test). The dragging itself is handled by the Viewport.
  */
 export function TransformGizmo({
@@ -88,6 +97,10 @@ export function TransformGizmo({
   return (
     <>
       {parts.includes("rotate") && <RotateHandle boxes={boxes} frame={frame} hot={hot === "rotate"} cam={cam} />}
+      {box &&
+        (["pitch", "roll"] as const)
+          .filter((part) => parts.includes(part))
+          .map((part) => <TiltRing key={part} shape={box} part={part} hot={hot === part} cam={cam} />)}
       {box &&
         parts
           .filter(isScalePart)
@@ -138,6 +151,31 @@ function RotateHandle({ boxes, frame, hot, cam }: { boxes: Shape[]; frame: Frame
       </mesh>
       <mesh geometry={ringTipGeometry} renderOrder={12}>
         <meshBasicMaterial color={color} depthTest={false} transparent />
+      </mesh>
+    </group>
+  );
+}
+
+/** A tilt ring around the shape's center, square to the axis it turns the shape around, at a constant size on screen. */
+function TiltRing({ shape, part, hot, cam }: { shape: Shape; part: TiltPart; hot: boolean; cam: RefObject<CameraState> }) {
+  const group = useRef<THREE.Group>(null);
+
+  useFrame(() => {
+    const g = group.current;
+    if (!g) return;
+    const { center, axis, u, v } = tiltRing(shape, part);
+    g.position.set(center.x, center.y, center.z);
+    // The torus's x, y and z go to the ring's u, v and axis.
+    g.quaternion.setFromRotationMatrix(
+      new THREE.Matrix4().makeBasis(new THREE.Vector3(u.x, u.y, u.z), new THREE.Vector3(v.x, v.y, v.z), new THREE.Vector3(axis.x, axis.y, axis.z)),
+    );
+    g.scale.setScalar(gizmoScale(cam.current));
+  });
+
+  return (
+    <group ref={group}>
+      <mesh geometry={tiltGeometry} renderOrder={12}>
+        <meshBasicMaterial color={hot ? TILT_COLORS[part].hot : TILT_COLORS[part].base} depthTest={false} transparent opacity={0.9} />
       </mesh>
     </group>
   );

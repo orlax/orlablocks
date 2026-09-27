@@ -24,6 +24,7 @@ import {
   boundsOf,
   isClosed,
   isFootprinted,
+  isTilted,
   lineProblem,
   outlineProblem,
   pathCrosses,
@@ -376,8 +377,11 @@ export function Viewport({
   const selectedBoxes = tool !== "select" || editShape ? [] : ghosts.length > 0 ? ghosts : shownUnder(selection);
   const single =
     selection.length === 1 && selectedBoxes.length === 1 && selectedBoxes[0].id === selection[0] ? selectedBoxes[0] : undefined;
-  // Height and scale handles are for a single closed shape (a line has neither).
-  const scalable = single && isClosed(single) ? single : undefined;
+  // Height and scale handles are for a single closed shape (a line has neither) that isn't tilted (its top face
+  // isn't flat on screen: it's resized with the contextual bar's fields). Tilt rings are for a single box or
+  // cylinder volume.
+  const scalable = single && isClosed(single) && !isTilted(single) ? single : undefined;
+  const tiltable = single && isFootprinted(single) && single.kind === "volume";
   // The selection frame turns with the selection: live while rotating, then as far as it was turned.
   const selectionKey = selection.join(",");
   const frameTurn = drag?.active && drag.turn !== undefined ? drag.turn : turn?.key === selectionKey ? turn.angle : 0;
@@ -386,7 +390,10 @@ export function Viewport({
     frame && selectedBoxes.length > 0
       ? {
           anchor: gizmoAnchor(boundsOf(selectedBoxes), frame),
-          parts: (scalable ? ["x", "y", "z", "rotate", "height", ...SCALE_PARTS] : ["x", "y", "z", "rotate"]) as GizmoPart[],
+          parts: [
+            ...(scalable ? ["x", "y", "z", "rotate", "height", ...SCALE_PARTS] : ["x", "y", "z", "rotate"]),
+            ...(tiltable ? ["pitch", "roll"] : []),
+          ] as GizmoPart[],
           boxes: selectedBoxes,
           box: scalable,
           frame,
@@ -1045,7 +1052,7 @@ export function Viewport({
       return scaleBox && size ? `resize-${scaleCursor(cam.current, size, scaleBox, activePart, drag?.active ? drag.frame : gizmo?.frame)}` : "moving";
     }
     if (drag?.active && drag.copy) return "copying";
-    if (activePart === "rotate") return "rotating";
+    if (activePart === "rotate" || activePart === "pitch" || activePart === "roll") return "rotating";
     if (activePart === "y" || activePart === "height") return "resizing";
     if (activePart) return "moving";
     if (panning) return "panning";
@@ -1323,7 +1330,8 @@ function PenPreview({ pen, kind, fields, line }: { pen: Pen; kind: ShapeKind; fi
             id: "pen",
             type: "freeform",
             kind,
-            ...fieldsFor(kind, fields),
+            // The drawing tools never tilt (the next shape's fields are a wall, a taper and a bevel).
+            ...(fieldsFor(kind, fields) as Omit<KindFields, "pitch" | "roll">),
             y: 0,
             height: DEFAULT_HEIGHT[kind],
             color: DEFAULT_COLOR,

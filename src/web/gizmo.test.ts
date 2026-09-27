@@ -18,6 +18,9 @@ import {
   snapElevation,
   startBodyDrag,
   startHandleDrag,
+  TILT_RADIUS,
+  tiltRing,
+  tiltValue,
 } from "./gizmo";
 
 const size = { width: 1200, height: 800 };
@@ -312,5 +315,48 @@ describe("copy drags", () => {
     expect(dragOffset([a, b], { box_1: { x: 5.2, z: -2 }, box_2: { x: 9.1, z: 0 } })).toEqual({ dx: 4.1, dy: 0, dz: 0 });
     expect(dragOffset([a], { box_1: { y: 3 } })).toEqual({ dx: 0, dy: 3, dz: 0 });
     expect(dragOffset([a], {})).toEqual({ dx: 0, dy: 0, dz: 0 });
+  });
+});
+
+describe("tilt rings", () => {
+  const block = box({ x: 5, z: 5, width: 2, depth: 2, height: 2, rotation: 30 });
+  const scale = gizmoScale(cam);
+  /** The point at `deg` around a ring, on screen. */
+  const onRing = (shape: Box, part: "pitch" | "roll", deg: number) => {
+    const r = tiltRing(shape, part);
+    const a = (deg * Math.PI) / 180;
+    const k = TILT_RADIUS * scale;
+    return screen({
+      x: r.center.x + (r.u.x * Math.cos(a) + r.v.x * Math.sin(a)) * k,
+      y: r.center.y + (r.u.y * Math.cos(a) + r.v.y * Math.sin(a)) * k,
+      z: r.center.z + (r.u.z * Math.cos(a) + r.v.z * Math.sin(a)) * k,
+    });
+  };
+
+  it("is grabbed on its circle, and turns the shape by the angle dragged, snapped to 15°", () => {
+    const anchor = gizmoAnchor(boundsOf([block]));
+    for (const part of ["pitch", "roll"] as const) {
+      const p = onRing(block, part, 10);
+      expect(hitGizmo(cam, size, p.sx, p.sy, anchor, [part], [block])).toBe(part);
+      const drag = startHandleDrag(cam, size, p.sx, p.sy, part, [block]);
+      const q = onRing(block, part, 10 + 88);
+      const { patches, label } = dragUpdate(drag, cam, size, q.sx, q.sy, { shift: false, alt: false, snap: true }, []);
+      expect(patches.box_1).toEqual({ [part]: 90 });
+      expect(label).toBe(`${part} 90°`);
+    }
+  });
+
+  it("keeps the roll ring square to the tilted shape's own z axis", () => {
+    const pitched = { ...block, pitch: 90 };
+    const r = tiltRing(pitched, "roll");
+    // +90° pitch lays local +z straight down.
+    expect(r.axis.y).toBeCloseTo(-1);
+    expect(tiltRing(pitched, "pitch").axis.y).toBeCloseTo(0);
+  });
+
+  it("stores angles in -180..180, none for 0", () => {
+    expect(tiltValue(270)).toBe(-90);
+    expect(tiltValue(-180)).toBe(180);
+    expect(tiltValue(360)).toBeUndefined();
   });
 });

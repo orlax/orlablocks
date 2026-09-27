@@ -2,7 +2,7 @@ import type { Express } from "express";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
-import { boundsOf, round2 } from "../shared/geometry";
+import { boundsOf, isTilted, round2 } from "../shared/geometry";
 import {
   SHAPE_COLORS,
   COMPASS,
@@ -28,6 +28,7 @@ import {
   MIN_WALL,
   type OpenScene,
   type Scene,
+  type Shape,
 } from "../shared/scene.types";
 import { isGroup, isShape, shapesUnder } from "../shared/tree";
 import { SceneError } from "./scene";
@@ -58,6 +59,12 @@ const INSTRUCTIONS =
   "becomes a pyramid, a cylinder a cone) and `bevel` 0..1 rounds its top edge (1 = as round as it fits: a tall cylinder " +
   "gets a dome, a box a rounded top); together they make hills and mountains (taper 0.6, bevel 0.5). The top stays at " +
   "y + height, the bottom stays flat. Rooms have neither; making a volume a room drops them, and making a room a volume drops its wall. " +
+  "A box or cylinder volume can also tilt: `pitch` turns it around its own x axis and `roll` around its own z axis, " +
+  "in degrees through its CENTER (x, y + height / 2, z), roll first, then pitch, then `rotation` as usual (so rotating " +
+  "never changes the tilt). +pitch leans the top toward its local +z, +roll toward its local -x. `y` stays the bottom " +
+  "before tilting and `height` the length along the tilted axis: a cylinder lying on its side (a round window or a " +
+  "log) is pitch 90, with height as its length and its center at y + height / 2. get_scene gives a tilted shape its " +
+  "actual axis-aligned `bounds`. Free-forms and rooms don't tilt, and a tilted shape can't convert to a free-form. " +
   `\`color\` is a palette key: ${SHAPE_COLORS.join(", ")} (default ${DEFAULT_COLOR}). ` +
   "A cylinder has exactly a box's fields, and its footprint is the ellipse inscribed in its width × depth rectangle " +
   "(width = depth for a circle, so a round room 10 m across is width 10, depth 10), centered at (x, z) and turned by `rotation` like a box. " +
@@ -105,26 +112,33 @@ const INSTRUCTIONS =
 
 const json = (value: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }] });
 
-/** The scene for the agent: which project and scene it is, and each group gets its derived bounds (center x/z, bottom y, sizes). */
+/** Axis-aligned bounds for the agent: center x/z, bottom y, sizes. */
+function boundsFor(shapes: Shape[]) {
+  const b = boundsOf(shapes);
+  return {
+    x: round2((b.minX + b.maxX) / 2),
+    z: round2((b.minZ + b.maxZ) / 2),
+    y: round2(b.minY),
+    width: round2(b.maxX - b.minX),
+    depth: round2(b.maxZ - b.minZ),
+    height: round2(b.maxY - b.minY),
+  };
+}
+
+/**
+ * The scene for the agent: which project and scene it is; each group gets its derived bounds, and so does each
+ * tilted shape (where it really is).
+ */
 function describeScene(open: OpenScene, scene: Scene) {
   return {
     ...open,
     compass: COMPASS,
     ...scene,
     nodes: scene.nodes.map((n) => {
-      if (!isGroup(n)) return n;
+      if (!isGroup(n)) return isTilted(n) ? { ...n, bounds: boundsFor([n]) } : n;
       const boxes = shapesUnder(scene.nodes, [n.id]);
       if (boxes.length === 0) return n;
-      const b = boundsOf(boxes);
-      const bounds = {
-        x: round2((b.minX + b.maxX) / 2),
-        z: round2((b.minZ + b.maxZ) / 2),
-        y: round2(b.minY),
-        width: round2(b.maxX - b.minX),
-        depth: round2(b.maxZ - b.minZ),
-        height: round2(b.maxY - b.minY),
-      };
-      return { ...n, bounds };
+      return { ...n, bounds: boundsFor(boxes) };
     }),
   };
 }
@@ -180,7 +194,7 @@ function buildServer(workspace: Workspace) {
       description:
         `Change existing nodes by ID in a single batch; changes appear live in the editor. ` +
         `A box takes any of: name, parent, kind, x, z, y, width, depth, height, rotation, color, wall (a room's; null = the default), ` +
-        `taper and bevel (a volume's; 0 clears them); ` +
+        `taper and bevel (a volume's; 0 clears them), pitch and roll (a box or cylinder volume's; 0 levels it); ` +
         `a cylinder those and sides; a free-form name, parent, kind, y, height, color, wall, taper, bevel and points (the whole outline); a line name, parent, color, ` +
         `points (the whole path, with y), thickness, dashed and arrow. ` +
         `A group takes only name and parent. ` +

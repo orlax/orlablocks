@@ -4,6 +4,7 @@ import {
   isFootprinted,
   mirrorAcross,
   moveShape,
+  isTilted,
   normalizeDeg,
   lineProblem,
   outlineProblem,
@@ -97,6 +98,8 @@ const FIELD_VERBS: Record<keyof NodePatch, string> = {
   wall: "change walls of",
   taper: "taper",
   bevel: "bevel",
+  pitch: "tilt",
+  roll: "tilt",
   points: "reshape",
   thickness: "restyle",
   dashed: "restyle",
@@ -104,7 +107,7 @@ const FIELD_VERBS: Record<keyof NodePatch, string> = {
 };
 
 /** What a kind-specific field is called in errors ("only a room has walls"). */
-const KIND_FIELD_NOUNS: Record<KindField, string> = { wall: "walls", taper: "a taper", bevel: "a bevel" };
+const KIND_FIELD_NOUNS: Record<KindField, string> = { wall: "walls", taper: "a taper", bevel: "a bevel", pitch: "a pitch", roll: "a roll" };
 const kindFieldProblem = (f: KindField, kind: ShapeKind) => `only a ${KIND_FIELDS[f].join(" or a ")} has ${KIND_FIELD_NOUNS[f]} (this is a ${kind})`;
 const kindAllows = (f: KindField, kind: ShapeKind) => (KIND_FIELDS[f] as readonly ShapeKind[]).includes(kind);
 
@@ -216,6 +219,13 @@ export function createSceneStore() {
     return w === DEFAULT_WALL ? undefined : w;
   };
 
+  /** A pitch or roll as stored: degrees in -180..180, 2 decimals, and none (undefined) for 0. */
+  const angle = (v: number | undefined) => {
+    if (v === undefined) return undefined;
+    const a = round2(normalizeDeg(v + 180) - 180);
+    return a === 0 ? undefined : a === -180 ? 180 : a;
+  };
+
   /** A taper or bevel as stored: 2 decimals, and none (undefined) for 0. */
   const fraction = (v: number | undefined) => (v === undefined || round2(v) === 0 ? undefined : round2(v));
 
@@ -239,6 +249,8 @@ export function createSceneStore() {
       const node = nodes.get(id);
       if (node && node.type !== "box" && node.type !== "cylinder") {
         errors.push(`${prefix}[${i}]: "${id}" is a ${node.type}; only boxes and cylinders convert to free-forms`);
+      } else if (node && isTilted(node)) {
+        errors.push(`${prefix}[${i}]: "${id}" is tilted, and a free-form can't be; set its pitch and roll to 0 first`);
       }
       return node as Box | Cylinder;
     });
@@ -355,7 +367,9 @@ export function createSceneStore() {
         const height = d.height ?? DEFAULT_HEIGHT[d.kind];
         checkSizes(prefix, { ...(d.type === "freeform" ? {} : { width: d.width, depth: d.depth }), height }, errors);
         for (const f of Object.keys(KIND_FIELDS) as KindField[]) {
-          if (d[f] !== undefined && !kindAllows(f, d.kind)) errors.push(`${prefix}.${f}: ${kindFieldProblem(f, d.kind)}`);
+          if ((d as Partial<Record<KindField, number>>)[f] !== undefined && !kindAllows(f, d.kind)) {
+            errors.push(`${prefix}.${f}: ${kindFieldProblem(f, d.kind)}`);
+          }
         }
         const wall = d.wall !== undefined ? wallValue(`${prefix}.wall`, d.wall, errors) : undefined;
         const taper = fraction(d.taper);
@@ -383,6 +397,8 @@ export function createSceneStore() {
           width: round2(d.width),
           depth: round2(d.depth),
           rotation: normalizeRotation(d.rotation ?? 0),
+          ...(angle(d.pitch) !== undefined ? { pitch: angle(d.pitch) } : {}),
+          ...(angle(d.roll) !== undefined ? { roll: angle(d.roll) } : {}),
         };
       });
       failIf(errors, "Nothing was drawn.");
@@ -452,7 +468,7 @@ export function createSceneStore() {
             errors.push(`changes[${i}]: only a line has ${lineOnly.join(", ")} ("${id}" is a ${node.type})`);
           }
           if (node.type === "line") {
-            const closedOnly = (["kind", "x", "z", "y", "width", "depth", "height", "rotation", "wall", "taper", "bevel"] as const).filter(
+            const closedOnly = (["kind", "x", "z", "y", "width", "depth", "height", "rotation", "wall", "taper", "bevel", "pitch", "roll"] as const).filter(
               (k) => fields[k] !== undefined,
             );
             if (closedOnly.length > 0) {
@@ -471,7 +487,7 @@ export function createSceneStore() {
             }
           }
           if (node.type === "freeform") {
-            const footprinted = (["x", "z", "width", "depth", "rotation"] as const).filter((k) => fields[k] !== undefined);
+            const footprinted = (["x", "z", "width", "depth", "rotation", "pitch", "roll"] as const).filter((k) => fields[k] !== undefined);
             if (footprinted.length > 0) {
               errors.push(
                 `changes[${i}]: "${id}" is a free-form, with no ${footprinted.join(", ")} of its own: change its points, ` +
@@ -499,6 +515,8 @@ export function createSceneStore() {
         if (fields.wall !== undefined) patch.wall = fields.wall === null ? undefined : wallValue(`changes[${i}].wall`, fields.wall, errors);
         if (fields.taper !== undefined) patch.taper = fraction(fields.taper);
         if (fields.bevel !== undefined) patch.bevel = fraction(fields.bevel);
+        if (fields.pitch !== undefined) patch.pitch = angle(fields.pitch);
+        if (fields.roll !== undefined) patch.roll = angle(fields.roll);
         // A shape that changes kind loses the fields its new kind doesn't have (undo brings them back).
         if (fields.kind !== undefined && isShape(node) && node.type !== "line") {
           for (const f of Object.keys(KIND_FIELDS) as KindField[]) {

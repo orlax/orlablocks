@@ -6,7 +6,9 @@ import {
   DEFAULT_THICKNESS,
   DEFAULT_VIEW,
   DEFAULT_WALL,
+  type Box,
   type ClosedShape,
+  type Cylinder,
   type Line,
   type Shape,
   type ShapeColor,
@@ -14,7 +16,7 @@ import {
   type SceneNode,
   type View,
 } from "../shared/scene.types";
-import { footprintBounds, polyline, reversePoints, round2, wallOf } from "../shared/geometry";
+import { footprintBounds, isTilted, polyline, reversePoints, round2, wallOf } from "../shared/geometry";
 import { shapesUnder, childrenOf, isShape, isGroup } from "../shared/tree";
 import type { CameraState, GroundPoint } from "./camera";
 import { clipboardText, readClipboard } from "./clipboard";
@@ -72,7 +74,8 @@ const describe = (s: Shape) => {
     return `${title(s)} · ${s.points.length} points · ${round2(b.maxX - b.minX)} × ${round2(b.maxZ - b.minZ)} × ${s.height} m${wall} · y ${s.y}`;
   }
   const sides = s.type === "cylinder" ? (s.sides !== undefined ? ` · ${s.sides} sides` : " · smooth") : "";
-  return `${title(s)} · ${s.width} × ${s.depth} × ${s.height} m${sides}${wall} · y ${s.y} · ${s.rotation}°`;
+  const tilt = `${s.pitch ? ` · pitch ${s.pitch}°` : ""}${s.roll ? ` · roll ${s.roll}°` : ""}`;
+  return `${title(s)} · ${s.width} × ${s.depth} × ${s.height} m${sides}${wall}${tilt} · y ${s.y} · ${s.rotation}°`;
 };
 
 export function App() {
@@ -334,7 +337,8 @@ export function App() {
       ? `${title(single)} · ${selectedShapes.length} shapes`
       : `${selectedNodes.length} selected`;
   // What Convert to free-form converts: every box and cylinder in the selection (groups included).
-  const convertible = selectedShapes.filter((s) => s.type === "box" || s.type === "cylinder");
+  // A tilted shape can't convert (a free-form's outline is on the ground).
+  const convertible = selectedShapes.filter((s) => (s.type === "box" || s.type === "cylinder") && !isTilted(s));
   const convert = () => {
     const ids = convertible.map((s) => s.id);
     const before = nodes;
@@ -379,6 +383,17 @@ export function App() {
           bevel: sharedOf("bevel"),
           onChange: (patch: { taper?: number; bevel?: number }) =>
             send({ type: "update_nodes", changes: selectedVolumes.map((v) => ({ id: v.id, ...patch })) }),
+        }
+      : undefined;
+  // The tilt fields act on every box and cylinder volume in the selection, each around its own center.
+  const tiltable = selectedVolumes.filter((v): v is Box | Cylinder => v.type === "box" || v.type === "cylinder");
+  const sharedTilt = (f: "pitch" | "roll") => (tiltable.every((v) => (v[f] ?? 0) === (tiltable[0][f] ?? 0)) ? (tiltable[0]?.[f] ?? 0) : undefined);
+  const tiltControl =
+    tiltable.length > 0
+      ? {
+          pitch: sharedTilt("pitch"),
+          roll: sharedTilt("roll"),
+          onChange: (patch: { pitch?: number; roll?: number }) => send({ type: "update_nodes", changes: tiltable.map((v) => ({ id: v.id, ...patch })) }),
         }
       : undefined;
   // The drawing tools' next shape: its wall control for a room, its taper and bevel for a volume.
@@ -534,6 +549,7 @@ export function App() {
             }
             wall={wallControl}
             profile={profileControl}
+            tilt={tiltControl}
             onConvert={convertible.length > 0 ? convert : undefined}
             line={lineControls}
             editPoints={editable ? { active: editing === editable.id, onToggle: () => setEditing(editing ? null : editable.id) } : undefined}

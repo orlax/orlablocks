@@ -168,11 +168,16 @@ export function ShapeMesh({ shape, draft = false, highlight }: Props) {
   const floorMaterial = draft ? s.draft : sel ? c.floorSelected : hover ? c.floorHover : c.floor;
   const edgeMaterial = draft ? s.draftEdge : sel ? s.edgeSelected : hover ? s.edgeHover : s.edge;
 
+  // Turned around the vertical, then (inside) tilted around the shape's center: roll, then pitch (see `toWorld3`).
+  const deg = Math.PI / 180;
+  const turn = new THREE.Euler((shape.pitch ?? 0) * deg, frame.rotation * deg, (shape.roll ?? 0) * deg, "YXZ");
   return (
-    <group position={[frame.x, y, frame.z]} rotation={[0, (frame.rotation * Math.PI) / 180, 0]}>
-      {solid && <mesh geometry={solid} material={bodyMaterial} castShadow={!draft} receiveShadow={!draft} />}
-      {floor && <mesh geometry={floor} material={floorMaterial} receiveShadow={!draft} />}
-      {edges && <lineSegments geometry={edges} material={edgeMaterial} renderOrder={1} />}
+    <group position={[frame.x, y + height / 2, frame.z]} rotation={turn}>
+      <group position={[0, -height / 2, 0]}>
+        {solid && <mesh geometry={solid} material={bodyMaterial} castShadow={!draft} receiveShadow={!draft} />}
+        {floor && <mesh geometry={floor} material={floorMaterial} receiveShadow={!draft} />}
+        {edges && <lineSegments geometry={edges} material={edgeMaterial} renderOrder={1} />}
+      </group>
     </group>
   );
 }

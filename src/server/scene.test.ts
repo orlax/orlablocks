@@ -1107,3 +1107,46 @@ describe("scene store taper and bevel", () => {
     expect(f).toMatchObject({ bevel: 0.3 });
   });
 });
+
+describe("scene store tilt", () => {
+  it("draws tilted box and cylinder volumes, storing angles in -180..180 and leaving 0 out", () => {
+    const store = createSceneStore();
+    const [log, block, flat] = store.drawShapes(
+      [
+        { type: "cylinder", kind: "volume", x: 0, z: 0, width: 1, depth: 1, height: 4, pitch: 90 },
+        { kind: "volume", x: 5, z: 0, width: 2, depth: 2, height: 2, roll: 270, pitch: -180 },
+        { kind: "volume", x: 9, z: 0, width: 2, depth: 2, pitch: 360 },
+      ],
+      "agent",
+    );
+    expect(log).toMatchObject({ pitch: 90 });
+    expect(block).toMatchObject({ roll: -90, pitch: 180 });
+    expect(flat).not.toHaveProperty("pitch");
+  });
+
+  it("refuses tilt on rooms and free-forms, and refuses to convert a tilted shape", () => {
+    const store = createSceneStore();
+    expect(() => store.drawShapes([{ kind: "room", x: 0, z: 0, width: 4, depth: 4, pitch: 30 }], "agent")).toThrow(/only a volume has a pitch/);
+    expect(() =>
+      store.drawShapes([{ type: "freeform", kind: "volume", points: [{ x: 0, z: 0 }, { x: 4, z: 0 }, { x: 2, z: 3 }], pitch: 30 } as never], "agent"),
+    ).toThrow(/pitch/);
+    const [f, b] = store.drawShapes(
+      [
+        { type: "freeform", kind: "volume", points: [{ x: 0, z: 0 }, { x: 4, z: 0 }, { x: 2, z: 3 }] },
+        { kind: "volume", x: 10, z: 0, width: 2, depth: 2, roll: 30 },
+      ],
+      "agent",
+    );
+    expect(() => store.updateNodes([{ id: f.id, roll: 10 }], "agent")).toThrow(/free-form/);
+    expect(() => store.convertNodes({ ids: [b.id] }, "agent")).toThrow(/is tilted/);
+  });
+
+  it("tilts and levels with one-step updates", () => {
+    const store = createSceneStore();
+    const [c] = store.drawShapes([{ type: "cylinder", kind: "volume", x: 0, z: 0, y: 1, width: 1, depth: 1, height: 0.5 }], "human");
+    store.updateNodes([{ id: c.id, pitch: 90 }], "human");
+    expect(store.getHistory().undoLabel).toBe("Tilt cylinder_1");
+    store.updateNodes([{ id: c.id, pitch: 0, roll: 0 }], "human");
+    expect(store.getScene().nodes.find((n) => n.id === c.id)).not.toHaveProperty("pitch");
+  });
+});

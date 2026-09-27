@@ -17,6 +17,7 @@ import {
   SquareRoundCorner,
   Spline,
   Redo2,
+  Rotate3d,
   Square,
   SquareDashed,
   Trash2,
@@ -154,6 +155,7 @@ export function ContextualBar({
   sides,
   wall,
   profile,
+  tilt,
   onConvert,
   editPoints,
   line,
@@ -173,6 +175,8 @@ export function ContextualBar({
   wall?: { value: number | undefined; onChange: (wall: number) => void };
   /** Shows the taper and bevel sliders (volumes): each value, undefined when the selected volumes differ. */
   profile?: { taper: number | undefined; bevel: number | undefined; onChange: (patch: { taper?: number; bevel?: number }) => void };
+  /** Shows the pitch and roll fields and Reset tilt (box and cylinder volumes): each value, undefined when they differ. */
+  tilt?: { pitch: number | undefined; roll: number | undefined; onChange: (patch: { pitch?: number; roll?: number }) => void };
   /** Shows Convert to free-form (the selection has boxes or cylinders). */
   onConvert?: () => void;
   /** Shows Edit points (a single free-form or line is selected): whether it's in point editing, and a toggle. */
@@ -258,6 +262,12 @@ export function ContextualBar({
               </button>
             ))}
           </div>
+        </>
+      )}
+      {tilt && (
+        <>
+          <span className="sep" />
+          <TiltControl {...tilt} />
         </>
       )}
       {(onConvert || editPoints) && (
@@ -413,6 +423,63 @@ function FractionSlider({ icon: Icon, title, value, onChange }: { icon: LucideIc
       />
       <span className="value">{value === undefined && dragging === null ? "–" : shown.toFixed(2)}</span>
     </label>
+  );
+}
+
+/** The tilt fields' − / + step, in degrees (the rings' snap). */
+const TILT_STEP = 15;
+
+/** A degrees field with − / + in 15° steps: typing a value and pressing Enter (or leaving the field) sets it. */
+function AngleField({ label, title, value, onChange }: { label: string; title: string; value: number | undefined; onChange: (deg: number) => void }) {
+  const [text, setText] = useState<string | null>(null);
+  const cancelled = useRef(false);
+  const commit = () => {
+    if (!cancelled.current && text !== null && text.trim() !== "" && Number.isFinite(Number(text))) onChange(Number(text));
+    cancelled.current = false;
+    setText(null);
+  };
+  const current = value ?? 0;
+  return (
+    <div className="sides angle" title={title}>
+      <span className="label">{label}</span>
+      <button title={`${label} −${TILT_STEP}°`} onClick={() => onChange(current - TILT_STEP)}>
+        <Minus size={14} />
+      </button>
+      <input
+        type="text"
+        inputMode="decimal"
+        className="count"
+        value={text ?? (value === undefined ? "" : `${value}°`)}
+        placeholder="–"
+        onFocus={() => setText(value === undefined ? "" : String(value))}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") cancelled.current = true;
+          if (e.key === "Enter" || e.key === "Escape") e.currentTarget.blur();
+        }}
+      />
+      <button title={`${label} +${TILT_STEP}°`} onClick={() => onChange(current + TILT_STEP)}>
+        <Plus size={14} />
+      </button>
+    </div>
+  );
+}
+
+/**
+ * A box's or cylinder's tilt: pitch (around its own x axis, + leans the top toward its +z) and roll (around its own
+ * z axis), in degrees, and Reset tilt, which levels it (both 0) in one step.
+ */
+function TiltControl({ pitch, roll, onChange }: { pitch: number | undefined; roll: number | undefined; onChange: (patch: { pitch?: number; roll?: number }) => void }) {
+  const level = pitch === 0 && roll === 0;
+  return (
+    <div className="tilt">
+      <AngleField label="pitch" title="Pitch: degrees around the shape's own x axis (the red ring)" value={pitch} onChange={(p) => onChange({ pitch: p })} />
+      <AngleField label="roll" title="Roll: degrees around the shape's own z axis (the blue ring)" value={roll} onChange={(r) => onChange({ roll: r })} />
+      <button className="labeled" disabled={level} title="Reset tilt: level it again (pitch and roll 0)" onClick={() => onChange({ pitch: 0, roll: 0 })}>
+        <Rotate3d size={16} /> Reset tilt
+      </button>
+    </div>
   );
 }
 

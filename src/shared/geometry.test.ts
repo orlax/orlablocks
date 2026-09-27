@@ -5,6 +5,8 @@ import {
   footprintBounds,
   handleFrame,
   mirrorAcross,
+  mirrorShape,
+  toWorld3,
   lineProblem,
   orientedFrame,
   polyline,
@@ -27,6 +29,7 @@ import {
   sampleEdge,
   signedArea2,
 } from "./geometry";
+import { hitMesh } from "./mesh";
 import { CURVE_SEGMENTS, type Box, type Cylinder, type FootPoint, type Freeform, type Line, type LinePoint } from "./scene.types";
 
 const box = (patch: Partial<Box>): Box => ({
@@ -495,5 +498,62 @@ describe("lines", () => {
     expect(split[1].x).toBeCloseTo(mid.x);
     expect(split[1].y).toBeCloseTo(mid.y);
     expect(split[1].in!.y).toBeDefined();
+  });
+});
+
+describe("tilt", () => {
+  const cylinderBase = (): Cylinder => ({ ...box({}), id: "cylinder_1", type: "cylinder" }) as Cylinder;
+  const lying: Cylinder = { ...cylinderBase(), width: 1, depth: 1, height: 0.5, y: 1, pitch: 90 };
+
+  it("turns around the center, which never moves", () => {
+    const c = toWorld3(lying, { x: 0, y: 0.25, z: 0 });
+    expect(c.x).toBeCloseTo(0);
+    expect(c.y).toBeCloseTo(1.25);
+    expect(c.z).toBeCloseTo(0);
+    // +90° pitch lays local +y (the axis) along local +z, so the top leans toward +z.
+    const top = toWorld3(lying, { x: 0, y: 0.5, z: 0 });
+    expect(top.z).toBeCloseTo(0.25);
+    expect(top.y).toBeCloseTo(1.25);
+  });
+
+  it("gives a lying cylinder the bounds of where it really is", () => {
+    const [y0, y1] = verticalRange(lying);
+    expect(y0).toBeCloseTo(0.75);
+    expect(y1).toBeCloseTo(1.75);
+    const f = footprintBounds(lying);
+    expect(f.minZ).toBeCloseTo(-0.25);
+    expect(f.maxZ).toBeCloseTo(0.25);
+    expect(f.maxX).toBeCloseTo(0.5, 1);
+    // Turning it by its rotation keeps it lying: its axis now runs along world x.
+    const turned = footprintBounds({ ...lying, rotation: 90 });
+    expect(turned.maxX).toBeCloseTo(0.25);
+  });
+
+  /** The shape's mesh corners in the world, sorted, to compare two shapes' places. */
+  const corners = (s: Box | Cylinder) => {
+    const p = hitMesh(s)!.positions;
+    const out: string[] = [];
+    for (let i = 0; i < p.length; i += 3) out.push([p[i], p[i + 1], p[i + 2]].map((v) => (Math.round(v * 100) / 100 + 0).toFixed(2)).join(","));
+    return [...new Set(out)].sort();
+  };
+  const reflect = (s: Box | Cylinder, axis: "x" | "z") =>
+    corners(s)
+      .map((c) => c.split(",").map(Number))
+      .map(([x, y, z]) => [axis === "x" ? -x : x, y, axis === "z" ? -z : z].map((v) => (v + 0).toFixed(2)).join(","))
+      .sort();
+
+  it("mirrors tilted shapes into their true mirror image, and back exactly", () => {
+    const shapes: (Box | Cylinder)[] = [
+      box({ width: 4, depth: 2, height: 3, rotation: 40, pitch: 30, roll: 20 }),
+      { ...cylinderBase(), width: 4, depth: 3, height: 2, sides: 5, rotation: 40, pitch: 25, roll: -35 },
+      { ...cylinderBase(), width: 4, depth: 4, height: 2, sides: 6, rotation: 10, pitch: -60, roll: 15 },
+    ];
+    for (const s of shapes) {
+      for (const axis of ["x", "z"] as const) {
+        const once = { ...s, ...mirrorShape(s, axis, 0) } as Box | Cylinder;
+        expect(corners(once)).toEqual(reflect(s, axis));
+        expect({ ...once, ...mirrorShape(once, axis, 0) }).toEqual(s);
+      }
+    }
   });
 });

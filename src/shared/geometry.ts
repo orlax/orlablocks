@@ -161,6 +161,35 @@ export function localFootprint(shape: ClosedShape): Point[] {
   ];
 }
 
+/** Whether a shape is tilted: a box or cylinder with a pitch or a roll. */
+export const isTilted = (shape: Shape): boolean => isFootprinted(shape) && (!!shape.pitch || !!shape.roll);
+
+/**
+ * A point in a closed shape's own frame (x/z on its footprint, y from 0 at its bottom up to its height) in the
+ * world. The shape is tilted around its center (0, height / 2, 0): first `roll` around its local z axis, then
+ * `pitch` around its local x axis (both right-handed, in degrees), then turned by `rotation` around the vertical
+ * and moved to its place, so a tilt never moves its center and a turn never changes its tilt.
+ */
+export function toWorld3(shape: ClosedShape, p: Point3): Point3 {
+  let { x, y, z } = p;
+  if (isTilted(shape)) {
+    const h = shape.height / 2;
+    y -= h;
+    const r = ((shape.roll ?? 0) * Math.PI) / 180;
+    [x, y] = [x * Math.cos(r) - y * Math.sin(r), x * Math.sin(r) + y * Math.cos(r)];
+    const q = ((shape.pitch ?? 0) * Math.PI) / 180;
+    [y, z] = [y * Math.cos(q) - z * Math.sin(q), y * Math.sin(q) + z * Math.cos(q)];
+    y += h;
+  }
+  const w = fromShapeLocal(shapeFrame(shape), { x, z });
+  return { x: w.x, y: y + shape.y, z: w.z };
+}
+
+/** A tilted shape's points in the world (its rings' corners): what its bounds and its outline on the ground come from. */
+function tiltedPoints(shape: ClosedShape): Point3[] {
+  return volumeRings(shape).flatMap(({ ring, y }) => ring.map((p) => toWorld3(shape, { x: p.x, y, z: p.z })));
+}
+
 /** Where a shape's own frame sits in the world and how it's turned (degrees). `localFootprint` is in this frame. */
 export const shapeFrame = (shape: ClosedShape) => (isFootprinted(shape) ? { x: shape.x, z: shape.z, rotation: shape.rotation } : { x: 0, z: 0, rotation: 0 });
 
@@ -170,8 +199,77 @@ export const footprint = (shape: ClosedShape): Point[] => {
   return localFootprint(shape).map((p) => fromShapeLocal(frame, p));
 };
 
-/** Where a shape covers the ground, as points to take bounds of: a closed shape's footprint, a line's polyline. */
-export const groundPoints = (shape: Shape): Point[] => (isClosed(shape) ? footprint(shape) : polyline(shape));
+/**
+ * Where a shape covers the ground, as points to take bounds of: a closed shape's footprint (a tilted one's points,
+ * seen from above), a line's polyline.
+ */
+export const groundPoints = (shape: Shape): Point[] =>
+  !isClosed(shape) ? polyline(shape) : isTilted(shape) ? tiltedPoints(shape) : footprint(shape);
+
+/** How many rings round a bevel's quarter circle. */
+export const BEVEL_SEGMENTS = 8;
+
+/** A polygon's area centroid on the ground. */
+export function centroid(poly: Point[]): Point {
+  let [a, cx, cz] = [0, 0, 0];
+  for (let i = 0; i < poly.length; i++) {
+    const p = poly[i];
+    const q = poly[(i + 1) % poly.length];
+    const f = p.x * q.z - q.x * p.z;
+    a += f;
+    cx += (p.x + q.x) * f;
+    cz += (p.z + q.z) * f;
+  }
+  return Math.abs(a) < 1e-12 ? poly[0] : { x: cx / (3 * a), z: cz / (3 * a) };
+}
+
+/**
+ * The rings a volume is built from, from 0 up to its height, in its own frame. Without a taper or a bevel it's the
+ * footprint at the bottom and the top. `taper` (0..1) scales the outline toward its center linearly up the height,
+ * to 1 − taper at the top (1 = a point). `bevel` (0..1) rounds the top edge along a quarter circle of radius
+ * bevel × min(height, the top's half smallest extent), in BEVEL_SEGMENTS rings.
+ * - A box or cylinder shrinks by the same distance on its width and depth: a true inset, so the rounding is even.
+ * - A free-form scales toward its outline's area centroid (a true inset of a concave outline would change its
+ *   point count): the inset is read as a fraction of the outline's half smallest extent.
+ */
+export function volumeRings(shape: ClosedShape): { ring: Point[]; y: number }[] {
+  const base = localFootprint(shape);
+  const h = shape.height;
+  const taper = shape.taper ?? 0;
+  const bevel = shape.bevel ?? 0;
+  if (taper === 0 && bevel === 0) return [{ ring: base, y: 0 }, { ring: base, y: h }];
+  // `ringAt(k, e)`: the outline scaled by k toward its center, then inset by e meters.
+  let half: number;
+  let ringAt: (k: number, e: number) => Point[];
+  if (isFootprinted(shape)) {
+    half = Math.min(shape.width, shape.depth) / 2;
+    ringAt = (k, e) =>
+      localFootprint({ ...shape, width: Math.max(0, k * shape.width - 2 * e), depth: Math.max(0, k * shape.depth - 2 * e) });
+  } else {
+    const c = centroid(base);
+    const xs = base.map((p) => p.x);
+    const zs = base.map((p) => p.z);
+    half = Math.min(Math.max(...xs) - Math.min(...xs), Math.max(...zs) - Math.min(...zs)) / 2;
+    ringAt = (k, e) => {
+      const s = Math.max(0, k - e / half);
+      return base.map((p) => ({ x: c.x + (p.x - c.x) * s, z: c.z + (p.z - c.z) * s }));
+    };
+  }
+  const scale = (y: number) => 1 - (taper * y) / h;
+  const r = bevel * Math.min(h, scale(h) * half);
+  const stack = [{ ring: base, y: 0 }];
+  if (r < 1e-6) stack.push({ ring: ringAt(scale(h), 0), y: h });
+  else {
+    for (let j = 0; j <= BEVEL_SEGMENTS; j++) {
+      const a = (j / BEVEL_SEGMENTS) * (Math.PI / 2);
+      const y = h - r + r * Math.sin(a);
+      // The bevel's first ring is where the straight side ends; when the bevel takes the whole height it's the bottom.
+      if (j === 0 && y < 1e-6) continue;
+      stack.push({ ring: ringAt(scale(y), r * (1 - Math.cos(a))), y });
+    }
+  }
+  return stack;
+}
 
 /** Twice the signed area of a polygon in the x/z plane (shoelace); the sign gives its winding. */
 export function signedArea2(poly: Point[]): number {
@@ -292,7 +390,7 @@ function polygonBounds(poly: Point[]) {
  * cylinder's from its true ellipse, not the drawn polygon), from the sampled outline for a free-form.
  */
 export function footprintBounds(shape: Shape): { minX: number; maxX: number; minZ: number; maxZ: number } {
-  if (!isFootprinted(shape) || (shape.type === "cylinder" && shape.sides !== undefined)) return polygonBounds(groundPoints(shape));
+  if (!isFootprinted(shape) || isTilted(shape) || (shape.type === "cylinder" && shape.sides !== undefined)) return polygonBounds(groundPoints(shape));
   const a = (shape.rotation * Math.PI) / 180;
   const cos = Math.abs(Math.cos(a));
   const sin = Math.abs(Math.sin(a));
@@ -319,8 +417,15 @@ export function boundsOf(shapes: Shape[]): Bounds {
   return b;
 }
 
-/** A shape's bottom and top: a closed shape's elevation and top, a line's lowest and highest point (curves included). */
+/**
+ * A shape's bottom and top: a closed shape's elevation and top (a tilted one's lowest and highest point), a line's
+ * lowest and highest point (curves included).
+ */
 export function verticalRange(shape: Shape): [number, number] {
+  if (isTilted(shape)) {
+    const ys = tiltedPoints(shape as ClosedShape).map((p) => p.y);
+    return [Math.min(...ys), Math.max(...ys)];
+  }
   if (isClosed(shape)) return [shape.y, shape.y + shape.height];
   const ys = polyline(shape).map((p) => p.y);
   return [Math.min(...ys), Math.max(...ys)];
@@ -592,6 +697,7 @@ function round2HalfEven(n: number): number {
  *   rotation becomes -rotation on either axis.
  * - An odd-sided cylinder is symmetric across its local x axis only: -rotation on Z, but 180 - rotation on X
  *   (the mirror of its flipped-x shape is the same shape turned a half turn).
+ * - A tilt reflects with it: on Z the pitch changes sign; on X the roll does (an odd-sided cylinder's pitch).
  * - A free-form isn't symmetric: each point reflects and its handles flip on that axis. The points keep their
  *   order (so their indices stay stable), which only reverses the outline's winding.
  */
@@ -604,7 +710,14 @@ export function mirrorShape(shape: Shape, axis: MirrorAxis, sum: number): ShapeP
   }
   const odd = shape.type === "cylinder" && shape.sides !== undefined && shape.sides % 2 === 1;
   const rotation = round2(normalizeDeg(axis === "x" && odd ? 180 - shape.rotation : -shape.rotation)) % 360;
-  return axis === "x" ? { x: round2(sum - shape.x), rotation } : { z: round2(sum - shape.z), rotation };
+  // A tilt reflects too: on Z the pitch flips; on X the roll flips, or for an odd-sided cylinder (turned a half
+  // turn instead) the pitch.
+  const flip = (a: number | undefined) => (a === undefined || a === 180 ? a : -a);
+  const tilt: ShapePatch = {};
+  const flipsPitch = axis === "z" || odd;
+  if (shape.pitch !== undefined && flipsPitch) tilt.pitch = flip(shape.pitch);
+  if (shape.roll !== undefined && !flipsPitch) tilt.roll = flip(shape.roll);
+  return axis === "x" ? { x: round2(sum - shape.x), rotation, ...tilt } : { z: round2(sum - shape.z), rotation, ...tilt };
 }
 
 /**

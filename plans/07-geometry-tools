@@ -419,3 +419,43 @@ Adopted as recommended (say if any should change):
     - making the pyramid a room dropped its taper, and undo restored it;
     - converting the hill kept its taper and bevel.
 
+### 07.3 — Tilt (done; browser check pending with the rest of the phase)
+
+- **Data:**
+  - `pitch?` and `roll?` on boxes and cylinders, in `KIND_FIELDS` for volumes, and `TILT_FIELDS` in `scene.types.ts`.
+  - The store stores them in -180..180 (180 rather than -180), rounded to 2 decimals, and leaves 0 out. Free-forms refuse them (their type has `pitch?: undefined`), and so do rooms.
+  - A tilted shape refuses to convert (`"box_1" is tilted, and a free-form can't be; set its pitch and roll to 0 first`). The label is `Tilt box_1`.
+- **`geometry.ts`:**
+  - `toWorld3(shape, p)` takes a point in the shape's own frame (y from 0 up) to the world: roll around the local z axis, then pitch around the local x axis (both right-handed, around the center at height / 2), then the yaw and the move.
+  - `isTilted` tells a tilted shape. `volumeRings`, `centroid` and `BEVEL_SEGMENTS` moved here from `mesh.ts`, so the server can compute a tilted shape's points without three.js.
+  - For a tilted shape, `groundPoints`, `footprintBounds` and `verticalRange` use its ring points in the world. So bounds, group bounds, the mirror and rotate pivots, paste and elevation snapping all see where it really is.
+  - `mirrorShape`: on Z the pitch flips, on X the roll flips (for an odd-sided cylinder, turned a half turn instead, the pitch). A test checks the mesh corners are the true mirror image for a box, a pentagon and a hexagon on both axes, and that mirroring twice restores the values.
+  - `rotateShape` is unchanged: yaw is the outer turn, so it only changes `rotation`.
+- **`mesh.ts`:** `hitMesh` places its vertices with `toWorld3`, so picking and the marquee follow the tilt.
+- **Rendering:** `ShapeMesh` puts the shape in a group at its center, turned by a `YXZ` Euler (yaw, then pitch, then roll inside), with the meshes offset down by half the height.
+- **The gizmo:**
+  - The `pitch` and `roll` parts (`TiltPart`). `tiltRing(shape, part)` gives each ring's center, axis and plane: the pitch axis is the yawed local x, which stays level, and the roll axis is the tilted local z. `tiltRingPoints` gives its points.
+  - Hit testing is within `HANDLE_HIT_PX` of the ring's projected circle.
+  - The drag angle is where the cursor's ray meets the ring's plane. When the plane is seen edge-on, the cursor's offset on screen is solved in the plane's projected axes.
+  - It snaps the new angle to 15°, with a `pitch 30°` label. `tiltValue` normalizes it.
+  - `TiltRing` in `TransformGizmo.tsx` draws them as tori: red and blue, drawn over everything, a constant size on screen.
+  - The Viewport adds the rings for a single box or cylinder volume, and hides the scale and height handles while the shape is tilted.
+- **The contextual bar:**
+  - `TiltControl` has two `AngleField`s (pitch and roll: − / degrees / +, in 15° steps) and **Reset tilt**. It acts on every selected box and cylinder volume, each around its own center.
+  - Convert to free-form skips tilted shapes.
+  - The selection info adds `· pitch 90° · roll 30°`.
+- **MCP:**
+  - An instructions paragraph on tilt: the center pivot, the order, which way + leans, `y` still the bottom before tilting, a lying cylinder is pitch 90, and bounds.
+  - `get_scene` adds `bounds` to tilted shapes (`boundsFor`). `update_nodes` mentions pitch and roll.
+  - The instructions are 7.6 kB.
+- **Checks:**
+  - typecheck;
+  - 257 tests. The new ones: "tilt" in `geometry.test.ts` (the pivot, a lying cylinder's bounds, true mirror images), "tilt rings" in `gizmo.test.ts` (both rings grabbed on screen and dragged 88° to 90° snapped; the roll axis follows the pitch; value normalization) and "scene store tilt";
+  - the editor bundles;
+  - a scripted run on `:5171`:
+    - a lying window cylinder reported bounds y 0.75, 1 × 0.5 × 1;
+    - mirroring a tilted box and a tilted pentagon on X flipped the box's roll and the pentagon's pitch, and twice restored the exact JSON;
+    - `rotate_nodes` kept the tilt;
+    - converting a tilted box and tilting a room were refused;
+    - a WS reset leveled the window and dropped its bounds.
+
