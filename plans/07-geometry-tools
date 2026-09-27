@@ -1,0 +1,345 @@
+# 07 — Geometry Tools
+
+> **For the agent reading this:** Read `plans/06-more-shapes` first (the footprint refactor, cylinders, free-forms, lines, point editing, and its notes for the next session). The idea came from `plans/thinking-02-tweaking-shapes`. This is the last geometry phase; semantics and prefabs move to 08. It adds:
+> - **wall thickness** per room, with the walls now grown **inward** from the outline;
+> - **taper** and **bevel** on volumes: a box becomes a pyramid, a tall cylinder gets a rounded top;
+> - **tilt** (`pitch` and `roll`) on boxes and cylinders, with gizmo rings, so a cylinder can lie on its side;
+> - **holes**, a third kind next to room and volume: any closed shape can be one, and it cuts the shapes in its own group and its sibling groups;
+> - **ramps**, a new shape type: a path with a width, smooth or stepped (stairs), straight, curved or spiral.
+>
+> Everything is still shapes: a door is a box hole in the room's group, not an anchored entity. The groundwork comes first (07.1): every shape reduces to a closed triangle mesh, and rendering, picking and the marquee run from it, because none of the new shapes is a vertical prism anymore. The agent gets all of it through `draw_shapes` and `update_nodes`, with no new tools. The work is split into small increments (§10). Each one ends with the human ↔ agent loop still working and a browser checklist for Orlando. Add this phase's terms to `GLOSSARY.md` (marked "from 07") as they land. Log progress in a §13 at the end of this file, as 06 did.
+
+---
+
+## 1. Goal
+
+One demo, end to end:
+
+1. Orlando draws a box room for a castle keep and sets its **wall** to 0.6 m on the contextual bar. The walls thicken inward, and the outside stays where he drew it.
+2. He draws a smooth cylinder volume, sets **taper** 0.6 and **bevel** 0.5: a rounded hill. A box volume with taper 1 is a pyramid.
+3. He draws a small cylinder, makes it a **hole**, and drags its red **pitch ring** to 90°: it lies on its side. He moves it into the keep's group and slides it into the wall: a round window. A box hole with a lying cylinder hole on top, grouped as "door", is an arched doorway.
+4. He stacks a second room on the keep, cuts a cylinder hole in its floor, and presses `R` to draw a **ramp**: a click on the ground floor, a click on the upper floor, with **step** 0.25 m. It's a flight of stairs.
+5. He asks the agent for *"a round tower with a spiral staircase up to a second floor, and a round window on the north side"*. It's a `draw_shapes` call (the rooms, a spiral ramp, the floor hole and the window) and a `group_nodes`, because holes only cut inside a group.
+
+---
+
+## 2. Scope
+
+### In
+
+- **The mesh groundwork:** a pure builder in `src/shared/` turns any closed shape or ramp into a watertight triangle mesh. Rendering, picking (ray against triangles) and the marquee (projected triangles) use it. There's no visible change.
+- **Wall thickness:** `wall` on rooms, 0.2 m by default, grown inward from the outline (which is now the room's outside).
+- **Taper and bevel:** `taper` and `bevel`, both fractions from 0 to 1, on volumes and holes of every closed shape type. The bevel rounds the top only.
+- **Tilt:** `pitch` and `roll` in degrees, on box and cylinder volumes and holes, with two gizmo rings and a **Reset tilt** button.
+- **Holes:** `kind: "hole"` on any closed shape or ramp. Holes cut, with a boolean library, only when drawing in the browser. The scene data stays plain shapes.
+- **Ramps:** a new shape type (`ramp_N`), with a Ramp tool (`R`), point editing, and a `spiral` shorthand for the agent.
+- **Agent:** the new fields in `draw_shapes` and `update_nodes`, and warnings for holes that cut nothing. Server version 0.0.8.
+
+### Out (deliberately deferred or dropped)
+
+- **Sloped tops** (free-form points at different heights). Dropped: ramps cover the need.
+- **Negative taper** (a top wider than the bottom).
+- **Rounding the bottom edge** (bevel is top only), so no true capsules or spheres.
+- **Tilting free-forms, lines, ramps or rooms.**
+- **Wall-anchored doors and windows.** Openings are hole shapes in the room's group, and their meaning comes in 08.
+- **Holes that walk the whole hierarchy** (see §7 for the exact scope).
+- **Picking and line snapping through cut openings:** picking uses the uncut shapes (§7).
+- **Railings, landings with their own width, and ramps that branch.**
+- Semantics and prefabs (phase 08).
+
+---
+
+## 3. Naming and data
+
+| type | ID | new fields |
+|---|---|---|
+| `box` | `box_N` | `wall?` (rooms), `taper?`, `bevel?`, `pitch?`, `roll?` (volumes, holes) |
+| `cylinder` | `cylinder_N` | the same as a box |
+| `freeform` | `freeform_N` | `wall?` (rooms), `taper?`, `bevel?` (volumes, holes) |
+| `ramp` | `ramp_N` | new: `kind` (`volume` or `hole`), `points: RampPoint[]`, `width`, `step?`, `base`, `color` |
+| `line`, `group` | | unchanged |
+
+- **`ShapeKind` becomes `"room" | "volume" | "hole"`.** A ramp is a volume or a hole, never a room.
+- **Every new field is optional** and left out at its default (`wall` 0.2, the others 0), like `sides`. Old scenes load unchanged.
+- **Fields that don't apply to a kind are dropped when the kind changes,** in the same step (undo restores them):
+  - becoming a room drops `taper`, `bevel`, `pitch` and `roll`;
+  - leaving room drops `wall`.
+  - The store refuses them on the wrong kind in `draw_shapes` and `update_nodes`, with a plain error ("taper is for volumes and holes; box_3 is a room").
+- **Every value is rounded to 2 decimals,** as today.
+- **ID counters:** `nextId` gains `ramp`, defaulting to 1.
+- **Counts:** `3 rooms · 2 volumes · 2 holes · 1 ramp · 1 group`, in the info-label and `get_scene`'s summary. A ramp counts as a ramp whatever its kind.
+
+---
+
+## 4. The mesh groundwork and wall thickness (07.1)
+
+### The mesh builder
+
+- **`src/shared/mesh.ts`**, pure and tested, is the one place a shape becomes triangles.
+  - `shapeMesh(shape)` returns indexed positions and triangle indices in the shape's own frame, plus the frame. A room gives two parts, `walls` and `floor`, because they use different materials.
+  - `worldMesh(shape)` gives the same in world space, for picking and the boolean library.
+  - Meshes are watertight and share vertices, which is what a boolean library needs.
+- **Rendering:** `ShapeMesh` builds its three.js geometry from `shapeMesh` instead of `ExtrudeGeometry`. The UV rule, creased normals (30°), edges and materials are unchanged, and old scenes look identical (apart from §4's walls).
+- **Picking:** `pickHit` tests the ray against each shape's world triangles, after a bounds check.
+  - A room has no ceiling, so a ray through the open top reaches the floor or an inner wall with no special case. That replaces `prismCrossings` and the room logic in `hitDistance`.
+  - Lines are still picked on screen (`pickLine`).
+- **The marquee:** a shape is hit when one of its triangles, projected on screen, overlaps the rectangle (`polygonOverlapsRect`), after a screen-bounds check. That replaces `shapeFaces`.
+- **Bounds and snapping** (`groundPoints`, `verticalRange`) stay analytic for untilted shapes, and use the mesh's vertices for tilted ones (07.3).
+- **Performance:** a smooth cylinder room is about 600 triangles. Meshes are cached per shape object, as `roomWalls` is.
+
+### Wall thickness
+
+- **The outline is the room's outside.** The walls are the region between the outline and the outline shrunk by `wall` (mitered for boxes and cylinders, Clipper2 for free-forms).
+  - `roomWalls` returns `outer` = the outline, and `inner` = the outline shrunk by `wall`.
+  - A room whose inside would vanish renders solid, as today.
+- **`wall`:** meters, from 0.05 up, 0.2 by default.
+- **Old scenes change a little:** every room's walls move 0.1 m inward, because the data used to be the wall's centerline. The data isn't rewritten.
+- **Rooms that touch no longer share a wall:** two rooms edge to edge have two walls back to back. To share one, overlap them by a wall's thickness.
+- **Editor:** a **wall** field on the contextual bar for selected rooms (typed in meters, with − / + in 0.05 m steps), and in the Box, Cylinder and Pen tools' bars for the next room.
+- **Selection info:** `keep (box_1) · 12 × 10 × 3 m · wall 0.6 · y 0 · 0°`.
+
+---
+
+## 5. Taper and bevel (07.2)
+
+### What they mean
+
+- **`taper`** runs from 0 (straight sides) to 1 (the top is a point). The top face is the outline scaled by `1 − taper` toward its center.
+  - A box at taper 1 is a pyramid, and a smooth cylinder at taper 1 is a cone.
+  - A 10 × 4 box at taper 1 comes to a point, not a ridge.
+- **`bevel`** runs from 0 (a sharp top edge) to 1 (as round as it fits). It rounds the top edge only.
+  - Its radius is `bevel × min(height, the top's half smallest extent)`. So a smooth cylinder at bevel 1 gets a full dome on top when it's at least as tall as its radius.
+  - The bottom always stays sharp and flat, sitting on its elevation.
+- **Together:** the taper is applied first, then the bevel rounds the tapered top. Taper 0.6 with bevel 0.5 is a rounded hill.
+- **Volumes and holes only.** A tapered hole is a funnel pit.
+
+### How it's built: a profile
+
+- The side is the outline stacked in rings from `y` to `y + height`, and each ring is the outline shrunk by an amount that depends on its height:
+  - the taper shrinks it linearly;
+  - the bevel shrinks it along a quarter circle near the top, with 8 rings.
+- Every ring has the same points as the outline, so the mesh just stitches neighboring rings with quads and caps the top (triangulated, or a point at taper 1). It never crosses itself.
+- **Boxes and cylinders shrink by an equal distance on width and depth,** a true inset. The rounding is even all around, and a smooth cylinder's dome is exact.
+- **Free-forms scale toward their outline's area centroid,** because a true inset of a concave outline changes its point count. This looks right on blob-shaped hills. A crescent's horns lean toward a centroid outside the shape, and that's accepted.
+
+### Editor and data
+
+- **The contextual bar:** two sliders, **taper** and **bevel** (0..1, in steps of 0.05, each sent on release as one step), for selected volumes and holes and in the drawing tools' bars. They're hidden for rooms.
+- **The gizmo:** the height handle sits on the true top, which is lower on a beveled shape.
+- **The rest works unchanged:** stacking (`y + height` is still the top), bounds, move, rotate, mirror and copy. Converting to a free-form keeps `taper` and `bevel`.
+- **Selection info:** `hill (cylinder_2) · 20 × 20 × 8 m · taper 0.6 · bevel 0.5 · y 0`.
+
+---
+
+## 6. Tilt (07.3)
+
+### Data
+
+- **`pitch`** turns the shape around its own local x axis, and **`roll`** around its own local z axis, in degrees (right-handed, so +90° pitch tips local +z up). Both default to 0 and are left out when they're 0.
+- **Box and cylinder volumes and holes only.**
+- **The order: tilt first, then yaw.** The shape is built in its own frame, tilted around its center (roll, then pitch), then turned by `rotation` as today. Because yaw is the outer turn:
+  - `rotate_nodes` and the purple rotate handle still only change `rotation`, and a tilted shape turns around world y correctly;
+  - "world-aligned" means pitch 0 and roll 0, and **Reset tilt** sets both to 0 in one step.
+- **The pivot is the shape's center,** `(x, y + height / 2, z)`. `y` stays the bottom before tilting, and `height` stays the length along local y. A cylinder lying on its side with height 0.5 is 0.5 long, and its center is at `y + 0.25`.
+- **`get_scene` reports `bounds` for a tilted shape** (as it does for groups), so the agent sees where it actually ends up.
+- **Mirroring** keeps it exact: on X, `rotation → −rotation` (or `180 − rotation` for an odd-sided cylinder, as today) and `roll → −roll`; on Z, `rotation → −rotation` and `pitch → −pitch`. It's tested: the corners are the true mirror image, and mirroring twice restores the values.
+- **Converting a tilted shape to a free-form is refused,** because its outline on the ground isn't its shape.
+
+### The gizmo
+
+- **Two new rings on a single selected, tilted-capable box or cylinder:** red for pitch (around the local x axis) and blue for roll (around the local z axis), through the shape's center, sized in gizmo units like the other handles.
+  - They follow the shape's yaw and its current tilt.
+  - They're the x and z arrows' colors, so each ring reads as "turn around this axis".
+- **Dragging a ring** turns the shape around that axis. The angle comes from the cursor's direction around the ring's center, projected on the ring's plane. It snaps to 15° (`Cmd/Ctrl` for free), with a live `pitch 30°` label, and it's one step on release (`Tilt box_3`).
+- **The purple yaw ring** stays where it is.
+- **While a shape is tilted,** its scale and height handles are hidden (the top face isn't flat on screen anymore), and it's resized with the contextual bar's fields. The body drag and the x / y / z arrows work as usual, in world axes.
+- **Multi-selection:** no rings. The contextual bar's fields set the same pitch or roll on each selected shape, each around its own center.
+- **The contextual bar:** **pitch** and **roll** fields (with ±15° buttons) and **Reset tilt**, for box and cylinder volumes and holes.
+- **Selection info:** `window (cylinder_4) · 1 × 1 × 0.5 m · hole · pitch 90° · y 1.25 · 0°`.
+
+---
+
+## 7. Holes (07.4)
+
+### The rule
+
+- **A hole is a closed shape (or a ramp) with `kind: "hole"`.** Any shape type, with any taper, bevel or tilt.
+- **What a hole cuts:** let `G` be the hole's group (its `parent`).
+  - It cuts the shapes that are directly in `G`.
+  - It also cuts the shapes directly in `G`'s **sibling groups**: the other groups directly in `G`'s parent (the other top-level groups, when `G` is top-level).
+  - Nothing deeper is searched in either case.
+  - So a door in the "lobby" group cuts the lobby's walls and the next room's back-to-back wall, when that room is also a group next to the lobby.
+- **A hole outside any group cuts nothing.** It shows a small warning (§ Rendering), and the agent is told (§8).
+- **Holes don't cut holes,** and never cut lines.
+- **The floor rule:** a hole cuts a room's floor only if it reaches below the room's `y`. A door standing on the floor doesn't notch it, and a hole sunk through the floor opens it.
+- **Default height:** 2.2 m (a door), when a box, cylinder or free-form is drawn as a hole.
+
+### Rendering
+
+- **The cut runs in the browser only.** Each shape that a hole overlaps is drawn as its mesh minus the union of those holes. It's recomputed when the shape or one of its holes changes, and cached.
+- **Holes are ghosts:** translucent in their color, with dashed edges, casting no shadow. They're selectable, movable and editable like any shape.
+- **A view toggle, Show holes** (on by default, in the info-label), hides the ghosts so you see only the result. Selected and hovered holes still show.
+- **A hole that cuts nothing** (outside any group) shows a small yellow warning mark above it, and its outliner row gets one too, with the tooltip "Not in a group: this hole cuts nothing".
+- **The boolean library** is picked at the start of 07.4 with a test: a door hole flush with a wall's bottom and top (coplanar faces), a cylinder hole through a curved free-form wall, and a tapered hole in a beveled volume.
+  - `three-bvh-csg` (MIT, needs `three-mesh-bvh`) is simple, but known to struggle with coplanar faces.
+  - `manifold-3d` (Apache, compiled to WASM) is robust with coplanar faces, but its npm package pulls in about ten dependencies for its command-line and glTF tooling. Check what actually ends up in the bundle and in `npm audit`, the way `clipper2-js` was rejected in 06.3.
+
+### Picking and the rest
+
+- **Picking uses the uncut shapes,** and a hole is picked like a solid shape. The ghost fills the doorway, so clicking a doorway selects the door. Line and ramp points snap to the uncut surface: a point clicked in a doorway lands on the hole.
+- **The kind toggle** on the contextual bar gets a third choice, **hole**, in the drawing tools and for selected shapes.
+- **Outliner icons:** each shape's icon in a hole style (dotted).
+- **Everything else** (move, copy, mirror, paste, groups, undo) is unchanged. Moving a hole into or out of a group in the outliner changes what it cuts, live.
+
+---
+
+## 8. Ramps and the Ramp tool (07.5)
+
+### Data
+
+- **`Ramp`:** `{ id, type: "ramp", name?, parent?, kind, points, width, step?, base, color, createdBy }`.
+- **`points`:** 2 or more `RampPoint`s, `{ x, y, z, in?, out? }`, in absolute world coordinates (like a line's), with handles as flat `{ x, z }` offsets (like a free-form's). A curve bends the path on the ground, and height is handled separately.
+- **Height along the path:** between two points, y changes evenly with the horizontal distance along the path. So steps come out even, and two points at the same y make a landing (or a flat walkway).
+- **`width`:** meters, centered on the path, 0.2 m or more.
+- **`step`:** the riser height in meters. Left out, it's a smooth ramp. With it, each segment gets `max(1, round(rise / step))` equal steps with equal treads. A flat segment has no steps.
+- **`base`:**
+  - `"solid"` (the default) fills down to the ramp's lowest point, not to y = 0. It's the classic graybox wedge, and a stair from the 2nd to the 3rd floor stops at the 2nd.
+  - `"floating"` is a 0.2 m slab under the surface (under the treads, following the steps' slope).
+- **`kind`:** `"volume"` (the default) or `"hole"` (a sloped tunnel through a volume, for example).
+- **Rejected by the server:** fewer than 2 points, neighbors in the same x/z place, or a curve tighter than half the width (the inner edge would fold).
+
+### The agent's spiral shorthand
+
+- `draw_shapes` takes a ramp with `spiral: { x, z, radius, turn, y, rise, from? }` instead of `points`:
+  - `radius` is the path's radius;
+  - `turn` is degrees, counterclockwise seen from above (negative for clockwise);
+  - `from` is the start angle, where 0 is east (+x) and 90 is north (−z);
+  - `y` is the start elevation, and `rise` is how much it climbs.
+- The server turns it into points, one every 90° (plus the end), with circle handles and y rising evenly. The stored ramp has only points, as convert does for circles. The instructions say to use it rather than computing a helix by hand.
+
+### Rendering and editing
+
+- **Mesh:** the path is sampled (the curves with `CURVE_SEGMENTS`), then offset left and right by half the width.
+  - A smooth ramp's surface follows y along the path.
+  - A stepped ramp is a row of treads: each one is flat, and a vertical riser joins it to the next.
+  - The underside is either solid down to the lowest y, or the floating slab.
+  - The whole mesh is closed, so holes can cut ramps and ramps can be holes.
+- **The Ramp tool (`R`):** the Line tool's point placing. Each press lands on the surface under the cursor, so a ramp is two clicks: the ground, then a platform's top. A drag pulls out flat handles, and a double-click or `Enter` finishes.
+  - The contextual bar has width, step (with a **smooth** toggle), base (solid or floating), kind (volume or hole) and color. The preview is a draft of the ramp.
+- **Selected:** the body drag, the x / y / z arrows and the rotate ring. There are no scale or height handles.
+- **Point editing:** the same as a line's (double-click to enter), including the y arrow on the selected point to raise it.
+- **Move, rotate, mirror and copy** change the points, as for a line.
+- **Selection info:** `stair (ramp_1) · 3 points · 7.2 m long · 1.5 m wide · rises 3 m · 12 steps of 0.25 · solid`.
+- **The outliner icon:** stairs.
+
+---
+
+## 9. MCP surface
+
+| Tool | Change |
+|---|---|
+| `draw_shapes` | `kind: "hole"`; `wall`, `taper`, `bevel`, `pitch`, `roll`; a `ramp` type (with `points` or `spiral`). The result lists `warnings`, e.g. `box_7 is a hole outside any group: it cuts nothing`. |
+| `update_nodes` | the same new fields, plus the ramp's `width`, `step` (null = smooth), `base` and `points`. Changing `kind` drops the fields that don't apply (§3). |
+| `get_scene` | reports the new fields, `bounds` on tilted shapes, holes and ramps in the summary, and the same `warnings`. |
+| `group_nodes` | its result also warns when a grouping leaves a hole with nothing to cut. |
+| the other 6 | unchanged. |
+
+- **The server instructions** gain short paragraphs:
+  - walls grow inward from the outline (so rooms that touch have two walls back to back);
+  - taper and bevel as fractions (what 1 means for each);
+  - tilt (the pivot, `y` still the bottom before tilting, and `bounds`);
+  - the hole rule (its own group plus sibling groups, nothing outside a group, the floor rule) and how to make a door, a window and a floor hole;
+  - ramps, with `step`, `base`, landings and the spiral shorthand.
+- **Keep it short:** it's about 6.4 kB now. Stay under about 9 kB, and cut the older paragraphs where they repeat the tools' own descriptions.
+- **Server version 0.0.8.** **Restart the server and reconnect with `/mcp`.**
+- **CLAUDE.md:** "Working with the scene" gains holes, the new fields and ramps. The paragraph about the next phase points at 08 (semantics and prefabs).
+
+### Editor ↔ server protocol
+
+```
+client → server  { type: "add_shapes", shapes: [ShapeInput] }     // gains the ramp type and the new fields
+client → server  { type: "update_nodes", changes: [...] }          // gains wall, taper, bevel, pitch, roll, and the ramp's fields
+server → client  unchanged
+```
+
+---
+
+## 10. Increments
+
+Each increment is verified before the next one starts: typecheck, tests, a scripted check on a spare port with a scratch `DATA_DIR`, and Orlando's browser checklist.
+
+### 07.1 — Mesh groundwork and wall thickness
+
+- `mesh.ts`, rendering from it, triangle picking and the triangle marquee, and walls grown inward with `wall`.
+- **Check:** old scenes look the same apart from the walls moving 0.1 m inward. Picking (including through a room's open top onto a volume inside it), the marquee on a concave free-form, the gizmo, copy, mirror and paste all behave as before. A 0.6 m wall on a box, an octagon and a star room draws cleanly. The agent sets `wall`.
+
+### 07.2 — Taper and bevel
+
+- The profile mesh, the fields, the sliders, and converting that keeps them.
+- **Check:** a pyramid, a cone, a dome-topped cylinder and a rounded blob hill. Each is picked on its sloped surface and marquee-selected by its real outline. A box stacked on a pyramid snaps to its top. The agent draws a hill from two numbers.
+
+### 07.3 — Tilt
+
+- `pitch` and `roll`, the mesh transform, bounds from the mesh, the mirror cases, the two gizmo rings, the fields and Reset tilt.
+- **Check:** lay a cylinder on its side with the pitch ring (it snaps to 90°). Roll a box to 30°. Turn it with the yaw ring, and it stays tilted. Mirror a tilted pentagon on X twice, and it's restored exactly. Reset tilt. The scale handles hide while tilted. The agent lays a cylinder down, and `get_scene` reports its bounds.
+
+### 07.4 — Holes
+
+- The kind, the library test and choice, the cut with its scope and floor rule, ghosts, Show holes, the ungrouped warning, and the MCP warnings.
+- **Check:** a door (a box hole) through a room's wall, and through two back-to-back walls of sibling room groups. A round window (a lying cylinder hole). An arched doorway (box + cylinder holes). A floor hole that opens the floor, and a door on the floor that doesn't notch it. A top-level hole cuts nothing and shows the warning. Moving a hole out of its group un-cuts it live. The agent makes a doorway.
+
+### 07.5 — Ramps and the Ramp tool
+
+- The type, the mesh (smooth, stepped, solid, floating), the checks, the Ramp tool, point editing, the spiral shorthand and MCP.
+- **Check:** a two-click ramp from the ground to a platform. The same with step 0.25 is stairs. An L-shaped stair with a landing. A curved, floating stair. A spiral stair from the agent's shorthand. A ramp as a hole through a volume. A curve that's too tight is refused.
+
+---
+
+## 11. Acceptance test (end of phase)
+
+1. **Walls:** a room's wall set to 0.6 m thickens inward, and the outside stays put. An old scene opens with its walls 0.1 m inward and otherwise unchanged, keeping its history.
+2. **Taper and bevel:** a box at taper 1 is a pyramid. A tall smooth cylinder at bevel 1 has a domed top. Taper 0.6 with bevel 0.5 is a hill. They're hidden for rooms, and making a tapered volume a room drops them (undo restores them).
+3. **Tilt:** the pitch ring lays a cylinder on its side, the roll ring rolls a box, the yaw ring still turns them, Reset tilt levels them, and mirroring twice restores a tilted shape.
+4. **Holes:** a door, a round window, an arched doorway and a floor hole all cut as described. The group scope and the floor rule hold. A hole outside a group shows its warning. Show holes hides the ghosts.
+5. **Ramps:** a smooth ramp, stairs, a landing, a curve, a floating stair and a spiral stair, all as one step each. Point editing reshapes them.
+6. **Everything else still works on every shape:** picking, the marquee, move, Alt-drag copy, `Alt+J`, copy and paste, mirror, groups, delete and undo.
+7. **Agent:** *"a round tower with a spiral staircase up to a second floor, and a round window on the north side"* takes a `draw_shapes` and a `group_nodes`, and the window really cuts the wall.
+8. **The agent's context:** `/mcp` lists 9 tools, and the server reports 0.0.8.
+
+---
+
+## 12. Decisions
+
+Settled with Orlando:
+
+1. **07 is the last geometry phase,** and semantics and prefabs move to 08.
+2. **Everything is shapes.** A door or window is a hole shape in the room's group, with no anchoring. Its meaning comes from groups and names, in 08.
+3. **Any shape can be a hole.**
+4. **A hole cuts only its own group's shapes and those of its sibling groups,** so the store never walks the whole hierarchy. **A hole outside any group cuts nothing,** with a visible warning. **Holes don't cut holes.**
+5. **The outline is the room's outside,** and walls grow inward by `wall`.
+6. **Taper and bevel are fractions from 0 to 1.** The bevel rounds the top only, and there's no negative taper.
+7. **Tilt is for boxes and cylinders only,** it's world-aligned by default with a reset, and **its gizmo rings are part of this phase.**
+8. **A ramp's base can be solid (reaching down) or floating.**
+9. **No sloped tops.**
+
+Adopted as recommended (say if any should change):
+
+10. **The mesh groundwork comes first,** with no visible change, and picking and the marquee move to triangles.
+11. **The type is `ramp`,** and `step` makes it stairs. A flat one is a walkway.
+12. **Taper scales toward the center** (1 = a point, not a ridge). The bevel is a true inset on boxes and cylinders, and a scale toward the centroid on free-forms.
+13. **Taper, bevel and tilt apply to volumes and holes, and `wall` to rooms.** Changing the kind drops the fields that no longer apply, in the same step.
+14. **The tilt order is roll, then pitch, then yaw,** around the shape's center, with `y` still the bottom before tilting. `get_scene` reports a tilted shape's bounds.
+15. **Tilt rings show for a single box or cylinder only.** Scale and height handles hide while it's tilted.
+16. **Picking ignores the cuts.** A hole is picked as a solid shape.
+17. **A hole cuts a room's floor only if it reaches below the room's `y`.**
+18. **Old scenes aren't rewritten,** so their walls move 0.1 m inward.
+19. **"Sibling groups" means the groups directly in the same parent as the hole's group.** Shapes directly in that parent (not in a group) aren't cut.
+20. **Ramp heights change evenly with horizontal distance,** and ramp handles are flat.
+21. **The agent gets a `spiral` shorthand** for ramps, stored as points.
+22. **A new hole defaults to 2.2 m high.**
+
+---
+
+## 13. Progress
+
+(Nothing yet.)
