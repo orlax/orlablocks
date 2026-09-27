@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { Box, SceneNode } from "../shared/scene.types";
+import type { Box, Freeform, SceneNode } from "../shared/scene.types";
 import { subtreeIds } from "../shared/tree";
 import { createSceneStore, SceneError } from "./scene";
 
@@ -51,7 +51,7 @@ describe("scene store", () => {
       "agent",
     );
     expect(a).toMatchObject({ y: -2.5, rotation: 270, color: "blue", name: "pit" });
-    expect(b.rotation).toBe(0);
+    expect(b).toMatchObject({ rotation: 0 });
     expect("name" in b).toBe(false);
   });
 
@@ -400,7 +400,7 @@ describe("scene store groups", () => {
     const store = setup();
     store.groupNodes({ ids: ["box_1", "box_2"] }, "human");
     const moved = store.moveNodes({ ids: ["group_1"], dx: 6, dy: 0.5 }, "agent");
-    expect(moved.map((b) => [b.id, b.x, b.y])).toEqual([
+    expect((moved as Box[]).map((b) => [b.id, b.x, b.y])).toEqual([
       ["box_1", 6, 0.5],
       ["box_2", 16, 0.5],
     ]);
@@ -749,7 +749,7 @@ describe("scene store cylinders", () => {
     expect(round).toMatchObject({ type: "cylinder", height: 3, name: "shrine" });
     expect(round).not.toHaveProperty("sides");
     expect(octagon).toMatchObject({ type: "cylinder", sides: 8, height: 0.25 });
-    expect(store.getNextId()).toEqual({ box: 2, group: 1, cylinder: 3 });
+    expect(store.getNextId()).toEqual({ box: 2, group: 1, cylinder: 3, freeform: 1 });
     expect(store.getHistory().undoLabel).toBe("Agent: draw box_1, cylinder_1, cylinder_2");
   });
 
@@ -796,5 +796,79 @@ describe("scene store cylinders", () => {
     expect(copy).toMatchObject({ id: "cylinder_2", type: "cylinder", sides: 8, x: 10 });
     const [pasted] = store.pasteNodes({ nodes: [c], focus: { x: 50, z: 0 }, parent: null }, "human");
     expect(pasted).toMatchObject({ id: "cylinder_3", sides: 8, x: 50 });
+  });
+});
+
+describe("scene store free-forms", () => {
+  const l = [
+    { x: 0, z: 0 },
+    { x: 6, z: 0 },
+    { x: 6, z: 2 },
+    { x: 2, z: 2 },
+    { x: 2, z: 6 },
+    { x: 0, z: 6 },
+  ];
+
+  it("draws free-forms with their own IDs, points rounded and empty handles dropped", () => {
+    const store = createSceneStore();
+    const [f] = store.drawShapes(
+      [{ type: "freeform", kind: "room", points: [{ x: 0.123, z: 0, out: { x: 0.001, z: 0 } }, ...l.slice(1)], name: "cave" }],
+      "agent",
+    );
+    expect(f).toMatchObject({ id: "freeform_1", type: "freeform", kind: "room", height: 3, y: 0, name: "cave" });
+    expect((f as Freeform).points[0]).toEqual({ x: 0.12, z: 0 });
+    expect(store.getHistory().undoLabel).toBe("Agent: draw freeform_1");
+  });
+
+  it("refuses an outline that crosses itself, too few points, and box fields", () => {
+    const store = createSceneStore();
+    const bowtie = [{ x: 0, z: 0 }, { x: 4, z: 0 }, { x: 0, z: 4 }, { x: 5, z: 5 }];
+    expect(() => store.drawShapes([{ type: "freeform", kind: "room", points: bowtie }], "agent")).toThrow(
+      /shapes\[0\]\.points: the outline crosses itself \(the edges from point 1 and from point 3\)/,
+    );
+    expect(() => store.drawShapes([{ type: "freeform", kind: "room", points: l.slice(0, 2) }], "agent")).toThrow(/points/);
+    expect(() => store.drawShapes([{ type: "freeform", kind: "room", points: l, width: 3 } as never], "agent")).toThrow(/width/);
+    expect(store.getScene().nodes).toHaveLength(0);
+  });
+
+  it("updates points (one reshape step), refuses footprint fields, and undoes", () => {
+    const store = createSceneStore();
+    const [f] = store.drawShapes([{ type: "freeform", kind: "volume", points: l }], "human");
+    store.updateNodes([{ id: f.id, points: l.map((p) => ({ ...p, x: p.x * 2 })) }], "human");
+    expect(store.getHistory().undoLabel).toBe("Reshape freeform_1");
+    expect((store.getScene().nodes[0] as Freeform).points[1]).toEqual({ x: 12, z: 0 });
+    // The same points again change nothing.
+    store.updateNodes([{ id: f.id, points: l.map((p) => ({ ...p, x: p.x * 2 })) }], "human");
+    expect(store.getHistory().undoLabel).toBe("Reshape freeform_1");
+    expect(() => store.updateNodes([{ id: f.id, x: 3 }], "agent")).toThrow(/is a free-form, with no x of its own/);
+    expect(() => store.updateNodes([{ id: f.id, points: [l[0], l[1], l[0], l[1]] }], "agent")).toThrow(/points/);
+    const [b] = store.drawShapes([{ kind: "room", x: 20, z: 0, width: 2, depth: 2 }], "human");
+    expect(() => store.updateNodes([{ id: b.id, points: l }], "agent")).toThrow(/only a free-form has points/);
+    store.undo();
+    store.undo();
+    expect((store.getScene().nodes[0] as Freeform).points).toEqual(l);
+  });
+
+  it("moves, rotates, mirrors, copies and pastes free-forms through their points", () => {
+    const store = createSceneStore();
+    const [f] = store.drawShapes([{ type: "freeform", kind: "volume", points: l }], "human");
+    const points = () => (store.getScene().nodes.find((n) => n.id === f.id) as Freeform).points;
+    store.moveNodes({ ids: [f.id], dx: 1, dz: 2 }, "agent");
+    expect(points()[0]).toEqual({ x: 1, z: 2 });
+    store.rotateNodes({ ids: [f.id], degrees: 90 }, "agent");
+    store.rotateNodes({ ids: [f.id], degrees: -90 }, "agent");
+    expect(points()[0]).toEqual({ x: 1, z: 2 });
+    const before = points();
+    store.mirrorNodes({ ids: [f.id], axis: "x" }, "agent");
+    expect(points()).not.toEqual(before);
+    store.mirrorNodes({ ids: [f.id], axis: "x" }, "agent");
+    expect(points()).toEqual(before);
+    const [copy] = store.duplicateNodes({ ids: [f.id], dx: 10 }, "agent");
+    expect(copy).toMatchObject({ id: "freeform_2" });
+    expect((copy as Freeform).points[0]).toEqual({ x: 11, z: 2 });
+    const [pasted] = store.pasteNodes({ nodes: [store.getScene().nodes[0]], focus: { x: 50, z: 0 }, parent: null }, "human");
+    expect(pasted.id).toBe("freeform_3");
+    // Its bounds (x 1..7, z 2..8) are centered on the focus.
+    expect((pasted as Freeform).points[0]).toEqual({ x: 47, z: -3 });
   });
 });

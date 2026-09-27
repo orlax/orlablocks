@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Box } from "../shared/scene.types";
+import type { Box, Freeform } from "../shared/scene.types";
 import { DEFAULT_CAMERA, heightOnVertical, screenRay, worldToScreen, type CameraState, type Vec3 } from "./camera";
 import { pickShape, prismCrossings } from "./pick";
 
@@ -52,6 +52,32 @@ describe("pickShape", () => {
   });
 });
 
+describe("pickShape on free-forms", () => {
+  // An L-shaped room: 0..6 along x at z 0..2, and 0..2 along z up to 6.
+  const l = {
+    id: "freeform_1",
+    type: "freeform",
+    kind: "room",
+    y: 0,
+    height: 3,
+    color: "almost-white",
+    createdBy: "human",
+    points: [
+      { x: 0, z: 0 },
+      { x: 6, z: 0 },
+      { x: 6, z: 2 },
+      { x: 2, z: 2 },
+      { x: 2, z: 6 },
+      { x: 0, z: 6 },
+    ],
+  } as const satisfies Freeform;
+
+  it("hits the floor of an arm and misses the L's inside corner", () => {
+    expect(pickShape(rayAt({ x: 4, y: 0, z: 1 }), [l])).toBe("freeform_1");
+    expect(pickShape(rayAt({ x: 4, y: 0, z: 4 }), [l])).toBeNull();
+  });
+});
+
 describe("prismCrossings", () => {
   // An L-shaped prism 0..2 m tall: 0..4 along x at z 0..1, and 0..1 along z up to 4.
   const l = [
@@ -65,18 +91,18 @@ describe("prismCrossings", () => {
   const down = (x: number, z: number) => ({ origin: { x, y: 10, z }, dir: { x: 0, y: -1, z: 0 } });
 
   it("finds the top and the bottom straight down through an arm", () => {
-    expect(prismCrossings(down(3, 0.5), l, 0, 2)).toEqual([
+    expect(prismCrossings(down(3, 0.5), [l], 0, 2)).toEqual([
       { t: 8, face: "top" },
       { t: 10, face: "bottom" },
     ]);
   });
 
   it("misses the inside corner of a concave outline", () => {
-    expect(prismCrossings(down(3, 3), l, 0, 2)).toEqual([]);
+    expect(prismCrossings(down(3, 3), [l], 0, 2)).toEqual([]);
   });
 
   it("finds a side face hit by a level ray", () => {
-    const [first] = prismCrossings({ origin: { x: -5, y: 1, z: 2 }, dir: { x: 1, y: 0, z: 0 } }, l, 0, 2);
+    const [first] = prismCrossings({ origin: { x: -5, y: 1, z: 2 }, dir: { x: 1, y: 0, z: 0 } }, [l], 0, 2);
     expect(first).toEqual({ t: 5, face: "side" });
   });
 });

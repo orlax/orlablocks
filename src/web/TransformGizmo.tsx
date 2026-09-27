@@ -1,6 +1,7 @@
 import { useRef, type RefObject } from "react";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
+import { handleFrame } from "../shared/geometry";
 import type { Shape } from "../shared/scene.types";
 import type { CameraState, Vec3 } from "./camera";
 import {
@@ -139,7 +140,7 @@ function RotateHandle({ boxes, hot, cam }: { boxes: Shape[]; hot: boolean; cam: 
   );
 }
 
-/** One scale handle, turned with the box so it reads as part of its top face, at a constant size on screen. */
+/** One scale handle, turned with the shape's handle frame so it reads as part of its top face, at a constant size on screen. */
 function ScaleHandle({ box, part, hot, cam }: { box: Shape; part: ScalePart; hot: boolean; cam: RefObject<CameraState> }) {
   const group = useRef<THREE.Group>(null);
 
@@ -152,7 +153,7 @@ function ScaleHandle({ box, part, hot, cam }: { box: Shape; part: ScalePart; hot
   });
 
   return (
-    <group ref={group} rotation={[0, (box.rotation * Math.PI) / 180, 0]}>
+    <group ref={group} rotation={[0, (handleFrame(box).rotation * Math.PI) / 180, 0]}>
       <mesh geometry={scaleRimGeometry} renderOrder={12}>
         <meshBasicMaterial color={SCALE_COLORS.rim} depthTest={false} transparent />
       </mesh>

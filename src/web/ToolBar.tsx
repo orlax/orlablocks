@@ -7,6 +7,7 @@ import {
   Hand,
   Minus,
   MousePointer2,
+  PenTool,
   Plus,
   Redo2,
   Square,
@@ -26,6 +27,7 @@ export const TOOLS: { tool: Tool; label: string; key: string; icon: LucideIcon }
   { tool: "hand", label: "Hand", key: "h", icon: Hand },
   { tool: "box", label: "Box", key: "b", icon: BoxIcon },
   { tool: "cylinder", label: "Cylinder", key: "c", icon: Cylinder },
+  { tool: "pen", label: "Pen (free-form)", key: "p", icon: PenTool },
 ];
 
 /** What each tool does and its modifiers, shown in the info-label. */
@@ -34,6 +36,7 @@ export const HINTS: Record<Tool, string> = {
   hand: "drag to pan · scroll to zoom · A/D or ←/→ to rotate",
   box: `drag to draw · Shift square · Alt from center · ${MOD} no snap · Esc to cancel`,
   cylinder: `drag to draw · Shift circle · Alt from center · ${MOD} no snap · Esc to cancel`,
+  pen: `click for a corner · drag for a curve · click the first point or Enter to close · ⌫ removes the last point · ${MOD} no snap · Esc to cancel`,
 };
 
 /**

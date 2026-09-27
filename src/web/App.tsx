@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ChevronDown, Map as MapIcon } from "lucide-react";
 import { DEFAULT_COLOR, DEFAULT_VIEW, type Shape, type ShapeColor, type ShapeKind, type SceneNode, type View } from "../shared/scene.types";
+import { footprintBounds, round2 } from "../shared/geometry";
 import { shapesUnder, childrenOf, isShape, isGroup } from "../shared/tree";
 import type { CameraState, GroundPoint } from "./camera";
 import { clipboardText, readClipboard } from "./clipboard";
@@ -33,8 +34,15 @@ const copiedRoots = (added: SceneNode[]) => {
 /** `lobby (group_1)` or just `box_3`. */
 const title = (n: SceneNode) => (n.name ? `${n.name} (${n.id})` : n.id);
 
-/** `lobby (box_3) · 6 × 4 × 3 m · y 0 · 0°`, and a cylinder's sides: `tower (cylinder_1) · 8 × 8 × 3 m · 8 sides · y 0 · 0°` */
+/**
+ * `lobby (box_3) · 6 × 4 × 3 m · y 0 · 0°`, a cylinder's sides: `tower (cylinder_1) · 8 × 8 × 3 m · 8 sides · y 0 · 0°`,
+ * and a free-form's points and bounds: `cave (freeform_1) · 7 points · 12.3 × 8 × 3 m · y 0`.
+ */
 const describe = (s: Shape) => {
+  if (s.type === "freeform") {
+    const b = footprintBounds(s);
+    return `${title(s)} · ${s.points.length} points · ${round2(b.maxX - b.minX)} × ${round2(b.maxZ - b.minZ)} × ${s.height} m · y ${s.y}`;
+  }
   const sides = s.type === "cylinder" ? (s.sides !== undefined ? ` · ${s.sides} sides` : " · smooth") : "";
   return `${title(s)} · ${s.width} × ${s.depth} × ${s.height} m${sides} · y ${s.y} · ${s.rotation}°`;
 };
@@ -54,7 +62,7 @@ export function App() {
   const [context, setContext] = useState<string | null>(null);
   // The node under the cursor in the outliner, highlighted in the view.
   const [outlinerHover, setOutlinerHover] = useState<string | null>(null);
-  // The next shape's style in the Box and Cylinder tools, remembered while the tab is open.
+  // The next shape's style in the Box, Cylinder and Pen tools, remembered while the tab is open.
   const [nextKind, setNextKind] = useState<ShapeKind>("room");
   const [nextColor, setNextColor] = useState<ShapeColor>(DEFAULT_COLOR);
   // The Cylinder tool's sides (undefined = smooth).
@@ -297,6 +305,7 @@ export function App() {
           lastCopy.current = offset;
           duplicate(ids, offset);
         }}
+        onNotice={setNotice}
         onCursor={setCursor}
         onViewChange={(v, c) => {
           setView(v);
@@ -356,6 +365,11 @@ export function App() {
         {tool === "box" && (
           <ContextualBar kind={nextKind} onKind={setNextKind} color={nextColor} onColor={setNextColor}>
             next box
+          </ContextualBar>
+        )}
+        {tool === "pen" && (
+          <ContextualBar kind={nextKind} onKind={setNextKind} color={nextColor} onColor={setNextColor}>
+            next free-form
           </ContextualBar>
         )}
         {tool === "cylinder" && (

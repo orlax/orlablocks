@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Box } from "../shared/scene.types";
+import type { Box, Freeform } from "../shared/scene.types";
 import { DEFAULT_CAMERA, worldToScreen, type CameraState } from "./camera";
 import { marqueeHits, polygonOverlapsRect, rectFrom } from "./marquee";
 
@@ -83,5 +83,30 @@ describe("marqueeHits", () => {
     const rect = rectFrom({ sx: p.sx - 3, sy: p.sy - 3 }, { sx: p.sx + 3, sy: p.sy + 3 });
     expect(marqueeHits(cam, size, [long], rect)).toEqual(["box_1"]);
     expect(marqueeHits(cam, size, [{ ...long, rotation: 90 }], rect)).toEqual([]);
+  });
+
+  it("misses a concave free-form when the rect is only in its inside corner", () => {
+    const l: Freeform = {
+      id: "freeform_1",
+      type: "freeform",
+      kind: "volume",
+      y: 0,
+      height: 0.25,
+      color: "almost-white",
+      createdBy: "human",
+      points: [
+        { x: 0, z: 0 },
+        { x: 6, z: 0 },
+        { x: 6, z: 2 },
+        { x: 2, z: 2 },
+        { x: 2, z: 6 },
+        { x: 0, z: 6 },
+      ],
+    };
+    const p = at(4.5, 0.1, 4.5);
+    const rect = rectFrom({ sx: p.sx - 4, sy: p.sy - 4 }, { sx: p.sx + 4, sy: p.sy + 4 });
+    expect(marqueeHits(cam, size, [l], rect)).toEqual([]);
+    const q = at(4.5, 0.1, 1);
+    expect(marqueeHits(cam, size, [l], rectFrom({ sx: q.sx - 4, sy: q.sy - 4 }, { sx: q.sx + 4, sy: q.sy + 4 }))).toEqual(["freeform_1"]);
   });
 });

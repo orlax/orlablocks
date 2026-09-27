@@ -1,6 +1,7 @@
 import { useEffect, useMemo } from "react";
 import * as THREE from "three";
-import { localFootprint, offsetPolygon, shapeFrame, type Point } from "../shared/geometry";
+import { toCreasedNormals } from "three/examples/jsm/utils/BufferGeometryUtils.js";
+import { isFootprinted, localFootprint, pointInPolygon, roomWalls, shapeFrame, signedArea2, type Point } from "../shared/geometry";
 import { PALETTE, WALL_THICKNESS, type Shape, type ShapeColor } from "../shared/scene.types";
 
 type Props = {
@@ -106,59 +107,50 @@ function applyBoxUVs(geometry: THREE.BufferGeometry, ox: number, oy: number, oz:
   return geometry;
 }
 
+/** A ring on the ground as a three.js outline: drawn in x / -z, then rotated so the extrusion points up (+y). */
+const flat = (points: Point[]) => points.map((p) => new THREE.Vector2(p.x, -p.z));
+
 /**
- * A polygon on the ground (in the shape's frame) extruded from 0 up to `height`, with an optional hole, as one mesh
- * with clean edges (no seams at the corners).
+ * A region on the ground (in the shape's frame), given as rings, extruded from 0 up to `height`, as one mesh with
+ * clean edges (no seams at the corners). Rings wound like the first one are solid, the others are holes in the
+ * solid ring around them.
  */
-function extrude(outline: Point[], height: number, hole?: Point[] | null) {
-  // The shape is drawn in x / -z, then rotated so the extrusion points up (+y).
-  const flat = (points: Point[]) => points.map((p) => new THREE.Vector2(p.x, -p.z));
-  const shape = new THREE.Shape(flat(outline));
-  if (hole) shape.holes.push(new THREE.Path(flat(hole)));
-  const geometry = new THREE.ExtrudeGeometry(shape, { depth: height, bevelEnabled: false });
+function extrude(rings: Point[][], height: number) {
+  const solid = Math.sign(signedArea2(rings[0]));
+  const shapes = rings.filter((r) => Math.sign(signedArea2(r)) === solid).map((r) => ({ ring: r, shape: new THREE.Shape(flat(r)) }));
+  for (const hole of rings.filter((r) => Math.sign(signedArea2(r)) !== solid)) {
+    const around = shapes.find((s) => pointInPolygon(s.ring, hole[0])) ?? shapes[0];
+    around.shape.holes.push(new THREE.Path(flat(hole)));
+  }
+  const geometry = new THREE.ExtrudeGeometry(
+    shapes.map((s) => s.shape),
+    { depth: height, bevelEnabled: false },
+  );
   geometry.rotateX(-Math.PI / 2);
   return geometry;
 }
 
 /**
- * A smooth cylinder is drawn as many flat facets. This bends the normals of its side faces (the ones that aren't
- * floors or tops) to the true ellipse's, so the lighting reads as round: the gradient of x²/hw² + z²/hd², turned to
- * face the same side as the facet (a room's inner wall faces in). Call it after the UVs, which pick their plane
- * from the flat normals.
+ * Curved walls are many flat facets: faces that meet at less than this angle share their normals, so a round
+ * tower or a curved cave wall lights as round, while a box's (or a hexagon's) corners stay sharp.
  */
-function smoothSides(geometry: THREE.BufferGeometry, hw: number, hd: number) {
-  const pos = geometry.getAttribute("position");
-  const nrm = geometry.getAttribute("normal");
-  for (let i = 0; i < pos.count; i++) {
-    const nx = nrm.getX(i);
-    const nz = nrm.getZ(i);
-    if (Math.abs(nrm.getY(i)) > 0.5) continue;
-    let gx = pos.getX(i) / (hw * hw);
-    let gz = pos.getZ(i) / (hd * hd);
-    const len = Math.hypot(gx, gz);
-    if (len === 0) continue;
-    gx /= len;
-    gz /= len;
-    const sign = gx * nx + gz * nz < 0 ? -1 : 1;
-    nrm.setXYZ(i, sign * gx, 0, sign * gz);
-  }
-  nrm.needsUpdate = true;
-  return geometry;
-}
+const CREASE = (30 * Math.PI) / 180;
 
 /**
  * The UV offset: the frame's world position for an unrotated shape (its tiles line up with the ground grid and
- * with other shapes), its half size for a rotated one (tiles start at a corner).
+ * with other shapes), its half size for a rotated one (tiles start at a corner). A free-form's frame is the
+ * world's, so its tiles always line up with the grid.
  */
-function uvOffset(box: Shape): [number, number] {
-  return box.rotation === 0 ? [box.x, box.z] : [box.width / 2, box.depth / 2];
+function uvOffset(shape: Shape): [number, number] {
+  if (!isFootprinted(shape)) return [0, 0];
+  return shape.rotation === 0 ? [shape.x, shape.z] : [shape.width / 2, shape.depth / 2];
 }
 
 /**
  * Graybox rendering of a closed shape, from its footprint polygon. A room is a floor slab plus thick walls (the
- * footprint grown and shrunk by half the wall thickness, the outer ring with the inner one as a hole), with no
- * ceiling, so you see in from above. A volume is the footprint extruded to its height. Both cast and receive
- * shadows and have faint outlined edges.
+ * region between the footprint grown and shrunk by half the wall thickness), with no ceiling, so you see in from
+ * above. A volume is the footprint extruded to its height. Both cast and receive shadows and have faint outlined
+ * edges.
  */
 export function ShapeMesh({ shape, draft = false, highlight }: Props) {
   const { kind, y, height, color } = shape;
@@ -168,28 +160,27 @@ export function ShapeMesh({ shape, draft = false, highlight }: Props) {
   // Geometry is rebuilt only when what it's made from changes (the outline is a new array every render).
   const key = JSON.stringify([kind, outline, height, ox, y, oz]);
 
-  const smooth = shape.type === "cylinder" && shape.sides === undefined;
+  // An outline with no area (a stored shape is never one, but a preview can be) has no walls or body: nothing to draw.
+  const empty = Math.abs(signedArea2(outline)) < 1e-9;
   const solid = useMemo(() => {
-    let g: THREE.BufferGeometry;
-    if (kind === "volume") g = applyBoxUVs(extrude(outline, height), ox, y, oz);
-    else {
-      // Rooms narrower than two wall thicknesses have no inside left: they render as a solid block.
-      const outer = offsetPolygon(outline, WALL_THICKNESS / 2)!;
-      g = applyBoxUVs(extrude(outer, height, offsetPolygon(outline, -WALL_THICKNESS / 2)), ox, y, oz);
-    }
-    return smooth ? smoothSides(g, shape.width / 2, shape.depth / 2) : g;
-  }, [key, smooth]);
+    if (empty) return null;
+    // Rooms too narrow to have an inside come out as solid blocks (no inner ring).
+    const rings = kind === "volume" ? [outline] : roomWalls(shape, WALL_THICKNESS / 2).walls;
+    if (rings.length === 0) return null;
+    // UVs pick their plane from the flat normals, so they come first.
+    return toCreasedNormals(applyBoxUVs(extrude(rings, height), ox, y, oz), CREASE);
+  }, [key]);
 
   const floor = useMemo(
-    () => (kind === "room" ? applyBoxUVs(extrude(outline, FLOOR_THICKNESS), ox, y, oz) : null),
+    () => (kind === "room" && !empty ? applyBoxUVs(extrude([outline], FLOOR_THICKNESS), ox, y, oz) : null),
     [key],
   );
 
-  const edges = useMemo(() => new THREE.EdgesGeometry(solid, 15), [solid]);
+  const edges = useMemo(() => (solid ? new THREE.EdgesGeometry(solid, 15) : null), [solid]);
 
-  useEffect(() => () => solid.dispose(), [solid]);
+  useEffect(() => () => solid?.dispose(), [solid]);
   useEffect(() => () => floor?.dispose(), [floor]);
-  useEffect(() => () => edges.dispose(), [edges]);
+  useEffect(() => () => edges?.dispose(), [edges]);
 
   const s = getShared();
   const c = colorMaterials(color);
@@ -201,9 +192,9 @@ export function ShapeMesh({ shape, draft = false, highlight }: Props) {
 
   return (
     <group position={[frame.x, y, frame.z]} rotation={[0, (frame.rotation * Math.PI) / 180, 0]}>
-      <mesh geometry={solid} material={bodyMaterial} castShadow={!draft} receiveShadow={!draft} />
+      {solid && <mesh geometry={solid} material={bodyMaterial} castShadow={!draft} receiveShadow={!draft} />}
       {floor && <mesh geometry={floor} material={floorMaterial} receiveShadow={!draft} />}
-      <lineSegments geometry={edges} material={edgeMaterial} renderOrder={1} />
+      {edges && <lineSegments geometry={edges} material={edgeMaterial} renderOrder={1} />}
     </group>
   );
 }

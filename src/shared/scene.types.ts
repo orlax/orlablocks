@@ -55,8 +55,36 @@ export type Box = Footprinted & { type: "box" };
  */
 export type Cylinder = Footprinted & { type: "cylinder"; sides?: number };
 
+/** An offset on the ground, e.g. a bezier handle relative to its point. */
+export type Offset = { x: number; z: number };
+
+/**
+ * A free-form shape's point, in absolute world x/z. `in` and `out` are its bezier handles, as offsets from the
+ * point; a point without handles is a corner. The edge from point i to point i + 1 is straight unless i has `out`
+ * or i + 1 has `in`.
+ */
+export type FootPoint = { x: number; z: number; in?: Offset; out?: Offset };
+
+/**
+ * A free-form shape: a closed outline of points (3 or more, the last joins the first) in absolute world x/z, at
+ * elevation `y`, rising to `y + height`. No center, size or rotation of its own: moving, turning and mirroring it
+ * change its points. The outline must not cross itself.
+ */
+export type Freeform = {
+  id: string; // "freeform_1", ...
+  type: "freeform";
+  name?: string;
+  parent?: string;
+  kind: ShapeKind;
+  y: number;
+  height: number;
+  color: ShapeColor;
+  points: FootPoint[];
+  createdBy: Actor;
+};
+
 /** Anything drawn: every node that isn't a group. */
-export type Shape = Box | Cylinder;
+export type Shape = Box | Cylinder | Freeform;
 export type ShapeType = Shape["type"];
 
 /**
@@ -75,9 +103,10 @@ export type Group = {
 /** Anything in the scene's flat list. (Not `Node`, which is the DOM's.) */
 export type SceneNode = Shape | Group;
 
-/** The shape fields an edit can change. `sides` is for cylinders (undefined = smooth). */
+/** The shape fields an edit can change. `sides` is for cylinders (undefined = smooth), `points` for free-forms. */
 export type ShapePatch = Partial<Pick<Footprinted, "name" | "kind" | "x" | "z" | "y" | "width" | "depth" | "height" | "rotation" | "color">> & {
   sides?: number;
+  points?: FootPoint[];
 };
 /** What an update op can change on any node: shape fields (shapes only), `name` and `parent`. */
 export type NodePatch = ShapePatch & { parent?: string };
@@ -121,6 +150,11 @@ export const MIN_SIDES = 3;
 export const MAX_SIDES = 64;
 /** How many segments a smooth cylinder is drawn and picked with. */
 export const SMOOTH_SEGMENTS = 64;
+/** A free-form's outline has at least this many points, and at most this many. */
+export const MIN_POINTS = 3;
+export const MAX_POINTS = 500;
+/** How many straight segments each curved edge of a free-form is drawn, picked and checked with. */
+export const CURVE_SEGMENTS = 16;
 
 export const ShapeKindSchema = z.enum(["room", "volume"]);
 export const ShapeColorSchema = z.enum(SHAPE_COLORS);
@@ -162,8 +196,23 @@ const footprinted = {
   color: ShapeColorSchema,
   createdBy: ActorSchema,
 };
+const OffsetSchema = z.object({ x: z.number(), z: z.number() });
+const FootPointSchema = z.object({ x: z.number(), z: z.number(), in: OffsetSchema.optional(), out: OffsetSchema.optional() });
 const BoxSchema = z.object({ ...footprinted, type: z.literal("box") });
 const CylinderSchema = z.object({ ...footprinted, type: z.literal("cylinder"), sides: z.number().int().min(MIN_SIDES).max(MAX_SIDES).optional() });
+
+const FreeformSchema = z.object({
+  id: z.string(),
+  type: z.literal("freeform"),
+  name: z.string().optional(),
+  parent: z.string().optional(),
+  kind: ShapeKindSchema,
+  y: z.number(),
+  height: z.number().min(MIN_HEIGHT),
+  color: ShapeColorSchema,
+  points: z.array(FootPointSchema).min(MIN_POINTS).max(MAX_POINTS),
+  createdBy: ActorSchema,
+});
 
 const GroupSchema = z.object({
   id: z.string(),
@@ -174,7 +223,7 @@ const GroupSchema = z.object({
 });
 
 /** A stored node, as in `scene.json` (and on the clipboard). */
-export const NodeSchema: z.ZodType<SceneNode> = z.discriminatedUnion("type", [BoxSchema, CylinderSchema, GroupSchema]);
+export const NodeSchema: z.ZodType<SceneNode> = z.discriminatedUnion("type", [BoxSchema, CylinderSchema, FreeformSchema, GroupSchema]);
 
 export const BoxInputSchema = z.strictObject({
   kind: field.kind,
@@ -192,14 +241,42 @@ export const BoxInputSchema = z.strictObject({
   parent: field.parent.optional().describe("ID of the group to put it in, e.g. group_1. Omit for the top level"),
 });
 export type BoxInput = z.input<typeof BoxInputSchema>;
-/**
- * A new shape for `draw_shapes`: its `type` (box, the default, or cylinder) and that type's fields. Boxes and
- * cylinders share every field; `sides` is for cylinders only (the store rejects it on a box).
- */
-export const ShapeInputSchema = BoxInputSchema.extend({
-  type: z.enum(["box", "cylinder"]).optional().describe("box (the default) or cylinder (the ellipse inscribed in width × depth)"),
-  sides: field.sides.optional(),
+const OffsetInputSchema = z.strictObject({ x: z.number(), z: z.number() });
+const FootPointInputSchema = z.strictObject({
+  x: z.number().describe("World x, meters"),
+  z: z.number().describe("World z, meters"),
+  in: OffsetInputSchema.optional().describe("Bezier handle toward the previous point, as an offset from this point"),
+  out: OffsetInputSchema.optional().describe("Bezier handle toward the next point, as an offset from this point"),
 });
+const PointsSchema = z
+  .array(FootPointInputSchema)
+  .min(MIN_POINTS)
+  .max(MAX_POINTS)
+  .describe(`The closed outline, ${MIN_POINTS}..${MAX_POINTS} points in absolute world x/z (the last joins the first); it must not cross itself`);
+
+/** A free-form for `draw_shapes`: its points, kind, and the optional fields a box has, minus the footprint ones. */
+export const FreeformInputSchema = z.strictObject({
+  type: z.literal("freeform").describe("A closed outline of points, optionally curved with bezier handles"),
+  kind: field.kind,
+  points: PointsSchema,
+  height: BoxInputSchema.shape.height,
+  y: BoxInputSchema.shape.y,
+  color: BoxInputSchema.shape.color,
+  name: field.name.optional(),
+  parent: BoxInputSchema.shape.parent,
+});
+
+/**
+ * A new shape for `draw_shapes`: its `type` (box, the default, cylinder or freeform) and that type's fields. Boxes
+ * and cylinders share every field; `sides` is for cylinders only (the store rejects it on a box).
+ */
+export const ShapeInputSchema = z.discriminatedUnion("type", [
+  BoxInputSchema.extend({
+    type: z.enum(["box", "cylinder"]).optional().describe("box (the default) or cylinder (the ellipse inscribed in width × depth)"),
+    sides: field.sides.optional(),
+  }),
+  FreeformInputSchema,
+]);
 export type ShapeInput = z.input<typeof ShapeInputSchema>;
 
 /** A change to an existing node, by ID: any of a shape's editable fields; for a group only `name` and `parent`. */
@@ -215,6 +292,7 @@ export const NodeUpdateSchema = z.strictObject({
   rotation: field.rotation.optional(),
   color: field.color.optional(),
   sides: field.sides.nullable().optional().describe(`Cylinders only: ${MIN_SIDES}..${MAX_SIDES} sides, or null to make it smooth`),
+  points: PointsSchema.optional().describe("Free-forms only: the whole new outline (it replaces the old one)"),
   name: field.name.optional().describe('A label for people, e.g. "lobby". Not unique. An empty string removes it'),
   parent: field.parent
     .nullable()

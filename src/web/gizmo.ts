@@ -1,13 +1,19 @@
 import { HEIGHT_SNAP, MIN_HEIGHT, SNAP, type Shape, type ShapePatch } from "../shared/scene.types";
 import {
+  anchorOf,
   boundsOf,
-  shapeAxes,
   footprintBounds,
   fromShapeLocal,
+  handleFrame,
+  isFootprinted,
   moveShape,
   normalizeDeg,
+  resizeShape,
   rotateAround,
+  rotationOf,
   round2,
+  sameValue,
+  shapeAxes,
   toShapeLocal,
   type Bounds,
 } from "../shared/geometry";
@@ -69,10 +75,11 @@ export const AXES: Record<"x" | "y" | "z", Vec3> = {
 const snapTo = (n: number, step: number) => Math.round(n / step) * step;
 
 /** Where a scale handle sits: on the top face's corner or edge midpoint. */
-export function scaleHandlePoint(box: Shape, part: ScalePart): Vec3 {
+export function scaleHandlePoint(shape: Shape, part: ScalePart): Vec3 {
   const [sx, sz] = signs(part);
-  const p = fromShapeLocal(box, { x: (sx * box.width) / 2, z: (sz * box.depth) / 2 });
-  return { x: p.x, y: box.y + box.height, z: p.z };
+  const f = handleFrame(shape);
+  const p = fromShapeLocal(f, { x: (sx * f.width) / 2, z: (sz * f.depth) / 2 });
+  return { x: p.x, y: shape.y + shape.height, z: p.z };
 }
 
 /**
@@ -80,7 +87,8 @@ export function scaleHandlePoint(box: Shape, part: ScalePart): Vec3 {
  * right at any yaw and rotation.
  */
 export function scaleCursor(cam: CameraState, size: Size, box: Shape, part: ScalePart): "ns" | "ew" | "nwse" | "nesw" {
-  const c = worldToScreen(cam, size, { x: box.x, y: box.y + box.height, z: box.z });
+  const f = handleFrame(box);
+  const c = worldToScreen(cam, size, { x: f.x, y: box.y + box.height, z: f.z });
   const h = worldToScreen(cam, size, scaleHandlePoint(box, part));
   if (!c || !h) return "nwse";
   const deg = ((Math.atan2(h.sy - c.sy, h.sx - c.sx) * 180) / Math.PI + 180) % 180; // 0..180, screen y down
@@ -96,7 +104,7 @@ export function rotateHandlePlacement(boxes: Shape[], scale: number): { point: V
   const offset = ROTATE_OFFSET * scale;
   if (boxes.length === 1) {
     const box = boxes[0];
-    const { ex, ez } = shapeAxes(box);
+    const { ex, ez } = shapeAxes(handleFrame(box));
     const corner = scaleHandlePoint(box, "scale:-1:-1");
     const out = { x: -(ex.x + ez.x) / Math.SQRT2, z: -(ex.z + ez.z) / Math.SQRT2 };
     return { point: { x: corner.x + out.x * offset, y: corner.y, z: corner.z + out.z * offset }, inward: { x: -out.x, z: -out.z } };
@@ -214,10 +222,11 @@ export function startHandleDrag(cam: CameraState, size: Size, sx: number, sy: nu
     return { part, origin, bounds, grab: angleOf(p.x - pivot.x, p.z - pivot.z) };
   }
   if (isScalePart(part)) {
-    const box = origin[0];
+    const shape = origin[0];
+    const f = handleFrame(shape);
     const [hx, hz] = signs(part);
-    const l = toShapeLocal(box, screenToPlane(cam, size, sx, sy, box.y + box.height));
-    return { part, origin, bounds, grab: { x: l.x - (hx * box.width) / 2, y: 0, z: l.z - (hz * box.depth) / 2 } };
+    const l = toShapeLocal(f, screenToPlane(cam, size, sx, sy, shape.y + shape.height));
+    return { part, origin, bounds, grab: { x: l.x - (hx * f.width) / 2, y: 0, z: l.z - (hz * f.depth) / 2 } };
   }
   const axis = part === "height" ? AXES.y : AXES[part];
   return { part, origin, bounds, grab: paramOnLine(cam, size, sx, sy, gizmoAnchor(bounds), axis) };
@@ -249,8 +258,8 @@ export function dragUpdate(
     const p = screenToPlane(cam, size, sx, sy, bounds.maxY);
     let delta = normalizeDeg(angleOf(p.x - anchor.x, p.z - anchor.z) - (drag.grab as number));
     if (delta > 180) delta -= 360;
-    // One box snaps to whole 15° angles; several snap the change (their angles differ).
-    const single = origin.length === 1 ? origin[0] : null;
+    // One box or cylinder snaps to whole 15° angles; several (or a free-form, which has no angle) snap the change.
+    const single = origin.length === 1 && isFootprinted(origin[0]) ? origin[0] : null;
     if (mods.snap) {
       delta = single ? snapTo(single.rotation + delta, ROTATE_SNAP) - single.rotation : snapTo(delta, ROTATE_SNAP);
     }
@@ -324,10 +333,12 @@ function scaleUpdate(
   sy: number,
   mods: DragModifiers,
 ): { patches: Record<string, ShapePatch>; label: string } {
-  const box = drag.origin[0];
+  const shape = drag.origin[0];
+  // The math runs on the handle frame: a box's own rectangle, a free-form's bounds.
+  const box = handleFrame(shape);
   const grab = drag.grab as Vec3;
   const [hx, hz] = signs(part);
-  const l = toShapeLocal(box, screenToPlane(cam, size, sx, sy, box.y + box.height));
+  const l = toShapeLocal(box, screenToPlane(cam, size, sx, sy, shape.y + shape.height));
   // Where the dragged handle should be, in the box's frame.
   const tx = l.x - grab.x;
   const tz = l.z - grab.z;
@@ -355,8 +366,9 @@ function scaleUpdate(
   // The fixed side stays put, so the center moves by half the change (not at all from the center).
   const shift = (sign: Sign, next: number, original: number) => (mods.alt || sign === 0 ? 0 : (sign * (next - original)) / 2);
   const c = fromShapeLocal(box, { x: shift(hx, width, box.width), z: shift(hz, depth, box.depth) });
+  const to = isFootprinted(shape) ? { x: round2(c.x), z: round2(c.z), width, depth } : { x: c.x, z: c.z, width, depth };
   return {
-    patches: { [box.id]: { x: round2(c.x), z: round2(c.z), width, depth } },
+    patches: { [shape.id]: resizeShape(shape, box, to) },
     label: `${width.toFixed(2)} × ${depth.toFixed(2)} m`,
   };
 }
@@ -366,7 +378,7 @@ export function effectiveChanges(origin: Shape[], patches: Record<string, ShapeP
   return origin.flatMap((box) => {
     const patch = patches[box.id];
     if (!patch) return [];
-    const changed = (Object.keys(patch) as (keyof ShapePatch)[]).some((k) => patch[k] !== (box as ShapePatch)[k]);
+    const changed = (Object.keys(patch) as (keyof ShapePatch)[]).some((k) => !sameValue(patch[k], (box as ShapePatch)[k]));
     return changed ? [{ id: box.id, ...patch }] : [];
   });
 }
@@ -374,9 +386,10 @@ export function effectiveChanges(origin: Shape[], patches: Record<string, ShapeP
 /** The drags that `Alt` turns into a copy: the move drags (body, x/z arrows, y arrow). Scale keeps `Alt` = from the center. */
 export const canCopy = (part: DragPart) => part === "body" || part === "x" || part === "y" || part === "z";
 
-/** How far a move drag has taken the boxes (world axes, 2 decimals), from the first box's patch. */
+/** How far a move drag has taken the shapes (world axes, 2 decimals), from the first shape's patch. */
 export function dragOffset(origin: Shape[], patches: Record<string, ShapePatch>): { dx: number; dy: number; dz: number } {
-  const box = origin[0];
-  const p = patches[box.id] ?? {};
-  return { dx: round2((p.x ?? box.x) - box.x), dy: round2((p.y ?? box.y) - box.y), dz: round2((p.z ?? box.z) - box.z) };
+  const shape = origin[0];
+  const a = anchorOf(shape);
+  const b = anchorOf({ ...shape, ...patches[shape.id] } as Shape);
+  return { dx: round2(b.x - a.x), dy: round2(b.y - a.y), dz: round2(b.z - a.z) };
 }

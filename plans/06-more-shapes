@@ -389,3 +389,91 @@ Adopted as recommended (say if any should change):
     - a WS `add_shapes` drew `cylinder_4`;
     - after a restart, the history reloaded, undo removed `cylinder_4`, and the next cylinder was `cylinder_5` (no ID reused);
   - Orlando's browser check passed.
+
+### 06.3 — Free-form and the Pen tool (done; committed at Orlando's request, full browser checklist not confirmed yet)
+
+- **Types:**
+  - `Freeform` is `{ kind, y, height, color, points: FootPoint[] }`, with no x, z, width, depth or rotation. A `FootPoint` is `{ x, z, in?, out? }`, and its handles are offsets from the point. `Shape = Box | Cylinder | Freeform`.
+  - Limits: `MIN_POINTS` 3, `MAX_POINTS` 500, and `CURVE_SEGMENTS` 16 per curved edge.
+  - `ShapeInputSchema` is now a discriminated union on `type`: box and cylinder (with `type` optional, so a missing one still means box), or `freeform`. Zod reports only the matching branch's issues, so the agent's errors stay plain (`expected array … at shapes[0].points`). The agent sees a `oneOf` with 2 branches (the schema is 3.8 kB).
+  - `update_nodes` takes `points` (the whole outline). The `nextId` counters gain `freeform`.
+- **The dependency:** `@countertype/clipper2-ts` (Clipper2 in TypeScript, BSL-1.0, no dependencies). `clipper2-js` was tried first and dropped: it pulls in `@angular/core` and `@angular/common`, which have open advisories.
+- **`geometry.ts`:**
+  - Outlines: `sampleEdge` and `sampleOutline` (curves sampled, remembering which point's edge each segment came from). `localFootprint`, `footprint` and `footprintBounds` cover free-forms, whose frame is the world's.
+  - Offsets: `offsetRings` is the mitered offset for convex shapes and Clipper2's `inflatePathsD` (miter limit 2, to the millimeter) for free-forms. `roomWalls(shape)` gives `outer`, `inner` and `walls` rings (the wall region, via Clipper's `differenceD`), cached per shape object. `ringsInWorld` and `pointInRings` (even-odd) go with them.
+  - The per-type cases: `moveShape`, `rotateShape`, `mirrorShape` and `resizeShape` change a free-form's points and handles. A mirror keeps the point order. `roundPoints` drops handles that round to nothing.
+  - For the gizmo: `handleFrame` (a box's or cylinder's own rectangle, or a free-form's world-axis bounds), `rotationOf`, `anchorOf` (what `dragOffset` measures), and `sameValue` (point lists compare by content, so an unchanged outline records no step).
+  - The checks: `outlineProblem` (fewer than 3 distinct points, two in the same place, no area, or crossing edges, naming the points' edges) and `pathCrosses` (an open path while drawing, or a closed one), sharing `firstCrossing` with a bounding-box reject.
+- **Picking and the marquee** run on rings: `prismCrossings` takes a region of rings, rooms use `roomWalls`' `outer` and `inner`, and the marquee projects every ring's faces. A concave outline's inside corner is neither picked nor marquee-hit (tested).
+- **Rendering:**
+  - `extrude` takes rings (holes go into the solid ring around them). Walls use `roomWalls(...).walls`.
+  - `toCreasedNormals` (30°) replaces 06.2's `smoothSides`: curved walls and smooth cylinders light as round, while box and hexagon corners stay sharp.
+  - A free-form's UV offset is 0, so its tiles line up with the world grid.
+- **The gizmo:** the scale handles, their cursor and the rotate handle sit on the handle frame. Scaling a free-form stretches its points with the frame (`resizeShape`). A free-form's rotation label is the change (`+15°`), because it has no angle.
+- **The Pen (`P`):**
+  - A press adds a snapped corner, a drag before release pulls out mirrored handles (not snapped), and a second press in the same place adds nothing.
+  - Pressing within 10 px of the first point (with 3 or more points), or `Enter`, closes it. `Backspace` / `Delete` removes the last point, and `Esc` drops the outline. These keys don't reach the app while an outline is under way.
+  - A closing outline that isn't valid is refused, with `Can't close: …` in the status bar (the new `onNotice`).
+  - The outline survives the hand tool, so Space-panning while drawing keeps it. Any other tool drops it.
+  - The preview has the edges (curves sampled), point squares, handle stems and dots, a big first point when a click would close, and a draft of the shape once it could close. It turns red while the path crosses itself. The label reads `3 points · Enter to close` or `click to close`.
+  - The contextual bar says `next free-form` (kind, color).
+- **App:**
+  - The selection info reads `cave (freeform_1) · 7 points · 12.3 × 8 × 3 m · y 0`.
+  - The outliner shows squircle icons (dashed for a room).
+- **MCP:**
+  - The instructions describe free-forms: absolute world points, handles as offsets, `in = −out` for a smooth point, 0.5523 × r for a circle, no crossing, `points` replaces the outline, and move / rotate / mirror bake into the points.
+  - `draw_shapes`, `update_nodes`, `rotate_nodes` and `mirror_nodes` mention them.
+  - The server version stays 0.0.7. **Restart the server and reconnect with `/mcp`.**
+- **Fixed after Orlando's first try:** the Pen's second click blanked the view. The cursor sat exactly on the point just placed, so the preview's 3-point path had no area. The draft only checked for crossings, so it drew a room from it, and `extrude` read a wall ring that the empty offset never made, which crashed the canvas. Now the draft needs a fully valid outline (`outlineProblem`), and `ShapeMesh` draws nothing for an outline with no area or no wall rings (a test pins down the empty rings).
+- **Noticed, not changed:** `rotate_nodes` (and the rotate handle) turn around the center of the bounds, and a free-form's bounds move as it turns. So +30° then −30° doesn't land where it started (0.35 m off for a crescent). Groups of boxes already behave like this. A pivot that doesn't move (the outline's centroid, or bounds that turn with the selection) would fix both.
+- **Checks:**
+  - typecheck;
+  - 197 tests (new: "free-forms" in `geometry.test.ts`, "scene store free-forms" in `scene.test.ts`, free-form picking, the concave marquee case);
+  - the editor bundles;
+  - a scripted run on `:5171`:
+    - the agent drew a round room, a curved crescent pool and a box in one `draw_shapes` call;
+    - a free-form without points and a box without depth got plain errors, a crossing outline was refused naming its edges, and `x` on a free-form was refused;
+    - rotate, mirror twice and rotate back worked (see above for the pivot);
+    - a group of all three was copied 30 m east, with its free-form's points moved;
+    - a WS `add_shapes` drew `freeform_3`, and undo removed it. The counters were saved.
+
+### Notes for the next session (written 2026-09-26, end of day)
+
+**Where things stand:**
+- 06.1, 06.2 and 06.3 are committed, one commit each.
+- 06.3's browser checklist wasn't confirmed as a whole. Orlando hit the Pen's second-click crash, which is fixed (see 06.3). Start by asking whether the rest of the checklist passed, and fix anything he found before building on it:
+  - the Pen: corners, curves, closing, Backspace, Esc, Space-panning;
+  - star, crescent and V walls;
+  - the gizmo on a free-form;
+  - picking and the marquee in an L's inside corner;
+  - copy and paste;
+  - the agent's shrine.
+- **Next is 06.4, point editing and convert (§8).** Orlando asked "can I edit free-form shapes after creating them?", and this is the answer he's waiting for.
+
+**06.4, how I'd build it:**
+- **Entering the mode:** today a double-click in the Select tool enters a group (`onDoubleClick` in `Viewport.tsx`). Make a double-click on a free-form (the node itself, once it's selected at its level) enter point editing instead. Keep it as Viewport state next to `context`, or lift it to App like `context` if the contextual bar needs it (it does: `editing freeform_1`).
+- **Hit-testing points and handles** is like the gizmo's `hitGizmo` (screen distance ≤ `HANDLE_HIT_PX`). Put the pure math in a new `src/web/points.ts` with tests, as `gizmo.ts` and `marquee.ts` do.
+- **Dragging a point** reuses `groundAt` (snap, `Cmd/Ctrl` for free). Dragging a handle mirrors the opposite one, and `Alt` breaks the mirror. Preview locally like the gizmo's `pending` (patch `points`), then send one `update_nodes { points }` on release. The store already validates with `outlineProblem` and records `Reshape freeform_1`, so show red and don't send when `outlineProblem` fails.
+- **Inserting a point:** click an edge to split its bezier at t (de Casteljau). New in `geometry.ts`, and it needs the nearest t on the sampled edge (`sampleEdge`) to the cursor.
+- **Deleting** keeps at least 3 points. A double-click on a point toggles corner ↔ smooth: smooth gets handles along its neighbors' direction (about a third of the shorter neighbor edge).
+- **Convert** (`convert_nodes { ids }` on WS, and `update_nodes { type: "freeform" }` for the agent):
+  - a box → its 4 world corners (`footprint`);
+  - a sided cylinder → its corners;
+  - a smooth cylinder → 4 smooth points on the ellipse's axes, with handles 0.5523 × each radius along the tangent, turned by the rotation.
+  - It's a new ID (`freeform_N`) at the same place in the node list, keeping name, parent, kind, color, y and height. One step: a `remove` plus an `add` with `indices`. It's labeled `Convert box_3 to freeform_4`, and the editor selects the new node (App's `pendingSelect`).
+  - `NodeUpdateSchema` doesn't have `type` yet; add it as `z.literal("freeform").optional()`.
+- **Undo** already works for all of this, because every change is an `update` or `add` / `remove` op.
+
+**Open questions to raise with Orlando:**
+- **The rotate pivot.** Rotating turns around the center of the bounds, and a free-form's (or a group's) bounds move as it turns, so +30° then −30° doesn't land where it started (0.35 m off for a crescent). The options: a pivot that doesn't move (the outline's area centroid, or bounds that turn with the selection, as in Figma), or leave it.
+- **An error boundary around the `<Canvas>`,** so a render bug shows a message instead of blanking the editor. I offered it; he hasn't answered.
+
+**Things that bit me (save the next agent the time):**
+- **zsh doesn't split `$VAR` into words:** `perl -pi -e '...' $FILES` ran on one file named with newlines. Pipe through `xargs`.
+- **A blanket `\bBox\b` → `Shape` rename also rewrites comments** ("Box tool" became "Shape tool"). After a rename, grep the comments.
+- **`clipper2-js` pulls in Angular.** Use `@countertype/clipper2-ts` (CommonJS, fine under Vite and tsx). Its `PathD` points are `{ x, y }`, so ours are mapped `z ↔ y` in `geometry.ts` (`toPath` / `fromPath`).
+- **`toCreasedNormals`** (`three/examples/jsm/utils/BufferGeometryUtils.js`) edits non-indexed geometry in place and keeps UVs. Apply it after `applyBoxUVs`, which reads the flat normals.
+- **The Pen's preview can hold degenerate outlines** (duplicate points, no area). Anything drawn from a preview has to tolerate them (`ShapeMesh` returns no mesh). Stored shapes never are degenerate, because the store validates.
+- **Scripted checks:** run `PORT=5171 DATA_DIR=<scratchpad>/data npm run dev` in the background. Talk MCP with `fetch` POSTs to `/mcp` (`initialize`, `tools/list`, `tools/call`; the reply is SSE, so read the `data:` line), and WS with `ws` imported from `node_modules/ws/wrapper.mjs` by absolute path when the script lives outside the repo. Stop that server by PID (`lsof -tiTCP:5171 -sTCP:LISTEN`), never by pattern: `:5170` is Orlando's.
+- **Bundle check:** run `npx vite build --outDir <scratchpad>/build` from `src/web` (the Vite root; there's no vite config file). The chunk-size warning is expected.
+- **Browser testing is Orlando's.** Hand over a checklist, and don't commit an increment until he says it passed.

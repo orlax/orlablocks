@@ -1,7 +1,13 @@
 import { useEffect, useState, type DragEvent, type KeyboardEvent, type MouseEvent } from "react";
-import { ChevronDown, ChevronRight, ChevronsDownUp, Circle, CircleDashed, Folder, Square, SquareDashed } from "lucide-react";
+import { ChevronDown, ChevronRight, ChevronsDownUp, Circle, CircleDashed, Folder, Square, SquareDashed, Squircle, SquircleDashed } from "lucide-react";
 import type { SceneNode } from "../shared/scene.types";
 import { ancestry, childrenOf, isGroup, subtreeIds } from "../shared/tree";
+
+const SHAPE_ICONS = {
+  box: { room: SquareDashed, volume: Square },
+  cylinder: { room: CircleDashed, volume: Circle },
+  freeform: { room: SquircleDashed, volume: Squircle },
+} as const;
 
 type Row = { node: SceneNode; depth: number; hasChildren: boolean };
 type Drop = { id: string | null; where: "before" | "after" | "into" | "end" };
@@ -151,16 +157,8 @@ export function Outliner({
           {rows.length === 0 && <div className="outliner-empty">No boxes yet</div>}
           {rows.map((row) => {
             const { node, depth, hasChildren } = row;
-            // Rooms are dashed (hollow), volumes solid; circles for cylinders.
-            const Icon = isGroup(node)
-              ? Folder
-              : node.type === "cylinder"
-                ? node.kind === "room"
-                  ? CircleDashed
-                  : Circle
-                : node.kind === "room"
-                  ? SquareDashed
-                  : Square;
+            // Rooms are dashed (hollow), volumes solid: squares for boxes, circles for cylinders, squircles for free-forms.
+            const Icon = isGroup(node) ? Folder : SHAPE_ICONS[node.type][node.kind];
             const classes = ["outliner-row"];
             if (selection.includes(node.id)) classes.push("selected");
             if (drop?.id === node.id) classes.push(`drop-${drop.where}`);

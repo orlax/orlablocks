@@ -1,6 +1,6 @@
 import { WALL_THICKNESS, type Shape } from "../shared/scene.types";
 import { worldToScreen, type CameraState, type Size } from "./camera";
-import { footprint, offsetPolygon } from "../shared/geometry";
+import { footprint, ringsInWorld, roomWalls } from "../shared/geometry";
 
 /**
  * The marquee: which shapes a screen rectangle touches. Exact: a shape is a vertical prism over its footprint, so
@@ -20,26 +20,30 @@ export const rectFrom = (a: ScreenPoint, b: ScreenPoint): ScreenRect => ({
 });
 
 /**
- * The shape's faces on screen (room walls included): its bottom and top outlines, then one quad per side. Null if
- * any corner is behind the camera.
+ * The shape's faces on screen (room walls included): for each ring of its outline, the bottom and top, then one
+ * quad per side. A concave outline's inside isn't a face, so a rect in a crescent's hollow misses it. Null if any
+ * corner is behind the camera.
  */
-export function shapeFaces(cam: CameraState, size: Size, box: Shape): ScreenPoint[][] | null {
-  const outline = box.kind === "room" ? offsetPolygon(footprint(box), WALL_THICKNESS / 2)! : footprint(box);
-  const ring = (y: number) => {
-    const points: ScreenPoint[] = [];
-    for (const p of outline) {
-      const s = worldToScreen(cam, size, { x: p.x, y, z: p.z });
-      if (!s) return null;
-      points.push(s);
-    }
-    return points;
-  };
-  const bottom = ring(box.y);
-  const top = ring(box.y + box.height);
-  if (!bottom || !top) return null;
-  const n = outline.length;
-  const sides = outline.map((_, i) => [bottom[i], bottom[(i + 1) % n], top[(i + 1) % n], top[i]]);
-  return [bottom, top, ...sides];
+export function shapeFaces(cam: CameraState, size: Size, shape: Shape): ScreenPoint[][] | null {
+  const outlines = shape.kind === "room" ? ringsInWorld(shape, roomWalls(shape, WALL_THICKNESS / 2).outer) : [footprint(shape)];
+  const faces: ScreenPoint[][] = [];
+  for (const outline of outlines) {
+    const ring = (y: number) => {
+      const points: ScreenPoint[] = [];
+      for (const p of outline) {
+        const s = worldToScreen(cam, size, { x: p.x, y, z: p.z });
+        if (!s) return null;
+        points.push(s);
+      }
+      return points;
+    };
+    const bottom = ring(shape.y);
+    const top = ring(shape.y + shape.height);
+    if (!bottom || !top) return null;
+    const n = outline.length;
+    faces.push(bottom, top, ...outline.map((_, i) => [bottom[i], bottom[(i + 1) % n], top[(i + 1) % n], top[i]]));
+  }
+  return faces;
 }
 
 /** Even-odd point-in-polygon on screen. */

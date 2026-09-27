@@ -1,6 +1,23 @@
 import { describe, expect, it } from "vitest";
-import { boundsOf, footprint, footprintBounds, mirrorAcross, moveShape, offsetPolygon, pointInPolygon, signedArea2 } from "./geometry";
-import type { Box, Cylinder } from "./scene.types";
+import {
+  boundsOf,
+  footprint,
+  footprintBounds,
+  handleFrame,
+  mirrorAcross,
+  moveShape,
+  offsetPolygon,
+  outlineProblem,
+  pathCrosses,
+  pointInPolygon,
+  pointInRings,
+  resizeShape,
+  roomWalls,
+  rotateShape,
+  sampleEdge,
+  signedArea2,
+} from "./geometry";
+import { CURVE_SEGMENTS, type Box, type Cylinder, type FootPoint, type Freeform } from "./scene.types";
 
 const box = (patch: Partial<Box>): Box => ({
   id: "box_1",
@@ -159,5 +176,131 @@ describe("cylinders", () => {
       const corners = footprint(out);
       for (const q of reflected) expect(Math.min(...corners.map((c) => Math.hypot(c.x - q.x, c.z - q.z)))).toBeLessThan(0.01);
     }
+  });
+});
+
+describe("free-forms", () => {
+  const freeform = (points: FootPoint[], patch: Partial<Freeform> = {}): Freeform => ({
+    id: "freeform_1",
+    type: "freeform",
+    kind: "volume",
+    y: 0,
+    height: 1,
+    color: "almost-white",
+    points,
+    createdBy: "human",
+    ...patch,
+  });
+  const square: FootPoint[] = [
+    { x: 0, z: 0 },
+    { x: 4, z: 0 },
+    { x: 4, z: 4 },
+    { x: 0, z: 4 },
+  ];
+
+  it("samples straight edges as their start point, curved ones along the curve", () => {
+    expect(sampleEdge(square[0], square[1])).toEqual([{ x: 0, z: 0 }]);
+    const curved = sampleEdge({ x: 0, z: 0, out: { x: 0, z: -2 } }, { x: 4, z: 0 });
+    expect(curved).toHaveLength(CURVE_SEGMENTS);
+    // The handle pulls the curve toward -z.
+    expect(Math.min(...curved.map((p) => p.z))).toBeLessThan(-0.5);
+  });
+
+  it("bounds include a curve that bulges past the points", () => {
+    const b = footprintBounds(freeform([{ x: 0, z: 0, out: { x: 0, z: -4 } }, ...square.slice(1)]));
+    expect(b.minZ).toBeLessThan(-1);
+    expect(handleFrame(freeform(square))).toEqual({ x: 2, z: 2, width: 4, depth: 4, rotation: 0 });
+  });
+
+  it("finds what's wrong with an outline", () => {
+    expect(outlineProblem(square)).toBeNull();
+    // A lopsided bowtie (a symmetric one has no net area): the edges from point 1 and from point 3 cross.
+    expect(outlineProblem([square[0], square[1], square[3], { x: 5, z: 5 }])).toMatch(/crosses itself \(the edges from point 1 and from point 3\)/);
+    expect(outlineProblem([square[0], square[1], square[1], square[2]])).toMatch(/points 1 and 2 are in the same place/);
+    expect(outlineProblem([square[0], square[1], square[0]])).toMatch(/at least 3 distinct points/);
+    expect(outlineProblem([square[0], { x: 2, z: 0 }, square[1]])).toMatch(/no area/);
+    // A handle long enough to swing the first edge across the far side.
+    expect(outlineProblem([{ x: 0, z: 0, out: { x: 0, z: 12 } }, ...square.slice(1)])).toMatch(/crosses itself/);
+  });
+
+  it("tells whether a path being drawn crosses itself, open or closed", () => {
+    // The third edge comes back down across the first.
+    const back = [square[0], square[1], square[2], { x: 2, z: -2 }];
+    expect(pathCrosses(back, false)).toBe(true);
+    expect(pathCrosses(square, false)).toBe(false);
+    // Open, a U doesn't cross; closed, its last edge would only join it.
+    expect(pathCrosses(square.slice(0, 3), true)).toBe(false);
+  });
+
+  it("moves points (handles unchanged), and patches nothing for no move", () => {
+    const f = freeform([{ x: 0, z: 0, out: { x: 1, z: 0 } }, ...square.slice(1)]);
+    expect(moveShape(f, 1, 0, 2).points).toEqual([
+      { x: 1, z: 2, out: { x: 1, z: 0 } },
+      { x: 5, z: 2 },
+      { x: 5, z: 6 },
+      { x: 1, z: 6 },
+    ]);
+    expect(moveShape(f, 0, 0.5, 0)).toEqual({ y: 0.5 });
+    expect(moveShape(f, 0, 0, 0)).toEqual({});
+  });
+
+  it("rotates points around the pivot and turns their handles", () => {
+    // 90° counterclockwise seen from above takes +x to -z.
+    const { points } = rotateShape(freeform([{ x: 1, z: 0, out: { x: 1, z: 0 } }, { x: 0, z: 1 }, { x: -1, z: 0 }]), { x: 0, z: 0 }, 90);
+    expect(points).toEqual([
+      { x: 0, z: -1, out: { x: 0, z: -1 } },
+      { x: 1, z: 0 },
+      { x: 0, z: 1 },
+    ]);
+  });
+
+  it("mirrors as a true mirror image, keeping the point order, and twice restores it exactly", () => {
+    const f = freeform([
+      { x: 0.25, z: 0 },
+      { x: 3.1, z: 0.4, out: { x: 1, z: 1 } },
+      { x: 2.3, z: 3.7, in: { x: 0.5, z: -0.2 } },
+    ]);
+    for (const axis of ["x", "z"] as const) {
+      const once = { ...f, ...mirrorAcross([f], axis)[f.id] } as Freeform;
+      const b = boundsOf([f]);
+      const sum = axis === "x" ? b.minX + b.maxX : b.minZ + b.maxZ;
+      const reflected = footprint(f).map((q) => (axis === "x" ? { x: sum - q.x, z: q.z } : { x: q.x, z: sum - q.z }));
+      footprint(once).forEach((q, i) => expect(Math.hypot(q.x - reflected[i].x, q.z - reflected[i].z)).toBeLessThan(0.01));
+      const twice = { ...once, ...mirrorAcross([once], axis)[f.id] };
+      expect(twice).toEqual(f);
+    }
+  });
+
+  it("stretches points and handles with its frame when resized", () => {
+    const f = freeform([{ x: 0, z: 0, out: { x: 2, z: 0 } }, ...square.slice(1)]);
+    const { points } = resizeShape(f, handleFrame(f), { x: 4, z: 2, width: 8, depth: 4 });
+    expect(points![0]).toEqual({ x: 0, z: 0, out: { x: 4, z: 0 } });
+    expect(points![2]).toEqual({ x: 8, z: 4 });
+  });
+
+  it("offsets concave room walls robustly: an L's walls hold its inside, and a thin sliver has none", () => {
+    const l = freeform(
+      [
+        { x: 0, z: 0 },
+        { x: 6, z: 0 },
+        { x: 6, z: 2 },
+        { x: 2, z: 2 },
+        { x: 2, z: 6 },
+        { x: 0, z: 6 },
+      ],
+      { kind: "room" },
+    );
+    const { outer, inner, walls } = roomWalls(l, 0.1);
+    expect(pointInRings(outer, { x: 6.05, z: 1 })).toBe(true);
+    expect(pointInRings(inner, { x: 1, z: 4 })).toBe(true);
+    expect(pointInRings(walls, { x: 1, z: 4 })).toBe(false);
+    expect(pointInRings(walls, { x: 1.95, z: 4 })).toBe(true);
+    // The inside corner of the L is outside everything.
+    expect(pointInRings(outer, { x: 4, z: 4 })).toBe(false);
+    const sliver = freeform([{ x: 0, z: 0 }, { x: 5, z: 0 }, { x: 5, z: 0.15 }], { kind: "room" });
+    expect(roomWalls(sliver, 0.1).inner).toEqual([]);
+    // No area at all (the Pen's preview with the cursor on the point just placed): no rings, so nothing to draw.
+    const flat = freeform([{ x: 0, z: 0 }, { x: 5, z: 0 }, { x: 5, z: 0 }], { kind: "room" });
+    expect(roomWalls(flat, 0.1).walls).toEqual([]);
   });
 });

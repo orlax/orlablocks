@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type MouseEvent, type PointerEvent, type RefObject } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent, type RefObject } from "react";
 import { Canvas, invalidate, useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
 import {
@@ -9,11 +9,12 @@ import {
   type ShapeKind,
   type ShapePatch,
   type NodeUpdate,
+  type FootPoint,
   type SceneNode,
   type ShapeInput,
   type View,
 } from "../shared/scene.types";
-import { boundsOf } from "../shared/geometry";
+import { boundsOf, outlineProblem, pathCrosses, roundPoints, sampleEdge, type Point } from "../shared/geometry";
 import { shapesUnder, isShape, selectableAt } from "../shared/tree";
 import { ShapeMesh } from "./ShapeMesh";
 import {
@@ -27,6 +28,7 @@ import {
   screenRay,
   screenToGround,
   viewOf,
+  worldToScreen,
   YAW_SPEED_DEG,
   zoomBy,
   type CameraState,
@@ -59,11 +61,20 @@ const BACKGROUND = "#f7f6f2";
 const VIEW_REPORT_MS = 100;
 /** A pointer-up within this many px of its pointer-down is a click, not a drag. */
 const CLICK_PX = 4;
+/** With the Pen, a click this close (px) to the first point closes the outline. */
+const CLOSE_PX = 10;
+
+/**
+ * The Pen's outline in progress: the points placed so far (world x/z, unrounded), where the cursor is (the next
+ * point, snapped like one), and the point whose handle a press-and-drag is pulling out.
+ */
+type Pen = { points: FootPoint[]; cursor: Point | null; closing: boolean; drag: { pointerId: number; index: number; sx: number; sy: number } | null };
+const NO_PEN: Pen = { points: [], cursor: null, closing: false, drag: null };
 
 type YawKey = "left" | "right";
 const YAW_KEYS: Record<string, YawKey> = { a: "left", arrowleft: "left", d: "right", arrowright: "right" };
 
-export type Tool = "select" | "hand" | "box" | "cylinder";
+export type Tool = "select" | "hand" | "box" | "cylinder" | "pen";
 /** The tools that drag a footprint on the ground, and the shape type each draws. */
 const DRAWS: Partial<Record<Tool, "box" | "cylinder">> = { box: "box", cylinder: "cylinder" };
 
@@ -132,6 +143,8 @@ type Props = {
   onDrawShape: (shape: ShapeInput) => void;
   /** One gizmo drag: one `update_nodes`, so one undo step. */
   onUpdate: (changes: NodeUpdate[]) => void;
+  /** A short message for the status bar (the Pen's "the outline crosses itself"). */
+  onNotice: (message: string) => void;
   /** One Alt-drag: copies the nodes by the drag's offset, one undo step. */
   onDuplicate: (copy: { ids: string[]; dx: number; dy: number; dz: number }) => void;
   onCursor: (point: GroundPoint | null) => void;
@@ -158,6 +171,7 @@ export function Viewport({
   onDrawShape,
   onUpdate,
   onDuplicate,
+  onNotice,
   onCursor,
   onViewChange,
   cameraRestore,
@@ -177,6 +191,10 @@ export function Viewport({
   const [panning, setPanning] = useState(false);
   const [draft, setDraft] = useState<(Footprint & Draft & { sx: number; sy: number }) | null>(null);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
+  const [pen, setPen] = useState<Pen>(NO_PEN);
+  // The key listener is installed once; it reads the Pen from here.
+  const penRef = useRef(pen);
+  penRef.current = pen;
   const [hotPart, setHotPart] = useState<GizmoPart | null>(null);
   const [drag, setDrag] = useState<Drag | null>(null);
   // After releasing a drag, keep showing its result until the server's scene arrives (no flicker back).
@@ -263,11 +281,14 @@ export function Viewport({
   };
 
   // Switching tools (or holding Space) mid-drag drops the unfinished footprint, gizmo drag or marquee (keeping
-  // whatever the marquee has selected so far).
+  // whatever the marquee has selected so far). The Pen's outline takes many clicks, so it survives the hand (Space
+  // to pan while drawing) and is dropped by any other tool.
   useEffect(() => {
     cancelDrawing();
     setDrag(null);
     setMarquee(null);
+    if (tool === "hand" || tool === "pen") setPen((p) => ({ ...p, cursor: null, closing: false, drag: null }));
+    else setPen(NO_PEN);
   }, [tool]);
 
   // A new scene from the server: the released drag is now real, and a drag whose boxes vanished (undo, Clear,
@@ -299,6 +320,65 @@ export function Viewport({
     const size = { width: wrap.current!.clientWidth, height: wrap.current!.clientHeight };
     const { patches, label } = dragUpdate(d, cam.current, size, sx, sy, mods, others);
     return { ...d, active: true, copy, patches, label, sx, sy };
+  };
+
+  /** A ground point's position on screen. */
+  const onScreen = (p: Point) =>
+    worldToScreen(cam.current, { width: wrap.current!.clientWidth, height: wrap.current!.clientHeight }, { x: p.x, y: 0, z: p.z });
+
+  /**
+   * Draws the Pen's outline as a free-form (rounded to 2 decimals), unless it isn't valid: then the status bar says
+   * why and the outline stays, to fix with Backspace.
+   */
+  const finishPen = (points: FootPoint[]) => {
+    const rounded = roundPoints(points);
+    const problem = outlineProblem(rounded);
+    if (problem) {
+      onNotice(`Can't close: ${problem}`);
+      return;
+    }
+    onDrawShape({ type: "freeform", kind: nextKind, points: rounded });
+    setPen(NO_PEN);
+  };
+  const finishPenRef = useRef(finishPen);
+  finishPenRef.current = finishPen;
+
+  // Pen: a press adds a corner at the (snapped) ground point, and dragging before release pulls out its handles
+  // (a smooth point). Pressing the first point (with 3 or more) closes the outline.
+  const penDown = (e: PointerEvent) => {
+    const { sx, sy } = local(e);
+    const { points } = pen;
+    const first = points[0] && onScreen(points[0]);
+    if (points.length >= 3 && first && Math.hypot(first.sx - sx, first.sy - sy) <= CLOSE_PX) {
+      finishPen(points);
+      return;
+    }
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const { point } = groundAt(e);
+    const last = points.at(-1);
+    // A second press in the same place (a double-click) adds nothing, but can still pull out the handles.
+    const same = last && last.x === point.x && last.z === point.z;
+    const next = same ? points : [...points, { x: point.x, z: point.z }];
+    setPen({ ...pen, points: next, drag: { pointerId: e.pointerId, index: next.length - 1, sx, sy } });
+  };
+
+  /** The Pen as the cursor moves: pulling out the pressed point's handles, or showing where the next point goes. */
+  const penMove = (e: PointerEvent) => {
+    const { sx, sy, size } = local(e);
+    const d = pen.drag;
+    if (d?.pointerId === e.pointerId) {
+      if (Math.hypot(sx - d.sx, sy - d.sy) < CLICK_PX) return;
+      // Handles aren't snapped: the out handle follows the cursor and the in handle mirrors it.
+      const g = screenToGround(cam.current, size, sx, sy);
+      const p = pen.points[d.index];
+      const out = { x: g.x - p.x, z: g.z - p.z };
+      const points = pen.points.map((q, i) => (i === d.index ? { x: q.x, z: q.z, in: { x: -out.x, z: -out.z }, out } : q));
+      setPen({ ...pen, points, cursor: null });
+      return;
+    }
+    const first = pen.points[0] && onScreen(pen.points[0]);
+    const closing = pen.points.length >= 3 && !!first && Math.hypot(first.sx - sx, first.sy - sy) <= CLOSE_PX;
+    setPen({ ...pen, cursor: closing ? { ...pen.points[0] } : groundAt(e).point, closing });
   };
 
   // Select tool: a gizmo handle drags it. Pressing a box selects it (unless it's already selected) and dragging
@@ -339,8 +419,12 @@ export function Viewport({
       setMarquee({ pointerId: e.pointerId, start, end: start, additive: e.shiftKey, base: selection, active: false });
       return;
     }
+    if (e.button === 0 && tool === "pen") {
+      penDown(e);
+      return;
+    }
     const draws = DRAWS[tool];
-    const panButton = e.button === 1 || (e.button === 0 && !draws);
+    const panButton = e.button === 1 || (e.button === 0 && !draws && tool !== "pen");
     const drawButton = e.button === 0 && !!draws;
     if (!panButton && !drawButton) return;
     e.currentTarget.setPointerCapture(e.pointerId);
@@ -387,6 +471,10 @@ export function Viewport({
       invalidate();
       return;
     }
+    if (tool === "pen") {
+      penMove(e);
+      return;
+    }
     const d = drawing.current;
     if (d?.pointerId === e.pointerId) {
       const { point } = groundAt(e);
@@ -400,6 +488,10 @@ export function Viewport({
   };
 
   const onPointerUp = (e: PointerEvent) => {
+    if (pen.drag?.pointerId === e.pointerId) {
+      setPen({ ...pen, drag: null });
+      return;
+    }
     if (drag?.pointerId === e.pointerId) {
       // `Alt` counts at release: pressing or releasing it mid-drag switches between move and copy.
       if (drag.active && e.altKey && canCopy(drag.part)) {
@@ -466,6 +558,23 @@ export function Viewport({
 
   // Esc mid-drag cancels the drag, the draft or the marquee (restoring the selection it started from) and nothing
   // else: this runs in the capture phase, before the app's Esc (deselect), and stops it.
+  // With the Pen's outline under way, Enter closes it, Backspace (or Delete) removes the last point, and Esc drops
+  // it; none of them reach the app (which would deselect or delete the selection).
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const { points } = penRef.current;
+      if (typingInField(e) || points.length === 0) return;
+      if (e.key !== "Enter" && e.key !== "Backspace" && e.key !== "Delete" && e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      if (e.key === "Escape") setPen(NO_PEN);
+      else if (e.key === "Enter") finishPenRef.current(points);
+      else setPen({ ...penRef.current, points: points.slice(0, -1), drag: null });
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, []);
+
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       const m = marqueeRef.current;
@@ -551,7 +660,7 @@ export function Viewport({
     if (activePart === "y" || activePart === "height") return "resizing";
     if (activePart) return "moving";
     if (panning) return "panning";
-    return DRAWS[tool] ? "drawing" : tool === "select" ? "selecting" : "";
+    return DRAWS[tool] || tool === "pen" ? "drawing" : tool === "select" ? "selecting" : "";
   })();
 
   return (
@@ -592,6 +701,7 @@ export function Viewport({
           selected={new Set(ghosts.length > 0 ? ghosts.map((b) => b.id) : shapesUnder(nodes, selection).map((b) => b.id))}
           hovered={new Set(shapesUnder(nodes, [hoveredId, outsideHover].filter((id) => id !== null)).map((b) => b.id))}
         />
+        {pen.points.length > 0 && <PenPreview pen={pen} kind={nextKind} />}
         {gizmo && (
           <TransformGizmo
             anchor={gizmo.anchor}
@@ -606,6 +716,9 @@ export function Viewport({
         <div className="draft-label" style={{ left: draft.sx + 14, top: draft.sy + 14 }}>
           {round2(draft.width)} × {round2(draft.depth)} m
         </div>
+      )}
+      {pen.points.length > 0 && pen.cursor && (
+        <PenLabel pen={pen} at={onScreen(pen.cursor)} />
       )}
       {marquee?.active && (
         <div
@@ -669,6 +782,113 @@ function Boxes({
           }}
           draft
         />
+      )}
+    </>
+  );
+}
+
+/** The Pen's outline in progress: blue, or red once it crosses itself. */
+const PEN_COLOR = "#3d7be0";
+const PEN_BAD_COLOR = "#d0473d";
+/** Just above the ground, so the preview isn't hidden in it. */
+const PEN_Y = 0.02;
+
+/** The path the Pen would draw now: the placed points, then the cursor as the next one (unless it's closing). */
+const penPath = (pen: Pen) => (pen.cursor && !pen.closing ? [...pen.points, pen.cursor] : pen.points);
+
+/** Next to the cursor: how many points, and what Enter or a click on the first point does. */
+function PenLabel({ pen, at }: { pen: Pen; at: { sx: number; sy: number } | null }) {
+  if (!at) return null;
+  const n = pen.points.length;
+  const text = pen.closing ? "click to close" : n >= 3 ? `${n} points · Enter to close` : `${n} point${n === 1 ? "" : "s"}`;
+  return (
+    <div className="draft-label" style={{ left: at.sx + 14, top: at.sy + 14 }}>
+      {text}
+    </div>
+  );
+}
+
+/**
+ * The Pen's preview: the path's edges (curves sampled), each point as a square (the first one bigger once a click
+ * there would close the outline), the handles of smooth points, and, once the outline could close without
+ * crossing itself, a draft of the shape at its kind's default height.
+ */
+function PenPreview({ pen, kind }: { pen: Pen; kind: ShapeKind }) {
+  const path = penPath(pen);
+  const bad = pathCrosses(path, pen.closing);
+  const key = JSON.stringify([path, pen.closing]);
+
+  const { lines, dots, handleDots } = useMemo(() => {
+    const segments: number[] = [];
+    const add = (a: Point, b: Point) => segments.push(a.x, PEN_Y, a.z, b.x, PEN_Y, b.z);
+    const edges = pen.closing ? path.length : path.length - 1;
+    for (let i = 0; i < edges; i++) {
+      const b = path[(i + 1) % path.length];
+      const samples = [...sampleEdge(path[i], b), b];
+      for (let k = 0; k + 1 < samples.length; k++) add(samples[k], samples[k + 1]);
+    }
+    const handleEnds: number[] = [];
+    for (const p of pen.points) {
+      for (const h of [p.in, p.out]) {
+        if (!h) continue;
+        add(p, { x: p.x + h.x, z: p.z + h.z });
+        handleEnds.push(p.x + h.x, PEN_Y, p.z + h.z);
+      }
+    }
+    const geometry = (values: number[]) => new THREE.BufferGeometry().setAttribute("position", new THREE.Float32BufferAttribute(values, 3));
+    return {
+      lines: geometry(segments),
+      dots: geometry(pen.points.flatMap((p) => [p.x, PEN_Y, p.z])),
+      handleDots: geometry(handleEnds),
+    };
+  }, [key]);
+  useEffect(
+    () => () => {
+      lines.dispose();
+      dots.dispose();
+      handleDots.dispose();
+      invalidate();
+    },
+    [lines, dots, handleDots],
+  );
+
+  const color = bad ? PEN_BAD_COLOR : PEN_COLOR;
+  // Only a valid outline gets a draft (not while the cursor still sits on the point just placed, say).
+  const closable = path.length >= 3 && outlineProblem(roundPoints(path)) === null;
+  const first = pen.points[0];
+  return (
+    <>
+      {closable && (
+        <ShapeMesh
+          shape={{
+            id: "pen",
+            type: "freeform",
+            kind,
+            y: 0,
+            height: DEFAULT_HEIGHT[kind],
+            color: DEFAULT_COLOR,
+            points: roundPoints(path),
+            createdBy: "human",
+          }}
+          draft
+        />
+      )}
+      <lineSegments geometry={lines} renderOrder={20}>
+        <lineBasicMaterial color={color} depthTest={false} transparent />
+      </lineSegments>
+      <points geometry={dots} renderOrder={21}>
+        <pointsMaterial color={color} size={7} sizeAttenuation={false} depthTest={false} transparent />
+      </points>
+      <points geometry={handleDots} renderOrder={21}>
+        <pointsMaterial color={color} size={5} sizeAttenuation={false} depthTest={false} transparent />
+      </points>
+      {pen.closing && first && (
+        <points renderOrder={22}>
+          <bufferGeometry>
+            <bufferAttribute attach="attributes-position" args={[new Float32Array([first.x, PEN_Y, first.z]), 3]} />
+          </bufferGeometry>
+          <pointsMaterial color={color} size={12} sizeAttenuation={false} depthTest={false} transparent />
+        </points>
       )}
     </>
   );

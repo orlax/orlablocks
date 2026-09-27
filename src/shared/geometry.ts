@@ -1,10 +1,11 @@
-import { SMOOTH_SEGMENTS, type Shape, type ShapePatch } from "./scene.types";
+import { differenceD, EndType, FillRule, inflatePathsD, JoinType, type PathD } from "@countertype/clipper2-ts";
+import { CURVE_SEGMENTS, MIN_POINTS, SMOOTH_SEGMENTS, type Box, type Cylinder, type FootPoint, type Offset, type Shape, type ShapePatch } from "./scene.types";
 
 /**
  * Pure shape geometry shared by the server (group moves and rotations) and the editor (picking, the marquee, the
  * gizmo, rendering). Ground coordinates are x/z; rotation is counterclockwise seen from above (a right-handed turn
  * about +y). Every closed shape reduces to a **footprint** polygon, and what's specific to a shape type (its
- * footprint, how it moves, turns and mirrors) is one function each here, so a new shape adds its own cases.
+ * footprint, how it moves, turns, mirrors and scales) is one function each here, so a new shape adds its own cases.
  */
 
 /** A point on the ground. */
@@ -12,28 +13,80 @@ export type Point = { x: number; z: number };
 
 export type Bounds = { minX: number; maxX: number; minY: number; maxY: number; minZ: number; maxZ: number };
 
+/**
+ * A turned rectangle on the ground: a box's or a cylinder's own footprint rectangle, or a free-form's world-axis
+ * bounds (see `handleFrame`). The gizmo's scale and rotate handles sit on it.
+ */
+export type Frame = { x: number; z: number; width: number; depth: number; rotation: number };
+
+/** Whether two field values are the same: equal, or (for a free-form's points) the same content. */
+export const sameValue = (a: unknown, b: unknown) =>
+  a === b || (typeof a === "object" && a !== null && typeof b === "object" && JSON.stringify(a) === JSON.stringify(b));
+
 /** 2 decimals, and never -0. */
 export const round2 = (n: number) => Math.round(n * 100) / 100 + 0;
 export const normalizeDeg = (deg: number) => ((deg % 360) + 360) % 360;
 
-/** The box's local axes on the ground, in world x/z: `ex` along its width, `ez` along its depth. */
-export function shapeAxes(box: Shape) {
-  const a = (box.rotation * Math.PI) / 180;
+/** Boxes and cylinders: a center, a size and a rotation of their own (free-forms have only points). */
+export const isFootprinted = (shape: Shape): shape is Box | Cylinder => shape.type !== "freeform";
+
+/** A shape's rotation (a free-form's is always 0: turning it turns its points). */
+export const rotationOf = (shape: Shape) => (isFootprinted(shape) ? shape.rotation : 0);
+
+/** The frame's local axes on the ground, in world x/z: `ex` along its width, `ez` along its depth. */
+export function shapeAxes(frame: { rotation: number }) {
+  const a = (frame.rotation * Math.PI) / 180;
   return { ex: { x: Math.cos(a), z: -Math.sin(a) }, ez: { x: Math.sin(a), z: Math.cos(a) } };
 }
 
-/** A world ground point in the box's frame (origin at its center, axes along width and depth). */
-export function toShapeLocal(box: Shape, p: { x: number; z: number }) {
-  const { ex, ez } = shapeAxes(box);
-  const dx = p.x - box.x;
-  const dz = p.z - box.z;
+/** A world ground point in the frame (origin at its center, axes along width and depth). */
+export function toShapeLocal(frame: { x: number; z: number; rotation: number }, p: Point) {
+  const { ex, ez } = shapeAxes(frame);
+  const dx = p.x - frame.x;
+  const dz = p.z - frame.z;
   return { x: dx * ex.x + dz * ex.z, z: dx * ez.x + dz * ez.z };
 }
 
-/** A point in the box's frame back in world x/z. */
-export function fromShapeLocal(box: Shape, l: { x: number; z: number }) {
-  const { ex, ez } = shapeAxes(box);
-  return { x: box.x + l.x * ex.x + l.z * ez.x, z: box.z + l.x * ex.z + l.z * ez.z };
+/** A point in the frame back in world x/z. */
+export function fromShapeLocal(frame: { x: number; z: number; rotation: number }, l: Point) {
+  const { ex, ez } = shapeAxes(frame);
+  return { x: frame.x + l.x * ex.x + l.z * ez.x, z: frame.z + l.x * ex.z + l.z * ez.z };
+}
+
+/** A cubic bezier's point at t. */
+function bezier(p0: Point, p1: Point, p2: Point, p3: Point, t: number): Point {
+  const u = 1 - t;
+  const a = u * u * u;
+  const b = 3 * u * u * t;
+  const c = 3 * u * t * t;
+  const d = t * t * t;
+  return { x: a * p0.x + b * p1.x + c * p2.x + d * p3.x, z: a * p0.z + b * p1.z + c * p2.z + d * p3.z };
+}
+
+/**
+ * The edge from `a` to `b` as straight segments: its start point, then (for a curved edge) CURVE_SEGMENTS − 1
+ * points along the curve. The end point is the next edge's start. Straight unless `a.out` or `b.in` is set.
+ */
+export function sampleEdge(a: FootPoint, b: FootPoint): Point[] {
+  if (!a.out && !b.in) return [{ x: a.x, z: a.z }];
+  const c1 = a.out ? { x: a.x + a.out.x, z: a.z + a.out.z } : a;
+  const c2 = b.in ? { x: b.x + b.in.x, z: b.z + b.in.z } : b;
+  return Array.from({ length: CURVE_SEGMENTS }, (_, i) => bezier(a, c1, c2, b, i / CURVE_SEGMENTS));
+}
+
+/**
+ * A closed outline of points as a polygon: every edge sampled (`sampleEdge`). `edge[k]` is the point index whose
+ * edge the polygon's segment k (from vertex k to k + 1) lies on.
+ */
+export function sampleOutline(points: FootPoint[]): { polygon: Point[]; edge: number[] } {
+  const polygon: Point[] = [];
+  const edge: number[] = [];
+  points.forEach((p, i) => {
+    const samples = sampleEdge(p, points[(i + 1) % points.length]);
+    polygon.push(...samples);
+    edge.push(...samples.map(() => i));
+  });
+  return { polygon, edge };
 }
 
 /**
@@ -42,8 +95,10 @@ export function fromShapeLocal(box: Shape, l: { x: number; z: number }) {
  * - A cylinder: its corners on the ellipse inscribed in width × depth, corner i at angle (i + ½) × 360° / sides from
  *   local +x, counterclockwise seen from above, so a flat edge faces local +x (and, for a side count divisible by
  *   4, every axis). A smooth one is drawn and picked with SMOOTH_SEGMENTS corners.
+ * - A free-form: its sampled outline; its frame is the world's.
  */
 export function localFootprint(shape: Shape): Point[] {
+  if (shape.type === "freeform") return sampleOutline(shape.points).polygon;
   const hw = shape.width / 2;
   const hd = shape.depth / 2;
   if (shape.type === "cylinder") {
@@ -62,10 +117,13 @@ export function localFootprint(shape: Shape): Point[] {
 }
 
 /** Where a shape's own frame sits in the world and how it's turned (degrees). `localFootprint` is in this frame. */
-export const shapeFrame = (box: Shape) => ({ x: box.x, z: box.z, rotation: box.rotation });
+export const shapeFrame = (shape: Shape) => (isFootprinted(shape) ? { x: shape.x, z: shape.z, rotation: shape.rotation } : { x: 0, z: 0, rotation: 0 });
 
 /** The shape's footprint in world x/z. */
-export const footprint = (box: Shape): Point[] => localFootprint(box).map((p) => fromShapeLocal(box, p));
+export const footprint = (shape: Shape): Point[] => {
+  const frame = shapeFrame(shape);
+  return localFootprint(shape).map((p) => fromShapeLocal(frame, p));
+};
 
 /** Twice the signed area of a polygon in the x/z plane (shoelace); the sign gives its winding. */
 export function signedArea2(poly: Point[]): number {
@@ -89,9 +147,12 @@ export function pointInPolygon(poly: Point[], p: Point): boolean {
   return inside;
 }
 
+/** Whether `p` is inside a region given as rings (even-odd across all of them, so holes count as outside). */
+export const pointInRings = (rings: Point[][], p: Point) => rings.filter((r) => pointInPolygon(r, p)).length % 2 === 1;
+
 /**
  * The polygon grown outward by `d` meters (negative shrinks it), with mitered corners, in either winding. Exact
- * for convex polygons (boxes); concave outlines will need a robust offset. Null if shrinking collapses it (an
+ * for convex polygons (boxes, cylinders); concave outlines use `offsetRings`. Null if shrinking collapses it (an
  * edge would turn around).
  */
 export function offsetPolygon(poly: Point[], d: number): Point[] | null {
@@ -122,17 +183,68 @@ export function offsetPolygon(poly: Point[], d: number): Point[] | null {
   return collapsed ? null : out;
 }
 
+/** Offsets are computed to the millimeter, and sharp corners are mitered out to at most twice the offset. */
+const OFFSET_PRECISION = 3;
+const MITER_LIMIT = 2;
+const toPath = (poly: Point[]): PathD => poly.map((p) => ({ x: p.x, y: p.z }));
+const fromPath = (path: PathD): Point[] => path.map((p) => ({ x: p.x, z: p.y }));
+
 /**
- * The axis-aligned bounds of a shape's (possibly rotated) footprint: exact for each type (a smooth cylinder's from
- * its true ellipse, not the drawn polygon).
+ * The region the polygon covers, grown by `d` meters (negative shrinks it), as rings to read even-odd. For a
+ * convex polygon it's the exact mitered offset (one ring, or none if it collapses); for any other (a free-form) a
+ * robust offset (Clipper2), which can split a shrunk outline into pieces or leave holes where a grown one closes
+ * an inlet.
+ */
+export function offsetRings(poly: Point[], d: number, convex: boolean): Point[][] {
+  if (convex) {
+    const ring = offsetPolygon(poly, d);
+    return ring ? [ring] : [];
+  }
+  return inflatePathsD([toPath(poly)], d, JoinType.Miter, EndType.Polygon, MITER_LIMIT, OFFSET_PRECISION).map(fromPath);
+}
+
+/**
+ * A room's walls on the ground, in the shape's own frame: `outer` (the footprint grown by half the wall thickness,
+ * what a click or the marquee can hit), `inner` (shrunk by it: the open inside, none if the room is too narrow to
+ * have one) and `walls`, the region between them as rings (outer ones counterclockwise in x/z, holes the other
+ * way). Cached per shape object, since picking asks for it on every pointer move.
+ */
+const wallCache = new WeakMap<Shape, { outer: Point[][]; inner: Point[][]; walls: Point[][] }>();
+export function roomWalls(shape: Shape, half: number): { outer: Point[][]; inner: Point[][]; walls: Point[][] } {
+  const cached = wallCache.get(shape);
+  if (cached) return cached;
+  const local = localFootprint(shape);
+  const convex = isFootprinted(shape);
+  const outer = offsetRings(local, half, convex);
+  const inner = offsetRings(local, -half, convex);
+  const walls = convex
+    ? [...outer, ...inner.map((r) => [...r].reverse())]
+    : differenceD(outer.map(toPath), inner.map(toPath), FillRule.NonZero, OFFSET_PRECISION).map(fromPath);
+  const result = { outer, inner, walls };
+  wallCache.set(shape, result);
+  return result;
+}
+
+/** Rings in the shape's own frame (from `roomWalls`) in world x/z. */
+export function ringsInWorld(shape: Shape, rings: Point[][]): Point[][] {
+  if (!isFootprinted(shape)) return rings;
+  const frame = shapeFrame(shape);
+  return rings.map((r) => r.map((p) => fromShapeLocal(frame, p)));
+}
+
+/** A polygon's axis-aligned bounds on the ground. */
+function polygonBounds(poly: Point[]) {
+  const xs = poly.map((p) => p.x);
+  const zs = poly.map((p) => p.z);
+  return { minX: Math.min(...xs), maxX: Math.max(...xs), minZ: Math.min(...zs), maxZ: Math.max(...zs) };
+}
+
+/**
+ * The axis-aligned bounds of a shape's (possibly rotated) footprint: exact for boxes and cylinders (a smooth
+ * cylinder's from its true ellipse, not the drawn polygon), from the sampled outline for a free-form.
  */
 export function footprintBounds(shape: Shape): { minX: number; maxX: number; minZ: number; maxZ: number } {
-  if (shape.type === "cylinder" && shape.sides !== undefined) {
-    const f = footprint(shape);
-    const xs = f.map((p) => p.x);
-    const zs = f.map((p) => p.z);
-    return { minX: Math.min(...xs), maxX: Math.max(...xs), minZ: Math.min(...zs), maxZ: Math.max(...zs) };
-  }
+  if (!isFootprinted(shape) || (shape.type === "cylinder" && shape.sides !== undefined)) return polygonBounds(footprint(shape));
   const a = (shape.rotation * Math.PI) / 180;
   const cos = Math.abs(Math.cos(a));
   const sin = Math.abs(Math.sin(a));
@@ -143,50 +255,107 @@ export function footprintBounds(shape: Shape): { minX: number; maxX: number; min
   return { minX: shape.x - hx, maxX: shape.x + hx, minZ: shape.z - hz, maxZ: shape.z + hz };
 }
 
-/** The axis-aligned box around all of `boxes` (at least one). */
-export function boundsOf(boxes: Shape[]): Bounds {
+/** The axis-aligned box around all of `shapes` (at least one). */
+export function boundsOf(shapes: Shape[]): Bounds {
   const b: Bounds = { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity, minZ: Infinity, maxZ: -Infinity };
-  for (const box of boxes) {
-    const f = footprintBounds(box);
+  for (const shape of shapes) {
+    const f = footprintBounds(shape);
     b.minX = Math.min(b.minX, f.minX);
     b.maxX = Math.max(b.maxX, f.maxX);
     b.minZ = Math.min(b.minZ, f.minZ);
     b.maxZ = Math.max(b.maxZ, f.maxZ);
-    b.minY = Math.min(b.minY, box.y);
-    b.maxY = Math.max(b.maxY, box.y + box.height);
+    b.minY = Math.min(b.minY, shape.y);
+    b.maxY = Math.max(b.maxY, shape.y + shape.height);
   }
   return b;
 }
+
+/** The rectangle the gizmo's scale and rotate handles sit on: a box's or cylinder's own, a free-form's world-axis bounds. */
+export function handleFrame(shape: Shape): Frame {
+  if (isFootprinted(shape)) return shape;
+  const b = footprintBounds(shape);
+  return { x: (b.minX + b.maxX) / 2, z: (b.minZ + b.maxZ) / 2, width: b.maxX - b.minX, depth: b.maxZ - b.minZ, rotation: 0 };
+}
+
+/** A point that moves with the shape (a box's center, a free-form's first point), for measuring how far a drag took it. */
+export const anchorOf = (shape: Shape) =>
+  isFootprinted(shape) ? { x: shape.x, y: shape.y, z: shape.z } : { x: shape.points[0].x, y: shape.y, z: shape.points[0].z };
+
+/** Points (and their handles) with every value rounded to 2 decimals; a handle that rounds to nothing is dropped. */
+export function roundPoints(points: FootPoint[]): FootPoint[] {
+  const handle = (h: Offset | undefined) => {
+    if (!h) return undefined;
+    const r = { x: round2(h.x), z: round2(h.z) };
+    return r.x === 0 && r.z === 0 ? undefined : r;
+  };
+  return points.map((p) => {
+    const out: FootPoint = { x: round2(p.x), z: round2(p.z) };
+    const i = handle(p.in);
+    const o = handle(p.out);
+    if (i) out.in = i;
+    if (o) out.out = o;
+    return out;
+  });
+}
+
+/** Every point (with its handles) through `f`, which maps a position; handles map through `h`, which maps an offset. */
+const mapPoints = (points: FootPoint[], f: (p: Point) => Point, h: (o: Offset) => Offset): FootPoint[] =>
+  roundPoints(points.map((p) => ({ ...f(p), ...(p.in ? { in: h(p.in) } : {}), ...(p.out ? { out: h(p.out) } : {}) })));
 
 /**
  * A shape moved by an offset (2 decimals). Only the axes that move are in the patch, so a drag along x is a "move"
  * and not also an elevation change.
  */
-export function moveShape(box: Shape, dx: number, dy: number, dz: number): ShapePatch {
+export function moveShape(shape: Shape, dx: number, dy: number, dz: number): ShapePatch {
   const patch: ShapePatch = {};
-  if (dx !== 0) patch.x = round2(box.x + dx);
-  if (dy !== 0) patch.y = round2(box.y + dy);
-  if (dz !== 0) patch.z = round2(box.z + dz);
+  if (dy !== 0) patch.y = round2(shape.y + dy);
+  if (!isFootprinted(shape)) {
+    if (dx !== 0 || dz !== 0) patch.points = mapPoints(shape.points, (p) => ({ x: p.x + dx, z: p.z + dz }), (o) => o);
+    return patch;
+  }
+  if (dx !== 0) patch.x = round2(shape.x + dx);
+  if (dz !== 0) patch.z = round2(shape.z + dz);
   return patch;
 }
 
-/** A shape turned by `degrees` around the vertical axis through `pivot`: its center orbits the pivot and the angle adds to its rotation. */
-export function rotateShape(box: Shape, pivot: Point, degrees: number): ShapePatch {
+/**
+ * A shape turned by `degrees` around the vertical axis through `pivot`. A box's or cylinder's center orbits the
+ * pivot and the angle adds to its rotation; a free-form's points orbit it and their handles turn with them.
+ */
+export function rotateShape(shape: Shape, pivot: Point, degrees: number): ShapePatch {
   const a = (degrees * Math.PI) / 180;
   const cos = Math.cos(a);
   const sin = Math.sin(a);
-  const dx = box.x - pivot.x;
-  const dz = box.z - pivot.z;
-  return {
-    x: round2(pivot.x + dx * cos + dz * sin),
-    z: round2(pivot.z - dx * sin + dz * cos),
-    rotation: round2(normalizeDeg(box.rotation + degrees)) % 360,
+  const turn = (o: Offset) => ({ x: o.x * cos + o.z * sin, z: -o.x * sin + o.z * cos });
+  const orbit = (p: Point) => {
+    const t = turn({ x: p.x - pivot.x, z: p.z - pivot.z });
+    return { x: pivot.x + t.x, z: pivot.z + t.z };
   };
+  if (!isFootprinted(shape)) return { points: mapPoints(shape.points, orbit, turn) };
+  const c = orbit(shape);
+  return { x: round2(c.x), z: round2(c.z), rotation: round2(normalizeDeg(shape.rotation + degrees)) % 360 };
 }
 
 /** Turns shapes by `degrees` around the vertical axis through `pivot` (see `rotateShape`). Returns the patches. */
-export function rotateAround(boxes: Shape[], pivot: Point, degrees: number): Record<string, ShapePatch> {
-  return Object.fromEntries(boxes.map((box) => [box.id, rotateShape(box, pivot, degrees)]));
+export function rotateAround(shapes: Shape[], pivot: Point, degrees: number): Record<string, ShapePatch> {
+  return Object.fromEntries(shapes.map((shape) => [shape.id, rotateShape(shape, pivot, degrees)]));
+}
+
+/**
+ * A shape resized from its handle frame `from` to `to` (the gizmo's scale handles). A box or cylinder takes the new
+ * center and size; a free-form's points (and handles) stretch with the frame, around its center.
+ */
+export function resizeShape(shape: Shape, from: Frame, to: { x: number; z: number; width: number; depth: number }): ShapePatch {
+  if (isFootprinted(shape)) return { x: to.x, z: to.z, width: to.width, depth: to.depth };
+  const sx = from.width > 0 ? to.width / from.width : 1;
+  const sz = from.depth > 0 ? to.depth / from.depth : 1;
+  return {
+    points: mapPoints(
+      shape.points,
+      (p) => ({ x: to.x + (p.x - from.x) * sx, z: to.z + (p.z - from.z) * sz }),
+      (o) => ({ x: o.x * sx, z: o.z * sz }),
+    ),
+  };
 }
 
 /** A world axis on the ground, for mirroring. */
@@ -204,25 +373,101 @@ function round2HalfEven(n: number): number {
 }
 
 /**
- * One shape reflected across the plane where `axis` = sum / 2 (sum = twice the pivot). Only its center and angle
- * change: the center reflects, and the angle becomes the one that shows the mirror image.
- * - A box, a smooth or even-sided cylinder: symmetric across both of its own axes, so -rotation on either axis.
+ * One shape reflected across the plane where `axis` = sum / 2 (sum = twice the pivot).
+ * - A box, a smooth or even-sided cylinder: symmetric across both of its own axes, so its center reflects and its
+ *   rotation becomes -rotation on either axis.
  * - An odd-sided cylinder is symmetric across its local x axis only: -rotation on Z, but 180 - rotation on X
  *   (the mirror of its flipped-x shape is the same shape turned a half turn).
- * Shapes that aren't symmetric at all (outlines, things that face a direction) need their own case.
+ * - A free-form isn't symmetric: each point reflects and its handles flip on that axis. The points keep their
+ *   order (so their indices stay stable), which only reverses the outline's winding.
  */
 export function mirrorShape(shape: Shape, axis: MirrorAxis, sum: number): ShapePatch {
+  if (!isFootprinted(shape)) {
+    return axis === "x"
+      ? { points: mapPoints(shape.points, (p) => ({ x: sum - p.x, z: p.z }), (o) => ({ x: -o.x, z: o.z })) }
+      : { points: mapPoints(shape.points, (p) => ({ x: p.x, z: sum - p.z }), (o) => ({ x: o.x, z: -o.z })) };
+  }
   const odd = shape.type === "cylinder" && shape.sides !== undefined && shape.sides % 2 === 1;
   const rotation = round2(normalizeDeg(axis === "x" && odd ? 180 - shape.rotation : -shape.rotation)) % 360;
   return axis === "x" ? { x: round2(sum - shape.x), rotation } : { z: round2(sum - shape.z), rotation };
 }
 
 /**
- * Mirrors boxes on a world axis across the center of their combined footprint bounds, in place. Mirroring the
+ * Mirrors shapes on a world axis across the center of their combined footprint bounds, in place. Mirroring the
  * result again restores the original values exactly. Returns the patches.
  */
-export function mirrorAcross(boxes: Shape[], axis: MirrorAxis): Record<string, ShapePatch> {
-  const b = boundsOf(boxes);
+export function mirrorAcross(shapes: Shape[], axis: MirrorAxis): Record<string, ShapePatch> {
+  const b = boundsOf(shapes);
   const sum = round2HalfEven(axis === "x" ? b.minX + b.maxX : b.minZ + b.maxZ);
-  return Object.fromEntries(boxes.map((box) => [box.id, mirrorShape(box, axis, sum)]));
+  return Object.fromEntries(shapes.map((shape) => [shape.id, mirrorShape(shape, axis, sum)]));
+}
+
+/** Whether segments a–b and c–d cross or touch (on the ground). */
+function segmentsTouch(a: Point, b: Point, c: Point, d: Point): boolean {
+  const orient = (p: Point, q: Point, r: Point) => {
+    const v = (q.x - p.x) * (r.z - p.z) - (q.z - p.z) * (r.x - p.x);
+    return Math.abs(v) < 1e-12 ? 0 : Math.sign(v);
+  };
+  const on = (p: Point, q: Point, r: Point) =>
+    Math.min(p.x, q.x) <= r.x && r.x <= Math.max(p.x, q.x) && Math.min(p.z, q.z) <= r.z && r.z <= Math.max(p.z, q.z);
+  const o1 = orient(a, b, c);
+  const o2 = orient(a, b, d);
+  const o3 = orient(c, d, a);
+  const o4 = orient(c, d, b);
+  if (o1 !== o2 && o3 !== o4 && o1 !== 0 && o2 !== 0 && o3 !== 0 && o4 !== 0) return true;
+  return (o1 === 0 && on(a, b, c)) || (o2 === 0 && on(a, b, d)) || (o3 === 0 && on(c, d, a)) || (o4 === 0 && on(c, d, b));
+}
+
+/**
+ * The first two segments of a polygonal path that cross or touch, other than neighbors (which share an end point),
+ * as their indices, or null. `closed`: the last point joins the first.
+ */
+function firstCrossing(polygon: Point[], closed: boolean): [number, number] | null {
+  const n = polygon.length;
+  const segments = closed ? n : n - 1;
+  // Each segment's bounds, for a quick reject before the exact test.
+  const box = polygon.map((p, i) => {
+    const q = polygon[(i + 1) % n];
+    return { x0: Math.min(p.x, q.x), x1: Math.max(p.x, q.x), z0: Math.min(p.z, q.z), z1: Math.max(p.z, q.z) };
+  });
+  for (let i = 0; i < segments; i++) {
+    for (let j = i + 1; j < segments; j++) {
+      if (j === i + 1 || (closed && i === 0 && j === n - 1)) continue;
+      if (box[i].x1 < box[j].x0 || box[j].x1 < box[i].x0 || box[i].z1 < box[j].z0 || box[j].z1 < box[i].z0) continue;
+      if (segmentsTouch(polygon[i], polygon[(i + 1) % n], polygon[j], polygon[(j + 1) % n])) return [i, j];
+    }
+  }
+  return null;
+}
+
+/**
+ * Whether a path of points (curved edges sampled) crosses itself: an outline being drawn (`closed` false: its last
+ * point doesn't join the first yet) or a finished one.
+ */
+export function pathCrosses(points: FootPoint[], closed: boolean): boolean {
+  if (points.length < 3) return false;
+  const polygon = closed
+    ? sampleOutline(points).polygon
+    : [...points.slice(0, -1).flatMap((p, i) => sampleEdge(p, points[i + 1])), points.at(-1)!];
+  return firstCrossing(polygon, closed) !== null;
+}
+
+/**
+ * What's wrong with a free-form outline, or null if it's fine: fewer than 3 distinct points, no area, or edges
+ * that cross (checked on the sampled curves, so a handle that loops an edge over another counts). Points are named
+ * by their index in the list.
+ */
+export function outlineProblem(points: FootPoint[]): string | null {
+  const distinct = new Set(points.map((p) => `${p.x},${p.z}`));
+  if (distinct.size < MIN_POINTS) return `the outline needs at least ${MIN_POINTS} distinct points`;
+  for (let i = 0; i < points.length; i++) {
+    const q = points[(i + 1) % points.length];
+    if (points[i].x === q.x && points[i].z === q.z) return `points ${i} and ${(i + 1) % points.length} are in the same place`;
+  }
+  const { polygon, edge } = sampleOutline(points);
+  if (Math.abs(signedArea2(polygon)) < 1e-6) return "the outline has no area";
+  const crossing = firstCrossing(polygon, true);
+  if (!crossing) return null;
+  const [a, b] = [edge[crossing[0]], edge[crossing[1]]];
+  return a === b ? `the curve from point ${a} loops over itself` : `the outline crosses itself (the edges from point ${a} and from point ${b})`;
 }

@@ -1,5 +1,5 @@
 import { WALL_THICKNESS, type Shape } from "../shared/scene.types";
-import { footprint, offsetPolygon, pointInPolygon, type Point } from "../shared/geometry";
+import { footprint, pointInRings, ringsInWorld, roomWalls, type Point } from "../shared/geometry";
 import type { Vec3 } from "./camera";
 
 type Ray = { origin: Vec3; dir: Vec3 };
@@ -27,16 +27,19 @@ export function pickHit(ray: Ray, boxes: Shape[]): { id: string; point: Vec3 } |
 
 type Crossing = { t: number; face: "top" | "bottom" | "side" };
 
-/** Every place (t ≥ 0 along the ray) where the ray crosses the surface of the prism over `poly` from y0 to y1, nearest first. */
-export function prismCrossings({ origin: o, dir: d }: Ray, poly: Point[], y0: number, y1: number): Crossing[] {
+/**
+ * Every place (t ≥ 0 along the ray) where the ray crosses the surface of the prism from y0 to y1 over a region on
+ * the ground (rings, read even-odd, so holes count), nearest first.
+ */
+export function prismCrossings({ origin: o, dir: d }: Ray, rings: Point[][], y0: number, y1: number): Crossing[] {
   const out: Crossing[] = [];
   if (Math.abs(d.y) > 1e-12) {
     for (const [y, face] of [[y1, "top"], [y0, "bottom"]] as const) {
       const t = (y - o.y) / d.y;
-      if (t >= 0 && pointInPolygon(poly, { x: o.x + d.x * t, z: o.z + d.z * t })) out.push({ t, face });
+      if (t >= 0 && pointInRings(rings, { x: o.x + d.x * t, z: o.z + d.z * t })) out.push({ t, face });
     }
   }
-  for (let i = 0; i < poly.length; i++) {
+  for (const poly of rings) for (let i = 0; i < poly.length; i++) {
     const a = poly[i];
     const b = poly[(i + 1) % poly.length];
     // o + t·d = a + s·(b − a) on the ground, with 0 ≤ s ≤ 1 and the height at t within the prism.
@@ -54,22 +57,21 @@ export function prismCrossings({ origin: o, dir: d }: Ray, poly: Point[], y0: nu
   return out.sort((p, q) => p.t - q.t);
 }
 
-function hitDistance(ray: Ray, box: Shape): number | null {
+function hitDistance(ray: Ray, shape: Shape): number | null {
   const { origin: o } = ray;
-  const y0 = box.y;
-  const y1 = box.y + box.height;
-  const centerline = footprint(box);
-  const room = box.kind === "room";
-  const outer = room ? offsetPolygon(centerline, WALL_THICKNESS / 2)! : centerline;
-  if (o.y >= y0 && o.y <= y1 && pointInPolygon(outer, o)) return 0;
+  const y0 = shape.y;
+  const y1 = shape.y + shape.height;
+  const room = shape.kind === "room" ? roomWalls(shape, WALL_THICKNESS / 2) : null;
+  const outer = room ? ringsInWorld(shape, room.outer) : [footprint(shape)];
+  if (o.y >= y0 && o.y <= y1 && pointInRings(outer, o)) return 0;
 
   const first = prismCrossings(ray, outer, y0, y1)[0];
   if (!first) return null;
   // Rooms too narrow to have an inside are solid.
-  const inner = room ? offsetPolygon(centerline, -WALL_THICKNESS / 2) : null;
-  if (!inner || first.face !== "top") return first.t;
+  if (!room || room.inner.length === 0 || first.face !== "top") return first.t;
+  const inner = ringsInWorld(shape, room.inner);
   const { dir: d } = ray;
-  if (!pointInPolygon(inner, { x: o.x + d.x * first.t, z: o.z + d.z * first.t })) return first.t;
+  if (!pointInRings(inner, { x: o.x + d.x * first.t, z: o.z + d.z * first.t })) return first.t;
   // In through the open top: where the ray next meets the room's inside, an inner wall or the floor.
   const next = prismCrossings(ray, inner, y0, y1).find((c) => c.t > first.t + 1e-9);
   return next?.t ?? first.t;

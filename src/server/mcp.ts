@@ -36,7 +36,7 @@ const INSTRUCTIONS =
   "the human opens and switches scenes in the editor. Every change is saved as it happens (there's no save step), " +
   "and the undo history survives server restarts. " +
   "Units are meters; decimals are allowed and kept to 2 places. The world is 3D with y up and the ground at y = 0. " +
-  "The scene is a flat list of nodes: shapes and groups. The shapes so far are boxes (type: box) and cylinders (type: cylinder). " +
+  "The scene is a flat list of nodes: shapes and groups. The shapes are boxes (type: box), cylinders (type: cylinder) and free-forms (type: freeform). " +
   "A box's footprint is CENTERED at (x, z), with `width` along the box's local x and " +
   "`depth` along its local z. It rises from its elevation `y` (its bottom: 0 = on the ground, negative = below ground) " +
   "to y + height, so to stack box B on box A, set B.y = A.y + A.height. " +
@@ -51,11 +51,20 @@ const INSTRUCTIONS =
   `It's a room or a volume like a box, with the same walls and heights. With \`sides\` (${MIN_SIDES}..${MAX_SIDES}) it's a regular polygon on that ellipse instead, ` +
   "with a flat edge facing its local +x (sides 8 at rotation 0: an octagon with flat walls facing ±x and ±z); " +
   "without sides it's smooth. update_nodes with sides: null makes one smooth. " +
+  "A free-form (type: freeform) is any other outline: a closed list of `points` in ABSOLUTE world x/z (3 or more; " +
+  "the last joins the first), at elevation `y` and rising to y + height, a room or a volume like a box (same walls " +
+  "and default heights). It has no x, z, width, depth or rotation of its own. A point is { x, z } (a corner), " +
+  "optionally with bezier handles `in` and `out`, which are OFFSETS from that point (not absolute positions): the " +
+  "edge from point i to point i + 1 curves when point i has `out` or point i + 1 has `in`. For a smooth point, make " +
+  "`in` the negative of `out`. A circle of radius r through 4 smooth points uses handles of length 0.5523 × r, " +
+  "along the tangent. The outline must not cross itself (the error names the edges that do). update_nodes with " +
+  "`points` replaces the whole outline. move_nodes, rotate_nodes and mirror_nodes change a free-form's points " +
+  "(rotating or mirroring one bakes the turn or the flip into them), so use them instead of recomputing points. " +
   "A group (type: group) is a container with NO position of its own: its shapes keep absolute world coordinates, " +
   "and a node is in a group when its `parent` is that group's ID (groups can nest). get_scene adds each group's " +
   "derived `bounds` (center x/z, bottom y, width, depth, height, axis-aligned) for reference. Groups are a unit of " +
   "action: move_nodes, rotate_nodes and remove_nodes on a group act on everything in it. A group left empty disappears. " +
-  "Every node has a server-assigned ID (box_1, cylinder_1, group_1, ..., never reused), an optional `name` for people " +
+  "Every node has a server-assigned ID (box_1, cylinder_1, freeform_1, group_1, ..., never reused), an optional `name` for people " +
   '("lobby"; not unique, tools always take IDs, so resolve names to IDs with get_scene), and records who created it (human or agent). ' +
   "To repeat things (a row of pillars, a second wing, another floor), copy them with move_nodes and copy: true " +
   "(count for several, each offset further) instead of retyping shapes with draw_shapes: copies get new IDs and keep " +
@@ -118,9 +127,9 @@ function buildServer(workspace: Workspace) {
       title: "Draw shapes",
       description:
         `Add one or more shapes to the scene in a single batch; they appear live in the editor. Each has a \`type\` ` +
-        `(box, the default, or cylinder) and that type's fields. For a box or cylinder (a room or a volume) only kind, x, z, ` +
-        `width and depth are required; the rest have defaults (the kind's height, y 0, rotation 0, color ${DEFAULT_COLOR}, ` +
-        `no name, top level, and a smooth cylinder). ` +
+        `(box, the default, cylinder or freeform) and that type's fields. For a box or cylinder (a room or a volume) only ` +
+        `kind, x, z, width and depth are required; for a free-form, kind and points. The rest have defaults (the kind's ` +
+        `height, y 0, rotation 0, color ${DEFAULT_COLOR}, no name, top level, and a smooth cylinder). ` +
         `Set \`parent\` to a group's ID to draw straight into that group. ` +
         `The batch is all-or-nothing: if any shape is invalid, nothing is drawn and the error says which one.`,
       inputSchema: { shapes: z.array(ShapeInputSchema).min(1) },
@@ -143,7 +152,8 @@ function buildServer(workspace: Workspace) {
       title: "Update nodes",
       description:
         `Change existing nodes by ID in a single batch; changes appear live in the editor. ` +
-        `A box takes any of: name, parent, kind, x, z, y, width, depth, height, rotation, color; a cylinder those and sides. ` +
+        `A box takes any of: name, parent, kind, x, z, y, width, depth, height, rotation, color; a cylinder those and sides; ` +
+        `a free-form name, parent, kind, y, height, color and points (the whole outline). ` +
         `A group takes only name and parent. ` +
         `Values are absolute (x: 4 moves the center to x = 4); to shift boxes or whole groups by an offset, use move_nodes instead. ` +
         `An empty name removes the name; parent null moves a node to the top level. ` +
@@ -195,8 +205,9 @@ function buildServer(workspace: Workspace) {
     {
       title: "Rotate nodes",
       description:
-        `Turn boxes and/or whole groups by \`degrees\` (counterclockwise seen from above) around the vertical axis through ` +
-        `the center of their combined bounds: every box's center orbits that point and its rotation grows by the same angle.`,
+        `Turn shapes and/or whole groups by \`degrees\` (counterclockwise seen from above) around the vertical axis through ` +
+        `the center of their combined bounds: every box's or cylinder's center orbits that point and its rotation grows by ` +
+        `the same angle; a free-form's points orbit it.`,
       inputSchema: RotateNodesSchema.shape,
     },
     async (input) => json({ rotated: store().rotateNodes(input, "agent") }),
@@ -209,7 +220,7 @@ function buildServer(workspace: Workspace) {
       description:
         `Flip boxes and/or whole groups in place on a world axis, across the center of their combined bounds: ` +
         `axis x swaps east and west (every x reflects), axis z swaps +z and -z. y never changes, and every rotation ` +
-        `becomes -rotation (an odd-sided cylinder mirrored on x: 180 - rotation). A group mirrors as a unit. ` +
+        `becomes -rotation (an odd-sided cylinder mirrored on x: 180 - rotation; a free-form's points reflect). A group mirrors as a unit. ` +
         `Mirroring twice restores the original exactly.`,
       inputSchema: MirrorNodesSchema.shape,
     },

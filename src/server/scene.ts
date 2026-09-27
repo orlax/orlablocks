@@ -1,5 +1,16 @@
 import type { z } from "zod";
-import { boundsOf, mirrorAcross, moveShape, normalizeDeg, rotateAround, round2 } from "../shared/geometry";
+import {
+  boundsOf,
+  isFootprinted,
+  mirrorAcross,
+  moveShape,
+  normalizeDeg,
+  outlineProblem,
+  rotateAround,
+  round2,
+  roundPoints,
+  sameValue,
+} from "../shared/geometry";
 import {
   DEFAULT_COLOR,
   DEFAULT_HEIGHT,
@@ -18,6 +29,7 @@ import {
   UngroupSchema,
   type Actor,
   type Shape,
+  type FootPoint,
   type ShapePatch,
   type Group,
   type HistorySummary,
@@ -68,6 +80,7 @@ const FIELD_VERBS: Record<keyof NodePatch, string> = {
   rotation: "rotate",
   color: "recolor",
   sides: "change sides of",
+  points: "reshape",
 };
 
 /** One verb when every change is the same kind of edit ("move", "recolor"), "edit" otherwise. */
@@ -153,7 +166,7 @@ export function createSceneStore() {
   const parentError = (parent: string) => {
     const node = byId().get(parent);
     if (!node) return `no group "${parent}"`;
-    if (!isGroup(node)) return `"${parent}" is a box, not a group`;
+    if (!isGroup(node)) return `"${parent}" is a ${node.type}, not a group`;
     return null;
   };
 
@@ -166,11 +179,19 @@ export function createSceneStore() {
     }
   };
 
+  /** A free-form's points rounded to 2 decimals, or an error (as `prefix: ...`) if the outline isn't valid. */
+  const checkPoints = (prefix: string, points: FootPoint[], errors: string[]) => {
+    const rounded = roundPoints(points);
+    const problem = outlineProblem(rounded);
+    if (problem) errors.push(`${prefix}.points: ${problem}`);
+    return rounded;
+  };
+
   /** Shape patches that change something, as update changes. */
   const effectiveShapeChanges = (boxes: Shape[], patches: Record<string, ShapePatch>) =>
     boxes.flatMap((box) => {
       const patch = patches[box.id];
-      const changed = patch && (Object.keys(patch) as (keyof ShapePatch)[]).some((k) => patch[k] !== (box as ShapePatch)[k]);
+      const changed = patch && (Object.keys(patch) as (keyof ShapePatch)[]).some((k) => !sameValue(patch[k], (box as ShapePatch)[k]));
       return changed ? [{ id: box.id, patch }] : [];
     });
 
@@ -216,28 +237,33 @@ export function createSceneStore() {
         }
         const d = result.data;
         const height = d.height ?? DEFAULT_HEIGHT[d.kind];
-        checkSizes(`shapes[${i}]`, { width: d.width, depth: d.depth, height }, errors);
+        const prefix = `shapes[${i}]`;
+        checkSizes(prefix, { ...(d.type === "freeform" ? {} : { width: d.width, depth: d.depth }), height }, errors);
         if (d.parent !== undefined) {
           const e = parentError(d.parent);
-          if (e) errors.push(`shapes[${i}].parent: ${e}`);
+          if (e) errors.push(`${prefix}.parent: ${e}`);
         }
-        const type = d.type ?? "box";
-        if (d.sides !== undefined && type !== "cylinder") errors.push(`shapes[${i}].sides: only a cylinder has sides (this is a ${type})`);
         const name = d.name?.trim();
-        return {
-          type,
-          ...(type === "cylinder" && d.sides !== undefined ? { sides: d.sides } : {}),
+        const common = {
           ...(name ? { name } : {}),
           ...(d.parent !== undefined ? { parent: d.parent } : {}),
           kind: d.kind,
+          y: round2(d.y ?? 0),
+          height: round2(height),
+          color: d.color ?? DEFAULT_COLOR,
+        };
+        if (d.type === "freeform") return { type: "freeform" as const, ...common, points: checkPoints(prefix, d.points, errors) };
+        const type = d.type ?? "box";
+        if (d.sides !== undefined && type !== "cylinder") errors.push(`${prefix}.sides: only a cylinder has sides (this is a ${type})`);
+        return {
+          type,
+          ...(type === "cylinder" && d.sides !== undefined ? { sides: d.sides } : {}),
+          ...common,
           x: round2(d.x),
           z: round2(d.z),
-          y: round2(d.y ?? 0),
           width: round2(d.width),
           depth: round2(d.depth),
-          height: round2(height),
           rotation: normalizeRotation(d.rotation ?? 0),
-          color: d.color ?? DEFAULT_COLOR,
         };
       });
       failIf(errors, "Nothing was drawn.");
@@ -249,8 +275,9 @@ export function createSceneStore() {
     },
 
     /**
-     * Changes existing nodes by ID. A shape takes any of name, parent, kind, x, z, y, width, depth, height, rotation,
-     * color, and a cylinder also sides (null = smooth); a group takes only name and parent. Validates every change first; applies all or nothing. Fields that
+     * Changes existing nodes by ID. A box or cylinder takes any of name, parent, kind, x, z, y, width, depth, height,
+     * rotation, color, and a cylinder also sides (null = smooth); a free-form takes name, parent, kind, y, height,
+     * color and points (the whole outline); a group takes only name and parent. Validates every change first; applies all or nothing. Fields that
      * don't actually change are dropped, and if nothing is left no step is recorded. An empty name removes the name,
      * and a null (or empty) parent moves the node to the top level.
      */
@@ -275,8 +302,22 @@ export function createSceneStore() {
         if (node && isGroup(node)) {
           const shapeOnly = Object.keys(fields).filter((k) => k !== "name" && k !== "parent");
           if (shapeOnly.length > 0) errors.push(`changes[${i}]: "${id}" is a group; only name and parent can change (not ${shapeOnly.join(", ")})`);
-        } else if (node && fields.sides !== undefined && node.type !== "cylinder") {
-          errors.push(`changes[${i}].sides: only a cylinder has sides ("${id}" is a ${node.type})`);
+        } else if (node) {
+          if (fields.sides !== undefined && node.type !== "cylinder") {
+            errors.push(`changes[${i}].sides: only a cylinder has sides ("${id}" is a ${node.type})`);
+          }
+          if (fields.points !== undefined && node.type !== "freeform") {
+            errors.push(`changes[${i}].points: only a free-form has points ("${id}" is a ${node.type})`);
+          }
+          if (node.type === "freeform") {
+            const footprinted = (["x", "z", "width", "depth", "rotation"] as const).filter((k) => fields[k] !== undefined);
+            if (footprinted.length > 0) {
+              errors.push(
+                `changes[${i}]: "${id}" is a free-form, with no ${footprinted.join(", ")} of its own: change its points, ` +
+                  `or use move_nodes / rotate_nodes`,
+              );
+            }
+          }
         }
         checkSizes(`changes[${i}]`, fields, errors);
         const parent = fields.parent === null || fields.parent === "" ? undefined : fields.parent;
@@ -294,13 +335,14 @@ export function createSceneStore() {
         if (fields.kind !== undefined) patch.kind = fields.kind;
         if (fields.color !== undefined) patch.color = fields.color;
         if (fields.sides !== undefined) patch.sides = fields.sides ?? undefined;
+        if (fields.points !== undefined && node?.type === "freeform") patch.points = checkPoints(`changes[${i}]`, fields.points, errors);
         if (fields.name !== undefined) patch.name = fields.name.trim() || undefined;
         if (fields.parent !== undefined) patch.parent = parent;
 
         // Keep only what differs from the node as it is.
         const effective: NodePatch = {};
         for (const key of Object.keys(patch) as (keyof NodePatch)[]) {
-          if (patch[key] !== (node as Record<string, unknown>)[key]) (effective as Record<string, unknown>)[key] = patch[key];
+          if (!sameValue(patch[key], (node as Record<string, unknown>)[key])) (effective as Record<string, unknown>)[key] = patch[key];
         }
         return { id, patch: effective, index: i };
       });
@@ -428,15 +470,16 @@ export function createSceneStore() {
         if (e) errors.push(`parent: ${e}`);
       }
       const groups = new Set(snapshot.filter(isGroup).map((n) => n.id));
-      const nodes = snapshot.map((n): SceneNode => {
+      const nodes = snapshot.map((n, i): SceneNode => {
         const { parent: p, ...rest } = n;
         const kept = p !== undefined && groups.has(p) ? { parent: p } : {};
         if (!isShape(n)) return { ...rest, ...kept } as SceneNode;
-        const box = { ...(rest as Shape), ...kept };
-        return { ...box, width: round2(box.width), depth: round2(box.depth), height: round2(box.height), rotation: normalizeRotation(box.rotation) };
+        const shape = { ...(rest as Shape), ...kept, height: round2(n.height) } as Shape;
+        if (!isFootprinted(shape)) return { ...shape, points: checkPoints(`nodes[${i}]`, shape.points, errors) };
+        return { ...shape, width: round2(shape.width), depth: round2(shape.depth), rotation: normalizeRotation(shape.rotation) };
       });
       nodes.forEach((n, i) => {
-        if (isShape(n)) checkSizes(`nodes[${i}]`, snapshot[i] as Shape, errors);
+        if (isShape(n)) checkSizes(`nodes[${i}]`, snapshot[i] as Partial<Record<"width" | "depth" | "height", number>>, errors);
         if (isCycle(nodes, n.id)) errors.push(`nodes[${i}].parent: "${n.id}" ends up inside itself`);
       });
       const boxes = nodes.filter(isShape);
