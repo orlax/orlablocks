@@ -1,5 +1,5 @@
 import type { z } from "zod";
-import { boundsOf, normalizeDeg, rotateAround, round2 } from "../shared/geometry";
+import { boundsOf, mirrorAcross, normalizeDeg, rotateAround, round2 } from "../shared/geometry";
 import {
   BoxInputSchema,
   DEFAULT_COLOR,
@@ -8,6 +8,7 @@ import {
   DuplicateNodesSchema,
   GroupNodesSchema,
   MIN_HEIGHT,
+  MirrorNodesSchema,
   MoveNodesSchema,
   NodeUpdateSchema,
   PlaceNodesSchema,
@@ -393,6 +394,23 @@ export function createSceneStore() {
       if (changes.length > 0) commit(label("rotate", listIds(ids), actor), actor, [{ op: "update", changes }]);
       const turned = new Set(boxes.map((b) => b.id));
       return scene.nodes.filter((n): n is Box => turned.has(n.id));
+    },
+
+    /**
+     * Mirrors boxes and whole groups in place on a world axis, as one step: every center reflects across the center
+     * of their combined footprint bounds, and every rotation becomes -rotation. Records nothing if nothing changes
+     * (a single unrotated box). Returns the boxes.
+     */
+    mirrorNodes(input: z.input<typeof MirrorNodesSchema>, actor: Actor): Box[] {
+      const { ids, axis } = parse(MirrorNodesSchema, input, "Nothing was mirrored.");
+      const errors: string[] = [];
+      checkIds("ids", ids, errors);
+      failIf(errors, "Nothing was mirrored.");
+      const boxes = boxesUnder(scene.nodes, ids);
+      const changes = effectiveBoxChanges(boxes, mirrorAcross(boxes, axis));
+      if (changes.length > 0) commit(label("mirror", `${listIds(ids)} on ${axis.toUpperCase()}`, actor), actor, [{ op: "update", changes }]);
+      const mirrored = new Set(boxes.map((b) => b.id));
+      return scene.nodes.filter((n): n is Box => mirrored.has(n.id));
     },
 
     /**

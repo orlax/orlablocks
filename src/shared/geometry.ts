@@ -76,3 +76,37 @@ export function rotateAround(boxes: Box[], pivot: { x: number; z: number }, degr
   }
   return patches;
 }
+
+/** A world axis on the ground, for mirroring. */
+export type MirrorAxis = "x" | "z";
+
+/**
+ * `n` rounded to 2 decimals, ties to an even last digit. Used for the mirror's reflection sum: with plain rounding
+ * a tie (quarter-meter widths make 0.125) would round up after every mirror, drifting 0.01 each time.
+ */
+function round2HalfEven(n: number): number {
+  const h = n * 100;
+  const f = Math.floor(h);
+  const tie = Math.abs(h - f - 0.5) < 1e-6;
+  return (tie ? (f % 2 === 0 ? f : f + 1) : Math.round(h)) / 100 + 0;
+}
+
+/**
+ * One box reflected across the plane where `axis` = sum / 2 (sum = twice the pivot). A box is symmetric, so only
+ * its center and angle change: the center reflects and the rotation becomes -rotation. Shapes that aren't
+ * symmetric (outlines, things that face a direction) will need their own case.
+ */
+export function mirrorBox(box: Box, axis: MirrorAxis, sum: number): BoxPatch {
+  const rotation = round2(normalizeDeg(-box.rotation)) % 360;
+  return axis === "x" ? { x: round2(sum - box.x), rotation } : { z: round2(sum - box.z), rotation };
+}
+
+/**
+ * Mirrors boxes on a world axis across the center of their combined footprint bounds, in place. Mirroring the
+ * result again restores the original values exactly. Returns the patches.
+ */
+export function mirrorAcross(boxes: Box[], axis: MirrorAxis): Record<string, BoxPatch> {
+  const b = boundsOf(boxes);
+  const sum = round2HalfEven(axis === "x" ? b.minX + b.maxX : b.minZ + b.maxZ);
+  return Object.fromEntries(boxes.map((box) => [box.id, mirrorBox(box, axis, sum)]));
+}

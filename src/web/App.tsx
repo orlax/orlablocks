@@ -136,7 +136,7 @@ export function App() {
     }
   }, [scene]);
 
-  // V / H / B pick a tool, Space holds the hand. Cmd/Ctrl+Z undoes, Cmd/Ctrl+Shift+Z (or Ctrl+Y) redoes.
+  // V / H / B pick a tool, Space holds the hand. Shift+X / Shift+Z mirror the selection on that world axis. Cmd/Ctrl+Z undoes, Cmd/Ctrl+Shift+Z (or Ctrl+Y) redoes.
   // Cmd/Ctrl+A selects everything at the current level, Cmd/Ctrl+G groups the selection, Cmd/Ctrl+Shift+G ungroups
   // it, Delete / Backspace removes it, Esc deselects and leaves an entered group.
   useEffect(() => {
@@ -196,6 +196,10 @@ export function App() {
         return;
       }
       if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.shiftKey && (key === "x" || key === "z")) {
+        if (selection.length > 0) send({ type: "mirror_nodes", ids: selection, axis: key });
+        return;
+      }
       if (e.key === "Escape") {
         setSelection([]);
         setContext(null);
@@ -320,6 +324,7 @@ export function App() {
             onKind={(kind) => singleBox && send({ type: "update_nodes", changes: [{ id: singleBox.id, kind }] })}
             color={sharedColor}
             onColor={(color) => send({ type: "update_nodes", changes: selectedBoxes.map((b) => ({ id: b.id, color })) })}
+            onMirror={(axis) => send({ type: "mirror_nodes", ids: selection, axis })}
           >
             {contextNode ? `in ${contextNode.name ?? contextNode.id} › ${selectionInfo}` : selectionInfo}
           </ContextualBar>

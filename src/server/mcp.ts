@@ -11,6 +11,7 @@ import {
   DuplicateNodesSchema,
   GroupNodesSchema,
   MAX_COPIES,
+  MirrorNodesSchema,
   MIN_HEIGHT,
   MoveNodesSchema,
   NodeUpdateSchema,
@@ -52,6 +53,8 @@ const INSTRUCTIONS =
   "To repeat things (a row of pillars, a second wing, another floor), copy them with move_nodes and copy: true " +
   "(count for several, each offset further) instead of retyping boxes with draw_boxes: copies get new IDs and keep " +
   "their names, structure and parent group. " +
+  "For symmetry, mirror_nodes flips nodes in place on a WORLD axis (x or z, not the camera's view): copy a wing " +
+  "with move_nodes, then mirror the copy, instead of computing reflected positions and angles by hand. " +
   "The scene's `selection` lists the IDs of the nodes the human has selected in the editor: when they say " +
   '"this" or "these", they mean the selection. ' +
   "The scene's `view` is what the editor window currently shows: `focus` is the ground point at the screen center, " +
@@ -187,6 +190,19 @@ function buildServer(workspace: Workspace) {
       inputSchema: RotateNodesSchema.shape,
     },
     async (input) => json({ rotated: store().rotateNodes(input, "agent") }),
+  );
+
+  server.registerTool(
+    "mirror_nodes",
+    {
+      title: "Mirror nodes",
+      description:
+        `Flip boxes and/or whole groups in place on a world axis, across the center of their combined bounds: ` +
+        `axis x swaps east and west (every x reflects), axis z swaps +z and -z. y never changes, and every rotation ` +
+        `becomes -rotation. A group mirrors as a unit. Mirroring twice restores the original exactly.`,
+      inputSchema: MirrorNodesSchema.shape,
+    },
+    async (input) => json({ mirrored: store().mirrorNodes(input, "agent") }),
   );
 
   server.registerTool(

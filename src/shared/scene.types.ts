@@ -176,6 +176,10 @@ export const RotateNodesSchema = z.strictObject({
   ids: IdsSchema.describe("IDs of boxes and/or groups; a group turns everything in it"),
   degrees: z.number().describe("Counterclockwise seen from above, around the center of the nodes' combined bounds"),
 });
+export const MirrorNodesSchema = z.strictObject({
+  ids: IdsSchema.describe("IDs of boxes and/or groups; a group mirrors everything in it as a unit"),
+  axis: z.enum(["x", "z"]).describe("World axis: x swaps east and west, z swaps +z and -z"),
+});
 export const GroupNodesSchema = z.strictObject({
   ids: IdsSchema.describe("IDs of the boxes and/or groups to put in a new group"),
   name: field.name.optional(),
@@ -256,6 +260,7 @@ export const ClientMessageSchema = z.discriminatedUnion("type", [
   MoveNodesSchema.extend({ type: z.literal("move_nodes") }),
   DuplicateNodesSchema.extend({ type: z.literal("duplicate_nodes") }),
   RotateNodesSchema.extend({ type: z.literal("rotate_nodes") }),
+  MirrorNodesSchema.extend({ type: z.literal("mirror_nodes") }),
   GroupNodesSchema.extend({ type: z.literal("group_nodes") }),
   UngroupSchema.extend({ type: z.literal("ungroup") }),
   PlaceNodesSchema.extend({ type: z.literal("place_nodes") }),

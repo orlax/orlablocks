@@ -8,7 +8,7 @@ Shared vocabulary for this project, for humans and agents alike. Use these names
 - **box tool**: `B`, drags boxes on the ground with the kind and color from the contextual bar. `Shift` makes the footprint square, `Alt` draws from the center, and `Cmd/Ctrl` turns off snap. Drawing never changes the selection, and the tool stays Box. Replaces the separate room and volume tools (from 03).
 - **camera**: the 3D perspective camera with a narrow (30°) field of view, so perspective stays mild (from 02). Its pitch is fixed, it orbits the focus point with yaw only, and zoom moves it toward the focus point.
 - **canvas**: the full-window 3D drawing surface (the viewport). It fills the whole browser window.
-- **contextual bar**: the bar that floats just above the tool-bar. In the Box tool it sets the next box's kind and color. In the Select tool it edits the selection: kind for a single box, color for all selected boxes, plus read-only numbers (from 03).
+- **contextual bar**: the bar that floats just above the tool-bar. In the Box tool it sets the next box's kind and color. In the Select tool it edits the selection: kind for a single box, color for all selected boxes, the X / Z mirror buttons (from 05), plus read-only numbers (from 03).
 - **draft**: the live preview of a box while you drag its footprint, drawn lighter, with a `W × D m` label next to the cursor. `Esc` cancels it.
 - **entered group**: the group you've double-clicked into. Clicks, the marquee and `Cmd/Ctrl+A` then act on its children, and the contextual bar says `in lobby › …`. `Esc` or clicking outside it leaves it (from 03).
 - **focus point**: the ground point under the center of the screen. The camera orbits it and pans move it (from 02).
@@ -43,6 +43,7 @@ Shared vocabulary for this project, for humans and agents alike. Use these names
 - **group**: a node that contains other nodes (via their `parent`), with ID `group_N`. It has no position of its own: its bounds come from its boxes (`get_scene` reports them as `bounds`), and moving, rotating or deleting it acts on everything inside as one command. A group left empty disappears in the same command (from 03).
 - **history**: the single linear list of commands shared by the human and the agent. Undo reverts the latest command, whoever made it (from 02) From 04 it's per scene and survives restarts, rebuilt from the **history log**.
 - **history log**: a scene's `history.jsonl`, append-only, one line per step (`commit` with its ops and inverse, `undo`, `redo`), numbered by `seq`. `scene.json` records the `seq` it includes. The log is written first, so after a crash it can be one step ahead, and opening the scene applies that step (from 04).
+- **mirror**: flipping nodes in place on a world axis, X (east ↔ west) or Z, across the center of their combined footprint bounds. Each box's center reflects and its rotation becomes -rotation, and `y` never changes. A group mirrors as a unit, and mirroring twice restores the exact values. `Shift+X` / `Shift+Z`, the mirror buttons on the Select tool's contextual bar (a flip icon, turned a quarter for Z, with a red X or blue Z in the corner), and the `mirror_nodes` tool. Mirroring only works in place: to mirror a copy, Alt-drag it first (from 05).
 - **name**: an optional human-friendly label on any node ("lobby"). Not unique. Tools still take IDs (from 03).
 - **node**: anything in the scene's flat list: a box or a group. Each has an `id`, an optional `name` and an optional `parent` (from 03).
 - **op**: the smallest reversible scene change (`add`, `remove`, `update`, and `order` for the outliner's reordering) inside a command.
@@ -62,6 +63,6 @@ Shared vocabulary for this project, for humans and agents alike. Use these names
 
 ## System
 
-- **MCP server / tools**: the `/mcp` endpoint Claude Code connects to. Current tools: `get_scene`, `draw_boxes`, `update_nodes`, `remove_nodes`, `move_nodes` (with `copy`, from 05), `rotate_nodes`, `group_nodes`, `ungroup`.
+- **MCP server / tools**: the `/mcp` endpoint Claude Code connects to. Current tools: `get_scene`, `draw_boxes`, `update_nodes`, `remove_nodes`, `move_nodes` (with `copy`, from 05), `rotate_nodes`, `mirror_nodes` (from 05), `group_nodes`, `ungroup`.
 - **server instructions**: the conventions text (units, boxes, groups, IDs, the view, copying) the MCP server sends once when a client connects, instead of repeating it in every tool description (from 05).
 - **server**: the single local process (`npm run dev`) that owns the open scene, saves it in the data folder, and serves the editor, the WebSocket (`/ws`) and MCP (`/mcp`).

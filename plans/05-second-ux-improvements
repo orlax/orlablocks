@@ -249,3 +249,25 @@ Adopted as recommended (say if any should change):
   - The Select tool's hint mentions `Alt` copies and `Alt+J` repeats.
 - **Checks:** typecheck; 153 tests; the editor bundles with `vite build`. The server side is unchanged from 05.1 (already checked there), so the rest is Orlando's browser checklist.
 - **Beyond the plan (Orlando's request):** the project bar moved out of the info-label into its own button at the top left: a map icon, `Castle ▸ Entrance` (cut off with an ellipsis when long) and a chevron. It grows with the names, from the outliner's 240 px up to 640 px, so the full scene name shows. The info-label now holds status only, as a solid status bar docked along the bottom edge, full width and 28 px tall (`--status-h`). The 3D view ends above it, so the screen center (the reported focus point) stays true and clicks on the bar don't reach the scene. The dock (tool-bar, contextual bar) and the outliner's max height moved up by the bar's height.
+
+### 05.3 — Mirror (done)
+
+- **`geometry.ts`:**
+  - `mirrorBox(box, axis, sum)` is the per-shape case: the center reflects and the rotation becomes `-rotation`. Future asymmetric shapes add their own case here.
+  - `mirrorAcross(boxes, axis)` pivots on the center of the combined footprint bounds.
+  - The reflection sum (min + max) is rounded **half to even**. Quarter-meter widths put the center exactly on a rounding tie (0.125), and plain rounding then goes up on every mirror, so a double mirror was 1 cm off. Half-to-even rounds both mirrors to the same sum, so mirroring twice restores the exact values. Tested: the test fails with plain rounding.
+- **Store:** `mirrorNodes({ ids, axis })`, one `update` step labeled `Mirror group_1 on X` / `Agent: mirror group_1 on Z`. If nothing changes (a single unrotated box), no step is recorded.
+- **Protocol:** `{ type: "mirror_nodes", ids, axis }`.
+- **Editor:**
+  - `Shift+X` / `Shift+Z` mirror the selection in any tool, like Delete.
+  - The Select tool's contextual bar has two mirror buttons, each a flip icon (`FlipHorizontal2`) with the axis letter in the corner in the gizmo's color (red X, blue Z), and tooltips naming the key and what it swaps. At Orlando's request, this replaces decision 16's letters-only buttons. Z's icon is turned 90° so the two buttons differ at a glance. The direction on screen still depends on the camera, so the letter names the axis.
+  - The Select hint mentions `⇧X/⇧Z mirror`.
+  - The selection stays the same.
+- **MCP:**
+  - New `mirror_nodes { ids, axis: "x" | "z" }`, which returns the mirrored boxes. `/mcp` lists 9 tools.
+  - The instructions explain that mirror axes are world axes, and that the way to get symmetry is to copy with `move_nodes`, then mirror the copy.
+  - The server version stays 0.0.6, as the plan says. **Restart the server and reconnect with `/mcp`.**
+- **Checks:**
+  - typecheck;
+  - 160 tests (new: `geometry.test.ts`, and "scene store mirroring" in `scene.test.ts`);
+  - a scripted run on `:5171` with a scratch `DATA_DIR`: 9 tools. The agent copied the lobby 20 m east twice in one `move_nodes` call. `mirror_nodes` on Z twice, on a group with rotated boxes and 2.25 × 4.75 footprints, restored the exact JSON. Axis `y` was refused. A WS mirror on X, then one undo, restored the lobby. Mirroring a single unrotated box recorded no step.

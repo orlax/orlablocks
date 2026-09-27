@@ -549,6 +549,61 @@ describe("scene store copies", () => {
   });
 });
 
+describe("scene store mirroring", () => {
+  /** An L of rotated boxes, grouped as group_1, plus box_3 far away. */
+  const setup = () => {
+    const store = createSceneStore();
+    store.drawBoxes(
+      [
+        { kind: "room", x: 4, z: 0, width: 8, depth: 2, rotation: 10 },
+        { kind: "volume", x: 1, z: 3, width: 2, depth: 4, rotation: 30, y: 1 },
+        { kind: "volume", x: 50, z: 50, width: 1, depth: 1 },
+      ],
+      "human",
+    );
+    store.groupNodes({ ids: ["box_1", "box_2"], name: "wing" }, "human");
+    return store;
+  };
+  const box = (store: ReturnType<typeof createSceneStore>, id: string) => boxes(store).find((b) => b.id === id)!;
+
+  it("mirrors a group on X as one step: centers reflect, rotations negate, y stays, others untouched", () => {
+    const store = setup();
+    const before = boxes(store);
+    const mirrored = store.mirrorNodes({ ids: ["group_1"], axis: "x" }, "agent");
+    expect(mirrored.map((b) => b.id)).toEqual(["box_1", "box_2"]);
+    expect(box(store, "box_1")).toMatchObject({ rotation: 350, z: 0 });
+    expect(box(store, "box_2")).toMatchObject({ rotation: 330, z: 3, y: 1 });
+    // The two centers swap sides: box_2 was west of box_1, now it's east.
+    expect(box(store, "box_2").x).toBeGreaterThan(box(store, "box_1").x);
+    expect(box(store, "box_3")).toEqual(before[2]);
+    expect(store.getHistory().undoLabel).toBe("Agent: mirror group_1 on X");
+    store.undo();
+    expect(boxes(store)).toEqual(before);
+  });
+
+  it("mirroring twice on either axis restores the exact values", () => {
+    const store = setup();
+    const before = boxes(store);
+    for (const axis of ["x", "z"] as const) {
+      store.mirrorNodes({ ids: ["group_1"], axis }, "human");
+      expect(boxes(store)).not.toEqual(before);
+      store.mirrorNodes({ ids: ["group_1"], axis }, "human");
+      expect(boxes(store)).toEqual(before);
+    }
+    expect(store.getHistory().undoLabel).toBe("Mirror group_1 on Z");
+  });
+
+  it("records nothing for a single unrotated box, and rejects unknown IDs and axes", () => {
+    const store = setup();
+    const label = store.getHistory().undoLabel;
+    store.mirrorNodes({ ids: ["box_3"], axis: "z" }, "human");
+    expect(store.getHistory().undoLabel).toBe(label);
+    expect(() => store.mirrorNodes({ ids: ["box_9"], axis: "x" }, "human")).toThrow(/no node "box_9"/);
+    // @ts-expect-error y isn't a mirror axis
+    expect(() => store.mirrorNodes({ ids: ["box_1"], axis: "y" }, "human")).toThrow(SceneError);
+  });
+});
+
 describe("scene store placing (outliner drag and drop)", () => {
   /** box_1..box_4 at the top level; group_1 holds box_2 and box_3. */
   const setup = () => {

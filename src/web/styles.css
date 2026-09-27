@@ -143,6 +143,14 @@ body {
 }
 .contextual-bar button.swatch:hover { transform: scale(1.12); }
 .contextual-bar button.swatch.active { outline: 2px solid #8fb4f2; outline-offset: 2px; }
+/* Mirror on X / Z: a flip icon with the axis letter in the corner, in the gizmo's axis colors. */
+.contextual-bar .mirrors { display: flex; gap: 4px; }
+.contextual-bar button.mirror { position: relative; width: 30px; height: 28px; }
+.contextual-bar button.mirror .axis { position: absolute; right: 2px; bottom: 1px; font: 700 9px/1 ui-monospace, monospace; }
+.contextual-bar button.mirror.x .axis { color: #f07a70; }
+.contextual-bar button.mirror.z .axis { color: #6f9df5; }
+/* Z's icon is turned a quarter, so the two buttons tell apart at a glance (the letter still names the axis). */
+.contextual-bar button.mirror.z svg { transform: rotate(90deg); }
 
 /* The outliner: a collapsible tree panel on the left, below the project bar. */
 .outliner {
