@@ -319,6 +319,11 @@ Adopted as recommended (say if any should change):
 14. **Lines default to `black`,** draw on top of shapes, and cast no shadows.
 15. **New free-forms start on the ground** (y 0), like drawn boxes.
 
+Settled with Orlando in 06.4:
+
+16. **The rotate pivot is Figma-style:** a selection's frame turns with it while it stays selected, and the pivot is that frame's center, so +30° then −30° lands where it started. For the agent, `rotate_nodes` returns its pivot and takes an optional `pivot`.
+17. **Crash protection with a visible log:** the 3D view (and the whole editor) sit in error boundaries, and a collapsible **error panel** lists every caught error, so nothing fails silently.
+
 ---
 
 ## 14. Progress
@@ -437,20 +442,69 @@ Adopted as recommended (say if any should change):
     - a group of all three was copied 30 m east, with its free-form's points moved;
     - a WS `add_shapes` drew `freeform_3`, and undo removed it. The counters were saved.
 
-### Notes for the next session (written 2026-09-26, end of day)
+### 06.4 — Point editing and convert (done)
+
+Orlando confirmed 06.3's browser checklist passed (no bugs found), and settled decisions 16 and 17.
+
+- **Convert (`geometry.ts` `toFreeformPoints`, the store's `convertNodes`):**
+  - A box gives its 4 world corners, and a sided cylinder its corners.
+  - A smooth cylinder gives 4 smooth points on its ellipse's axes, with handles `CIRCLE_HANDLE` (0.5523) × each radius along the tangent. They stay within 0.5 % of the true ellipse (tested).
+  - One step: a `remove` then an `add` with the originals' `indices`, so each free-form takes its original's place. It gets a new ID and keeps the name, parent, kind, y, height, color and `createdBy`. Labeled `Convert box_3 to freeform_4`.
+  - Groups and free-forms are refused, naming them.
+  - The editor sends `convert_nodes { ids }`. The agent uses `update_nodes { id, type: "freeform" }`: a call that converts only converts, and anything mixed is refused with a message that says to use a second call. The MCP result maps each old ID to its new one (`converted: [{ from, to }]`).
+- **Point editing (`src/web/points.ts`, pure and tested; `splitEdge` in `geometry.ts`):**
+  - **Entering and leaving:** double-click a free-form that's selected at its own level (inside a group, the first double-click still enters the group), or use the contextual bar's **Edit points** button (**Done** leaves). The bar reads `editing cave (freeform_1) · …`, and the status bar shows the point-editing hint.
+  - **What you see:** points and handles on the free-form's top face (`y + height`), drawn over everything. Points are hollow squares, filled when selected, and each selected point shows its handles as dots on stems.
+  - **A press on a point** selects it (`Shift` adds; a `Shift`-click on a selected point removes it) and dragging moves every selected point. The grabbed point snaps to 0.5 m, and `Cmd/Ctrl` turns snapping off.
+  - **Handles:** a press on a handle drags it freely. The opposite handle turns to stay in line and keeps its own length, so a point split by an insert stays smooth without changing its other curve. `Alt` breaks it.
+  - **A press on an edge** inserts a point there with de Casteljau, so the shape doesn't change. Dragging on from the press moves the new point.
+  - **Double-click a point:** corner ↔ smooth. Smooth handles run along the direction from the previous neighbor to the next, a third of the shorter neighbor edge long.
+  - **`Delete` / `Backspace`** removes the selected points, never below 3, and never deletes the free-form itself.
+  - **Leaving:** `Esc` cancels a point drag, or else leaves point editing. A press on the free-form away from its points deselects the points. A press on empty ground leaves point editing and keeps the selection. A press on another shape leaves it and selects that shape.
+  - **Each edit is one `update_nodes { points }`:** `Reshape freeform_1`. We kept the store's existing verb rather than §8's `Edit points of`, because a scale drag records the same field.
+  - **An edit that would cross itself** shows red, with the reason next to the cursor, and on release isn't sent. The status bar says `Can't reshape: …`.
+  - Point editing ends when the selection changes, the tool changes or a scene opens.
+- **Figma-style rotate pivot (decision 16):**
+  - `orientedFrame(shapes, angle)` is the smallest rectangle turned by `angle` around the footprints. `selectionFrame` is a single box's or cylinder's own rectangle, and for anything else that turned frame.
+  - The Viewport keeps a **turn** per selection. It updates while rotating, and it's kept after release as long as the server sends back what our own drags produced (`footprintKey`). An undo, the agent or another tab resets it to axis-aligned.
+  - The gizmo's anchor, rotate handle and a single free-form's scale handles sit on that frame. `resizeShape` stretches a free-form along a turned frame's own axes.
+  - The rotate label now shows the frame's angle for every selection (`45°`), not the change (`+45°`), and snaps it to 15°. One gizmo test's expected label changed.
+  - The store's `rotateNodes` returns `{ shapes, pivot }` and takes an optional `pivot`. The MCP result gives the pivot, and the tool description says to pass it back when turning something back.
+- **Crash protection (decision 17; `errors.ts`, `ErrorPanel.tsx`):**
+  - An `ErrorBoundary` wraps the `<Canvas>` (scope `view`: *Reload the view* remounts it) and the whole App in `main.tsx` (scope `editor`, whose message keeps the panel on screen).
+  - The log collects:
+    - boundary catches;
+    - React's `onUncaughtError`;
+    - `window` `error` and `unhandledrejection` (the render loop, handlers, timers);
+    - errors the server sends, since the dock drops them at the next scene.
+  - A repeated error counts up instead of flooding the log, which is capped at 50.
+  - The panel is a red `N errors` pill at the top right, hidden while there are none. It opens to the list (newest first, click an entry for its stack), with **Copy** (the whole log, for a bug report or for Claude) and **Clear**.
+- **MCP:** the instructions explain converting (a new ID, what's kept, and not to compute circle handles by hand). `update_nodes` and `rotate_nodes` describe `type` and `pivot`. The server version stays 0.0.7. **Restart the server and reconnect with `/mcp`.**
+- **Checks:**
+  - typecheck;
+  - 214 tests. The new ones:
+    - "convert and split" and "oriented frames" in `geometry.test.ts`;
+    - `points.test.ts`;
+    - a turned-frame rotate in `gizmo.test.ts`;
+    - "conversion" and "rotate pivot" in `scene.test.ts`;
+  - the editor bundles;
+  - a scripted run on `:5171` with a scratch `DATA_DIR`:
+    - `initialize` reports 0.0.7, and its instructions cover converting. `tools/list` has 9 tools, and `update_nodes` takes `type`;
+    - the agent converted a smooth 10 m cylinder (4 smooth points, name kept, the ID mapped), and a mixed convert was refused;
+    - a `points` edit worked;
+    - `rotate_nodes` +30° reported its pivot, and −30° with that pivot restored the exact points;
+    - a WS `convert_nodes` converted a rotated box and an octagon in place (`Convert box_1, cylinder_2 to freeform_2, freeform_3`), converting a free-form was refused, and undo put the box and octagon back in their places;
+  - Orlando's browser check passed. The agent drew the shrine, converted it and flattened its south side (3 steps). It took +z as south because the scene has no declared north, so a compass is queued as a side mission (see the notes below).
+
+### Notes for the next session (updated 2026-09-27)
 
 **Where things stand:**
-- 06.1, 06.2 and 06.3 are committed, one commit each.
-- 06.3's browser checklist wasn't confirmed as a whole. Orlando hit the Pen's second-click crash, which is fixed (see 06.3). Start by asking whether the rest of the checklist passed, and fix anything he found before building on it:
-  - the Pen: corners, curves, closing, Backspace, Esc, Space-panning;
-  - star, crescent and V walls;
-  - the gizmo on a free-form;
-  - picking and the marquee in an L's inside corner;
-  - copy and paste;
-  - the agent's shrine.
-- **Next is 06.4, point editing and convert (§8).** Orlando asked "can I edit free-form shapes after creating them?", and this is the answer he's waiting for.
+- 06.1, 06.2 and 06.3 are committed, one commit each, and their browser checklists passed.
+- 06.4 is committed, and its browser check passed.
+- **Side mission, asked for by Orlando: a compass.** The scene has a declared north, reported to the agent (in `get_scene` and the instructions), and the view shows a compass gizmo in a lower corner. Settle which way north points before building it.
+- **Next is 06.5, lines and the Line tool (§7).** Point editing is written for free-forms, but the drag, the hit-testing and the overlay work on a list of points, so lines can reuse them. A line adds the y arrow on the selected point.
 
-**06.4, how I'd build it:**
+**06.4, how I planned it (built as described in the 06.4 section, with the differences noted there):**
 - **Entering the mode:** today a double-click in the Select tool enters a group (`onDoubleClick` in `Viewport.tsx`). Make a double-click on a free-form (the node itself, once it's selected at its level) enter point editing instead. Keep it as Viewport state next to `context`, or lift it to App like `context` if the contextual bar needs it (it does: `editing freeform_1`).
 - **Hit-testing points and handles** is like the gizmo's `hitGizmo` (screen distance ≤ `HANDLE_HIT_PX`). Put the pure math in a new `src/web/points.ts` with tests, as `gizmo.ts` and `marquee.ts` do.
 - **Dragging a point** reuses `groundAt` (snap, `Cmd/Ctrl` for free). Dragging a handle mirrors the opposite one, and `Alt` breaks the mirror. Preview locally like the gizmo's `pending` (patch `points`), then send one `update_nodes { points }` on release. The store already validates with `outlineProblem` and records `Reshape freeform_1`, so show red and don't send when `outlineProblem` fails.
@@ -464,9 +518,9 @@ Adopted as recommended (say if any should change):
   - `NodeUpdateSchema` doesn't have `type` yet; add it as `z.literal("freeform").optional()`.
 - **Undo** already works for all of this, because every change is an `update` or `add` / `remove` op.
 
-**Open questions to raise with Orlando:**
-- **The rotate pivot.** Rotating turns around the center of the bounds, and a free-form's (or a group's) bounds move as it turns, so +30° then −30° doesn't land where it started (0.35 m off for a crescent). The options: a pivot that doesn't move (the outline's area centroid, or bounds that turn with the selection, as in Figma), or leave it.
-- **An error boundary around the `<Canvas>`,** so a render bug shows a message instead of blanking the editor. I offered it; he hasn't answered.
+**Questions raised with Orlando (both settled in 06.4, decisions 16 and 17):**
+- The rotate pivot: Figma-style, bounds that turn with the selection.
+- An error boundary around the `<Canvas>`: yes, plus a collapsible error panel so nothing fails silently.
 
 **Things that bit me (save the next agent the time):**
 - **zsh doesn't split `$VAR` into words:** `perl -pi -e '...' $FILES` ran on one file named with newlines. Pipe through `xargs`.

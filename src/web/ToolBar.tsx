@@ -9,6 +9,7 @@ import {
   MousePointer2,
   PenTool,
   Plus,
+  Spline,
   Redo2,
   Square,
   SquareDashed,
@@ -38,6 +39,11 @@ export const HINTS: Record<Tool, string> = {
   cylinder: `drag to draw · Shift circle · Alt from center · ${MOD} no snap · Esc to cancel`,
   pen: `click for a corner · drag for a curve · click the first point or Enter to close · ⌫ removes the last point · ${MOD} no snap · Esc to cancel`,
 };
+
+/** The hint while editing a free-form's points (the Select tool, after double-clicking it). */
+export const EDIT_POINTS_HINT =
+  `drag a point or handle (Alt breaks a smooth point) · Shift-click adds points · click an edge to add a point · ` +
+  `double-click a point: corner ↔ smooth · ⌫ deletes points · ${MOD} no snap · Esc or click outside to finish`;
 
 /**
  * The mirror buttons: a flip icon (turned a quarter for Z, so the two differ at a glance), and the world axis as a
@@ -124,6 +130,8 @@ export function ContextualBar({
   onColor,
   onMirror,
   sides,
+  onConvert,
+  editPoints,
   children,
 }: {
   kind: ShapeKind | null;
@@ -135,6 +143,10 @@ export function ContextualBar({
   onMirror?: (axis: MirrorAxis) => void;
   /** Shows the sides control (the Cylinder tool, a selected cylinder): the side count, undefined = smooth. */
   sides?: { value: number | undefined; onChange: (sides: number | undefined) => void };
+  /** Shows Convert to free-form (the selection has boxes or cylinders). */
+  onConvert?: () => void;
+  /** Shows Edit points (a single free-form is selected): whether it's in point editing, and a toggle. */
+  editPoints?: { active: boolean; onToggle: () => void };
   children?: ReactNode;
 }) {
   return (
@@ -181,6 +193,25 @@ export function ContextualBar({
               </button>
             ))}
           </div>
+        </>
+      )}
+      {(onConvert || editPoints) && (
+        <>
+          <span className="sep" />
+          {onConvert && (
+            <button className="labeled" title="Convert to free-form: its outline becomes points you can edit (a new ID)" onClick={onConvert}>
+              <Spline size={16} /> Convert to free-form
+            </button>
+          )}
+          {editPoints && (
+            <button
+              className={editPoints.active ? "labeled active" : "labeled"}
+              title={editPoints.active ? "Finish editing points (Esc)" : "Edit points (or double-click the shape)"}
+              onClick={editPoints.onToggle}
+            >
+              <Spline size={16} /> {editPoints.active ? "Done" : "Edit points"}
+            </button>
+          )}
         </>
       )}
       {children && (

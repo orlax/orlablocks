@@ -1,9 +1,18 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
+import { ErrorBoundary } from "./ErrorPanel";
+import { installGlobalErrorLog, reportError } from "./errors";
 
-createRoot(document.getElementById("root")!).render(
+installGlobalErrorLog();
+
+createRoot(document.getElementById("root")!, {
+  // What no error boundary caught (the boundaries log their own).
+  onUncaughtError: (error, info) => reportError("editor", error, info.componentStack ?? undefined),
+}).render(
   <StrictMode>
-    <App />
+    <ErrorBoundary scope="editor">
+      <App />
+    </ErrorBoundary>
   </StrictMode>,
 );

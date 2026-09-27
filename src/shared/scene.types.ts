@@ -282,6 +282,10 @@ export type ShapeInput = z.input<typeof ShapeInputSchema>;
 /** A change to an existing node, by ID: any of a shape's editable fields; for a group only `name` and `parent`. */
 export const NodeUpdateSchema = z.strictObject({
   id: z.string().describe("ID of an existing node, e.g. box_3 or group_1"),
+  type: z
+    .literal("freeform")
+    .optional()
+    .describe("Converts a box or cylinder into a free-form with the same outline and a new freeform_N ID. Give it alone with the id"),
   kind: field.kind.optional(),
   x: field.x.optional(),
   z: field.z.optional(),
@@ -327,8 +331,14 @@ export const PasteNodesSchema = z.strictObject({
 });
 export const RotateNodesSchema = z.strictObject({
   ids: IdsSchema.describe("IDs of boxes and/or groups; a group turns everything in it"),
-  degrees: z.number().describe("Counterclockwise seen from above, around the center of the nodes' combined bounds"),
+  degrees: z.number().describe("Counterclockwise seen from above"),
+  pivot: z
+    .object({ x: z.number(), z: z.number() })
+    .optional()
+    .describe("The ground point to turn around. Defaults to the center of the nodes' combined bounds"),
 });
+/** Converts boxes and cylinders into free-forms with the same outline (new IDs, same place in the list), as one step. */
+export const ConvertNodesSchema = z.strictObject({ ids: IdsSchema.describe("IDs of boxes and cylinders") });
 export const MirrorNodesSchema = z.strictObject({
   ids: IdsSchema.describe("IDs of boxes and/or groups; a group mirrors everything in it as a unit"),
   axis: z.enum(["x", "z"]).describe("World axis: x swaps east and west, z swaps +z and -z"),
@@ -415,6 +425,7 @@ export const ClientMessageSchema = z.discriminatedUnion("type", [
   DuplicateNodesSchema.extend({ type: z.literal("duplicate_nodes") }),
   RotateNodesSchema.extend({ type: z.literal("rotate_nodes") }),
   MirrorNodesSchema.extend({ type: z.literal("mirror_nodes") }),
+  ConvertNodesSchema.extend({ type: z.literal("convert_nodes") }),
   PasteNodesSchema.extend({ type: z.literal("paste_nodes") }),
   GroupNodesSchema.extend({ type: z.literal("group_nodes") }),
   UngroupSchema.extend({ type: z.literal("ungroup") }),

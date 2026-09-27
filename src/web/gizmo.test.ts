@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Box } from "../shared/scene.types";
-import { boundsOf, footprintBounds } from "../shared/geometry";
+import { boundsOf, footprintBounds, selectionFrame } from "../shared/geometry";
 import { DEFAULT_CAMERA, worldToScreen, type CameraState, type Vec3 } from "./camera";
 import {
   ARROW,
@@ -271,7 +271,24 @@ describe("rotate handle", () => {
     const b = box({ id: "box_2", x: 2, z: 0 });
     const { patches, label } = rotate([a, b], 88);
     expect(patches).toEqual({ box_1: { x: 0, z: 2, rotation: 180 }, box_2: { x: 0, z: -2, rotation: 90 } });
-    expect(label).toBe("+90°");
+    // The label is the selection frame's angle, as for one box.
+    expect(label).toBe("90°");
+  });
+
+  it("turns around the selection frame's center and snaps its angle, so a turned frame turns back in place", () => {
+    const a = box({ x: -2, z: 0 });
+    const b = box({ id: "box_2", x: 2, z: 3, width: 4 });
+    const frame = selectionFrame([a, b], 30);
+    const pivot = gizmoAnchor(boundsOf([a, b]), frame);
+    const at = (deg: number) => {
+      const r = (deg * Math.PI) / 180;
+      return screen({ x: pivot.x + 5 * Math.cos(r), y: pivot.y, z: pivot.z - 5 * Math.sin(r) });
+    };
+    const drag = startHandleDrag(cam, size, at(0).sx, at(0).sy, "rotate", [a, b], frame);
+    const { label, turn } = dragUpdate(drag, cam, size, at(17).sx, at(17).sy, plain, []);
+    // 30° + 17° snaps to 45°: a 15° change.
+    expect(turn).toBe(45);
+    expect(label).toBe("45°");
   });
 });
 

@@ -60,6 +60,10 @@ const INSTRUCTIONS =
   "along the tangent. The outline must not cross itself (the error names the edges that do). update_nodes with " +
   "`points` replaces the whole outline. move_nodes, rotate_nodes and mirror_nodes change a free-form's points " +
   "(rotating or mirroring one bakes the turn or the flip into them), so use them instead of recomputing points. " +
+  'To reshape a box or cylinder freely, first convert it with update_nodes { id, type: "freeform" } (a box gives ' +
+  "its 4 corners, a sided cylinder its corners, a smooth one 4 smooth points that are still a true circle or oval), " +
+  "then edit the new free-form's points. The free-form gets a NEW ID (the result maps each old ID to it) and keeps " +
+  "the name, group, kind, color, y, height and place in the list. Don't compute circle handles by hand. " +
   "A group (type: group) is a container with NO position of its own: its shapes keep absolute world coordinates, " +
   "and a node is in a group when its `parent` is that group's ID (groups can nest). get_scene adds each group's " +
   "derived `bounds` (center x/z, bottom y, width, depth, height, axis-aligned) for reference. Groups are a unit of " +
@@ -155,12 +159,18 @@ function buildServer(workspace: Workspace) {
         `A box takes any of: name, parent, kind, x, z, y, width, depth, height, rotation, color; a cylinder those and sides; ` +
         `a free-form name, parent, kind, y, height, color and points (the whole outline). ` +
         `A group takes only name and parent. ` +
+        `{ id, type: "freeform" } alone converts a box or cylinder into a free-form with a new ID; a call that converts ` +
+        `only converts (edit the new free-form in a second call). ` +
         `Values are absolute (x: 4 moves the center to x = 4); to shift boxes or whole groups by an offset, use move_nodes instead. ` +
         `An empty name removes the name; parent null moves a node to the top level. ` +
         `The batch is all-or-nothing: an unknown ID or an invalid value rejects it and nothing changes.`,
       inputSchema: { changes: z.array(NodeUpdateSchema).min(1) },
     },
-    async ({ changes }) => json({ updated: store().updateNodes(changes, "agent") }),
+    async ({ changes }) => {
+      const updated = store().updateNodes(changes, "agent");
+      if (!changes.some((c) => c.type !== undefined)) return json({ updated });
+      return json({ converted: changes.map((c, i) => ({ from: c.id, to: updated[i].id })), updated });
+    },
   );
 
   server.registerTool(
@@ -206,11 +216,15 @@ function buildServer(workspace: Workspace) {
       title: "Rotate nodes",
       description:
         `Turn shapes and/or whole groups by \`degrees\` (counterclockwise seen from above) around the vertical axis through ` +
-        `the center of their combined bounds: every box's or cylinder's center orbits that point and its rotation grows by ` +
-        `the same angle; a free-form's points orbit it.`,
+        `\`pivot\` (default: the center of their combined bounds): every box's or cylinder's center orbits that point and ` +
+        `its rotation grows by the same angle; a free-form's points orbit it. The result gives the pivot used. The ` +
+        `bounds' center moves as shapes turn, so to turn something back (or in several steps), pass that same pivot.`,
       inputSchema: RotateNodesSchema.shape,
     },
-    async (input) => json({ rotated: store().rotateNodes(input, "agent") }),
+    async (input) => {
+      const { shapes, pivot } = store().rotateNodes(input, "agent");
+      return json({ rotated: shapes, pivot });
+    },
   );
 
   server.registerTool(

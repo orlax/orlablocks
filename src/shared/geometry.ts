@@ -303,6 +303,99 @@ const mapPoints = (points: FootPoint[], f: (p: Point) => Point, h: (o: Offset) =
   roundPoints(points.map((p) => ({ ...f(p), ...(p.in ? { in: h(p.in) } : {}), ...(p.out ? { out: h(p.out) } : {}) })));
 
 /**
+ * The frame around `shapes`' footprints, turned by `angle` degrees: the smallest rectangle in axes turned that way
+ * that holds them all. At 0 it's the exact axis-aligned bounds. Turning the shapes around its center by some angle
+ * gives the same frame turned by that much, around the same center: that's what keeps a selection's rotate pivot
+ * still (Figma-style), where the axis-aligned bounds' center would drift.
+ */
+export function orientedFrame(shapes: Shape[], angle: number): Frame {
+  if (angle === 0) {
+    const b = boundsOf(shapes);
+    return { x: (b.minX + b.maxX) / 2, z: (b.minZ + b.maxZ) / 2, width: b.maxX - b.minX, depth: b.maxZ - b.minZ, rotation: 0 };
+  }
+  const { ex, ez } = shapeAxes({ rotation: angle });
+  let [u0, u1, v0, v1] = [Infinity, -Infinity, Infinity, -Infinity];
+  for (const shape of shapes) {
+    for (const p of footprint(shape)) {
+      const u = p.x * ex.x + p.z * ex.z;
+      const v = p.x * ez.x + p.z * ez.z;
+      [u0, u1, v0, v1] = [Math.min(u0, u), Math.max(u1, u), Math.min(v0, v), Math.max(v1, v)];
+    }
+  }
+  const [uc, vc] = [(u0 + u1) / 2, (v0 + v1) / 2];
+  return { x: uc * ex.x + vc * ez.x, z: uc * ex.z + vc * ez.z, width: u1 - u0, depth: v1 - v0, rotation: angle };
+}
+
+/**
+ * The frame the gizmo sits on for a selection: a single box's or cylinder's own rectangle, otherwise the shapes'
+ * frame turned by `turn` (how far the editor has turned this selection so far; 0 = axis-aligned).
+ */
+export function selectionFrame(shapes: Shape[], turn = 0): Frame {
+  if (shapes.length === 1 && isFootprinted(shapes[0])) return handleFrame(shapes[0]);
+  return orientedFrame(shapes, turn);
+}
+
+/** Bezier handles of a circle drawn through 4 smooth points: this times the radius, along the tangent. */
+export const CIRCLE_HANDLE = 0.5523;
+
+/**
+ * A box's or cylinder's outline as free-form points (rounded to 2 decimals): a box's 4 corners, a sided cylinder's
+ * corners, and a smooth cylinder as 4 smooth points on its ellipse's axes (handles CIRCLE_HANDLE × each radius),
+ * so it stays a true circle or oval to edit. The points go counterclockwise seen from above, from local +x.
+ */
+export function toFreeformPoints(shape: Box | Cylinder): FootPoint[] {
+  if (shape.type === "box" || shape.sides !== undefined) return roundPoints(footprint(shape));
+  const { ex, ez } = shapeAxes(shape);
+  const world = (l: Offset) => ({ x: l.x * ex.x + l.z * ez.x, z: l.x * ex.z + l.z * ez.z });
+  const [hw, hd] = [shape.width / 2, shape.depth / 2];
+  return roundPoints(
+    [0, 1, 2, 3].map((i) => {
+      const a = (i * Math.PI) / 2;
+      // On the ellipse at angle a from local +x (counterclockwise seen from above), and its tangent that way.
+      const p = world({ x: Math.cos(a) * hw, z: -Math.sin(a) * hd });
+      const out = world({ x: -Math.sin(a) * hw * CIRCLE_HANDLE, z: -Math.cos(a) * hd * CIRCLE_HANDLE });
+      return { x: shape.x + p.x, z: shape.z + p.z, in: { x: -out.x, z: -out.z }, out };
+    }),
+  );
+}
+
+/**
+ * The outline with a point inserted on the edge from point `i` to the next, at `t` (0..1) along it. A curved edge
+ * is split with de Casteljau, so the shape doesn't change: the neighbors' handles shorten and the new point gets
+ * handles along the curve. On a straight edge the new point is a corner. Not rounded.
+ */
+export function splitEdge(points: FootPoint[], i: number, t: number): FootPoint[] {
+  const a = points[i];
+  const j = (i + 1) % points.length;
+  const b = points[j];
+  const lerp = (p: Point, q: Point) => ({ x: p.x + (q.x - p.x) * t, z: p.z + (q.z - p.z) * t });
+  const offset = (p: Point, from: Point): Offset | undefined => {
+    const o = { x: p.x - from.x, z: p.z - from.z };
+    return o.x === 0 && o.z === 0 ? undefined : o;
+  };
+  const withHandle = (p: FootPoint, side: "in" | "out", h: Offset | undefined): FootPoint => {
+    const { [side]: _old, ...rest } = p;
+    return h ? { ...rest, [side]: h } : rest;
+  };
+  let inserted: FootPoint;
+  let [na, nb] = [a, b];
+  if (!a.out && !b.in) inserted = lerp(a, b);
+  else {
+    const p1 = a.out ? { x: a.x + a.out.x, z: a.z + a.out.z } : a;
+    const p2 = b.in ? { x: b.x + b.in.x, z: b.z + b.in.z } : b;
+    const [p01, p12, p23] = [lerp(a, p1), lerp(p1, p2), lerp(p2, b)];
+    const [p012, p123] = [lerp(p01, p12), lerp(p12, p23)];
+    const m = lerp(p012, p123);
+    inserted = withHandle(withHandle({ x: m.x, z: m.z }, "in", offset(p012, m)), "out", offset(p123, m));
+    na = withHandle(a, "out", a.out && offset(p01, a));
+    nb = withHandle(b, "in", b.in && offset(p23, b));
+  }
+  const next = points.map((p, k) => (k === i ? na : k === j ? nb : p));
+  next.splice(i + 1, 0, inserted);
+  return next;
+}
+
+/**
  * A shape moved by an offset (2 decimals). Only the axes that move are in the patch, so a drag along x is a "move"
  * and not also an elevation change.
  */
@@ -343,17 +436,27 @@ export function rotateAround(shapes: Shape[], pivot: Point, degrees: number): Re
 
 /**
  * A shape resized from its handle frame `from` to `to` (the gizmo's scale handles). A box or cylinder takes the new
- * center and size; a free-form's points (and handles) stretch with the frame, around its center.
+ * center and size; a free-form's points (and handles) stretch with the frame, along its own (possibly turned) axes.
  */
 export function resizeShape(shape: Shape, from: Frame, to: { x: number; z: number; width: number; depth: number }): ShapePatch {
   if (isFootprinted(shape)) return { x: to.x, z: to.z, width: to.width, depth: to.depth };
   const sx = from.width > 0 ? to.width / from.width : 1;
   const sz = from.depth > 0 ? to.depth / from.depth : 1;
+  const target = { ...to, rotation: from.rotation };
+  const { ex, ez } = shapeAxes(from);
+  const stretch = (o: Offset) => {
+    const u = (o.x * ex.x + o.z * ex.z) * sx;
+    const v = (o.x * ez.x + o.z * ez.z) * sz;
+    return { x: u * ex.x + v * ez.x, z: u * ex.z + v * ez.z };
+  };
   return {
     points: mapPoints(
       shape.points,
-      (p) => ({ x: to.x + (p.x - from.x) * sx, z: to.z + (p.z - from.z) * sz }),
-      (o) => ({ x: o.x * sx, z: o.z * sz }),
+      (p) => {
+        const l = toShapeLocal(from, p);
+        return fromShapeLocal(target, { x: l.x * sx, z: l.z * sz });
+      },
+      stretch,
     ),
   };
 }

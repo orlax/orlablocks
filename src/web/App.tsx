@@ -5,10 +5,12 @@ import { footprintBounds, round2 } from "../shared/geometry";
 import { shapesUnder, childrenOf, isShape, isGroup } from "../shared/tree";
 import type { CameraState, GroundPoint } from "./camera";
 import { clipboardText, readClipboard } from "./clipboard";
+import { ErrorPanel } from "./ErrorPanel";
+import { reportError } from "./errors";
 import { typingInField } from "./keys";
 import { Outliner } from "./Outliner";
 import { ProjectPicker } from "./ProjectPicker";
-import { ContextualBar, HINTS, TOOLS, ToolBar } from "./ToolBar";
+import { ContextualBar, EDIT_POINTS_HINT, HINTS, TOOLS, ToolBar } from "./ToolBar";
 import { useScene } from "./useScene";
 import { Viewport, type Tool } from "./Viewport";
 
@@ -60,6 +62,8 @@ export function App() {
   const [selection, setSelection] = useState<string[]>([]);
   // The group entered with a double-click (null = the top level).
   const [context, setContext] = useState<string | null>(null);
+  // The free-form in point editing (entered by double-clicking it, or its Edit points button).
+  const [editing, setEditing] = useState<string | null>(null);
   // The node under the cursor in the outliner, highlighted in the view.
   const [outlinerHover, setOutlinerHover] = useState<string | null>(null);
   // The next shape's style in the Box, Cylinder and Pen tools, remembered while the tab is open.
@@ -96,10 +100,22 @@ export function App() {
     setPickerOpen(false);
     setSelection(restore.selection);
     setContext(null);
+    setEditing(null);
     setOutlinerHover(null);
     pendingSelect.current = null;
     lastCopy.current = null;
   }, [restore]);
+
+  // Point editing lasts while its free-form is the whole selection, in the Select tool.
+  useEffect(() => {
+    if (editing !== null && (selection.length !== 1 || selection[0] !== editing)) setEditing(null);
+  }, [editing, selection]);
+  useEffect(() => setEditing(null), [tool]);
+
+  // Errors from the server go to the error log too, since the dock only shows the latest one until the next scene.
+  useEffect(() => {
+    if (error) reportError("server", error);
+  }, [error]);
 
   useEffect(() => {
     if (!notice) return;
@@ -286,6 +302,25 @@ export function App() {
     : single
       ? `${title(single)} · ${selectedShapes.length} shapes`
       : `${selectedNodes.length} selected`;
+  // What Convert to free-form converts: every box and cylinder in the selection (groups included).
+  const convertible = selectedShapes.filter((s) => s.type === "box" || s.type === "cylinder");
+  const convert = () => {
+    const ids = convertible.map((s) => s.id);
+    const before = nodes;
+    // Select the free-forms in their originals' places (each takes its original's place in the list).
+    pendingSelect.current = {
+      before: new Set(before.map((n) => n.id)),
+      pick: (added, next) => {
+        const made = new Set(added.map((n) => n.id));
+        return selection.map((id) => {
+          const n = next[before.findIndex((b) => b.id === id)];
+          return ids.includes(id) && n && made.has(n.id) ? n.id : id;
+        });
+      },
+    };
+    send({ type: "convert_nodes", ids });
+  };
+  const editable = singleShape?.type === "freeform" ? singleShape : null;
 
   return (
     <div className="app">
@@ -295,6 +330,8 @@ export function App() {
         selection={selection}
         context={context}
         onContext={setContext}
+        editing={editing}
+        onEditing={setEditing}
         outsideHover={outlinerHover}
         nextKind={nextKind}
         nextSides={nextSides}
@@ -357,7 +394,7 @@ export function App() {
         <span className="sep" />
         <span className="counts">{scene ? `${rooms} rooms · ${volumes} volumes · ${groups} groups` : "—"}</span>
         <span className="sep" />
-        <span className={notice ? "hint notice" : "hint"}>{notice ?? HINTS[activeTool]}</span>
+        <span className={notice ? "hint notice" : "hint"}>{notice ?? (editing && activeTool === "select" ? EDIT_POINTS_HINT : HINTS[activeTool])}</span>
       </div>
 
       <div className="dock">
@@ -396,8 +433,14 @@ export function App() {
                 ? { value: singleShape.sides, onChange: (sides) => send({ type: "update_nodes", changes: [{ id: singleShape.id, sides: sides ?? null }] }) }
                 : undefined
             }
+            onConvert={convertible.length > 0 ? convert : undefined}
+            editPoints={editable ? { active: editing === editable.id, onToggle: () => setEditing(editing ? null : editable.id) } : undefined}
           >
-            {contextNode ? `in ${contextNode.name ?? contextNode.id} › ${selectionInfo}` : selectionInfo}
+            {editing && editable
+              ? `editing ${describe(editable)}`
+              : contextNode
+                ? `in ${contextNode.name ?? contextNode.id} › ${selectionInfo}`
+                : selectionInfo}
           </ContextualBar>
         )}
         <ToolBar
@@ -410,6 +453,8 @@ export function App() {
           onClear={() => send({ type: "clear" })}
         />
       </div>
+
+      <ErrorPanel />
 
       {connected && (open === null || pickerOpen) && (
         <ProjectPicker

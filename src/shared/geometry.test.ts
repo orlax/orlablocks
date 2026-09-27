@@ -5,6 +5,12 @@ import {
   footprintBounds,
   handleFrame,
   mirrorAcross,
+  orientedFrame,
+  rotateAround,
+  sampleOutline,
+  splitEdge,
+  toFreeformPoints,
+  toShapeLocal,
   moveShape,
   offsetPolygon,
   outlineProblem,
@@ -302,5 +308,126 @@ describe("free-forms", () => {
     // No area at all (the Pen's preview with the cursor on the point just placed): no rings, so nothing to draw.
     const flat = freeform([{ x: 0, z: 0 }, { x: 5, z: 0 }, { x: 5, z: 0 }], { kind: "room" });
     expect(roomWalls(flat, 0.1).walls).toEqual([]);
+  });
+});
+
+describe("convert and split (point editing)", () => {
+  const freeform = (points: FootPoint[]): Freeform => ({
+    id: "freeform_1",
+    type: "freeform",
+    kind: "volume",
+    y: 0,
+    height: 1,
+    color: "almost-white",
+    points,
+    createdBy: "human",
+  });
+  /** The distance from `p` to the nearest of the outline's densely sampled points. */
+  const offOutline = (points: FootPoint[], p: { x: number; z: number }) => {
+    const dense = points.flatMap((a, i) => {
+      const b = points[(i + 1) % points.length];
+      const c1 = a.out ? { x: a.x + a.out.x, z: a.z + a.out.z } : a;
+      const c2 = b.in ? { x: b.x + b.in.x, z: b.z + b.in.z } : b;
+      return Array.from({ length: 400 }, (_, k) => {
+        const t = k / 400;
+        const u = 1 - t;
+        return {
+          x: u * u * u * a.x + 3 * u * u * t * c1.x + 3 * u * t * t * c2.x + t * t * t * b.x,
+          z: u * u * u * a.z + 3 * u * u * t * c1.z + 3 * u * t * t * c2.z + t * t * t * b.z,
+        };
+      });
+    });
+    return Math.min(...dense.map((q) => Math.hypot(q.x - p.x, q.z - p.z)));
+  };
+
+  it("converts a box to its 4 world corners, and a sided cylinder to its corners", () => {
+    expect(toFreeformPoints(box({ x: 1, z: 1, width: 4, depth: 2 }))).toEqual([
+      { x: -1, z: 0 },
+      { x: 3, z: 0 },
+      { x: 3, z: 2 },
+      { x: -1, z: 2 },
+    ]);
+    const hex: Cylinder = { ...box({ width: 4, depth: 4, rotation: 30 }), type: "cylinder", sides: 6 };
+    const points = toFreeformPoints(hex);
+    expect(points).toHaveLength(6);
+    expect(points.every((p) => !p.in && !p.out)).toBe(true);
+    points.forEach((p, i) => {
+      const f = footprint(hex)[i];
+      expect(p.x).toBeCloseTo(f.x, 2);
+      expect(p.z).toBeCloseTo(f.z, 2);
+    });
+  });
+
+  it("converts a smooth cylinder to 4 smooth points that still trace its ellipse", () => {
+    const oval: Cylinder = { ...box({ x: 5, z: -2, width: 10, depth: 6, rotation: 20 }), type: "cylinder" };
+    const points = toFreeformPoints(oval);
+    expect(points).toHaveLength(4);
+    expect(points.every((p) => p.in && p.out && p.in.x === -p.out.x && p.in.z === -p.out.z)).toBe(true);
+    // Every sampled point of the free-form lies on the true ellipse (within a couple of centimeters).
+    for (const p of sampleOutline(points).polygon) {
+      const l = toShapeLocal(oval, p);
+      expect(Math.abs(Math.hypot(l.x / 5, l.z / 3) - 1)).toBeLessThan(0.005);
+    }
+  });
+
+  it("splits a straight edge with a corner, and a curved one without changing the shape", () => {
+    const square: FootPoint[] = [
+      { x: 0, z: 0 },
+      { x: 4, z: 0 },
+      { x: 4, z: 4 },
+      { x: 0, z: 4 },
+    ];
+    expect(splitEdge(square, 0, 0.25)[1]).toEqual({ x: 1, z: 0 });
+    expect(splitEdge(square, 3, 0.5)).toHaveLength(5);
+    expect(splitEdge(square, 3, 0.5)[4]).toEqual({ x: 0, z: 2 });
+
+    const circle = toFreeformPoints({ ...box({ width: 8, depth: 8 }), type: "cylinder" });
+    const split = splitEdge(circle, 3, 0.3);
+    expect(split).toHaveLength(5);
+    expect(split[4].in && split[4].out).toBeTruthy();
+    for (const p of sampleOutline(split).polygon) expect(offOutline(circle, p)).toBeLessThan(0.01);
+  });
+});
+
+describe("oriented frames (the Figma-style rotate pivot)", () => {
+  const l: FootPoint[] = [
+    { x: 0, z: 0 },
+    { x: 6, z: 0 },
+    { x: 6, z: 2 },
+    { x: 2, z: 2 },
+    { x: 2, z: 6 },
+    { x: 0, z: 6 },
+  ];
+  const shape: Freeform = { id: "freeform_1", type: "freeform", kind: "volume", y: 0, height: 1, color: "almost-white", points: l, createdBy: "human" };
+
+  it("is the axis-aligned bounds at 0", () => {
+    expect(orientedFrame([shape], 0)).toEqual({ x: 3, z: 3, width: 6, depth: 6, rotation: 0 });
+  });
+
+  it("turns with the shapes around its center, so turning back lands where it started", () => {
+    const start = orientedFrame([shape], 0);
+    const turned = { ...shape, ...rotateAround([shape], start, 30)[shape.id] } as Freeform;
+    const frame = orientedFrame([turned], 30);
+    expect(frame.x).toBeCloseTo(start.x, 1);
+    expect(frame.z).toBeCloseTo(start.z, 1);
+    expect(frame.width).toBeCloseTo(6, 1);
+    // The axis-aligned bounds' center moved (that was the drift); the turned frame's didn't.
+    const b = boundsOf([turned]);
+    expect(Math.hypot((b.minX + b.maxX) / 2 - 3, (b.minZ + b.maxZ) / 2 - 3)).toBeGreaterThan(0.2);
+    const back = { ...turned, ...rotateAround([turned], frame, -30)[shape.id] } as Freeform;
+    back.points.forEach((p, i) => {
+      expect(p.x).toBeCloseTo(l[i].x, 1);
+      expect(p.z).toBeCloseTo(l[i].z, 1);
+    });
+  });
+
+  it("resizes a free-form along a turned frame's own axes", () => {
+    const turned = { ...shape, ...rotateAround([shape], { x: 3, z: 3 }, 90)[shape.id] } as Freeform;
+    const frame = orientedFrame([turned], 90);
+    // Twice as wide along the frame's own x, which after a 90° turn runs along world -z.
+    const patch = resizeShape(turned, frame, { x: frame.x, z: frame.z, width: frame.width * 2, depth: frame.depth });
+    const b = boundsOf([{ ...turned, ...patch } as Freeform]);
+    expect(b.maxZ - b.minZ).toBeCloseTo(12, 1);
+    expect(b.maxX - b.minX).toBeCloseTo(6, 1);
   });
 });

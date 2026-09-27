@@ -426,3 +426,109 @@ body {
 @media (max-width: 560px) {
   .picker-columns { grid-template-columns: 1fr; max-height: none; }
 }
+
+/* Error boundaries: the slot fills its place, and a crash shows a message there instead of going blank. */
+.editor-slot, .view-slot { position: absolute; inset: 0; }
+.crashed {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 24px;
+  color: #5a2626;
+  text-align: center;
+}
+.crashed p { margin: 0; max-width: 560px; }
+.crashed .muted { color: var(--muted); }
+.crashed button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 6px 12px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--bar-bg);
+  color: var(--bar-text);
+  font: inherit;
+  cursor: pointer;
+}
+
+/* The error panel, top right: a red count while there are errors, which opens the log. */
+.error-panel {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  max-width: min(520px, calc(100vw - 24px));
+  color: #ffd6d6;
+  text-align: left;
+}
+.error-panel button { font: inherit; color: inherit; cursor: pointer; }
+.error-panel-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 999px;
+  background: #8a2f2f;
+}
+.error-panel.open .error-panel-toggle, .error-panel-toggle:hover { background: #a33a3a; }
+.error-panel-actions { display: flex; gap: 4px; }
+.error-panel-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: #5a2626;
+  font-size: 12px;
+}
+.error-panel-list {
+  width: 100%;
+  max-height: 50vh;
+  margin: 0;
+  padding: 4px;
+  overflow-y: auto;
+  list-style: none;
+  border-radius: 8px;
+  background: rgba(58, 24, 24, 0.95);
+}
+.error-entry {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  text-align: left;
+}
+.error-entry:hover { background: rgba(255, 255, 255, 0.06); }
+.error-entry .when, .error-entry .source { flex: none; color: #d9a0a0; font: 11px/1.6 ui-monospace, monospace; }
+.error-entry .message { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.error-entry .count { flex: none; color: #f0c96a; }
+.error-detail {
+  margin: 2px 6px 6px;
+  padding: 6px;
+  max-height: 240px;
+  overflow: auto;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.3);
+  font: 11px/1.4 ui-monospace, monospace;
+  white-space: pre-wrap;
+}
+.viewport.adding { cursor: copy; }
+.draft-label.bad { background: #8a2f2f; color: #ffd6d6; }
+/* Buttons with a word next to the icon (Convert to free-form, Edit points). */
+.contextual-bar button.labeled { gap: 6px; height: 28px; padding: 0 8px; white-space: nowrap; }
+.contextual-bar button.labeled.active { background: rgba(143, 180, 242, 0.22); border-color: rgba(143, 180, 242, 0.5); }

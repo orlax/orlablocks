@@ -10,8 +10,10 @@ import {
   round2,
   roundPoints,
   sameValue,
+  toFreeformPoints,
 } from "../shared/geometry";
 import {
+  ConvertNodesSchema,
   DEFAULT_COLOR,
   DEFAULT_HEIGHT,
   DEFAULT_VIEW,
@@ -28,6 +30,9 @@ import {
   SNAP,
   UngroupSchema,
   type Actor,
+  type Box,
+  type Cylinder,
+  type Freeform,
   type Shape,
   type FootPoint,
   type ShapePatch,
@@ -187,6 +192,53 @@ export function createSceneStore() {
     return rounded;
   };
 
+  /**
+   * Converts boxes and cylinders into free-forms with the same outline, as one step (see `convertNodes`). `prefix`
+   * names the input in errors ("ids", or "changes" for update_nodes).
+   */
+  const convert = (ids: string[], actor: Actor, prefix: string): Freeform[] => {
+    const errors: string[] = [];
+    checkIds(prefix, ids, errors);
+    const nodes = byId();
+    const sources = ids.map((id, i) => {
+      const node = nodes.get(id);
+      if (node && node.type !== "box" && node.type !== "cylinder") {
+        errors.push(`${prefix}[${i}]: "${id}" is a ${node.type}; only boxes and cylinders convert to free-forms`);
+      }
+      return node as Box | Cylinder;
+    });
+    const outlines = sources.map((n, i) =>
+      n?.type === "box" || n?.type === "cylinder" ? checkPoints(`${prefix}[${i}]`, toFreeformPoints(n), errors) : [],
+    );
+    failIf(errors, "Nothing was converted.");
+
+    const made = sources.map(
+      (n, i): Freeform => ({
+        id: newId("freeform"),
+        type: "freeform",
+        ...(n.name !== undefined ? { name: n.name } : {}),
+        ...(n.parent !== undefined ? { parent: n.parent } : {}),
+        kind: n.kind,
+        y: n.y,
+        height: n.height,
+        color: n.color,
+        points: outlines[i],
+        createdBy: n.createdBy,
+      }),
+    );
+    // Each takes its original's place in the list.
+    const indices = ids.map((id) => scene.nodes.findIndex((n) => n.id === id));
+    const to = listIds(
+      made.map((n) => n.id),
+      "free-forms",
+    );
+    commit(label("convert", `${listIds(ids)} to ${to}`, actor), actor, [
+      { op: "remove", ids },
+      { op: "add", nodes: made, indices },
+    ]);
+    return made;
+  };
+
   /** Shape patches that change something, as update changes. */
   const effectiveShapeChanges = (boxes: Shape[], patches: Record<string, ShapePatch>) =>
     boxes.flatMap((box) => {
@@ -277,12 +329,31 @@ export function createSceneStore() {
     /**
      * Changes existing nodes by ID. A box or cylinder takes any of name, parent, kind, x, z, y, width, depth, height,
      * rotation, color, and a cylinder also sides (null = smooth); a free-form takes name, parent, kind, y, height,
-     * color and points (the whole outline); a group takes only name and parent. Validates every change first; applies all or nothing. Fields that
-     * don't actually change are dropped, and if nothing is left no step is recorded. An empty name removes the name,
-     * and a null (or empty) parent moves the node to the top level.
+     * color and points (the whole outline); a group takes only name and parent. Validates every change first;
+     * applies all or nothing. Fields that don't actually change are dropped, and if nothing is left no step is
+     * recorded. An empty name removes the name, and a null (or empty) parent moves the node to the top level.
+     * `type: "freeform"` converts a box or cylinder instead (see `convertNodes`): then every change in the call must
+     * be a conversion, on its own, and the result is the new free-forms in the same order.
      */
     updateNodes(changes: NodeUpdate[], actor: Actor): SceneNode[] {
       if (changes.length === 0) throw new SceneError("changes: at least one change is required");
+      if (changes.some((c) => c.type !== undefined)) {
+        const errors: string[] = [];
+        changes.forEach((c, i) => {
+          const result = NodeUpdateSchema.safeParse(c);
+          if (!result.success) return errors.push(...issueLines(`changes[${i}]`, result.error.issues));
+          const { id: _id, type, ...others } = result.data;
+          const fields = Object.keys(others);
+          if (type === undefined) errors.push(`changes[${i}]: a call that converts (type: "freeform") can only convert; update the new free-forms in a second call`);
+          else if (fields.length > 0) errors.push(`changes[${i}]: type converts on its own; change ${fields.join(", ")} in a second call, on the new free-form`);
+        });
+        failIf(errors, "Nothing was changed.");
+        return convert(
+          changes.map((c) => c.id),
+          actor,
+          "changes",
+        );
+      }
 
       const nodes = byId();
       const seen = new Set<string>();
@@ -367,6 +438,17 @@ export function createSceneStore() {
     },
 
     /**
+     * Converts boxes and cylinders into free-forms with the same outline, as one step: a box gives its 4 corners, a
+     * sided cylinder its corners, a smooth one 4 smooth points (still a true circle or oval). Each free-form gets a
+     * new ID and takes its original's place in the list, keeping its name, parent, kind, y, height, color and
+     * creator. Returns the free-forms, in the order of `ids`.
+     */
+    convertNodes(input: z.input<typeof ConvertNodesSchema>, actor: Actor): Freeform[] {
+      const { ids } = parse(ConvertNodesSchema, input, "Nothing was converted.");
+      return convert(ids, actor, "ids");
+    },
+
+    /**
      * Removes nodes by ID as one undoable step; a group takes everything in it. Unknown or repeated IDs reject all.
      * `cut` only changes the label (the editor put the nodes on the clipboard first).
      */
@@ -433,21 +515,23 @@ export function createSceneStore() {
     },
 
     /**
-     * Turns boxes and whole groups around the vertical axis through the center of their combined bounds, as one
-     * step: each center orbits it and the angle is added to each rotation. Returns the boxes that turned.
+     * Turns boxes and whole groups around the vertical axis through `pivot` (default: the center of their combined
+     * bounds), as one step: each center orbits it and the angle is added to each rotation (a free-form's points
+     * orbit it). Returns the shapes that turned and the pivot, so turning back by the same pivot restores them.
      */
-    rotateNodes(input: z.input<typeof RotateNodesSchema>, actor: Actor): Shape[] {
-      const { ids, degrees } = parse(RotateNodesSchema, input, "Nothing was rotated.");
+    rotateNodes(input: z.input<typeof RotateNodesSchema>, actor: Actor): { shapes: Shape[]; pivot: { x: number; z: number } } {
+      const { ids, degrees, pivot: given } = parse(RotateNodesSchema, input, "Nothing was rotated.");
       const errors: string[] = [];
       checkIds("ids", ids, errors);
       failIf(errors, "Nothing was rotated.");
       const boxes = shapesUnder(scene.nodes, ids);
       const b = boundsOf(boxes);
-      const patches = rotateAround(boxes, { x: (b.minX + b.maxX) / 2, z: (b.minZ + b.maxZ) / 2 }, degrees);
+      const pivot = given ?? { x: round2((b.minX + b.maxX) / 2), z: round2((b.minZ + b.maxZ) / 2) };
+      const patches = rotateAround(boxes, pivot, degrees);
       const changes = effectiveShapeChanges(boxes, patches);
       if (changes.length > 0) commit(label("rotate", listIds(ids), actor), actor, [{ op: "update", changes }]);
       const turned = new Set(boxes.map((b) => b.id));
-      return scene.nodes.filter((n): n is Shape => turned.has(n.id));
+      return { shapes: scene.nodes.filter((n): n is Shape => turned.has(n.id)), pivot };
     },
 
     /**

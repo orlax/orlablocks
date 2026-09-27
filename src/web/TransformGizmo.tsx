@@ -1,7 +1,7 @@
 import { useRef, type RefObject } from "react";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
-import { handleFrame } from "../shared/geometry";
+import type { Frame } from "../shared/geometry";
 import type { Shape } from "../shared/scene.types";
 import type { CameraState, Vec3 } from "./camera";
 import {
@@ -61,6 +61,7 @@ export function TransformGizmo({
   anchor,
   parts,
   boxes,
+  frame,
   hot,
   cam,
 }: {
@@ -68,6 +69,8 @@ export function TransformGizmo({
   parts: GizmoPart[];
   /** The selected boxes: scale handles need a single one, the rotate handle any. */
   boxes: Shape[];
+  /** Their selection frame, which the scale and rotate handles sit on. */
+  frame: Frame;
   hot: GizmoPart | null;
   cam: RefObject<CameraState>;
 }) {
@@ -84,11 +87,11 @@ export function TransformGizmo({
   const box = boxes.length === 1 ? boxes[0] : undefined;
   return (
     <>
-      {parts.includes("rotate") && <RotateHandle boxes={boxes} hot={hot === "rotate"} cam={cam} />}
+      {parts.includes("rotate") && <RotateHandle boxes={boxes} frame={frame} hot={hot === "rotate"} cam={cam} />}
       {box &&
         parts
           .filter(isScalePart)
-          .map((part) => <ScaleHandle key={part} box={box} part={part} hot={hot === part} cam={cam} />)}
+          .map((part) => <ScaleHandle key={part} box={box} frame={frame} part={part} hot={hot === part} cam={cam} />)}
       <group ref={group}>
         {(["x", "y", "z"] as const)
           .filter((axis) => parts.includes(axis))
@@ -113,14 +116,14 @@ export function TransformGizmo({
 }
 
 /** The rotate handle, just outside a top corner, turned so its gap faces the corner. */
-function RotateHandle({ boxes, hot, cam }: { boxes: Shape[]; hot: boolean; cam: RefObject<CameraState> }) {
+function RotateHandle({ boxes, frame, hot, cam }: { boxes: Shape[]; frame: Frame; hot: boolean; cam: RefObject<CameraState> }) {
   const group = useRef<THREE.Group>(null);
 
   useFrame(() => {
     const g = group.current;
     if (!g) return;
     const scale = gizmoScale(cam.current);
-    const { point, inward } = rotateHandlePlacement(boxes, scale);
+    const { point, inward } = rotateHandlePlacement(boxes, scale, frame);
     g.position.set(point.x, point.y, point.z);
     g.scale.setScalar(scale);
     // Turn the gap (at -45°) to face `inward`, counterclockwise seen from above.
@@ -140,20 +143,32 @@ function RotateHandle({ boxes, hot, cam }: { boxes: Shape[]; hot: boolean; cam: 
   );
 }
 
-/** One scale handle, turned with the shape's handle frame so it reads as part of its top face, at a constant size on screen. */
-function ScaleHandle({ box, part, hot, cam }: { box: Shape; part: ScalePart; hot: boolean; cam: RefObject<CameraState> }) {
+/** One scale handle, turned with the selection frame so it reads as part of the top face, at a constant size on screen. */
+function ScaleHandle({
+  box,
+  frame,
+  part,
+  hot,
+  cam,
+}: {
+  box: Shape;
+  frame: Frame;
+  part: ScalePart;
+  hot: boolean;
+  cam: RefObject<CameraState>;
+}) {
   const group = useRef<THREE.Group>(null);
 
   useFrame(() => {
     const g = group.current;
     if (!g) return;
-    const p = scaleHandlePoint(box, part);
+    const p = scaleHandlePoint(box, part, frame);
     g.position.set(p.x, p.y, p.z);
     g.scale.setScalar(gizmoScale(cam.current));
   });
 
   return (
-    <group ref={group} rotation={[0, (handleFrame(box).rotation * Math.PI) / 180, 0]}>
+    <group ref={group} rotation={[0, (frame.rotation * Math.PI) / 180, 0]}>
       <mesh geometry={scaleRimGeometry} renderOrder={12}>
         <meshBasicMaterial color={SCALE_COLORS.rim} depthTest={false} transparent />
       </mesh>

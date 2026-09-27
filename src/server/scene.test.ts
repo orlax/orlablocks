@@ -872,3 +872,83 @@ describe("scene store free-forms", () => {
     expect((pasted as Freeform).points[0]).toEqual({ x: 47, z: -3 });
   });
 });
+
+describe("scene store conversion to free-forms", () => {
+  it("converts a box in its place, keeping its name, group, kind, color, y and height, as one step", () => {
+    const store = createSceneStore();
+    const [a, b] = store.drawShapes(
+      [
+        { kind: "room", x: 0, z: 0, width: 4, depth: 2, name: "hall", color: "blue", y: 1, height: 2.5 },
+        { kind: "volume", x: 10, z: 0, width: 2, depth: 2 },
+      ],
+      "human",
+    );
+    const group = store.groupNodes({ ids: [a.id, b.id] }, "human");
+    const [f] = store.convertNodes({ ids: [a.id] }, "human");
+    expect(f).toMatchObject({ id: "freeform_1", type: "freeform", name: "hall", parent: group.id, kind: "room", color: "blue", y: 1, height: 2.5 });
+    expect(f.points).toEqual([
+      { x: -2, z: -1 },
+      { x: 2, z: -1 },
+      { x: 2, z: 1 },
+      { x: -2, z: 1 },
+    ]);
+    // In the box's place: after the group, before box_2.
+    expect(store.getScene().nodes.map((n) => n.id)).toEqual([group.id, "freeform_1", "box_2"]);
+    expect(store.getHistory().undoLabel).toBe("Convert box_1 to freeform_1");
+    store.undo();
+    expect(store.getScene().nodes.map((n) => n.id)).toEqual([group.id, "box_1", "box_2"]);
+    store.redo();
+    expect(store.getScene().nodes.map((n) => n.id)).toEqual([group.id, "freeform_1", "box_2"]);
+  });
+
+  it("converts a smooth cylinder to 4 smooth points, and refuses groups and free-forms", () => {
+    const store = createSceneStore();
+    const [c] = store.drawShapes([{ type: "cylinder", kind: "room", x: 0, z: 0, width: 10, depth: 10 }], "agent");
+    const [f] = store.convertNodes({ ids: [c.id] }, "agent");
+    expect(f.points).toHaveLength(4);
+    expect(f.points[0]).toEqual({ x: 5, z: 0, in: { x: 0, z: 2.76 }, out: { x: 0, z: -2.76 } });
+    expect(() => store.convertNodes({ ids: [f.id] }, "agent")).toThrow(/is a freeform; only boxes and cylinders convert/);
+    expect(() => store.convertNodes({ ids: ["box_9"] }, "agent")).toThrow(/no node "box_9"/);
+    expect(store.getHistory().undoLabel).toBe("Agent: convert cylinder_1 to freeform_1");
+  });
+
+  it("converts through update_nodes with type: freeform, alone", () => {
+    const store = createSceneStore();
+    const [a, b] = store.drawShapes(
+      [
+        { kind: "room", x: 0, z: 0, width: 4, depth: 4 },
+        { type: "cylinder", sides: 5, kind: "volume", x: 10, z: 0, width: 4, depth: 4 },
+      ],
+      "agent",
+    );
+    expect(() => store.updateNodes([{ id: a.id, type: "freeform", color: "red" }], "agent")).toThrow(/type converts on its own; change color/);
+    expect(() => store.updateNodes([{ id: a.id, type: "freeform" }, { id: b.id, color: "red" }], "agent")).toThrow(/can only convert/);
+    const made = store.updateNodes([{ id: a.id, type: "freeform" }, { id: b.id, type: "freeform" }], "agent");
+    expect(made.map((n) => n.id)).toEqual(["freeform_1", "freeform_2"]);
+    expect((made[1] as Freeform).points).toHaveLength(5);
+    expect(store.getHistory().undoLabel).toBe("Agent: convert box_1, cylinder_1 to freeform_1, freeform_2");
+  });
+});
+
+describe("scene store rotate pivot", () => {
+  it("reports the pivot, and turning back around it restores a free-form", () => {
+    const store = createSceneStore();
+    const l = [
+      { x: 0, z: 0 },
+      { x: 6, z: 0 },
+      { x: 6, z: 2 },
+      { x: 2, z: 2 },
+      { x: 2, z: 6 },
+      { x: 0, z: 6 },
+    ];
+    const [f] = store.drawShapes([{ type: "freeform", kind: "volume", points: l }], "agent");
+    const { pivot } = store.rotateNodes({ ids: [f.id], degrees: 30 }, "agent");
+    expect(pivot).toEqual({ x: 3, z: 3 });
+    store.rotateNodes({ ids: [f.id], degrees: -30, pivot }, "agent");
+    const points = (store.getScene().nodes[0] as Freeform).points;
+    points.forEach((p, i) => {
+      expect(p.x).toBeCloseTo(l[i].x, 1);
+      expect(p.z).toBeCloseTo(l[i].z, 1);
+    });
+  });
+});
