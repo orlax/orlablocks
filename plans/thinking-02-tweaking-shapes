@@ -26,3 +26,24 @@ I was thinking to have three different types of entities for then, but they are 
 could we implement a third kind of shape, so we would have "room" "volume" and "hole"? I think having boolean operations to create door ways and windows or holes on the ground would be very helpful. I also dont want to overcomplicate things, so if it is simpler to have this "hole" type only for boxes I would be ok with it. 
 
 this is what our next phase can be, just trying to get our last geometry building tools. 
+
+
+
+Feedback after claude auto goal:
+
+- the second contextual tool bar is now out of control, too much things happening there. we will keep only the "type" (room, volume, hole) and the colors in there. Everything else needs to go to a dedicated inspector panel, can be a floating window somewhere.
+
+- BUG after rotating a box, I no longer see the transform outline the box has a taper applied not sure if that is part of it. but I rotate the box, can see the box on its new rotation and then I rotate it again to its regular position and  when I apply other movements or scales the rotation resets to the previous one. on the error tab I can see:
+{"dungeonDesigner":"nodes","nodes":[{"id":"box_15","kind":"volume","x":-85.75,"z":-31.5,"y":0,"width":14.5,"depth":16,"height":9.2,"rotation":0,"color":"almost-white","taper":0.45,"roll":90,"createdBy":"human","type":"box","bevel":0.3}]}
+
+- IMPROVEMENT, I think we need gizmos for taper and bevels on screen too. is it too expensive to also have live previews? like we do for scaling and changing height?
+
+- wall width also could use its on gizmo
+
+- testing the holes, I think our rule needs to be updated. 
+in a group: room I have two children, walls, a piece of geometry and "door" a group of two hole shapes. this two hole shapes should cut into the walls geometry. so holes cut: - any geometry on their direct parent and on sibling groups.
+
+- stairs cannot be holes, I can see a lot of trouble coming from that.
+
+
+- currently boxes (and shapes in general) are drawn against the floor plane? I find my self needing to draw boxes on top of boxes. 

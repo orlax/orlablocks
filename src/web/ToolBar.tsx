@@ -88,7 +88,7 @@ const MIRRORS: { axis: MirrorAxis; title: string }[] = [
 const KINDS: { kind: ShapeKind; label: string; icon: LucideIcon }[] = [
   { kind: "room", label: "Room (hollow)", icon: SquareDashed },
   { kind: "volume", label: "Volume (solid)", icon: Square },
-  { kind: "hole", label: "Hole (cuts the shapes in its group and its sibling groups)", icon: SquareDot },
+  { kind: "hole", label: "Hole (cuts the shapes in its group, beside its group, and in the groups beside those)", icon: SquareDot },
 ];
 
 /** The floating bar at the bottom: the tools, then undo / redo / clear. */
@@ -192,7 +192,7 @@ export function ContextualBar({
   editPoints?: { active: boolean; onToggle: () => void };
   /** Shows the line controls (the Line tool, selected lines): thickness, dashes, arrows, and Reverse if given. */
   line?: { style: Partial<LineStyle>; onChange: (patch: Partial<LineStyle>) => void; onReverse?: () => void };
-  /** Shows the ramp controls (the Ramp tool, selected ramps): kind, width, steps and base, and Reverse if given. */
+  /** Shows the ramp controls (the Ramp tool, selected ramps): width, steps and base, and Reverse if given. */
   ramp?: { style: Partial<RampStyle>; onChange: (patch: Partial<RampStyle>) => void; onReverse?: () => void };
   children?: ReactNode;
 }) {
@@ -501,7 +501,7 @@ function TiltControl({ pitch, roll, onChange }: { pitch: number | undefined; rol
 }
 
 /**
- * A ramp's shape: volume or hole, its width (− / meters / +, in 0.25 m steps), smooth or stepped (with the riser
+ * A ramp's shape: its width (− / meters / +, in 0.25 m steps), smooth or stepped (with the riser
  * height, − / meters / +, in 0.05 m steps), and a solid or floating base. A value that differs across the selection
  * shows as not set.
  */
@@ -517,13 +517,6 @@ function RampControls({
   const stepped = style.step !== undefined;
   return (
     <div className="ramp-controls">
-      <div className="segmented">
-        {KINDS.filter((k) => k.kind !== "room").map(({ kind: k, label, icon: Icon }) => (
-          <button key={k} className={style.kind === k ? "active" : ""} title={label} onClick={() => onChange({ kind: k as RampStyle["kind"] })}>
-            <Icon size={16} />
-          </button>
-        ))}
-      </div>
       <MetersField
         label="width"
         title="Width, centered on the path"

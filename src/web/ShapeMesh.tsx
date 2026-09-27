@@ -4,7 +4,7 @@ import { toCreasedNormals } from "three/examples/jsm/utils/BufferGeometryUtils.j
 import { isFootprinted, localFootprint, shapeFrame, wallOf } from "../shared/geometry";
 import { cutsFloor } from "../shared/holes";
 import { shapeMesh, type Mesh } from "../shared/mesh";
-import { PALETTE, type ShapeColor, type Solid } from "../shared/scene.types";
+import { PALETTE, type ClosedShape, type ShapeColor, type Solid } from "../shared/scene.types";
 import { holeInFrameOf, subtract, useManifold } from "./csg";
 
 type Props = {
@@ -13,7 +13,7 @@ type Props = {
   draft?: boolean;
   highlight?: "hover" | "selected";
   /** The holes that cut this shape (see `cutters`): its mesh is drawn minus them. */
-  cuts?: Solid[];
+  cuts?: ClosedShape[];
 };
 
 /** Room floors are a slightly darker shade of the room's color. */
@@ -182,7 +182,7 @@ export function ShapeMesh({ shape, draft = false, highlight, cuts }: Props) {
   const parts = useMemo(() => {
     const p = shapeMesh(shape);
     if (!cutKey || !cuts) return p;
-    const holes = cuts.map((h) => ({ hole: h, mesh: holeInFrameOf(shape, h) })).filter((h): h is { hole: Solid; mesh: Mesh } => h.mesh !== null);
+    const holes = cuts.map((h) => ({ hole: h, mesh: holeInFrameOf(shape, h) })).filter((h): h is { hole: ClosedShape; mesh: Mesh } => h.mesh !== null);
     const floorHoles = shape.type === "ramp" ? [] : holes.filter((h) => cutsFloor(h.hole, shape)).map((h) => h.mesh);
     return {
       body: p.body && subtract(p.body, holes.map((h) => h.mesh)),

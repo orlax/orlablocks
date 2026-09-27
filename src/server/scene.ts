@@ -399,12 +399,13 @@ export function createSceneStore() {
         }
         if (d.type === "ramp") {
           if ((d.points === undefined) === (d.spiral === undefined)) errors.push(`${prefix}: give a ramp either points or spiral (one of them)`);
+          if (d.kind === "hole") errors.push(`${prefix}.kind: a ramp is always a volume, never a hole (to cut under a stair, use a closed shape as the hole)`);
           const points = d.spiral ? spiralPoints(d.spiral) : (d.points ?? []);
           return {
             type: "ramp" as const,
             ...(name ? { name } : {}),
             ...(d.parent !== undefined ? { parent: d.parent } : {}),
-            kind: d.kind ?? "volume",
+            kind: "volume" as const,
             ...checkRamp(prefix, { points, width: d.width ?? DEFAULT_RAMP_WIDTH, step: d.step, base: d.base ?? "solid" }, errors),
             color: d.color ?? DEFAULT_COLOR,
           };
@@ -522,7 +523,7 @@ export function createSceneStore() {
                   `or use move_nodes / rotate_nodes`,
               );
             }
-            if (fields.kind === "room") errors.push(`changes[${i}].kind: a ramp is a volume or a hole, never a room`);
+            if (fields.kind !== undefined && fields.kind !== "volume") errors.push(`changes[${i}].kind: a ramp is always a volume, never a ${fields.kind}`);
           }
           const lineOnly = (["thickness", "dashed", "arrow"] as const).filter((k) => fields[k] !== undefined);
           if (node.type !== "line" && lineOnly.length > 0) {

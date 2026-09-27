@@ -192,10 +192,14 @@ function ringAngle(cam: CameraState, size: Size, sx: number, sy: number, ring: R
   return (Math.atan2((ux * py - uy * px) / det, (px * vy - py * vx) / det) * 180) / Math.PI;
 }
 
-/** An angle as a tilt is stored: -180..180 (180 rather than -180), 2 decimals, and none (undefined) for 0. */
-export function tiltValue(deg: number): number | undefined {
+/**
+ * An angle as a tilt is sent: -180..180 (180 rather than -180), 2 decimals. Level is 0, never undefined: a patch
+ * travels as JSON, which drops undefined keys, so `{ roll: undefined }` would reach the server empty and leave the
+ * old tilt in place. The server stores 0 as none.
+ */
+export function tiltValue(deg: number): number {
   const a = round2(normalizeDeg(deg + 180) - 180);
-  return a === 0 ? undefined : a === -180 ? 180 : a;
+  return a === 0 ? 0 : a === -180 ? 180 : a;
 }
 
 /** The angle of a ground vector in degrees, counterclockwise seen from above (the rotation convention). */
@@ -391,7 +395,7 @@ export function dragUpdate(
     const raw = before + delta;
     const next = tiltValue(mods.snap ? snapTo(raw, ROTATE_SNAP) : raw);
     patches[box.id] = { [part]: next };
-    return { patches, label: `${part} ${next ?? 0}°` };
+    return { patches, label: `${part} ${next}°` };
   }
 
   if (part === "height") {

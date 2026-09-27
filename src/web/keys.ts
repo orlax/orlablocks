@@ -5,3 +5,9 @@
  */
 export const typingInField = (e: Event) =>
   e.target instanceof HTMLElement && e.target.matches("input, textarea, select, [contenteditable], .modal *");
+
+/**
+ * Whether the page has text highlighted (in the error panel, say): then Cmd/Ctrl+C / X copy that text, as normal,
+ * instead of the selected shapes.
+ */
+export const highlightedText = () => (window.getSelection()?.toString() ?? "") !== "";

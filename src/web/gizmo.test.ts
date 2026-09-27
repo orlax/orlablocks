@@ -354,9 +354,10 @@ describe("tilt rings", () => {
     expect(tiltRing(pitched, "pitch").axis.y).toBeCloseTo(0);
   });
 
-  it("stores angles in -180..180, none for 0", () => {
+  it("sends angles in -180..180, and 0 (not undefined, which JSON would drop) for level", () => {
     expect(tiltValue(270)).toBe(-90);
     expect(tiltValue(-180)).toBe(180);
-    expect(tiltValue(360)).toBeUndefined();
+    expect(tiltValue(360)).toBe(0);
+    expect(JSON.parse(JSON.stringify({ roll: tiltValue(-0.001) }))).toEqual({ roll: 0 });
   });
 });

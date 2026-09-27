@@ -55,7 +55,7 @@ export const isFootprinted = (shape: Shape): shape is Box | Cylinder => shape.ty
 /** Boxes, cylinders and free-forms: a footprint, a kind, an elevation and a height (lines and ramps have none). */
 export const isClosed = (shape: Shape): shape is ClosedShape => shape.type !== "line" && shape.type !== "ramp";
 
-/** Closed shapes and ramps: a kind and a mesh, so holes cut them (and they can be holes). */
+/** Closed shapes and ramps: a kind and a mesh, so holes cut them (only closed shapes can be holes). */
 export const isSolid = (shape: Shape): shape is Solid => shape.type !== "line";
 
 /** A shape's rotation (a free-form's or a line's is always 0: turning it turns its points). */

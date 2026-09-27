@@ -1,0 +1,189 @@
+# 07B — Geometry Tools: Refinements
+
+> Refinements after `07-geometry-tools`, from Orlando's browser pass (the feedback at the end of `thinking-02-tweaking-shapes`). Phase 07 works in the browser, but its editing surface grew too crowded, one bug loses tilts, and the hole rule doesn't fit how rooms are really grouped. This phase fixes those and adds the on-screen handles the new fields were missing. No new geometry: 08 (semantics and prefabs) comes after.
+
+---
+
+## 1. Goal
+
+- Only a shape's kind and color stay in the contextual bar. Everything else moves to an **inspector**, a floating panel.
+- Taper, bevel and wall thickness get **handles** in the viewport with live previews, like height and scale. The inspector's sliders preview live too.
+- Tilted shapes keep their outline and their handles.
+- Holes cut what a room's grouping implies (the new rule, §4).
+- Ramps are never holes.
+- The drawing tools draw **on the surface under the cursor**, so a box can be drawn on top of a box.
+
+## 2. What Orlando found, and what it becomes
+
+| Feedback | Cause, or what's missing | Where |
+|---|---|---|
+| Rotating a box back to level, then moving or scaling it, brings the old rotation back. The box also loses its outline once tilted. | **Bug.** When a tilt ring is dragged back to 0, `tiltValue` returns `undefined` ("none"), and JSON drops `{ roll: undefined }` on its way to the server. The server gets an empty patch, so the stored roll stays 90. The preview showed the box level until the next edit redrew it from the store. The missing outline is by design in 07 (tilted shapes had no scale or height handles), and it goes now (§5). | 07B.1 |
+| The contextual bar is out of control. | Walls, taper, bevel, tilt, sides and the ramp fields all piled into it. | 07B.2 |
+| Taper and bevel want handles with live previews. | They only had sliders, which sent on release with no preview. | 07B.3 |
+| Wall thickness wants a handle. | It only had a field. | 07B.3 |
+| Holes should cut what's in their direct parent and in sibling groups. | 07's rule only cut shapes in the hole's own group and in sibling groups. A `door` group inside a `room` group therefore couldn't reach the room's `walls`. | 07B.1 |
+| The error tab showed a copied box during the rotation bug. | Likely: Cmd+C in the error panel copied the box instead of the selected text. The editor's copy shortcut takes over whenever shapes are selected, even when page text is highlighted. Orlando's paste then gave the box's JSON. | 07B.1 |
+| Stairs can't be holes. | 07 let a ramp be a hole. | 07B.1 |
+| Shapes are drawn against the ground plane. | Box, cylinder and Pen drags start on the ground (y = 0). Only the Line and Ramp tools use the surface. | 07B.4 |
+
+## 3. Scope
+
+### In
+- The tilt fix, and a check of every other "none"-valued patch for the same drop.
+- The new hole rule. Ramps become volumes only.
+- The inspector panel, with live previews for its sliders.
+- Wall, taper and bevel handles. Scale and height handles on tilted shapes.
+- Drawing on surfaces: box, cylinder and Pen.
+
+### Out
+- Semantics, prefabs and room/door concepts (08).
+- New shape types or new fields.
+- Moving selection info, the outliner or the error panel into the inspector.
+
+## 4. Fixes (07B.1)
+
+### The tilt drop
+- A tilt drag sends `0`, not `undefined`. The server already normalizes 0 to "none" (absent) when it stores the shape, so the data stays the same.
+- **The general rule:** a patch never carries `undefined` for a value that should change. It sends 0 for pitch, roll, taper and bevel, and `null` for wall and step (the schema already takes `null` there).
+- Audit every call site that builds a patch from a "none" value: the tilt rings, Reset tilt, the sliders, the wall field and the step field.
+- A test sends each of these patches through `JSON.stringify` → `updateNodes` and checks the field is gone afterwards.
+
+### The hole rule, updated
+The idea: a door belongs to a room and cuts that room, and it can reach the rooms beside it. A hole in group **G**, where G's parent is **P** (P is the scene's top level when G is top-level), cuts the shapes directly in:
+1. **G**, its own group (as before);
+2. **P**, so shapes beside G are cut (new);
+3. **G's sibling groups**, the other groups in P (as before);
+4. **P's sibling groups**, the rooms beside the room (new; only when P is a group).
+
+Orlando's example becomes:
+```
+level (group)
+├── room_a (group)
+│   ├── walls   ← cut: in P
+│   └── door (group)                  G = door, P = room_a
+│       ├── hole_a
+│       └── hole_b
+└── room_b (group)
+    └── walls   ← cut: in a sibling group of P (a doorway through two rooms)
+```
+
+Consequences:
+- **Bounded:** the rule goes up at most two levels and one across, and nothing walks the whole tree. Cutting also needs the bounds to overlap, so a door only cuts the walls it actually touches.
+- **A hole directly in a room's group** (07's recipe) still works: G = the room, P = the level. So it cuts its room, the loose shapes in the level, and the sibling rooms. Settled with Orlando: a top-level G cuts the loose top-level shapes it overlaps.
+- **Holes outside any group still cut nothing**, keep their warning, and never cut other holes.
+- **Changes:** the MCP instructions' hole rule and recipes (recipe: a room group holding `walls` and a `door` group of holes), `holeScope` in `holes.ts`, its tests, and the glossary entry.
+
+### Copy doesn't take over selected text
+- The editor's Cmd/Ctrl+C / X is skipped when the page has highlighted text (a non-empty `window.getSelection()`), for example in the error panel or the selection info. Normal text copy works there.
+- If Orlando sees a real error entry again with the tilt bug fixed, it gets traced then.
+
+### Ramps are volumes only
+- Ramps are volumes only: `Ramp.kind` becomes `"volume"`, and the kind buttons don't show "hole" for a ramp.
+- Old ramp holes load as volumes (the schema accepts `"hole"` and turns it into `"volume"`), so no saved scene breaks.
+- `draw_shapes` and `update_nodes` refuse `kind: "hole"` on a ramp with a clear message.
+- `isHole` and `holeScope` go back to closed shapes only.
+
+## 5. The inspector (07B.2)
+
+- **The contextual bar keeps only** the kind buttons (room, volume, hole) and the colors, for the selection and for the drawing tools' next shape.
+- **The inspector** is a floating window that can be dragged by its title bar. It starts at the top right, below the compass, and it can collapse to its title.
+  - It remembers its position and whether it's collapsed per viewer (localStorage, in try/catch).
+  - It's kept inside the window on resize, so it can't be lost off screen.
+  - It shows the selection's fields, grouped:
+    - **Shape:** sides (cylinders).
+    - **Walls:** thickness (rooms).
+    - **Profile:** taper and bevel (volumes and holes).
+    - **Tilt:** pitch, roll and Reset tilt (box and cylinder volumes and holes).
+    - **Ramp:** width, step, base and Reverse.
+  - Each field shows "–" when the selected shapes differ, as today. With nothing selected and a drawing tool active, it shows the next shape's fields (walls, taper, bevel, ramp style). Otherwise it's hidden.
+- **Live previews:** the sliders preview while dragging and send one step on release, the same way gizmo drags work.
+  - The preview state (`id → patch`) moves up to `App`, so the inspector and the viewport share it.
+  - The viewport draws previewed shapes with holes cut live. Manifold cuts a few shapes per frame easily, and only previewed shapes and the shapes their holes touch are re-cut.
+- **Nothing changes on the server,** because it's only a UI move.
+
+## 6. Handles (07B.3)
+
+All three are small knobs in the gizmo's style. Dragging one previews live and sends one step on release, with Cmd/Ctrl turning off the snap as usual. The label shows the value (`wall 0.35 m`, `taper 0.40`, `bevel 0.25`).
+
+- **Wall** (single rooms):
+  - **Where:** a knob on the inner top edge of the wall at the room's local +x side. For a free-form, it goes on its first edge's midpoint.
+  - **Drag:** along that edge's inward normal on the top plane. Thickness = the distance from the outline, snapped to 0.05 m, from `MIN_WALL` up to the largest wall that still leaves a room.
+- **Taper** (single volumes and holes):
+  - **Where:** a knob at the midpoint of the top face's local +x edge.
+  - **Drag:** toward the center, on the top plane. Taper = how far the edge has moved in, 0 at the base's edge and 1 at the center, snapped to 0.05. A free-form measures toward its centroid.
+- **Bevel** (single volumes and holes):
+  - **Where:** a knob on the top edge at the local −x side.
+  - **Drag:** down the side. Bevel = the drop ÷ the largest radius it can have (min(height, the top's half smallest extent)), snapped to 0.05.
+- **Crowding:**
+  - At taper 1 the top is a point, so the taper knob sits at the apex and the bevel knob hides (there's no edge to round).
+  - The knobs never share a spot with the height handle, which stays on the top's center.
+- **Tilted shapes:**
+  - The outline, the scale handles and the height handle move into the shape's own frame: drawn tilted, dragged along its tilted axes. The math lives in `gizmo.ts`, reusing `toWorld3` / `toLocal3`.
+  - Scaling a tilted shape keeps its bottom's center fixed in its own frame, like the untilted rule, so the tilt pivot moves with the size.
+  - The tilt rings stay.
+  - Multi-selections with a tilted shape still get only move and rotate.
+
+## 7. Drawing on surfaces (07B.4)
+
+- **The press point:** box, cylinder and Pen drags start where the cursor meets the surface under it:
+  - a volume's top;
+  - a room's floor or wall top;
+  - otherwise the ground.
+
+  The Line and Ramp tools already do this (`surfaceAt`).
+- **Only flat surfaces count.** A hit counts only when the face under the cursor points straight up (normal y > 0.99). Tapered sides, bevels, tilted tops and ramp slopes fall through to the next surface below, and in the end to the ground. Holes and lines never count.
+- **The rest of the drag stays on that plane** (`screenToPlane` at the press's y), and the new shape's `y` is that height. The footprint preview and the snap work as on the ground.
+- **The hint says where it'll land,** for example `on box_3's top · y 9.2`, so drawing on a surface is visible, not a surprise.
+- **Alt draws on the ground** whatever is under the cursor, for when a floor shape is in the way.
+- **Nothing changes on the server** (the shape just arrives with its `y`).
+
+## 8. Increments
+
+Each increment ends with typecheck, the tests, a bundle build and a browser checklist for Orlando.
+
+1. **07B.1 — Fixes:** the tilt drop and the patch audit, the new hole rule, and ramps as volumes only. The MCP instructions are updated and the server version goes to 0.0.9.
+2. **07B.2 — Inspector:** the slimmer contextual bar, the inspector panel and the shared live preview.
+3. **07B.3 — Handles:** wall, taper and bevel knobs, and scale and height handles for tilted shapes.
+4. **07B.4 — Drawing on surfaces.**
+
+## 9. Decisions
+
+- **Top-level holes:** a hole in a top-level group also cuts the loose top-level shapes it overlaps (the rule as written, with no exceptions).
+- **Doors cut their room and the rooms beside it:** P's sibling groups are in reach, so a doorway through two rooms' walls works with the door group inside one room.
+- **The inspector is draggable,** and kept on screen.
+- **The error-tab entry** is treated as the copy takeover (§4) unless it shows up again.
+
+## 10. Progress
+
+### 07B.1 — Fixes (done; checked in the browser by Orlando)
+
+**What changed:**
+- **The tilt drop:** `tiltValue` (`gizmo.ts`) sends 0 for level instead of `undefined`, which JSON dropped. The server still stores 0 as none.
+  - The audit found no other drops: Reset tilt, the taper and bevel sliders and the wall field already send numbers, and the step field already sends `null`.
+- **The hole rule:** `holeScope` (`holes.ts`) now reaches G, P, and G's and P's sibling groups. `isHole`, `cutters` and `cutsFloor` take closed shapes only.
+- **Ramps are always volumes:**
+  - `Ramp.kind` is `"volume"`, and stored ramp holes load as volumes (the schema turns `"hole"` into `"volume"`).
+  - `draw_shapes` and `update_nodes` refuse a ramp hole: "a ramp is always a volume, never a hole".
+  - The ramp controls lost their kind buttons, and the selection info lost "· hole".
+- **Copy:** Cmd/Ctrl+C / X leave highlighted page text alone (`highlightedText` in `keys.ts`). A press in the view clears any highlighted text, so a stale text selection can't take over a copy of shapes.
+- **Agent and docs:**
+  - The MCP instructions state the new rule and the `door` group recipe, and describe ramps as always volumes.
+  - The server version is 0.0.9. The instructions are now 9.6 kB, still over the 9 kB budget (see 07's notes).
+  - CLAUDE.md and the glossary (hole, ramp, ramp tool, shape) are updated.
+
+**Verified:**
+- Typecheck, 275 unit tests and the bundle build pass.
+- New tests:
+  - Orlando's `room_a › door` layout, where the door cuts `walls_a`, a sibling group's shape and `room_b`'s walls;
+  - a top-level group's hole cutting a loose top-level shape;
+  - a ramp hole refused in `draw_shapes` and `update_nodes`;
+  - a stored ramp hole loading as a volume;
+  - a level tilt surviving JSON.
+- Scripted MCP check (5171): version 0.0.9. Walls plus a `door` group in `room a`, with `room b` beside it, gives no warnings, and a ramp hole is refused with the message.
+
+**Browser checklist:**
+1. Tilt a box volume with a ring (roll 90), drag the ring back to 0, then move and scale it. It stays level.
+2. Build `room` = { walls (a room box), `door` group of two box holes }. The holes cut the walls.
+3. Put a second room group beside `room` (both in one parent) with its wall where the door is. The door cuts that wall too.
+4. Select a ramp: the controls have no volume/hole buttons, and the Ramp tool has none either.
+5. With a shape selected, highlight text in the error panel and press Cmd+C. The text is copied, not the shape. Click in the view and press Cmd+C: the shape is copied again.

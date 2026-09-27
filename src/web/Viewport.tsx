@@ -9,7 +9,7 @@ import {
   MIN_POINTS,
   SNAP,
   type KindField,
-  type Solid,
+  type ClosedShape,
   type Line,
   type LinePoint,
   type Ramp,
@@ -727,6 +727,8 @@ export function Viewport({
   // Box and Cylinder tools: drag a footprint on the ground.
   const onPointerDown = (e: PointerEvent) => {
     const { sx, sy, size } = local(e);
+    // Working in the view drops any highlighted page text, so Cmd/Ctrl+C copies the shapes again, not stale text.
+    window.getSelection()?.removeAllRanges();
     if (e.button === 0 && tool === "select") {
       // In point editing, a press grabs a point, a handle or an edge. Pressing the free-form elsewhere deselects
       // the points; pressing anything else leaves point editing (empty ground does only that).
@@ -1241,7 +1243,7 @@ function Boxes({
 }: {
   boxes: Shape[];
   /** The holes that cut each shape, by its ID. */
-  cuts: Map<string, Solid[]>;
+  cuts: Map<string, ClosedShape[]>;
   /** Whether holes show as ghosts; hidden ones still show while selected or hovered. */
   showHoles: boolean;
   draft: (Footprint & Draft) | null;
@@ -1292,7 +1294,7 @@ function Boxes({
 /** The warning over a hole that cuts nothing (it's outside any group): a small yellow diamond above its top. */
 const warningGeometry = new THREE.OctahedronGeometry(0.22);
 const warningMaterial = new THREE.MeshBasicMaterial({ color: "#f5c518", depthTest: false });
-function HoleWarning({ hole }: { hole: Solid }) {
+function HoleWarning({ hole }: { hole: ClosedShape }) {
   const b = boundsOf([hole]);
   return (
     <mesh

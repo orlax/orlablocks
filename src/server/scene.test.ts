@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { Box, Freeform, Line, SceneNode } from "../shared/scene.types";
+import { NodeSchema, type Box, type Freeform, type Line, type SceneNode } from "../shared/scene.types";
 import { subtreeIds } from "../shared/tree";
 import { createSceneStore, SceneError } from "./scene";
 
@@ -1200,7 +1200,16 @@ describe("scene store ramps", () => {
     const [r] = store.drawShapes([{ type: "ramp", points: [{ x: 0, y: 0, z: 0 }, { x: 6, y: 3, z: 0 }] }], "agent");
     expect(() => store.updateNodes([{ id: r.id, height: 2 }], "agent")).toThrow(/is a ramp, with no height/);
     expect(() => store.updateNodes([{ id: r.id, kind: "room" }], "agent")).toThrow(/never a room/);
+    expect(() => store.updateNodes([{ id: r.id, kind: "hole" }], "agent")).toThrow(/always a volume, never a hole/);
+    expect(() => store.drawShapes([{ type: "ramp", kind: "hole", points: [{ x: 0, y: 0, z: 0 }, { x: 6, y: 3, z: 0 }] }], "agent")).toThrow(
+      /always a volume, never a hole/,
+    );
     expect(() => store.updateNodes([{ id: r.id, points: [{ x: 0, z: 0 }, { x: 1, z: 0 }] }], "agent")).toThrow(/need a y/);
+  });
+
+  it("loads a ramp saved as a hole (07 allowed it) as a volume", () => {
+    const old = { id: "ramp_1", type: "ramp", kind: "hole", points: [{ x: 0, y: 0, z: 0 }, { x: 6, y: 3, z: 0 }], width: 1.5, base: "solid", color: "gray", createdBy: "agent" };
+    expect(NodeSchema.parse(old)).toMatchObject({ id: "ramp_1", kind: "volume" });
   });
 
   it("changes a ramp's steps, width, base and path, and moves, mirrors and copies it by its points", () => {

@@ -134,14 +134,14 @@ export type RampBase = "solid" | "floating";
  * points at the same height), a walkway or a spiral stair. Its points (2 or more) are the path's centerline in
  * absolute world x/z, each with the surface's height `y` there; between two points the height changes evenly with
  * the distance along the ground, and curves come from the points' flat handles. `step` is the riser height (none =
- * smooth). A volume, or a hole (a sloped tunnel through something); never a room.
+ * smooth). Always a volume: never a room, and never a hole (a hole that cuts stairs and floors at once cuts too much).
  */
 export type Ramp = {
   id: string; // "ramp_1", ...
   type: "ramp";
   name?: string;
   parent?: string;
-  kind: "volume" | "hole";
+  kind: "volume";
   points: RampPoint[];
   width: number;
   step?: number;
@@ -152,7 +152,7 @@ export type Ramp = {
 
 /** A closed shape: one with a footprint, a kind (room or volume), an elevation and a height. */
 export type ClosedShape = Box | Cylinder | Freeform;
-/** A solid: a shape with a kind and a mesh, that holes cut and can be (a closed shape or a ramp). */
+/** A solid: a shape with a kind and a mesh, that holes cut (a closed shape or a ramp; only closed shapes are holes). */
 export type Solid = ClosedShape | Ramp;
 /** Anything drawn: every node that isn't a group. */
 export type Shape = ClosedShape | Line | Ramp;
@@ -379,7 +379,8 @@ const RampSchema = z.object({
   type: z.literal("ramp"),
   name: z.string().optional(),
   parent: z.string().optional(),
-  kind: z.enum(["volume", "hole"]),
+  // 07 let a ramp be a hole: those load as volumes.
+  kind: z.enum(["volume", "hole"]).transform((): "volume" => "volume"),
   points: z.array(RampPointSchema).min(MIN_LINE_POINTS).max(MAX_POINTS),
   width: z.number().min(MIN_RAMP_WIDTH),
   step: z.number().min(MIN_STEP).optional(),
@@ -496,7 +497,7 @@ const rampField = {
  */
 export const RampInputSchema = z.strictObject({
   type: z.literal("ramp").describe("A path with a width: a ramp, stairs (with step), a landing, a walkway, a spiral stair"),
-  kind: z.enum(["volume", "hole"]).optional().describe("volume (the default) or hole (a sloped tunnel through what it cuts)"),
+  kind: z.enum(["volume", "hole"]).optional().describe("always volume (the default): a ramp is never a hole"),
   points: z
     .array(RampPointInputSchema)
     .min(MIN_LINE_POINTS)

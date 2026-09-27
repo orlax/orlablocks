@@ -25,7 +25,7 @@ import type { CameraState, GroundPoint } from "./camera";
 import { clipboardText, readClipboard } from "./clipboard";
 import { ErrorPanel } from "./ErrorPanel";
 import { reportError } from "./errors";
-import { typingInField } from "./keys";
+import { highlightedText, typingInField } from "./keys";
 import { Outliner } from "./Outliner";
 import { ProjectPicker } from "./ProjectPicker";
 import { ContextualBar, EDIT_POINTS_HINT, HINTS, TOOLS, ToolBar } from "./ToolBar";
@@ -74,7 +74,7 @@ const describe = (s: Shape) => {
     const rise = round2(Math.max(...ys) - Math.min(...ys));
     const steps = s.step === undefined ? 0 : s.points.slice(1).reduce((n, p, i) => n + (p.y === s.points[i].y ? 0 : Math.max(1, Math.round(Math.abs(p.y - s.points[i].y) / s.step!))), 0);
     const how = s.step === undefined ? "smooth" : `${steps} steps of ${s.step}`;
-    return `${title(s)} · ${s.points.length} points · ${round2(stations.at(-1)!.s)} m long · ${s.width} m wide · rises ${rise} m · ${how} · ${s.base}${s.kind === "hole" ? " · hole" : ""}`;
+    return `${title(s)} · ${s.points.length} points · ${round2(stations.at(-1)!.s)} m long · ${s.width} m wide · rises ${rise} m · ${how} · ${s.base}`;
   }
   const wall =
     s.kind === "room"
@@ -135,7 +135,7 @@ export function App() {
   const boxes = nodes.filter(isShape);
   const selectedNodes = nodes.filter((n) => selection.includes(n.id));
   const selectedShapes = shapesUnder(nodes, selection);
-  // Rooms, volumes and holes of every closed shape (a ramp counts as a ramp, whatever its kind).
+  // Rooms, volumes and holes of every closed shape (a ramp counts as a ramp).
   const rooms = boxes.filter((b) => isClosed(b) && b.kind === "room").length;
   const volumes = boxes.filter((b) => isClosed(b) && b.kind === "volume").length;
   const holes = boxes.filter((b) => isClosed(b) && b.kind === "hole").length;
@@ -319,7 +319,7 @@ export function App() {
     };
     const onCopy = (e: ClipboardEvent) => {
       const { nodes, selection } = state.current;
-      if (!ours(e) || selection.length === 0 || !e.clipboardData) return;
+      if (!ours(e) || selection.length === 0 || !e.clipboardData || highlightedText()) return;
       e.preventDefault();
       e.clipboardData.setData("text/plain", clipboardText(nodes, selection));
       if (e.type === "cut") send({ type: "remove_nodes", ids: selection, cut: true });
@@ -436,7 +436,7 @@ export function App() {
   const rampControls =
     selectedRamps.length > 0
       ? {
-          style: { kind: sharedRamp("kind"), width: sharedRamp("width"), step: sharedRamp("step"), base: sharedRamp("base") },
+          style: { width: sharedRamp("width"), step: sharedRamp("step"), base: sharedRamp("base") },
           onChange: (patch: Partial<RampStyle>) =>
             send({
               type: "update_nodes",

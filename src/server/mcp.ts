@@ -67,10 +67,11 @@ const INSTRUCTIONS =
   "log) is pitch 90, with height as its length and its center at y + height / 2. get_scene gives a tilted shape its " +
   "actual axis-aligned `bounds`. Free-forms and rooms don't tilt, and a tilted shape can't convert to a free-form. " +
   "A HOLE (kind: hole) is any closed shape that cuts itself out of other shapes when drawn: a door, a window, an arch, " +
-  "a hole in a floor, a tunnel. It cuts only the shapes directly in its OWN group and directly in its group's " +
-  "SIBLING groups (the other groups in the same parent); a hole outside any group cuts nothing (results warn about it). " +
-  "So put a room and its doors and windows in one group, and a doorway between two room groups that sit in the same " +
-  "parent cuts both rooms' walls. Holes never cut holes. A hole cuts a room's floor only if its bottom is below the " +
+  "a hole in a floor, a tunnel. For a hole in group G, whose parent is P (the top level if G is top-level), it cuts " +
+  "the shapes directly in G, directly in P (beside G), and directly in G's and P's sibling groups; nothing deeper. " +
+  "A hole outside any group cuts nothing (results warn about it), and it only cuts what it overlaps. So give a room " +
+  "a group holding its walls and a `door` group of holes (a door can be several holes): the door cuts its room's " +
+  "walls and the walls of the rooms beside that room (P's sibling groups), for a doorway through two walls. Holes never cut holes. A hole cuts a room's floor only if its bottom is below the " +
   `room's y (a door standing on the floor doesn't notch it). Default hole height ${DEFAULT_HEIGHT.hole} m. A door: a box hole about 1 m wide, ` +
   "2.2 m tall, standing on the floor, turned like the wall and a bit deeper than the wall. A round window: a cylinder " +
   "hole with pitch 90 (lying, its height through the wall). An arch: a box hole plus a lying cylinder hole on top. Holes " +
@@ -83,10 +84,10 @@ const INSTRUCTIONS =
   "without it the ramp is smooth. `base` is solid (the default, filled down to its lowest point) or floating (a " +
   "slab under the surface). For a spiral, give `spiral: { x, z, radius, turn, y, rise, from? }` instead of points " +
   "(turn in degrees, counterclockwise seen from above; from 0 = east, 90 = north) and don't compute a helix by hand. " +
-  "A ramp is a volume or a hole (a sloped tunnel); it has no x, z, y, height or rotation, and move_nodes, " +
+  "A ramp is always a volume (never a hole); it has no x, z, y, height or rotation, and move_nodes, " +
   "rotate_nodes and mirror_nodes change its points. For a stair up to a floor above, cut a hole in that floor, and " +
-  "keep that hole thin (from about 0.05 m below the floor to just above it): a hole cuts everything it overlaps in " +
-  "its group, the stair included. " +
+  "keep that hole thin (from about 0.05 m below the floor to just above it): a hole cuts everything in reach that it " +
+  "overlaps, the stair included. " +
   `\`color\` is a palette key: ${SHAPE_COLORS.join(", ")} (default ${DEFAULT_COLOR}). ` +
   "A cylinder has exactly a box's fields, and its footprint is the ellipse inscribed in its width × depth rectangle " +
   "(width = depth for a circle, so a round room 10 m across is width 10, depth 10), centered at (x, z) and turned by `rotation` like a box. " +
@@ -168,7 +169,7 @@ function buildServer(workspace: Workspace) {
     const warnings = holeWarnings(store().getScene().nodes);
     return warnings.length > 0 ? { ...result, warnings } : result;
   };
-  const server = new McpServer({ name: "dungeon-designer", version: "0.0.8" }, { instructions: INSTRUCTIONS });
+  const server = new McpServer({ name: "dungeon-designer", version: "0.0.9" }, { instructions: INSTRUCTIONS });
   // Every tool reads or edits the open scene, and fails with a clear message while nothing is open.
   const store = () => workspace.requireScene();
 
@@ -201,7 +202,7 @@ function buildServer(workspace: Workspace) {
     async ({ shapes }) => {
       const created = store().drawShapes(shapes, "agent");
       const all = store().getScene().nodes;
-      // Rooms, volumes and holes of every closed shape; a ramp counts as a ramp, whatever its kind.
+      // Rooms, volumes and holes of every closed shape; a ramp counts as a ramp.
       const count = (kind: string) => all.filter((n) => isShape(n) && isClosed(n) && n.kind === kind).length;
       const totals = {
         rooms: count("room"),
@@ -224,7 +225,7 @@ function buildServer(workspace: Workspace) {
         `A box takes any of: name, parent, kind, x, z, y, width, depth, height, rotation, color, wall (a room's; null = the default), ` +
         `taper and bevel (a volume's; 0 clears them), pitch and roll (a box or cylinder volume's; 0 levels it); ` +
         `a cylinder those and sides; a free-form name, parent, kind, y, height, color, wall, taper, bevel and points (the whole outline); a line name, parent, color, ` +
-        `points (the whole path, with y), thickness, dashed and arrow; a ramp name, parent, kind (volume or hole), color, ` +
+        `points (the whole path, with y), thickness, dashed and arrow; a ramp name, parent, color, ` +
         `points (with y), width, step (null = smooth) and base. ` +
         `A group takes only name and parent. ` +
         `{ id, type: "freeform" } alone converts a box or cylinder into a free-form with a new ID; a call that converts ` +
