@@ -44,6 +44,7 @@ type Footprinted = {
   height: number; // >= MIN_HEIGHT
   rotation: number; // degrees, 0..360
   color: ShapeColor;
+  wall?: number; // rooms only: the walls' thickness, grown inward from the footprint; none = DEFAULT_WALL
   createdBy: Actor;
 };
 
@@ -79,6 +80,7 @@ export type Freeform = {
   y: number;
   height: number;
   color: ShapeColor;
+  wall?: number; // rooms only, as a box's
   points: FootPoint[];
   createdBy: Actor;
 };
@@ -133,10 +135,10 @@ export type Group = {
 export type SceneNode = Shape | Group;
 
 /**
- * The shape fields an edit can change. `sides` is for cylinders (undefined = smooth), `points` for free-forms and
- * lines, `thickness`, `dashed` and `arrow` for lines.
+ * The shape fields an edit can change. `wall` is for rooms (undefined = the default), `sides` for cylinders
+ * (undefined = smooth), `points` for free-forms and lines, `thickness`, `dashed` and `arrow` for lines.
  */
-export type ShapePatch = Partial<Pick<Footprinted, "name" | "kind" | "x" | "z" | "y" | "width" | "depth" | "height" | "rotation" | "color">> & {
+export type ShapePatch = Partial<Pick<Footprinted, "name" | "kind" | "x" | "z" | "y" | "width" | "depth" | "height" | "rotation" | "color" | "wall">> & {
   sides?: number;
   points?: FootPoint[] | LinePoint[];
   thickness?: number;
@@ -183,8 +185,12 @@ export const SNAP = 0.5;
 export const HEIGHT_SNAP = 0.05;
 export const MIN_HEIGHT = HEIGHT_SNAP;
 export const DEFAULT_HEIGHT: Record<ShapeKind, number> = { room: 3, volume: 0.25 };
-/** Room walls are this thick, centered on the footprint edge. Rendering and picking only: the data stores the centerline. */
-export const WALL_THICKNESS = 0.2;
+/**
+ * A room's walls are this thick unless it sets `wall`, and never thinner than MIN_WALL. They grow inward from the
+ * footprint, which is the room's outside.
+ */
+export const DEFAULT_WALL = 0.2;
+export const MIN_WALL = 0.05;
 /** A cylinder's side count, when it has one; without, it's smooth. */
 export const MIN_SIDES = 3;
 export const MAX_SIDES = 64;
@@ -225,6 +231,10 @@ const field = {
     .min(MIN_SIDES)
     .max(MAX_SIDES)
     .describe(`Cylinders only: ${MIN_SIDES}..${MAX_SIDES} sides make a regular polygon (a flat edge faces local +x); omit for a smooth circle or oval`),
+  wall: z
+    .number()
+    .min(MIN_WALL)
+    .describe(`Rooms only: the walls' thickness in meters (>= ${MIN_WALL}, default ${DEFAULT_WALL}), grown inward from the footprint`),
 };
 
 const ActorSchema = z.enum(["human", "agent"]);
@@ -242,6 +252,7 @@ const footprinted = {
   height: z.number().min(MIN_HEIGHT),
   rotation: z.number(),
   color: ShapeColorSchema,
+  wall: z.number().min(MIN_WALL).optional(),
   createdBy: ActorSchema,
 };
 const OffsetSchema = z.object({ x: z.number(), z: z.number() });
@@ -260,6 +271,7 @@ const FreeformSchema = z.object({
   y: z.number(),
   height: z.number().min(MIN_HEIGHT),
   color: ShapeColorSchema,
+  wall: z.number().min(MIN_WALL).optional(),
   points: z.array(FootPointSchema).min(MIN_POINTS).max(MAX_POINTS),
   createdBy: ActorSchema,
 });
@@ -300,6 +312,7 @@ export const BoxInputSchema = z.strictObject({
   y: field.y.optional().describe("Elevation of the box's bottom, meters. Defaults to 0 (on the ground); negative = below ground"),
   rotation: field.rotation.optional().describe("Degrees, counterclockwise seen from above. Defaults to 0 (grid-aligned)"),
   color: field.color.optional().describe(`Palette key: ${SHAPE_COLORS.join(", ")}. Defaults to ${DEFAULT_COLOR}`),
+  wall: field.wall.optional(),
   name: field.name.optional(),
   parent: field.parent.optional().describe("ID of the group to put it in, e.g. group_1. Omit for the top level"),
 });
@@ -325,6 +338,7 @@ export const FreeformInputSchema = z.strictObject({
   height: BoxInputSchema.shape.height,
   y: BoxInputSchema.shape.y,
   color: BoxInputSchema.shape.color,
+  wall: BoxInputSchema.shape.wall,
   name: field.name.optional(),
   parent: BoxInputSchema.shape.parent,
 });
@@ -390,6 +404,10 @@ export const NodeUpdateSchema = z.strictObject({
   rotation: field.rotation.optional(),
   color: field.color.optional(),
   sides: field.sides.nullable().optional().describe(`Cylinders only: ${MIN_SIDES}..${MAX_SIDES} sides, or null to make it smooth`),
+  wall: field.wall
+    .nullable()
+    .optional()
+    .describe(`Rooms only: the walls' thickness in meters (>= ${MIN_WALL}), or null for the default ${DEFAULT_WALL}`),
   points: z
     .array(
       z.strictObject({

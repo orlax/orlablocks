@@ -1,8 +1,9 @@
 import { useEffect, useMemo } from "react";
 import * as THREE from "three";
 import { toCreasedNormals } from "three/examples/jsm/utils/BufferGeometryUtils.js";
-import { isFootprinted, localFootprint, pointInPolygon, roomWalls, shapeFrame, signedArea2, type Point } from "../shared/geometry";
-import { PALETTE, WALL_THICKNESS, type ClosedShape, type ShapeColor } from "../shared/scene.types";
+import { isFootprinted, localFootprint, shapeFrame, wallOf } from "../shared/geometry";
+import { shapeMesh, type Mesh } from "../shared/mesh";
+import { PALETTE, type ClosedShape, type ShapeColor } from "../shared/scene.types";
 
 type Props = {
   shape: ClosedShape;
@@ -11,7 +12,6 @@ type Props = {
   highlight?: "hover" | "selected";
 };
 
-const FLOOR_THICKNESS = 0.04; // a thin slab just above the box's bottom, so it hides the grid inside the room
 /** Room floors are a slightly darker shade of the room's color. */
 const FLOOR_SHADE = 0.94;
 
@@ -107,26 +107,14 @@ function applyBoxUVs(geometry: THREE.BufferGeometry, ox: number, oy: number, oz:
   return geometry;
 }
 
-/** A ring on the ground as a three.js outline: drawn in x / -z, then rotated so the extrusion points up (+y). */
-const flat = (points: Point[]) => points.map((p) => new THREE.Vector2(p.x, -p.z));
-
-/**
- * A region on the ground (in the shape's frame), given as rings, extruded from 0 up to `height`, as one mesh with
- * clean edges (no seams at the corners). Rings wound like the first one are solid, the others are holes in the
- * solid ring around them.
- */
-function extrude(rings: Point[][], height: number) {
-  const solid = Math.sign(signedArea2(rings[0]));
-  const shapes = rings.filter((r) => Math.sign(signedArea2(r)) === solid).map((r) => ({ ring: r, shape: new THREE.Shape(flat(r)) }));
-  for (const hole of rings.filter((r) => Math.sign(signedArea2(r)) !== solid)) {
-    const around = shapes.find((s) => pointInPolygon(s.ring, hole[0])) ?? shapes[0];
-    around.shape.holes.push(new THREE.Path(flat(hole)));
-  }
-  const geometry = new THREE.ExtrudeGeometry(
-    shapes.map((s) => s.shape),
-    { depth: height, bevelEnabled: false },
-  );
-  geometry.rotateX(-Math.PI / 2);
+/** A shared mesh as three.js geometry, unshared per face (so each face gets its own flat normal, for the UVs). */
+function toGeometry(mesh: Mesh) {
+  const indexed = new THREE.BufferGeometry();
+  indexed.setAttribute("position", new THREE.Float32BufferAttribute(mesh.positions, 3));
+  indexed.setIndex(mesh.indices);
+  const geometry = indexed.toNonIndexed();
+  indexed.dispose();
+  geometry.computeVertexNormals();
   return geometry;
 }
 
@@ -147,34 +135,24 @@ function uvOffset(shape: ClosedShape): [number, number] {
 }
 
 /**
- * Graybox rendering of a closed shape, from its footprint polygon. A room is a floor slab plus thick walls (the
- * region between the footprint grown and shrunk by half the wall thickness), with no ceiling, so you see in from
+ * Graybox rendering of a closed shape, from its meshes (`shapeMesh`). A room is a floor slab plus thick walls (the
+ * region between the footprint and the footprint shrunk by the wall thickness), with no ceiling, so you see in from
  * above. A volume is the footprint extruded to its height. Both cast and receive shadows and have faint outlined
  * edges.
  */
 export function ShapeMesh({ shape, draft = false, highlight }: Props) {
   const { kind, y, height, color } = shape;
   const frame = shapeFrame(shape);
-  const outline = localFootprint(shape);
   const [ox, oz] = uvOffset(shape);
-  // Geometry is rebuilt only when what it's made from changes (the outline is a new array every render).
-  const key = JSON.stringify([kind, outline, height, ox, y, oz]);
+  // Geometry is rebuilt only when what it's made from changes (the shape is a new object every render).
+  const key = JSON.stringify([kind, localFootprint(shape), height, ox, y, oz, kind === "room" ? wallOf(shape) : 0]);
 
-  // An outline with no area (a stored shape is never one, but a preview can be) has no walls or body: nothing to draw.
-  const empty = Math.abs(signedArea2(outline)) < 1e-9;
-  const solid = useMemo(() => {
-    if (empty) return null;
-    // Rooms too narrow to have an inside come out as solid blocks (no inner ring).
-    const rings = kind === "volume" ? [outline] : roomWalls(shape, WALL_THICKNESS / 2).walls;
-    if (rings.length === 0) return null;
-    // UVs pick their plane from the flat normals, so they come first.
-    return toCreasedNormals(applyBoxUVs(extrude(rings, height), ox, y, oz), CREASE);
-  }, [key]);
-
-  const floor = useMemo(
-    () => (kind === "room" && !empty ? applyBoxUVs(extrude([outline], FLOOR_THICKNESS), ox, y, oz) : null),
-    [key],
-  );
+  // An outline with no area (a stored shape is never one, but a preview can be) has no meshes: nothing to draw.
+  // Rooms too narrow to have an inside come out as solid blocks (walls with no inner ring).
+  const parts = useMemo(() => shapeMesh(shape), [key]);
+  // UVs pick their plane from the flat normals, so they come first.
+  const solid = useMemo(() => (parts.body ? toCreasedNormals(applyBoxUVs(toGeometry(parts.body), ox, y, oz), CREASE) : null), [parts]);
+  const floor = useMemo(() => (parts.floor ? applyBoxUVs(toGeometry(parts.floor), ox, y, oz) : null), [parts]);
 
   const edges = useMemo(() => (solid ? new THREE.EdgesGeometry(solid, 15) : null), [solid]);
 

@@ -1008,3 +1008,63 @@ describe("scene store lines", () => {
     expect(() => store.convertNodes({ ids: [l.id] }, "agent")).toThrow(/is a line; only boxes and cylinders convert/);
   });
 });
+
+describe("scene store walls", () => {
+  it("draws rooms with a wall thickness, leaving the default out", () => {
+    const store = createSceneStore();
+    const [keep, plain, cave] = store.drawShapes(
+      [
+        { kind: "room", x: 0, z: 0, width: 12, depth: 10, wall: 0.6 },
+        { kind: "room", x: 20, z: 0, width: 4, depth: 4, wall: 0.2 },
+        { type: "freeform", kind: "room", points: [{ x: 0, z: 20 }, { x: 6, z: 20 }, { x: 3, z: 26 }], wall: 0.333 },
+      ],
+      "agent",
+    );
+    expect(keep).toMatchObject({ wall: 0.6 });
+    expect(plain).not.toHaveProperty("wall");
+    expect(cave).toMatchObject({ wall: 0.33 });
+  });
+
+  it("refuses walls on a volume or a line, and walls thinner than 0.05 m", () => {
+    const store = createSceneStore();
+    expect(() => store.drawShapes([{ kind: "volume", x: 0, z: 0, width: 2, depth: 2, wall: 0.5 }], "agent")).toThrow(/shapes\[0\]\.wall: only a room has walls/);
+    expect(() => store.drawShapes([{ kind: "room", x: 0, z: 0, width: 2, depth: 2, wall: 0.01 }], "agent")).toThrow(/wall/);
+    const [v, line] = store.drawShapes(
+      [
+        { kind: "volume", x: 0, z: 0, width: 2, depth: 2 },
+        { type: "line", points: [{ x: 0, y: 0, z: 0 }, { x: 1, y: 0, z: 0 }] },
+      ],
+      "agent",
+    );
+    expect(() => store.updateNodes([{ id: v.id, wall: 0.5 }], "agent")).toThrow(/only a room has walls/);
+    expect(() => store.updateNodes([{ id: line.id, wall: 0.5 }], "agent")).toThrow(/is a line/);
+    // Making it a room in the same change is fine.
+    store.updateNodes([{ id: v.id, kind: "room", wall: 0.5 }], "agent");
+    expect(store.getScene().nodes[0]).toMatchObject({ kind: "room", wall: 0.5 });
+  });
+
+  it("changes walls, resets them with null, and drops them when a room becomes a volume", () => {
+    const store = createSceneStore();
+    const [r] = store.drawShapes([{ kind: "room", x: 0, z: 0, width: 8, depth: 8 }], "human");
+    store.updateNodes([{ id: r.id, wall: 1 }], "human");
+    expect(store.getHistory().undoLabel).toBe("Change walls of box_1");
+    expect(store.getScene().nodes[0]).toMatchObject({ wall: 1 });
+    store.updateNodes([{ id: r.id, wall: null }], "human");
+    expect(store.getScene().nodes[0]).not.toHaveProperty("wall");
+    store.undo();
+    store.updateNodes([{ id: r.id, kind: "volume" }], "human");
+    expect(store.getScene().nodes[0]).not.toHaveProperty("wall");
+    expect(store.getHistory().undoLabel).toBe("Change kind of box_1");
+    store.undo();
+    expect(store.getScene().nodes[0]).toMatchObject({ kind: "room", wall: 1 });
+  });
+
+  it("keeps the wall when converting to a free-form, and when copying", () => {
+    const store = createSceneStore();
+    const [r] = store.drawShapes([{ kind: "room", x: 0, z: 0, width: 8, depth: 8, wall: 0.4 }], "human");
+    store.duplicateNodes({ ids: [r.id], dx: 10 }, "human");
+    const [f] = store.convertNodes({ ids: [r.id] }, "human");
+    expect(f).toMatchObject({ type: "freeform", wall: 0.4 });
+    expect(store.getScene().nodes[1]).toMatchObject({ wall: 0.4 });
+  });
+});

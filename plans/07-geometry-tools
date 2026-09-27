@@ -342,4 +342,45 @@ Adopted as recommended (say if any should change):
 
 ## 13. Progress
 
-(Nothing yet.)
+### 07.1 — Mesh groundwork and wall thickness (done)
+
+- **`src/shared/mesh.ts` (new):**
+  - `prism(rings, y0, y1)` extrudes a region (rings, holes wound the other way) into an indexed, watertight mesh. The caps come from three's `ShapeUtils.triangulateShape` (earcut), and each triangle is turned to face outward. So `mesh.ts` imports `three`; the server doesn't import it.
+  - `shapeMesh(shape)` gives the parts in the shape's own frame: `body` (a volume's solid, or a room's walls) and `floor` (a room's slab, `FLOOR_THICKNESS` 0.04, moved here from `ShapeMesh`).
+  - `hitMesh(shape)` gives the world mesh that picking and the marquee test, with its bounds: the body, plus a room's floor as a flat cap at its elevation. A point picked on a floor is at the room's `y`, as before, not on top of the slab, so line points drawn on floors keep y 0.
+  - Both are cached per shape object.
+- **Rendering:** `ShapeMesh` turns the shared mesh into three.js geometry (unshared per face, flat normals), then applies the same UVs, creased normals, edges and materials. `extrude` is gone.
+- **Picking (`pick.ts`):** `rayMesh` (Möller–Trumbore, both sides, after a slab test on the bounds) replaces `prismCrossings` and the room special case. A ray through a room's open top reaches the floor, an inner wall or a volume inside the room, because the mesh has no ceiling.
+  - Dropped: the old "the camera is inside the shape" case, which returned 0. The camera is never inside a shape at this pitch.
+- **The marquee (`marquee.ts`):** a closed shape is hit when a projected vertex is in the rect, or a projected triangle overlaps it, after a screen-bounds reject. `shapeFaces` is gone.
+- **Walls:**
+  - `wall?` on boxes, cylinders and free-forms: at least `MIN_WALL` (0.05), and left out at `DEFAULT_WALL` (0.2, was `WALL_THICKNESS`).
+  - `roomWalls(shape)` no longer takes a half-thickness. `outer` is the footprint, `inner` the footprint shrunk by `wallOf(shape)`, and an outline with no area gives no rings. `ringsInWorld` is gone.
+  - The store:
+    - `drawShapes` takes `wall` on rooms and refuses it on volumes (`shapes[0].wall: only a room has walls (this is a volume)`).
+    - `updateNodes` takes `wall`, and null resets it. It's refused on volumes and lines, unless the same change makes the shape a room.
+    - A kind change away from room drops `wall` in the same step. The label stays `Change kind of …`: `updateVerb` ignores that drop.
+    - Convert and copy keep `wall`. The undo label is `Change walls of box_1`.
+- **Editor:**
+  - The contextual bar's **wall control** (`WallControl` in `ToolBar.tsx`): a brick-wall icon, then − / a field in meters / +, stepping 0.05. With rooms selected, it sets every selected room's wall, and it shows the thickness when they all share one.
+  - In the Box, Cylinder and Pen tools the control sets the next room's wall (`nextWall` in App, passed to the Viewport). Drafts and the Pen's preview show it.
+  - The selection info adds `· wall 0.6` for rooms.
+- **MCP:** the instructions say the footprint is the room's outside, the walls grow inward by `wall`, and rooms that touch have two walls. `draw_shapes` and `update_nodes` mention `wall`. The instructions are still 6.4 kB. **Server version 0.0.8. Restart the server and reconnect with `/mcp`.**
+- **Docs:** GLOSSARY.md (footprint, mesh, room, wall thickness) and CLAUDE.md ("Working with the scene", `mesh.ts`).
+- **Checks:**
+  - typecheck;
+  - 241 tests. The new ones:
+    - `mesh.test.ts`: watertight and outward-facing (the signed volume) for a square in both windings, a ring with a hole, a volume, rooms with default and thick walls, a narrow solid room, a curved free-form room and a smooth cylinder, plus the `hitMesh` world transform;
+    - `rayMesh` tests replacing `prismCrossings`';
+    - a thick-wall pick;
+    - "scene store walls";
+    - the L-room wall test rewritten for inward walls;
+  - the editor bundles;
+  - a scripted run on `:5171` with a scratch `DATA_DIR`:
+    - `initialize` reports 0.0.8, with the new wall sentence and not the old "centered" one;
+    - `tools/list` has 9 tools, and `update_nodes` takes `wall`;
+    - the agent drew a box, an octagon and a free-form room with walls 0.6, 0.4 and 0.5;
+    - a volume with a wall was refused;
+    - `wall: null` reset one, and making the octagon a volume dropped its wall;
+    - a WS `add_shapes` drew a room with a 1 m wall, and a WS undo removed it;
+  - Orlando's browser check passed.

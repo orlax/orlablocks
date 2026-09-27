@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { Box, Freeform } from "../shared/scene.types";
 import { DEFAULT_CAMERA, heightOnVertical, screenRay, worldToScreen, type CameraState, type Vec3 } from "./camera";
-import { pickLine, pickShape, prismCrossings } from "./pick";
+import { prism } from "../shared/mesh";
+import { pickHit, pickLine, pickShape, rayMesh } from "./pick";
 
 const size = { width: 1200, height: 800 };
 const cam: CameraState = { ...DEFAULT_CAMERA, yaw: 30, distance: 60 };
@@ -78,7 +79,7 @@ describe("pickShape on free-forms", () => {
   });
 });
 
-describe("prismCrossings", () => {
+describe("rayMesh", () => {
   // An L-shaped prism 0..2 m tall: 0..4 along x at z 0..1, and 0..1 along z up to 4.
   const l = [
     { x: 0, z: 0 },
@@ -88,22 +89,35 @@ describe("prismCrossings", () => {
     { x: 1, z: 4 },
     { x: 0, z: 4 },
   ];
+  const m = prism([l], 0, 2)!;
+  const mesh = { ...m, min: [0, 0, 0] as [number, number, number], max: [4, 2, 4] as [number, number, number] };
   const down = (x: number, z: number) => ({ origin: { x, y: 10, z }, dir: { x: 0, y: -1, z: 0 } });
 
-  it("finds the top and the bottom straight down through an arm", () => {
-    expect(prismCrossings(down(3, 0.5), [l], 0, 2)).toEqual([
-      { t: 8, face: "top" },
-      { t: 10, face: "bottom" },
-    ]);
+  it("hits the top straight down through an arm", () => {
+    expect(rayMesh(down(3, 0.5), mesh)).toBeCloseTo(8);
   });
 
   it("misses the inside corner of a concave outline", () => {
-    expect(prismCrossings(down(3, 3), [l], 0, 2)).toEqual([]);
+    expect(rayMesh(down(3, 3), mesh)).toBeNull();
   });
 
-  it("finds a side face hit by a level ray", () => {
-    const [first] = prismCrossings({ origin: { x: -5, y: 1, z: 2 }, dir: { x: 1, y: 0, z: 0 } }, [l], 0, 2);
-    expect(first).toEqual({ t: 5, face: "side" });
+  it("hits a side face with a level ray", () => {
+    expect(rayMesh({ origin: { x: -5, y: 1, z: 2 }, dir: { x: 1, y: 0, z: 0 } }, mesh)).toBeCloseTo(5);
+  });
+
+  it("finds nothing behind the ray", () => {
+    expect(rayMesh({ origin: { x: 3, y: 10, z: 0.5 }, dir: { x: 0, y: 1, z: 0 } }, mesh)).toBeNull();
+  });
+});
+
+describe("pickShape with thick walls", () => {
+  // The walls grow inward: a 1 m wall on the 10 × 8 room covers x 0..1 on the west side, a default one x 0..0.2.
+  const thick: Box = { ...room, wall: 1 };
+
+  it("hits the top of a thick wall where a thin one leaves the room open", () => {
+    const ray = rayAt({ x: 0.5, y: 3, z: 4 });
+    expect(pickHit(ray, [thick])!.point.y).toBeCloseTo(3);
+    expect(pickHit(ray, [room])!.point.y).toBeLessThan(2.9);
   });
 });
 

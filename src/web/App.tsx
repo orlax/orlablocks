@@ -5,6 +5,8 @@ import {
   DEFAULT_LINE_COLOR,
   DEFAULT_THICKNESS,
   DEFAULT_VIEW,
+  DEFAULT_WALL,
+  type ClosedShape,
   type Line,
   type Shape,
   type ShapeColor,
@@ -12,7 +14,7 @@ import {
   type SceneNode,
   type View,
 } from "../shared/scene.types";
-import { footprintBounds, polyline, reversePoints, round2 } from "../shared/geometry";
+import { footprintBounds, polyline, reversePoints, round2, wallOf } from "../shared/geometry";
 import { shapesUnder, childrenOf, isShape, isGroup } from "../shared/tree";
 import type { CameraState, GroundPoint } from "./camera";
 import { clipboardText, readClipboard } from "./clipboard";
@@ -48,9 +50,10 @@ const copiedRoots = (added: SceneNode[]) => {
 const title = (n: SceneNode) => (n.name ? `${n.name} (${n.id})` : n.id);
 
 /**
- * `lobby (box_3) · 6 × 4 × 3 m · y 0 · 0°`, a cylinder's sides: `tower (cylinder_1) · 8 × 8 × 3 m · 8 sides · y 0 · 0°`,
- * a free-form's points and bounds: `cave (freeform_1) · 7 points · 12.3 × 8 × 3 m · y 0`, and a line's points,
- * length and style: `route (line_1) · 3 points · 14.2 m long · 3 px · dashed · arrow at the end`.
+ * `lobby (box_3) · 6 × 4 × 3 m · wall 0.2 · y 0 · 0°` (a room's wall thickness), a cylinder's sides:
+ * `tower (cylinder_1) · 8 × 8 × 3 m · 8 sides · y 0 · 0°`, a free-form's points and bounds:
+ * `cave (freeform_1) · 7 points · 12.3 × 8 × 3 m · y 0`, and a line's points, length and style:
+ * `route (line_1) · 3 points · 14.2 m long · 3 px · dashed · arrow at the end`.
  */
 const describe = (s: Shape) => {
   if (s.type === "line") {
@@ -59,12 +62,13 @@ const describe = (s: Shape) => {
     const arrow = s.arrow === "end" ? " · arrow at the end" : s.arrow === "both" ? " · arrows at both ends" : "";
     return `${title(s)} · ${s.points.length} points · ${round2(length)} m long · ${s.thickness} px${s.dashed ? " · dashed" : ""}${arrow}`;
   }
+  const wall = s.kind === "room" ? ` · wall ${wallOf(s)}` : "";
   if (s.type === "freeform") {
     const b = footprintBounds(s);
-    return `${title(s)} · ${s.points.length} points · ${round2(b.maxX - b.minX)} × ${round2(b.maxZ - b.minZ)} × ${s.height} m · y ${s.y}`;
+    return `${title(s)} · ${s.points.length} points · ${round2(b.maxX - b.minX)} × ${round2(b.maxZ - b.minZ)} × ${s.height} m${wall} · y ${s.y}`;
   }
   const sides = s.type === "cylinder" ? (s.sides !== undefined ? ` · ${s.sides} sides` : " · smooth") : "";
-  return `${title(s)} · ${s.width} × ${s.depth} × ${s.height} m${sides} · y ${s.y} · ${s.rotation}°`;
+  return `${title(s)} · ${s.width} × ${s.depth} × ${s.height} m${sides}${wall} · y ${s.y} · ${s.rotation}°`;
 };
 
 export function App() {
@@ -89,6 +93,8 @@ export function App() {
   const [nextColor, setNextColor] = useState<ShapeColor>(DEFAULT_COLOR);
   // The Cylinder tool's sides (undefined = smooth).
   const [nextSides, setNextSides] = useState<number | undefined>(undefined);
+  // The next room's wall thickness (undefined = the default).
+  const [nextWall, setNextWall] = useState<number | undefined>(undefined);
   // The Line tool's next line: its own color (black by default: a near-white line vanishes on the ground) and style.
   const [nextLine, setNextLine] = useState<LineStyle>({ color: DEFAULT_LINE_COLOR, thickness: DEFAULT_THICKNESS, dashed: false, arrow: "none" });
   // After Cmd+G or a copy: what to select when the result arrives (the new group, the copies).
@@ -349,6 +355,18 @@ export function App() {
   // The selected lines' style: each value when they all share it.
   const shared = <K extends keyof LineStyle>(k: K) =>
     selectedLines.every((l) => l[k] === selectedLines[0][k]) ? selectedLines[0]?.[k] : undefined;
+  // The wall control acts on every room in the selection; it shows their thickness when they share one.
+  const selectedRooms = selectedShapes.filter((s): s is ClosedShape => s.type !== "line" && s.kind === "room");
+  const wallControl =
+    selectedRooms.length > 0
+      ? {
+          value: selectedRooms.every((r) => wallOf(r) === wallOf(selectedRooms[0])) ? wallOf(selectedRooms[0]) : undefined,
+          onChange: (wall: number) => send({ type: "update_nodes", changes: selectedRooms.map((r) => ({ id: r.id, wall })) }),
+        }
+      : undefined;
+  // The drawing tools' next room: its wall control, when the next shape is a room.
+  const nextWallControl =
+    nextKind === "room" ? { value: nextWall ?? DEFAULT_WALL, onChange: (wall: number) => setNextWall(wall === DEFAULT_WALL ? undefined : wall) } : undefined;
   const lineControls =
     selectedLines.length > 0
       ? {
@@ -371,6 +389,7 @@ export function App() {
         outsideHover={outlinerHover}
         nextKind={nextKind}
         nextSides={nextSides}
+        nextWall={nextWall}
         nextLine={nextLine}
         onSelect={setSelection}
         onDrawShape={(shape) => send({ type: "add_shapes", shapes: [{ ...shape, color: shape.type === "line" ? nextLine.color : nextColor }] })}
@@ -439,12 +458,12 @@ export function App() {
       <div className="dock">
         {error && <div className="error">{error}</div>}
         {tool === "box" && (
-          <ContextualBar kind={nextKind} onKind={setNextKind} color={nextColor} onColor={setNextColor}>
+          <ContextualBar kind={nextKind} onKind={setNextKind} color={nextColor} onColor={setNextColor} wall={nextWallControl}>
             next box
           </ContextualBar>
         )}
         {tool === "pen" && (
-          <ContextualBar kind={nextKind} onKind={setNextKind} color={nextColor} onColor={setNextColor}>
+          <ContextualBar kind={nextKind} onKind={setNextKind} color={nextColor} onColor={setNextColor} wall={nextWallControl}>
             next free-form
           </ContextualBar>
         )}
@@ -465,6 +484,7 @@ export function App() {
             color={nextColor}
             onColor={setNextColor}
             sides={{ value: nextSides, onChange: setNextSides }}
+            wall={nextWallControl}
           >
             next cylinder
           </ContextualBar>
@@ -482,6 +502,7 @@ export function App() {
                 ? { value: singleShape.sides, onChange: (sides) => send({ type: "update_nodes", changes: [{ id: singleShape.id, sides: sides ?? null }] }) }
                 : undefined
             }
+            wall={wallControl}
             onConvert={convertible.length > 0 ? convert : undefined}
             line={lineControls}
             editPoints={editable ? { active: editing === editable.id, onToggle: () => setEditing(editing ? null : editable.id) } : undefined}

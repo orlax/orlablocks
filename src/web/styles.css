@@ -169,6 +169,8 @@ body {
 }
 .contextual-bar .sides input.count::placeholder { color: rgba(255, 255, 255, 0.45); }
 .contextual-bar .sides input.count:focus { outline: 1px solid #8fb4f2; }
+.contextual-bar .sides.wall .label-icon { margin: 0 4px 0 2px; opacity: 0.8; }
+.contextual-bar .sides.wall input.count { width: 60px; }
 
 /* The outliner: a collapsible tree panel on the left, below the project bar. */
 .outliner {

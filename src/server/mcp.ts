@@ -24,7 +24,8 @@ import {
   DEFAULT_THICKNESS,
   MAX_THICKNESS,
   MIN_THICKNESS,
-  WALL_THICKNESS,
+  DEFAULT_WALL,
+  MIN_WALL,
   type OpenScene,
   type Scene,
 } from "../shared/scene.types";
@@ -50,7 +51,8 @@ const INSTRUCTIONS =
   "`rotation` turns a box around the vertical axis through its center, in degrees, counterclockwise seen from above " +
   "(0 = grid-aligned: width along world +x, depth along world +z). Rotating never moves the center. " +
   `A box is either a room (hollow: floor and walls, no ceiling; default height ${DEFAULT_HEIGHT.room} m; ` +
-  `walls are ${WALL_THICKNESS} m thick, centered on the footprint edge, so rooms that share an edge share a wall) ` +
+  `its footprint is the room's OUTSIDE, and its walls grow inward from it, \`wall\` m thick (default ${DEFAULT_WALL}, at least ${MIN_WALL}), ` +
+  "so a 10 m room is 10 m across outside; two rooms that touch have two walls back to back, so overlap them by a wall's thickness to share one) " +
   `or a volume (solid, e.g. a platform or pillar; default height ${DEFAULT_HEIGHT.volume} m). Minimum height is ${MIN_HEIGHT} m. ` +
   `\`color\` is a palette key: ${SHAPE_COLORS.join(", ")} (default ${DEFAULT_COLOR}). ` +
   "A cylinder has exactly a box's fields, and its footprint is the ellipse inscribed in its width × depth rectangle " +
@@ -124,7 +126,7 @@ function describeScene(open: OpenScene, scene: Scene) {
 }
 
 function buildServer(workspace: Workspace) {
-  const server = new McpServer({ name: "dungeon-designer", version: "0.0.7" }, { instructions: INSTRUCTIONS });
+  const server = new McpServer({ name: "dungeon-designer", version: "0.0.8" }, { instructions: INSTRUCTIONS });
   // Every tool reads or edits the open scene, and fails with a clear message while nothing is open.
   const store = () => workspace.requireScene();
 
@@ -148,7 +150,7 @@ function buildServer(workspace: Workspace) {
         `Add one or more shapes to the scene in a single batch; they appear live in the editor. Each has a \`type\` ` +
         `(box, the default, cylinder, freeform or line) and that type's fields. For a box or cylinder (a room or a volume) only ` +
         `kind, x, z, width and depth are required; for a free-form, kind and points; for a line, points. The rest have defaults (the kind's ` +
-        `height, y 0, rotation 0, color ${DEFAULT_COLOR} (${DEFAULT_LINE_COLOR} for a line), no name, top level, a smooth cylinder, ` +
+        `height, y 0, rotation 0, color ${DEFAULT_COLOR} (${DEFAULT_LINE_COLOR} for a line), ${DEFAULT_WALL} m room walls, no name, top level, a smooth cylinder, ` +
         `and a solid ${DEFAULT_THICKNESS} px line with no arrow). ` +
         `Set \`parent\` to a group's ID to draw straight into that group. ` +
         `The batch is all-or-nothing: if any shape is invalid, nothing is drawn and the error says which one.`,
@@ -173,8 +175,8 @@ function buildServer(workspace: Workspace) {
       title: "Update nodes",
       description:
         `Change existing nodes by ID in a single batch; changes appear live in the editor. ` +
-        `A box takes any of: name, parent, kind, x, z, y, width, depth, height, rotation, color; a cylinder those and sides; ` +
-        `a free-form name, parent, kind, y, height, color and points (the whole outline); a line name, parent, color, ` +
+        `A box takes any of: name, parent, kind, x, z, y, width, depth, height, rotation, color, wall (a room's; null = the default); ` +
+        `a cylinder those and sides; a free-form name, parent, kind, y, height, color, wall and points (the whole outline); a line name, parent, color, ` +
         `points (the whole path, with y), thickness, dashed and arrow. ` +
         `A group takes only name and parent. ` +
         `{ id, type: "freeform" } alone converts a box or cylinder into a free-form with a new ID; a call that converts ` +

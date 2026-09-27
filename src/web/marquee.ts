@@ -1,10 +1,11 @@
-import { WALL_THICKNESS, type ClosedShape, type Shape } from "../shared/scene.types";
+import type { ClosedShape, Shape } from "../shared/scene.types";
 import { worldToScreen, type CameraState, type Size } from "./camera";
-import { footprint, isClosed, polyline, ringsInWorld, roomWalls } from "../shared/geometry";
+import { isClosed, polyline } from "../shared/geometry";
+import { hitMesh } from "../shared/mesh";
 
 /**
- * The marquee: which shapes a screen rectangle touches. Exact: a shape is a vertical prism over its footprint, so
- * its outline on screen is the union of its projected faces (bottom, top and each side), and the rect touches the
+ * The marquee: which shapes a screen rectangle touches. Exact: a closed shape's outline on screen is the union of
+ * its mesh's triangles, projected (`hitMesh`: a volume's solid, a room's walls and floor), and the rect touches the
  * shape if it touches any of them.
  */
 
@@ -20,30 +21,29 @@ export const rectFrom = (a: ScreenPoint, b: ScreenPoint): ScreenRect => ({
 });
 
 /**
- * The shape's faces on screen (room walls included): for each ring of its outline, the bottom and top, then one
- * quad per side. A concave outline's inside isn't a face, so a rect in a crescent's hollow misses it. Null if any
- * corner is behind the camera.
+ * Whether the rect touches the shape on screen: a vertex inside the rect, else any projected triangle overlapping
+ * it. A concave outline's inside isn't covered by any triangle, so a rect in a crescent's hollow misses it. False if
+ * any vertex is behind the camera.
  */
-export function shapeFaces(cam: CameraState, size: Size, shape: ClosedShape): ScreenPoint[][] | null {
-  const outlines = shape.kind === "room" ? ringsInWorld(shape, roomWalls(shape, WALL_THICKNESS / 2).outer) : [footprint(shape)];
-  const faces: ScreenPoint[][] = [];
-  for (const outline of outlines) {
-    const ring = (y: number) => {
-      const points: ScreenPoint[] = [];
-      for (const p of outline) {
-        const s = worldToScreen(cam, size, { x: p.x, y, z: p.z });
-        if (!s) return null;
-        points.push(s);
-      }
-      return points;
-    };
-    const bottom = ring(shape.y);
-    const top = ring(shape.y + shape.height);
-    if (!bottom || !top) return null;
-    const n = outline.length;
-    faces.push(bottom, top, ...outline.map((_, i) => [bottom[i], bottom[(i + 1) % n], top[(i + 1) % n], top[i]]));
+function shapeTouches(cam: CameraState, size: Size, shape: ClosedShape, rect: ScreenRect): boolean {
+  const mesh = hitMesh(shape);
+  if (!mesh) return false;
+  const screen: ScreenPoint[] = [];
+  const p = mesh.positions;
+  let [x0, y0, x1, y1] = [Infinity, Infinity, -Infinity, -Infinity];
+  for (let i = 0; i < p.length; i += 3) {
+    const s = worldToScreen(cam, size, { x: p[i], y: p[i + 1], z: p[i + 2] });
+    if (!s) return false;
+    screen.push(s);
+    [x0, y0, x1, y1] = [Math.min(x0, s.sx), Math.min(y0, s.sy), Math.max(x1, s.sx), Math.max(y1, s.sy)];
   }
-  return faces;
+  if (x1 < rect.x0 || x0 > rect.x1 || y1 < rect.y0 || y0 > rect.y1) return false;
+  if (screen.some((s) => s.sx >= rect.x0 && s.sx <= rect.x1 && s.sy >= rect.y0 && s.sy <= rect.y1)) return true;
+  for (let i = 0; i < mesh.indices.length; i += 3) {
+    const tri = [screen[mesh.indices[i]], screen[mesh.indices[i + 1]], screen[mesh.indices[i + 2]]];
+    if (polygonOverlapsRect(tri, rect)) return true;
+  }
+  return false;
 }
 
 /** Even-odd point-in-polygon on screen. */
@@ -104,11 +104,11 @@ function pathOverlapsRect(path: ScreenPoint[], rect: ScreenRect): boolean {
   return path.some((p, i) => i + 1 < path.length && corners.some((c, j) => segmentsCross(p, path[i + 1], c, corners[(j + 1) % 4])));
 }
 
-/** The IDs of the shapes the rect touches on screen, in scene order: a closed shape's faces, a line's path. */
+/** The IDs of the shapes the rect touches on screen, in scene order: a closed shape's mesh, a line's path. */
 export function marqueeHits(cam: CameraState, size: Size, boxes: Shape[], rect: ScreenRect): string[] {
   return boxes
     .filter((b) => {
-      if (isClosed(b)) return shapeFaces(cam, size, b)?.some((face) => polygonOverlapsRect(face, rect)) ?? false;
+      if (isClosed(b)) return shapeTouches(cam, size, b, rect);
       const path = polyline(b).map((p) => worldToScreen(cam, size, p));
       return path.every((p) => p !== null) && pathOverlapsRect(path, rect);
     })

@@ -1,6 +1,7 @@
 import { differenceD, EndType, FillRule, inflatePathsD, JoinType, type PathD } from "@countertype/clipper2-ts";
 import {
   CURVE_SEGMENTS,
+  DEFAULT_WALL,
   MIN_LINE_POINTS,
   MIN_POINTS,
   SMOOTH_SEGMENTS,
@@ -250,33 +251,33 @@ export function offsetRings(poly: Point[], d: number, convex: boolean): Point[][
   return inflatePathsD([toPath(poly)], d, JoinType.Miter, EndType.Polygon, MITER_LIMIT, OFFSET_PRECISION).map(fromPath);
 }
 
+/** A room's wall thickness: its own, or the default. */
+export const wallOf = (shape: ClosedShape) => shape.wall ?? DEFAULT_WALL;
+
 /**
- * A room's walls on the ground, in the shape's own frame: `outer` (the footprint grown by half the wall thickness,
- * what a click or the marquee can hit), `inner` (shrunk by it: the open inside, none if the room is too narrow to
- * have one) and `walls`, the region between them as rings (outer ones counterclockwise in x/z, holes the other
- * way). Cached per shape object, since picking asks for it on every pointer move.
+ * A room's walls on the ground, in the shape's own frame. The footprint is the room's outside, and the walls grow
+ * inward from it by the wall thickness: `outer` is the footprint (what a click or the marquee can hit), `inner` the
+ * footprint shrunk by the thickness (the open inside; none if the room is too narrow to have one) and `walls` the
+ * region between them as rings (solid ones wound one way, holes the other). An outline with no area gives no rings.
+ * Cached per shape object, since picking asks for it on every pointer move.
  */
 const wallCache = new WeakMap<ClosedShape, { outer: Point[][]; inner: Point[][]; walls: Point[][] }>();
-export function roomWalls(shape: ClosedShape, half: number): { outer: Point[][]; inner: Point[][]; walls: Point[][] } {
+export function roomWalls(shape: ClosedShape): { outer: Point[][]; inner: Point[][]; walls: Point[][] } {
   const cached = wallCache.get(shape);
   if (cached) return cached;
   const local = localFootprint(shape);
-  const convex = isFootprinted(shape);
-  const outer = offsetRings(local, half, convex);
-  const inner = offsetRings(local, -half, convex);
-  const walls = convex
-    ? [...outer, ...inner.map((r) => [...r].reverse())]
-    : differenceD(outer.map(toPath), inner.map(toPath), FillRule.NonZero, OFFSET_PRECISION).map(fromPath);
-  const result = { outer, inner, walls };
+  let result: { outer: Point[][]; inner: Point[][]; walls: Point[][] };
+  if (Math.abs(signedArea2(local)) < 1e-9) result = { outer: [], inner: [], walls: [] };
+  else {
+    const convex = isFootprinted(shape);
+    const inner = offsetRings(local, -wallOf(shape), convex);
+    const walls = convex
+      ? [local, ...inner.map((r) => [...r].reverse())]
+      : differenceD([toPath(local)], inner.map(toPath), FillRule.NonZero, OFFSET_PRECISION).map(fromPath);
+    result = { outer: [local], inner, walls };
+  }
   wallCache.set(shape, result);
   return result;
-}
-
-/** Rings in the shape's own frame (from `roomWalls`) in world x/z. */
-export function ringsInWorld(shape: ClosedShape, rings: Point[][]): Point[][] {
-  if (!isFootprinted(shape)) return rings;
-  const frame = shapeFrame(shape);
-  return rings.map((r) => r.map((p) => fromShapeLocal(frame, p)));
 }
 
 /** A polygon's axis-aligned bounds on the ground. */

@@ -288,7 +288,7 @@ describe("free-forms", () => {
     expect(points![2]).toEqual({ x: 8, z: 4 });
   });
 
-  it("offsets concave room walls robustly: an L's walls hold its inside, and a thin sliver has none", () => {
+  it("offsets concave room walls inward robustly: an L's walls hold its inside, and a thin sliver has none", () => {
     const l = freeform(
       [
         { x: 0, z: 0 },
@@ -300,18 +300,23 @@ describe("free-forms", () => {
       ],
       { kind: "room" },
     );
-    const { outer, inner, walls } = roomWalls(l, 0.1);
-    expect(pointInRings(outer, { x: 6.05, z: 1 })).toBe(true);
+    // The walls grow inward from the outline, 0.2 m by default.
+    const { outer, inner, walls } = roomWalls(l);
+    expect(pointInRings(outer, { x: 5.95, z: 1 })).toBe(true);
+    expect(pointInRings(outer, { x: 6.05, z: 1 })).toBe(false);
     expect(pointInRings(inner, { x: 1, z: 4 })).toBe(true);
     expect(pointInRings(walls, { x: 1, z: 4 })).toBe(false);
-    expect(pointInRings(walls, { x: 1.95, z: 4 })).toBe(true);
+    expect(pointInRings(walls, { x: 1.9, z: 4 })).toBe(true);
+    expect(pointInRings(walls, { x: 1.7, z: 4 })).toBe(false);
     // The inside corner of the L is outside everything.
     expect(pointInRings(outer, { x: 4, z: 4 })).toBe(false);
-    const sliver = freeform([{ x: 0, z: 0 }, { x: 5, z: 0 }, { x: 5, z: 0.15 }], { kind: "room" });
-    expect(roomWalls(sliver, 0.1).inner).toEqual([]);
+    // A thicker wall reaches further in.
+    expect(pointInRings(roomWalls({ ...l, wall: 0.5 }).walls, { x: 1.7, z: 4 })).toBe(true);
+    const sliver = freeform([{ x: 0, z: 0 }, { x: 5, z: 0 }, { x: 5, z: 0.3 }], { kind: "room" });
+    expect(roomWalls(sliver).inner).toEqual([]);
     // No area at all (the Pen's preview with the cursor on the point just placed): no rings, so nothing to draw.
     const flat = freeform([{ x: 0, z: 0 }, { x: 5, z: 0 }, { x: 5, z: 0 }], { kind: "room" });
-    expect(roomWalls(flat, 0.1).walls).toEqual([]);
+    expect(roomWalls(flat).walls).toEqual([]);
   });
 });
 

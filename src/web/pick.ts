@@ -1,13 +1,13 @@
-import { WALL_THICKNESS, type ClosedShape, type Line, type Shape } from "../shared/scene.types";
-import { footprint, isClosed, pointInRings, polyline, ringsInWorld, roomWalls, type Point } from "../shared/geometry";
+import type { Line, Shape } from "../shared/scene.types";
+import { isClosed, polyline } from "../shared/geometry";
+import { hitMesh, type BoundedMesh } from "../shared/mesh";
 import { worldToScreen, type CameraState, type Size, type Vec3 } from "./camera";
 
 type Ray = { origin: Vec3; dir: Vec3 };
 
 /**
- * Which shape a ray hits first. Every closed shape is a vertical prism over its footprint polygon, so the test is
- * the ray against the prism's top, bottom and side faces, no three.js needed. Rooms are hollow: a ray that enters
- * through the open top, inside the walls, hits the floor or an inner wall instead, so a volume inside the room wins.
+ * Which shape a ray hits first: the nearest hit on any closed shape's mesh (`hitMesh`). A room has no ceiling, so a
+ * ray that enters through its open top goes on to the floor, an inner wall, or a volume inside the room.
  */
 export function pickShape(ray: Ray, boxes: Shape[]): string | null {
   return pickHit(ray, boxes)?.id ?? null;
@@ -18,7 +18,8 @@ export function pickHit(ray: Ray, boxes: Shape[]): { id: string; point: Vec3 } |
   let best: { id: string; t: number } | null = null;
   for (const box of boxes) {
     if (!isClosed(box)) continue;
-    const t = hitDistance(ray, box);
+    const mesh = hitMesh(box);
+    const t = mesh && rayMesh(ray, mesh);
     if (t !== null && (!best || t < best.t)) best = { id: box.id, t };
   }
   if (!best) return null;
@@ -26,36 +27,57 @@ export function pickHit(ray: Ray, boxes: Shape[]): { id: string; point: Vec3 } |
   return { id: best.id, point: { x: o.x + d.x * best.t, y: o.y + d.y * best.t, z: o.z + d.z * best.t } };
 }
 
-type Crossing = { t: number; face: "top" | "bottom" | "side" };
+/** Whether the ray passes through the axis-aligned box (the slab test). */
+function rayHitsBounds({ origin: o, dir: d }: Ray, min: number[], max: number[]): boolean {
+  let t0 = 0;
+  let t1 = Infinity;
+  const os = [o.x, o.y, o.z];
+  const ds = [d.x, d.y, d.z];
+  for (let k = 0; k < 3; k++) {
+    if (Math.abs(ds[k]) < 1e-12) {
+      if (os[k] < min[k] || os[k] > max[k]) return false;
+      continue;
+    }
+    const a = (min[k] - os[k]) / ds[k];
+    const b = (max[k] - os[k]) / ds[k];
+    t0 = Math.max(t0, Math.min(a, b));
+    t1 = Math.min(t1, Math.max(a, b));
+    if (t0 > t1) return false;
+  }
+  return true;
+}
 
 /**
- * Every place (t ≥ 0 along the ray) where the ray crosses the surface of the prism from y0 to y1 over a region on
- * the ground (rings, read even-odd, so holes count), nearest first.
+ * How far along the ray (t ≥ 0, in units of `dir`) it first hits a triangle of the mesh, from either side, or
+ * null. Möller–Trumbore, after a bounds check.
  */
-export function prismCrossings({ origin: o, dir: d }: Ray, rings: Point[][], y0: number, y1: number): Crossing[] {
-  const out: Crossing[] = [];
-  if (Math.abs(d.y) > 1e-12) {
-    for (const [y, face] of [[y1, "top"], [y0, "bottom"]] as const) {
-      const t = (y - o.y) / d.y;
-      if (t >= 0 && pointInRings(rings, { x: o.x + d.x * t, z: o.z + d.z * t })) out.push({ t, face });
-    }
+export function rayMesh(ray: Ray, mesh: BoundedMesh): number | null {
+  if (!rayHitsBounds(ray, mesh.min, mesh.max)) return null;
+  const { origin: o, dir: d } = ray;
+  const p = mesh.positions;
+  let best: number | null = null;
+  for (let i = 0; i < mesh.indices.length; i += 3) {
+    const a = mesh.indices[i] * 3;
+    const b = mesh.indices[i + 1] * 3;
+    const c = mesh.indices[i + 2] * 3;
+    const e1x = p[b] - p[a], e1y = p[b + 1] - p[a + 1], e1z = p[b + 2] - p[a + 2];
+    const e2x = p[c] - p[a], e2y = p[c + 1] - p[a + 1], e2z = p[c + 2] - p[a + 2];
+    // h = d × e2, det = e1 · h
+    const hx = d.y * e2z - d.z * e2y, hy = d.z * e2x - d.x * e2z, hz = d.x * e2y - d.y * e2x;
+    const det = e1x * hx + e1y * hy + e1z * hz;
+    if (Math.abs(det) < 1e-12) continue;
+    const inv = 1 / det;
+    const sx = o.x - p[a], sy = o.y - p[a + 1], sz = o.z - p[a + 2];
+    const u = (sx * hx + sy * hy + sz * hz) * inv;
+    if (u < 0 || u > 1) continue;
+    // q = s × e1
+    const qx = sy * e1z - sz * e1y, qy = sz * e1x - sx * e1z, qz = sx * e1y - sy * e1x;
+    const v = (d.x * qx + d.y * qy + d.z * qz) * inv;
+    if (v < 0 || u + v > 1) continue;
+    const t = (e2x * qx + e2y * qy + e2z * qz) * inv;
+    if (t >= 0 && (best === null || t < best)) best = t;
   }
-  for (const poly of rings) for (let i = 0; i < poly.length; i++) {
-    const a = poly[i];
-    const b = poly[(i + 1) % poly.length];
-    // o + t·d = a + s·(b − a) on the ground, with 0 ≤ s ≤ 1 and the height at t within the prism.
-    const ex = b.x - a.x;
-    const ez = b.z - a.z;
-    const denom = d.x * ez - d.z * ex;
-    if (Math.abs(denom) < 1e-12) continue;
-    const wx = a.x - o.x;
-    const wz = a.z - o.z;
-    const t = (wx * ez - wz * ex) / denom;
-    const s = (wx * d.z - wz * d.x) / denom;
-    const y = o.y + d.y * t;
-    if (t >= 0 && s >= 0 && s <= 1 && y >= y0 && y <= y1) out.push({ t, face: "side" });
-  }
-  return out.sort((p, q) => p.t - q.t);
+  return best;
 }
 
 /** How close (px) to a line's path on screen a click picks it: more for a thick line. */
@@ -87,24 +109,4 @@ export function pickLine(cam: CameraState, size: Size, sx: number, sy: number, s
     }
   }
   return best && { id: best.id, point: best.point };
-}
-
-function hitDistance(ray: Ray, shape: ClosedShape): number | null {
-  const { origin: o } = ray;
-  const y0 = shape.y;
-  const y1 = shape.y + shape.height;
-  const room = shape.kind === "room" ? roomWalls(shape, WALL_THICKNESS / 2) : null;
-  const outer = room ? ringsInWorld(shape, room.outer) : [footprint(shape)];
-  if (o.y >= y0 && o.y <= y1 && pointInRings(outer, o)) return 0;
-
-  const first = prismCrossings(ray, outer, y0, y1)[0];
-  if (!first) return null;
-  // Rooms too narrow to have an inside are solid.
-  if (!room || room.inner.length === 0 || first.face !== "top") return first.t;
-  const inner = ringsInWorld(shape, room.inner);
-  const { dir: d } = ray;
-  if (!pointInRings(inner, { x: o.x + d.x * first.t, z: o.z + d.z * first.t })) return first.t;
-  // In through the open top: where the ray next meets the room's inside, an inner wall or the floor.
-  const next = prismCrossings(ray, inner, y0, y1).find((c) => c.t > first.t + 1e-9);
-  return next?.t ?? first.t;
 }

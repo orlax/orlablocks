@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   ArrowLeftRight,
   Box as BoxIcon,
+  BrickWall,
   Circle,
   Cylinder,
   FlipHorizontal2,
@@ -23,10 +24,12 @@ import {
 } from "lucide-react";
 import type { MirrorAxis } from "../shared/geometry";
 import {
+  DEFAULT_WALL,
   MAX_SIDES,
   MAX_THICKNESS,
   MIN_SIDES,
   MIN_THICKNESS,
+  MIN_WALL,
   PALETTE,
   SHAPE_COLORS,
   type HistorySummary,
@@ -147,6 +150,7 @@ export function ContextualBar({
   onColor,
   onMirror,
   sides,
+  wall,
   onConvert,
   editPoints,
   line,
@@ -162,6 +166,8 @@ export function ContextualBar({
   onMirror?: (axis: MirrorAxis) => void;
   /** Shows the sides control (the Cylinder tool, a selected cylinder): the side count, undefined = smooth. */
   sides?: { value: number | undefined; onChange: (sides: number | undefined) => void };
+  /** Shows the wall control (rooms): the thickness in meters, undefined when the selected rooms differ. */
+  wall?: { value: number | undefined; onChange: (wall: number) => void };
   /** Shows Convert to free-form (the selection has boxes or cylinders). */
   onConvert?: () => void;
   /** Shows Edit points (a single free-form or line is selected): whether it's in point editing, and a toggle. */
@@ -205,6 +211,12 @@ export function ContextualBar({
         <>
           <span className="sep" />
           <SidesControl {...sides} />
+        </>
+      )}
+      {wall && (
+        <>
+          <span className="sep" />
+          <WallControl {...wall} />
         </>
       )}
       {line && (
@@ -300,6 +312,52 @@ function SidesControl({ value, onChange }: { value: number | undefined; onChange
         }}
       />
       <button title="One side more" disabled={!smooth && value >= MAX_SIDES} onClick={() => set(smooth ? last : value + 1)}>
+        <Plus size={14} />
+      </button>
+    </div>
+  );
+}
+
+/** The wall control's − / + step, in meters. */
+const WALL_STEP = 0.05;
+
+/**
+ * A room's wall thickness: a wall icon, − / a field in meters / +. The buttons step by 0.05 m; typing a value and
+ * pressing Enter (or leaving the field) sets it, at least MIN_WALL. A value that differs across the selection
+ * shows as not set, and − / + then start from the default.
+ */
+function WallControl({ value, onChange }: { value: number | undefined; onChange: (wall: number) => void }) {
+  const [text, setText] = useState<string | null>(null);
+  const cancelled = useRef(false);
+  const set = (n: number) => onChange(Math.max(MIN_WALL, Math.round(n * 100) / 100));
+  const commit = () => {
+    if (!cancelled.current && text !== null && text.trim() !== "" && Number.isFinite(Number(text))) set(Number(text));
+    cancelled.current = false;
+    setText(null);
+  };
+  const current = value ?? DEFAULT_WALL;
+  return (
+    <div className="sides wall" title="Wall thickness, grown inward from the outline">
+      <BrickWall size={16} className="label-icon" />
+      <button title="Thinner walls" disabled={value !== undefined && value <= MIN_WALL} onClick={() => set(current - WALL_STEP)}>
+        <Minus size={14} />
+      </button>
+      <input
+        type="text"
+        inputMode="decimal"
+        className="count"
+        title={`Wall thickness in meters, at least ${MIN_WALL}`}
+        value={text ?? (value === undefined ? "" : `${value} m`)}
+        placeholder="–"
+        onFocus={() => setText(value === undefined ? "" : String(value))}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") cancelled.current = true;
+          if (e.key === "Enter" || e.key === "Escape") e.currentTarget.blur();
+        }}
+      />
+      <button title="Thicker walls" onClick={() => set(current + WALL_STEP)}>
         <Plus size={14} />
       </button>
     </div>
