@@ -14,6 +14,7 @@ import {
   Waypoints,
 } from "lucide-react";
 import { isHole } from "../shared/holes";
+import { Stairs } from "./icons";
 import type { SceneNode } from "../shared/scene.types";
 import { ancestry, childrenOf, isGroup, subtreeIds } from "../shared/tree";
 
@@ -24,7 +25,8 @@ const SHAPE_ICONS = {
   freeform: { room: SquircleDashed, volume: Squircle, hole: Squircle },
 } as const;
 /** The icon for a node: a folder for a group, a line's own, a closed shape's by type and kind. */
-const iconOf = (node: SceneNode) => (isGroup(node) ? Folder : node.type === "line" ? Waypoints : SHAPE_ICONS[node.type][node.kind]);
+const iconOf = (node: SceneNode) =>
+  isGroup(node) ? Folder : node.type === "line" ? Waypoints : node.type === "ramp" ? Stairs : SHAPE_ICONS[node.type][node.kind];
 
 type Row = { node: SceneNode; depth: number; hasChildren: boolean };
 type Drop = { id: string | null; where: "before" | "after" | "into" | "end" };

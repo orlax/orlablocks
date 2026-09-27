@@ -4,6 +4,8 @@ import {
   DEFAULT_WALL,
   MIN_LINE_POINTS,
   MIN_POINTS,
+  RAMP_SINK,
+  RAMP_SLAB,
   SMOOTH_SEGMENTS,
   type Box,
   type ClosedShape,
@@ -12,7 +14,10 @@ import {
   type Line,
   type LinePoint,
   type Offset,
+  type Ramp,
+  type RampPoint,
   type Shape,
+  type Solid,
   type ShapePatch,
 } from "./scene.types";
 
@@ -47,8 +52,11 @@ export const normalizeDeg = (deg: number) => ((deg % 360) + 360) % 360;
 /** Boxes and cylinders: a center, a size and a rotation of their own (free-forms and lines have only points). */
 export const isFootprinted = (shape: Shape): shape is Box | Cylinder => shape.type === "box" || shape.type === "cylinder";
 
-/** Boxes, cylinders and free-forms: a footprint, a kind, an elevation and a height (lines have none). */
-export const isClosed = (shape: Shape): shape is ClosedShape => shape.type !== "line";
+/** Boxes, cylinders and free-forms: a footprint, a kind, an elevation and a height (lines and ramps have none). */
+export const isClosed = (shape: Shape): shape is ClosedShape => shape.type !== "line" && shape.type !== "ramp";
+
+/** Closed shapes and ramps: a kind and a mesh, so holes cut them (and they can be holes). */
+export const isSolid = (shape: Shape): shape is Solid => shape.type !== "line";
 
 /** A shape's rotation (a free-form's or a line's is always 0: turning it turns its points). */
 export const rotationOf = (shape: Shape) => (isFootprinted(shape) ? shape.rotation : 0);
@@ -166,11 +174,12 @@ export const isTilted = (shape: Shape): boolean => isFootprinted(shape) && (!!sh
 
 /**
  * A point in a closed shape's own frame (x/z on its footprint, y from 0 at its bottom up to its height) in the
- * world. The shape is tilted around its center (0, height / 2, 0): first `roll` around its local z axis, then
+ * world (a ramp's frame is the world's). The shape is tilted around its center (0, height / 2, 0): first `roll` around its local z axis, then
  * `pitch` around its local x axis (both right-handed, in degrees), then turned by `rotation` around the vertical
  * and moved to its place, so a tilt never moves its center and a turn never changes its tilt.
  */
-export function toWorld3(shape: ClosedShape, p: Point3): Point3 {
+export function toWorld3(shape: Solid, p: Point3): Point3 {
+  if (shape.type === "ramp") return p;
   let { x, y, z } = p;
   if (isTilted(shape)) {
     const h = shape.height / 2;
@@ -186,7 +195,8 @@ export function toWorld3(shape: ClosedShape, p: Point3): Point3 {
 }
 
 /** A world point in a closed shape's own frame: the inverse of `toWorld3`. */
-export function toLocal3(shape: ClosedShape, p: Point3): Point3 {
+export function toLocal3(shape: Solid, p: Point3): Point3 {
+  if (shape.type === "ramp") return p;
   const l = toShapeLocal(shapeFrame(shape), p);
   let [x, y, z] = [l.x, p.y - shape.y, l.z];
   if (isTilted(shape)) {
@@ -220,7 +230,13 @@ export const footprint = (shape: ClosedShape): Point[] => {
  * seen from above), a line's polyline.
  */
 export const groundPoints = (shape: Shape): Point[] =>
-  !isClosed(shape) ? polyline(shape) : isTilted(shape) ? tiltedPoints(shape) : footprint(shape);
+  shape.type === "line"
+    ? polyline(shape)
+    : shape.type === "ramp"
+      ? rampEdges(shape).flat()
+      : isTilted(shape)
+        ? tiltedPoints(shape)
+        : footprint(shape);
 
 /** How many rings round a bevel's quarter circle. */
 export const BEVEL_SEGMENTS = 8;
@@ -285,6 +301,146 @@ export function volumeRings(shape: ClosedShape): { ring: Point[]; y: number }[] 
     }
   }
   return stack;
+}
+
+/**
+ * A station along a ramp's centerline: its place on the ground, its distance along the ground from the start
+ * (`s`), the height there if the ramp were smooth (`y`, even with the distance between two points), and its left
+ * and right edges (half the width out to each side; at a corner, mitered so the edges stay parallel to both sides).
+ */
+export type RampStation = { x: number; z: number; s: number; y: number; left: Point; right: Point };
+
+const stationCache = new WeakMap<Ramp, RampStation[]>();
+const pointDistances = new WeakMap<Ramp, number[]>();
+
+/** How far along the ground each of a ramp's points is from its start. */
+export function rampPointDistances(ramp: Ramp): number[] {
+  if (!pointDistances.has(ramp)) {
+    stationCache.delete(ramp);
+    rampStations(ramp);
+  }
+  return pointDistances.get(ramp)!;
+}
+
+/** The stations along a ramp: every point, and CURVE_SEGMENTS samples along each curved edge. Cached per ramp. */
+export function rampStations(ramp: Ramp): RampStation[] {
+  const cached = stationCache.get(ramp);
+  if (cached) return cached;
+  const pts = ramp.points;
+  const raw: { x: number; z: number; s: number; y: number }[] = [];
+  const at: number[] = [0];
+  let s = 0;
+  for (let i = 0; i + 1 < pts.length; i++) {
+    const [a, b] = [pts[i], pts[i + 1]];
+    const samples = [...sampleEdge(a, b), { x: b.x, z: b.z }];
+    const lengths = [0];
+    for (let k = 1; k < samples.length; k++) lengths.push(lengths[k - 1] + Math.hypot(samples[k].x - samples[k - 1].x, samples[k].z - samples[k - 1].z));
+    const length = lengths.at(-1)!;
+    // Each edge's end is the next edge's start; the last edge keeps its end.
+    const count = i + 2 < pts.length ? samples.length - 1 : samples.length;
+    for (let k = 0; k < count; k++) {
+      const f = length > 0 ? lengths[k] / length : 0;
+      raw.push({ x: samples[k].x, z: samples[k].z, s: s + lengths[k], y: a.y + (b.y - a.y) * f });
+    }
+    s += length;
+    at.push(s);
+  }
+  pointDistances.set(ramp, at);
+  const half = ramp.width / 2;
+  const dir = (p: Point, q: Point) => {
+    const l = Math.hypot(q.x - p.x, q.z - p.z) || 1;
+    return { x: (q.x - p.x) / l, z: (q.z - p.z) / l };
+  };
+  const stations = raw.map((p, k): RampStation => {
+    const din = k > 0 ? dir(raw[k - 1], p) : dir(p, raw[k + 1]);
+    const dout = k + 1 < raw.length ? dir(p, raw[k + 1]) : din;
+    // The left normal of each direction, averaged, lengthened at a corner (at most 4×) to keep the width.
+    const n1 = { x: din.z, z: -din.x };
+    const n2 = { x: dout.z, z: -dout.x };
+    const m = { x: n1.x + n2.x, z: n1.z + n2.z };
+    const ml = Math.hypot(m.x, m.z) || 1;
+    const cos = Math.max(0.25, (m.x * n1.x + m.z * n1.z) / ml);
+    const k2 = half / cos / ml;
+    return { ...p, left: { x: p.x + m.x * k2, z: p.z + m.z * k2 }, right: { x: p.x - m.x * k2, z: p.z - m.z * k2 } };
+  });
+  stationCache.set(ramp, stations);
+  return stations;
+}
+
+/** A ramp's left and right edges on the ground (for its bounds and its outline). */
+export const rampEdges = (ramp: Ramp): [Point[], Point[]] => {
+  const st = rampStations(ramp);
+  return [st.map((p) => p.left), st.map((p) => p.right)];
+};
+
+/** A ramp's bottom: flat just below its lowest point (solid), or its smooth surface lowered by the slab (floating). */
+export function rampBottom(ramp: Ramp, station: { y: number }): number {
+  if (ramp.base === "floating") return station.y - RAMP_SLAB;
+  return Math.min(...ramp.points.map((p) => p.y)) - RAMP_SINK;
+}
+
+/** A ramp's lowest and highest points: its bottom, and its highest point's height. */
+export function rampRange(ramp: Ramp): [number, number] {
+  const st = rampStations(ramp);
+  return [Math.min(...st.map((p) => rampBottom(ramp, p))), Math.max(...ramp.points.map((p) => p.y))];
+}
+
+/** A ramp can have at most this many steps in all. */
+export const MAX_STEPS = 1000;
+
+/**
+ * What's wrong with a ramp, or null: fewer than 2 points, neighbors in the same place on the ground, a turn too
+ * tight for its width (an edge would fold back on itself), or too many steps.
+ */
+export function rampProblem(ramp: Ramp): string | null {
+  const pts = ramp.points;
+  if (pts.length < MIN_LINE_POINTS) return `a ramp needs at least ${MIN_LINE_POINTS} points`;
+  for (let i = 0; i + 1 < pts.length; i++) {
+    if (pts[i].x === pts[i + 1].x && pts[i].z === pts[i + 1].z) return `points ${i} and ${i + 1} are in the same place on the ground`;
+  }
+  const st = rampStations(ramp);
+  for (let k = 0; k + 1 < st.length; k++) {
+    const [p, q] = [st[k], st[k + 1]];
+    const along = { x: q.x - p.x, z: q.z - p.z };
+    for (const side of ["left", "right"] as const) {
+      const e = { x: q[side].x - p[side].x, z: q[side].z - p[side].z };
+      if (e.x * along.x + e.z * along.z <= 1e-9) {
+        const near = pts.reduce((best, pt, i) => (Math.hypot(pt.x - p.x, pt.z - p.z) < Math.hypot(pts[best].x - p.x, pts[best].z - p.z) ? i : best), 0);
+        return `the ramp turns too tightly for its ${ramp.width} m width near point ${near} (make the curve wider or the ramp narrower)`;
+      }
+    }
+  }
+  if (ramp.step !== undefined) {
+    const steps = pts.slice(1).reduce((n, p, i) => n + Math.max(1, Math.round(Math.abs(p.y - pts[i].y) / ramp.step!)), 0);
+    if (steps > MAX_STEPS) return `${steps} steps is too many (at most ${MAX_STEPS}): make the step taller`;
+  }
+  return null;
+}
+
+/**
+ * A spiral's points: one every 90° at most (evenly spread over the turn), on a circle of `radius` around (x, z),
+ * from angle `from` (0 = east, +x; 90 = north, -z) through `turn` degrees (counterclockwise seen from above when
+ * positive), rising evenly by `rise` from `y`. Each point gets circle handles, so the path is a true circle.
+ */
+export function spiralPoints(sp: { x: number; z: number; radius: number; turn: number; y: number; rise: number; from?: number }): RampPoint[] {
+  const n = Math.max(1, Math.ceil(Math.abs(sp.turn) / 90 - 1e-9));
+  const step = sp.turn / n;
+  const k = (4 / 3) * Math.tan((Math.abs(step) * Math.PI) / 180 / 4) * sp.radius;
+  const sign = Math.sign(sp.turn) || 1;
+  return roundPoints(
+    Array.from({ length: n + 1 }, (_, i) => {
+      const a = (((sp.from ?? 0) + i * step) * Math.PI) / 180;
+      // Counterclockwise seen from above is +x toward -z; its tangent that way is (-sin a, -cos a).
+      const t = { x: -Math.sin(a) * sign * k, z: -Math.cos(a) * sign * k };
+      return {
+        x: sp.x + Math.cos(a) * sp.radius,
+        y: sp.y + (sp.rise * i) / n,
+        z: sp.z - Math.sin(a) * sp.radius,
+        ...(i > 0 ? { in: { x: -t.x, z: -t.z } } : {}),
+        ...(i < n ? { out: t } : {}),
+      };
+    }),
+  );
 }
 
 /** Twice the signed area of a polygon in the x/z plane (shoelace); the sign gives its winding. */
@@ -443,6 +599,7 @@ export function verticalRange(shape: Shape): [number, number] {
     return [Math.min(...ys), Math.max(...ys)];
   }
   if (isClosed(shape)) return [shape.y, shape.y + shape.height];
+  if (shape.type === "ramp") return rampRange(shape);
   const ys = polyline(shape).map((p) => p.y);
   return [Math.min(...ys), Math.max(...ys)];
 }
@@ -461,7 +618,7 @@ export function handleFrame(shape: Shape): Frame {
 export const anchorOf = (shape: Shape) => {
   if (isFootprinted(shape)) return { x: shape.x, y: shape.y, z: shape.z };
   const p = shape.points[0];
-  return { x: p.x, y: shape.type === "line" ? shape.points[0].y : shape.y, z: p.z };
+  return { x: p.x, y: shape.type === "freeform" ? shape.y : shape.points[0].y, z: p.z };
 };
 
 /** A point's or a handle's y, when it has one (a line's): rounded along with x and z. */
@@ -627,8 +784,8 @@ export function lineProblem(points: LinePoint[]): string | null {
  */
 export function moveShape(shape: Shape, dx: number, dy: number, dz: number): ShapePatch {
   const patch: ShapePatch = {};
-  if (shape.type === "line") {
-    // A line has no elevation of its own: moving it up moves its points.
+  if (shape.type === "line" || shape.type === "ramp") {
+    // A line or a ramp has no elevation of its own: moving it up moves its points.
     if (dx !== 0 || dy !== 0 || dz !== 0) patch.points = mapPoints(shape.points, (p) => ({ x: p.x + dx, z: p.z + dz }), (o) => o, dy);
     return patch;
   }
@@ -671,7 +828,7 @@ export function rotateAround(shapes: Shape[], pivot: Point, degrees: number): Re
  */
 export function resizeShape(shape: Shape, from: Frame, to: { x: number; z: number; width: number; depth: number }): ShapePatch {
   if (isFootprinted(shape)) return { x: to.x, z: to.z, width: to.width, depth: to.depth };
-  if (shape.type === "line") return {}; // lines have no scale handles
+  if (shape.type === "line" || shape.type === "ramp") return {}; // lines and ramps have no scale handles
   const sx = from.width > 0 ? to.width / from.width : 1;
   const sz = from.depth > 0 ? to.depth / from.depth : 1;
   const target = { ...to, rotation: from.rotation };

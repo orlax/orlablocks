@@ -587,3 +587,6 @@ body {
   padding: 0 4px;
 }
 .info-label .holes-toggle.off { opacity: 0.55; }
+
+/* The ramp controls on the contextual bar. */
+.contextual-bar .ramp-controls { display: flex; align-items: center; gap: 8px; }

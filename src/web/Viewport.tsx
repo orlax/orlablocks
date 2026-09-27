@@ -8,10 +8,12 @@ import {
   MIN_LINE_POINTS,
   MIN_POINTS,
   SNAP,
-  type ClosedShape,
   type KindField,
+  type Solid,
   type Line,
   type LinePoint,
+  type Ramp,
+  type RampPoint,
   type Shape,
   type ShapeKind,
   type ShapePatch,
@@ -27,6 +29,7 @@ import {
   isFootprinted,
   isTilted,
   lineProblem,
+  rampProblem,
   outlineProblem,
   pathCrosses,
   roundPoints,
@@ -112,8 +115,11 @@ const CLOSE_PX = 10;
  * point, snapped like one), and the point whose handle a press-and-drag is pulling out.
  */
 type Pen = {
-  /** The tool the points belong to: the Pen (a closed free-form, on the ground) or the Line tool (open, points in 3D). */
-  owner: "pen" | "line" | null;
+  /**
+   * The tool the points belong to: the Pen (a closed free-form, on the ground), the Line tool or the Ramp tool
+   * (open, points in 3D).
+   */
+  owner: "pen" | "line" | "ramp" | null;
   points: EditPoint[];
   cursor: EditPoint | null;
   closing: boolean;
@@ -122,11 +128,19 @@ type Pen = {
 const NO_PEN: Pen = { owner: null, points: [], cursor: null, closing: false, drag: null };
 /** The Line tool's style for the next line, from the contextual bar. */
 export type LineStyle = Pick<Line, "color" | "thickness" | "dashed" | "arrow">;
+/** The Ramp tool's next ramp, from the contextual bar. */
+export type RampStyle = Pick<Ramp, "kind" | "width" | "step" | "base" | "color">;
+/** The tools that place points one click at a time. */
+type PointTool = "pen" | "line" | "ramp";
+const isPointTool = (tool: Tool): tool is PointTool => tool === "pen" || tool === "line" || tool === "ramp";
+/** A ramp's points from placed ones: its handles are flat. */
+const rampPoints = (points: EditPoint[]): RampPoint[] =>
+  roundPoints(points as LinePoint[]).map(({ in: i, out: o, ...p }) => ({ ...p, ...(i ? { in: { x: i.x, z: i.z } } : {}), ...(o ? { out: { x: o.x, z: o.z } } : {}) }));
 
 type YawKey = "left" | "right";
 const YAW_KEYS: Record<string, YawKey> = { a: "left", arrowleft: "left", d: "right", arrowright: "right" };
 
-export type Tool = "select" | "hand" | "box" | "cylinder" | "pen" | "line";
+export type Tool = "select" | "hand" | "box" | "cylinder" | "pen" | "line" | "ramp";
 /** The tools that drag a footprint on the ground, and the shape type each draws. */
 const DRAWS: Partial<Record<Tool, "box" | "cylinder">> = { box: "box", cylinder: "cylinder" };
 
@@ -251,6 +265,8 @@ type Props = {
   nextFields: KindFields;
   /** How the Line tool draws the next line. */
   nextLine: LineStyle;
+  /** How the Ramp tool draws the next ramp. */
+  nextRamp: RampStyle;
   /** Whether holes show as ghosts (off: only the result shows, and hidden holes can't be clicked). */
   showHoles: boolean;
   onSelect: (ids: string[]) => void;
@@ -285,6 +301,7 @@ export function Viewport({
   nextSides,
   nextFields,
   nextLine,
+  nextRamp,
   showHoles,
   onSelect,
   onDrawShape,
@@ -365,14 +382,15 @@ export function Viewport({
   const cuts = cutters([...nodes.filter(isGroup), ...shown, ...ghosts]);
   // The free-form or line in point editing, as shown. A free-form's points sit on its top face (`editTop`); a
   // line's carry their own y, and its path is open.
-  const editShape = editing !== null ? shown.find((b) => b.id === editing && (b.type === "freeform" || b.type === "line")) : undefined;
+  const editShape =
+    editing !== null ? shown.find((b) => b.id === editing && (b.type === "freeform" || b.type === "line" || b.type === "ramp")) : undefined;
   const editPoints: EditPoint[] | null =
-    editShape?.type === "freeform" || editShape?.type === "line" ? (pointPreview?.points ?? editShape.points) : null;
+    editShape?.type === "freeform" || editShape?.type === "line" || editShape?.type === "ramp" ? (pointPreview?.points ?? editShape.points) : null;
   const editTop = editShape?.type === "freeform" ? editShape.y + editShape.height : 0;
-  const editClosed = editShape?.type !== "line";
+  const editClosed = editShape?.type === "freeform";
   // A line's selected point has a y arrow to raise or lower it (and the other selected points with it).
   const yArrow =
-    tool === "select" && editShape?.type === "line" && editPoints && pointSel.length > 0 && editPoints[pointSel[0]]
+    tool === "select" && (editShape?.type === "line" || editShape?.type === "ramp") && editPoints && pointSel.length > 0 && editPoints[pointSel[0]]
       ? { x: editPoints[pointSel[0]].x, y: pointY(editPoints[pointSel[0]], 0), z: editPoints[pointSel[0]].z }
       : null;
   /** The boxes (as shown) in or under the given nodes. */
@@ -522,7 +540,7 @@ export function Viewport({
     return noSnap(e) ? { x: p.x, y: round2(p.y), z: p.z } : { x: snap(p.x), y: round2(p.y), z: snap(p.z) };
   };
   /** Where the tool puts its next point: the ground (the Pen) or the surface under the cursor (the Line tool). */
-  const placeAt = (e: PointerEvent): EditPoint => (tool === "line" ? surfaceAt(e) : groundAt(e).point);
+  const placeAt = (e: PointerEvent): EditPoint => (tool === "line" || tool === "ramp" ? surfaceAt(e) : groundAt(e).point);
 
   /**
    * Finishes what the Pen or the Line tool drew (rounded to 2 decimals): the Pen's outline as a free-form, the
@@ -530,6 +548,19 @@ export function Viewport({
    * and the points stay, to fix with Backspace.
    */
   const finishPen = (p: Pen) => {
+    if (p.owner === "ramp") {
+      const points = rampPoints(p.points);
+      const ramp = { id: "", type: "ramp" as const, ...nextRamp, points, createdBy: "human" as const };
+      const problem = points.length < MIN_LINE_POINTS ? `a ramp needs at least ${MIN_LINE_POINTS} points` : rampProblem(ramp);
+      if (problem) {
+        onNotice(`Can't finish: ${problem}`);
+        return;
+      }
+      const { color: _color, ...style } = nextRamp;
+      onDrawShape({ type: "ramp", ...style, points });
+      setPen(NO_PEN);
+      return;
+    }
     if (p.owner === "line") {
       const rounded = roundPoints(p.points as LinePoint[]);
       const problem = rounded.length < MIN_LINE_POINTS ? `a line needs at least ${MIN_LINE_POINTS} points` : lineProblem(rounded);
@@ -557,7 +588,7 @@ export function Viewport({
   // handles (a smooth point). With the Pen, pressing the first point (with 3 or more) closes the outline.
   const penDown = (e: PointerEvent) => {
     const { sx, sy } = local(e);
-    const own = pen.owner === tool ? pen : { ...NO_PEN, owner: tool as "pen" | "line" };
+    const own = pen.owner === tool ? pen : { ...NO_PEN, owner: tool as PointTool };
     const { points } = own;
     const first = points[0] && onScreen(points[0]);
     if (tool === "pen" && points.length >= 3 && first && Math.hypot(first.sx - sx, first.sy - sy) <= CLOSE_PX) {
@@ -591,12 +622,16 @@ export function Viewport({
     }
     const first = pen.points[0] && onScreen(pen.points[0]);
     const closing = tool === "pen" && pen.points.length >= 3 && !!first && Math.hypot(first.sx - sx, first.sy - sy) <= CLOSE_PX;
-    setPen({ ...pen, owner: pen.owner ?? (tool as "pen" | "line"), cursor: closing ? { ...pen.points[0] } : placeAt(e), closing });
+    setPen({ ...pen, owner: pen.owner ?? (tool as PointTool), cursor: closing ? { ...pen.points[0] } : placeAt(e), closing });
   };
 
-  /** What's wrong with edited points (a free-form's outline, a line's path), or null. */
+  /** What's wrong with edited points (a free-form's outline, a line's or a ramp's path), or null. */
   const pointsProblem = (points: EditPoint[]) =>
-    editClosed ? outlineProblem(roundPoints(points)) : lineProblem(roundPoints(points as LinePoint[]));
+    editShape?.type === "ramp"
+      ? rampProblem({ ...editShape, points: rampPoints(points) })
+      : editClosed
+        ? outlineProblem(roundPoints(points))
+        : lineProblem(roundPoints(points as LinePoint[]));
 
   /**
    * Sends edited points (rounded) as one step, and shows them until the server's scene arrives. Refused, with the
@@ -604,9 +639,9 @@ export function Viewport({
    */
   const commitPoints = (points: EditPoint[], verb: string): boolean => {
     const original = boxesRef.current.find((b) => b.id === editing);
-    if (original?.type !== "freeform" && original?.type !== "line") return false;
-    const rounded = roundPoints(points);
-    const problem = pointsProblem(points);
+    if (original?.type !== "freeform" && original?.type !== "line" && original?.type !== "ramp") return false;
+    const rounded = original.type === "ramp" ? rampPoints(points) : roundPoints(points);
+    const problem = original.type === "ramp" ? rampProblem({ ...original, points: rampPoints(points) }) : pointsProblem(points);
     if (problem) {
       onNotice(`Can't ${verb}: ${problem}`);
       return false;
@@ -742,12 +777,12 @@ export function Viewport({
       setMarquee({ pointerId: e.pointerId, start, end: start, additive: e.shiftKey, base: selection, active: false });
       return;
     }
-    if (e.button === 0 && (tool === "pen" || tool === "line")) {
+    if (e.button === 0 && isPointTool(tool)) {
       penDown(e);
       return;
     }
     const draws = DRAWS[tool];
-    const panButton = e.button === 1 || (e.button === 0 && !draws && tool !== "pen" && tool !== "line");
+    const panButton = e.button === 1 || (e.button === 0 && !draws && !isPointTool(tool));
     const drawButton = e.button === 0 && !!draws;
     if (!panButton && !drawButton) return;
     e.currentTarget.setPointerCapture(e.pointerId);
@@ -803,7 +838,7 @@ export function Viewport({
       invalidate();
       return;
     }
-    if (tool === "pen" || tool === "line") {
+    if (isPointTool(tool)) {
       penMove(e);
       return;
     }
@@ -901,9 +936,9 @@ export function Viewport({
   // (the box itself, or a subgroup). On a free-form that's selected at its own level, it enters point editing, and
   // there a double-click on a point switches it between corner and smooth.
   const onDoubleClick = (e: MouseEvent) => {
-    // The Line tool: a double-click finishes the line (its second press added nothing).
-    if (tool === "line") {
-      if (pen.owner === "line" && pen.points.length > 0) finishPen(pen);
+    // The Line and Ramp tools: a double-click finishes the path (its second press added nothing).
+    if (tool === "line" || tool === "ramp") {
+      if (pen.owner === tool && pen.points.length > 0) finishPen(pen);
       return;
     }
     if (tool !== "select") return;
@@ -921,7 +956,7 @@ export function Viewport({
     if (target === id) {
       // Already the shape itself.
       const type = shown.find((b) => b.id === id)?.type;
-      if (type === "freeform" || type === "line") {
+      if (type === "freeform" || type === "line" || type === "ramp") {
         onSelect([id]);
         onEditing(id);
       }
@@ -1066,7 +1101,7 @@ export function Viewport({
     if (activePart === "y" || activePart === "height") return "resizing";
     if (activePart) return "moving";
     if (panning) return "panning";
-    return DRAWS[tool] || tool === "pen" || tool === "line" ? "drawing" : tool === "select" ? "selecting" : "";
+    return DRAWS[tool] || isPointTool(tool) ? "drawing" : tool === "select" ? "selecting" : "";
   })();
 
   return (
@@ -1111,7 +1146,7 @@ export function Viewport({
           selected={new Set(ghosts.length > 0 ? ghosts.map((b) => b.id) : shapesUnder(nodes, selection).map((b) => b.id))}
           hovered={new Set(shapesUnder(nodes, [hoveredId, outsideHover].filter((id) => id !== null)).map((b) => b.id))}
         />
-        {pen.points.length > 0 && <PenPreview pen={pen} kind={nextKind} fields={nextFields} line={nextLine} />}
+        {pen.points.length > 0 && <PenPreview pen={pen} kind={nextKind} fields={nextFields} line={nextLine} ramp={nextRamp} />}
         {editPoints && (
           <PointOverlay points={editPoints} y={editTop} closed={editClosed} selected={pointSel} bad={!!pointPreview?.problem} />
         )}
@@ -1206,7 +1241,7 @@ function Boxes({
 }: {
   boxes: Shape[];
   /** The holes that cut each shape, by its ID. */
-  cuts: Map<string, ClosedShape[]>;
+  cuts: Map<string, Solid[]>;
   /** Whether holes show as ghosts; hidden ones still show while selected or hovered. */
   showHoles: boolean;
   draft: (Footprint & Draft) | null;
@@ -1257,7 +1292,7 @@ function Boxes({
 /** The warning over a hole that cuts nothing (it's outside any group): a small yellow diamond above its top. */
 const warningGeometry = new THREE.OctahedronGeometry(0.22);
 const warningMaterial = new THREE.MeshBasicMaterial({ color: "#f5c518", depthTest: false });
-function HoleWarning({ hole }: { hole: ClosedShape }) {
+function HoleWarning({ hole }: { hole: Solid }) {
   const b = boundsOf([hole]);
   return (
     <mesh
@@ -1295,7 +1330,7 @@ function PenLabel({ pen, at }: { pen: Pen; at: { sx: number; sy: number } | null
   const n = pen.points.length;
   const count = `${n} point${n === 1 ? "" : "s"}`;
   const text =
-    pen.owner === "line"
+    pen.owner === "line" || pen.owner === "ramp"
       ? n >= 1
         ? `${count} · double-click or Enter to finish`
         : count
@@ -1317,9 +1352,9 @@ function PenLabel({ pen, at }: { pen: Pen; at: { sx: number; sy: number } | null
  * could close without crossing itself, a draft of the shape at its kind's default height; for the Line tool, the
  * line as it will look (its thickness, dashes and arrows).
  */
-function PenPreview({ pen, kind, fields, line }: { pen: Pen; kind: ShapeKind; fields: KindFields; line: LineStyle }) {
+function PenPreview({ pen, kind, fields, line, ramp }: { pen: Pen; kind: ShapeKind; fields: KindFields; line: LineStyle; ramp: RampStyle }) {
   const path = penPath(pen);
-  const open = pen.owner === "line";
+  const open = pen.owner === "line" || pen.owner === "ramp";
   const bad = !open && pathCrosses(path, pen.closing);
   const key = JSON.stringify([path, pen.closing]);
 
@@ -1361,7 +1396,10 @@ function PenPreview({ pen, kind, fields, line }: { pen: Pen; kind: ShapeKind; fi
   const color = bad ? PEN_BAD_COLOR : PEN_COLOR;
   // Only a valid outline gets a draft (not while the cursor still sits on the point just placed, say).
   const closable = !open && path.length >= 3 && outlineProblem(roundPoints(path)) === null;
-  const drawable = open && path.length >= MIN_LINE_POINTS && lineProblem(roundPoints(path as LinePoint[])) === null;
+  const drawable = pen.owner === "line" && path.length >= MIN_LINE_POINTS && lineProblem(roundPoints(path as LinePoint[])) === null;
+  const rampDraft: Ramp | null =
+    pen.owner === "ramp" && path.length >= MIN_LINE_POINTS ? { id: "ramp-draft", type: "ramp", ...ramp, points: rampPoints(path), createdBy: "human" } : null;
+  const rampOk = rampDraft !== null && rampProblem(rampDraft) === null;
   const first = pen.points[0];
   return (
     <>
@@ -1382,6 +1420,7 @@ function PenPreview({ pen, kind, fields, line }: { pen: Pen; kind: ShapeKind; fi
           draft
         />
       )}
+      {rampDraft && rampOk && <ShapeMesh shape={rampDraft} draft />}
       {drawable && (
         <LineMesh line={{ id: "line-draft", type: "line", ...line, points: roundPoints(path as LinePoint[]), createdBy: "human" }} />
       )}

@@ -749,7 +749,7 @@ describe("scene store cylinders", () => {
     expect(round).toMatchObject({ type: "cylinder", height: 3, name: "shrine" });
     expect(round).not.toHaveProperty("sides");
     expect(octagon).toMatchObject({ type: "cylinder", sides: 8, height: 0.25 });
-    expect(store.getNextId()).toEqual({ box: 2, group: 1, cylinder: 3, freeform: 1, line: 1 });
+    expect(store.getNextId()).toEqual({ box: 2, group: 1, cylinder: 3, freeform: 1, line: 1, ramp: 1 });
     expect(store.getHistory().undoLabel).toBe("Agent: draw box_1, cylinder_1, cylinder_2");
   });
 
@@ -843,7 +843,7 @@ describe("scene store free-forms", () => {
     expect(() => store.updateNodes([{ id: f.id, x: 3 }], "agent")).toThrow(/is a free-form, with no x of its own/);
     expect(() => store.updateNodes([{ id: f.id, points: [l[0], l[1], l[0], l[1]] }], "agent")).toThrow(/points/);
     const [b] = store.drawShapes([{ kind: "room", x: 20, z: 0, width: 2, depth: 2 }], "human");
-    expect(() => store.updateNodes([{ id: b.id, points: l }], "agent")).toThrow(/only free-forms and lines have points/);
+    expect(() => store.updateNodes([{ id: b.id, points: l }], "agent")).toThrow(/only free-forms, lines and ramps have points/);
     store.undo();
     store.undo();
     expect((store.getScene().nodes[0] as Freeform).points).toEqual(l);
@@ -1167,5 +1167,55 @@ describe("scene store holes", () => {
     // A hole that becomes a room loses its tilt and taper.
     store.updateNodes([{ id: window.id, kind: "room" }], "agent");
     expect(store.getScene().nodes[1]).not.toHaveProperty("pitch");
+  });
+});
+
+describe("scene store ramps", () => {
+  it("draws ramps with their defaults, and spirals as points", () => {
+    const store = createSceneStore();
+    const [ramp, spiral] = store.drawShapes(
+      [
+        { type: "ramp", points: [{ x: 0, y: 0, z: 0 }, { x: 6, y: 3, z: 0 }], step: 0.25, name: "stair" },
+        { type: "ramp", spiral: { x: 20, z: 0, radius: 2.5, turn: 360, y: 0, rise: 3 }, width: 1.2, base: "floating" },
+      ],
+      "agent",
+    );
+    expect(ramp).toMatchObject({ id: "ramp_1", type: "ramp", kind: "volume", width: 1.5, step: 0.25, base: "solid", name: "stair" });
+    expect(spiral).toMatchObject({ id: "ramp_2", width: 1.2, base: "floating" });
+    const pts = (spiral as { points: { x: number; y: number; z: number }[] }).points;
+    expect(pts).toHaveLength(5);
+    expect(pts[0]).toMatchObject({ x: 22.5, y: 0, z: 0 });
+    // Counterclockwise seen from above: a quarter turn from east is north (-z).
+    expect(pts[1]).toMatchObject({ x: 20, y: 0.75, z: -2.5 });
+    expect(pts[4]).toMatchObject({ x: 22.5, y: 3, z: 0 });
+    expect(store.getNextId().ramp).toBe(3);
+  });
+
+  it("refuses a ramp without a path, a turn too tight for its width, and closed-shape fields", () => {
+    const store = createSceneStore();
+    expect(() => store.drawShapes([{ type: "ramp" }], "agent")).toThrow(/either points or spiral/);
+    expect(() => store.drawShapes([{ type: "ramp", spiral: { x: 0, z: 0, radius: 0.5, turn: 180, y: 0, rise: 1 }, width: 2 }], "agent")).toThrow(
+      /turns too tightly/,
+    );
+    const [r] = store.drawShapes([{ type: "ramp", points: [{ x: 0, y: 0, z: 0 }, { x: 6, y: 3, z: 0 }] }], "agent");
+    expect(() => store.updateNodes([{ id: r.id, height: 2 }], "agent")).toThrow(/is a ramp, with no height/);
+    expect(() => store.updateNodes([{ id: r.id, kind: "room" }], "agent")).toThrow(/never a room/);
+    expect(() => store.updateNodes([{ id: r.id, points: [{ x: 0, z: 0 }, { x: 1, z: 0 }] }], "agent")).toThrow(/need a y/);
+  });
+
+  it("changes a ramp's steps, width, base and path, and moves, mirrors and copies it by its points", () => {
+    const store = createSceneStore();
+    const [r] = store.drawShapes([{ type: "ramp", points: [{ x: 0, y: 0, z: 0 }, { x: 6, y: 3, z: 0 }] }], "human");
+    store.updateNodes([{ id: r.id, step: 0.3 }], "human");
+    expect(store.getHistory().undoLabel).toBe("Change steps of ramp_1");
+    store.updateNodes([{ id: r.id, step: null, width: 3, base: "floating" }], "human");
+    expect(store.getScene().nodes[0]).toMatchObject({ width: 3, base: "floating" });
+    expect(store.getScene().nodes[0]).not.toHaveProperty("step");
+    store.moveNodes({ ids: [r.id], dx: 1, dy: 2 }, "human");
+    expect((store.getScene().nodes[0] as { points: unknown[] }).points[0]).toEqual({ x: 1, y: 2, z: 0 });
+    store.mirrorNodes({ ids: [r.id], axis: "x" }, "human");
+    expect((store.getScene().nodes[0] as { points: { x: number }[] }).points.map((p) => p.x)).toEqual([7, 1]);
+    const [copy] = store.duplicateNodes({ ids: [r.id], dz: 5 }, "human");
+    expect(copy).toMatchObject({ id: "ramp_2", type: "ramp", width: 3 });
   });
 });

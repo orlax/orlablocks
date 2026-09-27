@@ -4,13 +4,16 @@ import {
   isFootprinted,
   mirrorAcross,
   moveShape,
+  isClosed,
   isTilted,
   normalizeDeg,
   lineProblem,
   outlineProblem,
   rotateAround,
   round2,
+  rampProblem,
   roundPoints,
+  spiralPoints,
   sameValue,
   toFreeformPoints,
 } from "../shared/geometry";
@@ -18,6 +21,7 @@ import {
   ConvertNodesSchema,
   DEFAULT_COLOR,
   DEFAULT_WALL,
+  DEFAULT_RAMP_WIDTH,
   DEFAULT_HEIGHT,
   DEFAULT_LINE_COLOR,
   DEFAULT_THICKNESS,
@@ -26,6 +30,8 @@ import {
   GroupNodesSchema,
   MIN_HEIGHT,
   MIN_WALL,
+  MIN_RAMP_WIDTH,
+  MIN_STEP,
   KIND_FIELDS,
   MirrorNodesSchema,
   MoveNodesSchema,
@@ -38,8 +44,11 @@ import {
   UngroupSchema,
   type Actor,
   type KindField,
+  type RampBase,
+  type RampPoint,
   type ShapeKind,
   type Box,
+  type ClosedShape,
   type Cylinder,
   type Freeform,
   type LinePoint,
@@ -104,6 +113,8 @@ const FIELD_VERBS: Record<keyof NodePatch, string> = {
   thickness: "restyle",
   dashed: "restyle",
   arrow: "restyle",
+  step: "change steps of",
+  base: "restyle",
 };
 
 /** What a kind-specific field is called in errors ("only a room has walls"). */
@@ -289,6 +300,28 @@ export function createSceneStore() {
     return made;
   };
 
+  /**
+   * A ramp's path and shape as stored (points, width and step rounded to 2 decimals, a smooth ramp with no step),
+   * or an error (as `prefix: ...`) if it isn't valid.
+   */
+  const checkRamp = (prefix: string, r: { points: RampPoint[]; width: number; step?: number; base: RampBase }, errors: string[]) => {
+    const points = roundPoints(r.points).map(({ in: i, out: o, ...p }) => ({
+      ...p,
+      ...(i ? { in: { x: i.x, z: i.z } } : {}),
+      ...(o ? { out: { x: o.x, z: o.z } } : {}),
+    }));
+    const width = round2(r.width);
+    const step = r.step === undefined ? undefined : round2(r.step);
+    if (width < MIN_RAMP_WIDTH) errors.push(`${prefix}.width: ${r.width} rounds below ${MIN_RAMP_WIDTH} at 2 decimals`);
+    if (step !== undefined && step < MIN_STEP) errors.push(`${prefix}.step: ${r.step} rounds below ${MIN_STEP} at 2 decimals`);
+    const shape = { points, width, ...(step !== undefined ? { step } : {}), base: r.base };
+    if (points.length >= 2 && width >= MIN_RAMP_WIDTH) {
+      const problem = rampProblem({ id: "", type: "ramp", kind: "volume", color: DEFAULT_COLOR, createdBy: "agent", ...shape });
+      if (problem) errors.push(`${prefix}: ${problem}`);
+    }
+    return shape;
+  };
+
   /** A line's points rounded to 2 decimals, or an error (as `prefix: ...`) if the path isn't valid. */
   const checkLinePoints = (prefix: string, points: LinePoint[], errors: string[]) => {
     const rounded = roundPoints(points);
@@ -362,6 +395,18 @@ export function createSceneStore() {
             thickness: round2(d.thickness ?? DEFAULT_THICKNESS),
             dashed: d.dashed ?? false,
             arrow: d.arrow ?? "none",
+          };
+        }
+        if (d.type === "ramp") {
+          if ((d.points === undefined) === (d.spiral === undefined)) errors.push(`${prefix}: give a ramp either points or spiral (one of them)`);
+          const points = d.spiral ? spiralPoints(d.spiral) : (d.points ?? []);
+          return {
+            type: "ramp" as const,
+            ...(name ? { name } : {}),
+            ...(d.parent !== undefined ? { parent: d.parent } : {}),
+            kind: d.kind ?? "volume",
+            ...checkRamp(prefix, { points, width: d.width ?? DEFAULT_RAMP_WIDTH, step: d.step, base: d.base ?? "solid" }, errors),
+            color: d.color ?? DEFAULT_COLOR,
           };
         }
         const height = d.height ?? DEFAULT_HEIGHT[d.kind];
@@ -460,8 +505,24 @@ export function createSceneStore() {
           if (fields.sides !== undefined && node.type !== "cylinder") {
             errors.push(`changes[${i}].sides: only a cylinder has sides ("${id}" is a ${node.type})`);
           }
-          if (fields.points !== undefined && node.type !== "freeform" && node.type !== "line") {
-            errors.push(`changes[${i}].points: only free-forms and lines have points ("${id}" is a ${node.type})`);
+          if (fields.points !== undefined && node.type !== "freeform" && node.type !== "line" && node.type !== "ramp") {
+            errors.push(`changes[${i}].points: only free-forms, lines and ramps have points ("${id}" is a ${node.type})`);
+          }
+          const rampOnly = (["step", "base"] as const).filter((k) => fields[k] !== undefined);
+          if (node.type !== "ramp" && rampOnly.length > 0) {
+            errors.push(`changes[${i}]: only a ramp has ${rampOnly.join(", ")} ("${id}" is a ${node.type})`);
+          }
+          if (node.type === "ramp") {
+            const notRamp = (["x", "z", "y", "depth", "height", "rotation", "wall", "taper", "bevel", "pitch", "roll"] as const).filter(
+              (k) => fields[k] !== undefined,
+            );
+            if (notRamp.length > 0) {
+              errors.push(
+                `changes[${i}]: "${id}" is a ramp, with no ${notRamp.join(", ")}: change its points (they carry their own y), ` +
+                  `or use move_nodes / rotate_nodes`,
+              );
+            }
+            if (fields.kind === "room") errors.push(`changes[${i}].kind: a ramp is a volume or a hole, never a room`);
           }
           const lineOnly = (["thickness", "dashed", "arrow"] as const).filter((k) => fields[k] !== undefined);
           if (node.type !== "line" && lineOnly.length > 0) {
@@ -478,7 +539,7 @@ export function createSceneStore() {
               );
             }
           }
-          if (node.type !== "line") {
+          if (node.type !== "line" && node.type !== "ramp") {
             const kind = fields.kind ?? node.kind;
             for (const f of Object.keys(KIND_FIELDS) as KindField[]) {
               if (fields[f] !== undefined && fields[f] !== null && !kindAllows(f, kind)) {
@@ -518,7 +579,7 @@ export function createSceneStore() {
         if (fields.pitch !== undefined) patch.pitch = angle(fields.pitch);
         if (fields.roll !== undefined) patch.roll = angle(fields.roll);
         // A shape that changes kind loses the fields its new kind doesn't have (undo brings them back).
-        if (fields.kind !== undefined && isShape(node) && node.type !== "line") {
+        if (fields.kind !== undefined && node.type !== "group" && isClosed(node)) {
           for (const f of Object.keys(KIND_FIELDS) as KindField[]) {
             if (!kindAllows(f, fields.kind) && node[f] !== undefined && fields[f] === undefined) patch[f] = undefined;
           }
@@ -538,6 +599,26 @@ export function createSceneStore() {
           const missing = fields.points.findIndex((p) => p.y === undefined || (p.in && p.in.y === undefined) || (p.out && p.out.y === undefined));
           if (missing >= 0) errors.push(`changes[${i}].points[${missing}]: a line's points (and handles) need a y`);
           else patch.points = checkLinePoints(`changes[${i}]`, fields.points as LinePoint[], errors);
+        }
+        if (node.type === "ramp" && (fields.points !== undefined || fields.width !== undefined || fields.step !== undefined || fields.base !== undefined)) {
+          const missing = fields.points?.findIndex((p) => p.y === undefined) ?? -1;
+          if (missing >= 0) errors.push(`changes[${i}].points[${missing}]: a ramp's points need a y (the surface's height there)`);
+          else {
+            const next = checkRamp(
+              `changes[${i}]`,
+              {
+                points: (fields.points as RampPoint[] | undefined) ?? node.points,
+                width: fields.width ?? node.width,
+                step: fields.step === null ? undefined : (fields.step ?? node.step),
+                base: fields.base ?? node.base,
+              },
+              errors,
+            );
+            if (fields.points !== undefined) patch.points = next.points;
+            if (fields.width !== undefined) patch.width = next.width;
+            if (fields.step !== undefined) patch.step = next.step;
+            if (fields.base !== undefined) patch.base = next.base;
+          }
         }
         if (fields.thickness !== undefined) patch.thickness = round2(fields.thickness);
         if (fields.dashed !== undefined) patch.dashed = fields.dashed;
@@ -696,9 +777,9 @@ export function createSceneStore() {
         if (n.type === "line") {
           return { ...(rest as typeof n), ...kept, thickness: round2(n.thickness), points: checkLinePoints(`nodes[${i}]`, n.points, errors) };
         }
-        const shape = { ...(rest as Shape), ...kept, height: round2(n.height) } as Shape;
+        if (n.type === "ramp") return { ...(rest as typeof n), ...kept, ...checkRamp(`nodes[${i}]`, n, errors) };
+        const shape = { ...(rest as ClosedShape), ...kept, height: round2(n.height) } as ClosedShape;
         if (shape.type === "freeform") return { ...shape, points: checkPoints(`nodes[${i}]`, shape.points, errors) };
-        if (shape.type === "line") return shape;
         return { ...shape, width: round2(shape.width), depth: round2(shape.depth), rotation: normalizeRotation(shape.rotation) };
       });
       nodes.forEach((n, i) => {

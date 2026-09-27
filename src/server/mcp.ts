@@ -2,7 +2,7 @@ import type { Express } from "express";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
-import { boundsOf, isTilted, round2 } from "../shared/geometry";
+import { boundsOf, isClosed, isTilted, round2 } from "../shared/geometry";
 import { holeWarnings } from "../shared/holes";
 import {
   SHAPE_COLORS,
@@ -46,7 +46,7 @@ const INSTRUCTIONS =
   "Units are meters; decimals are allowed and kept to 2 places. The world is 3D with y up and the ground at y = 0. " +
   "The compass is fixed for every scene: NORTH is -z, south +z, east +x, west -x (get_scene repeats it as `compass`), " +
   'so "the north wall" is a shape\'s -z side and "go east" is +x; the editor shows a compass rose. ' +
-  "The scene is a flat list of nodes: shapes and groups. The shapes are boxes (type: box), cylinders (type: cylinder) and free-forms (type: freeform). " +
+  "The scene is a flat list of nodes: shapes and groups. The shapes are boxes (type: box), cylinders (type: cylinder), free-forms (type: freeform), lines and ramps. " +
   "A box's footprint is CENTERED at (x, z), with `width` along the box's local x and " +
   "`depth` along its local z. It rises from its elevation `y` (its bottom: 0 = on the ground, negative = below ground) " +
   "to y + height, so to stack box B on box A, set B.y = A.y + A.height. " +
@@ -75,6 +75,18 @@ const INSTRUCTIONS =
   "2.2 m tall, standing on the floor, turned like the wall and a bit deeper than the wall. A round window: a cylinder " +
   "hole with pitch 90 (lying, its height through the wall). An arch: a box hole plus a lying cylinder hole on top. Holes " +
   "can taper, bevel and tilt like volumes. " +
+  "A RAMP (type: ramp) is a path with a `width` (default 1.5 m) you walk along its top: a ramp, stairs, a landing, " +
+  "a walkway, a spiral stair. Its `points` are the centerline in ABSOLUTE world x/z, each with the surface's height " +
+  "`y` there (a floor's y, a platform's top); between two points the height changes evenly with the distance, so " +
+  "two points at the same y make a landing, and flat handles `in` / `out` ({ x, z } offsets) curve it. `step` is the " +
+  "riser height (stairs: each edge gets round(rise / step) equal steps, the top one flush with the higher end); " +
+  "without it the ramp is smooth. `base` is solid (the default, filled down to its lowest point) or floating (a " +
+  "slab under the surface). For a spiral, give `spiral: { x, z, radius, turn, y, rise, from? }` instead of points " +
+  "(turn in degrees, counterclockwise seen from above; from 0 = east, 90 = north) and don't compute a helix by hand. " +
+  "A ramp is a volume or a hole (a sloped tunnel); it has no x, z, y, height or rotation, and move_nodes, " +
+  "rotate_nodes and mirror_nodes change its points. For a stair up to a floor above, cut a hole in that floor, and " +
+  "keep that hole thin (from about 0.05 m below the floor to just above it): a hole cuts everything it overlaps in " +
+  "its group, the stair included. " +
   `\`color\` is a palette key: ${SHAPE_COLORS.join(", ")} (default ${DEFAULT_COLOR}). ` +
   "A cylinder has exactly a box's fields, and its footprint is the ellipse inscribed in its width × depth rectangle " +
   "(width = depth for a circle, so a round room 10 m across is width 10, depth 10), centered at (x, z) and turned by `rotation` like a box. " +
@@ -101,11 +113,10 @@ const INSTRUCTIONS =
   `\`color\` (default ${DEFAULT_LINE_COLOR}), \`thickness\` in screen pixels (${MIN_THICKNESS}..${MAX_THICKNESS}, default ${DEFAULT_THICKNESS}), ` +
   "`dashed` (default false) and `arrow`: none (default), end (an arrowhead at the last point) or both. It has no " +
   "kind, x, z, y, height or rotation; move_nodes, rotate_nodes and mirror_nodes change its points. " +
-  "A group (type: group) is a container with NO position of its own: its shapes keep absolute world coordinates, " +
-  "and a node is in a group when its `parent` is that group's ID (groups can nest). get_scene adds each group's " +
-  "derived `bounds` (center x/z, bottom y, width, depth, height, axis-aligned) for reference. Groups are a unit of " +
-  "action: move_nodes, rotate_nodes and remove_nodes on a group act on everything in it. A group left empty disappears. " +
-  "Every node has a server-assigned ID (box_1, cylinder_1, freeform_1, group_1, ..., never reused), an optional `name` for people " +
+  "A group (type: group) has NO position of its own: its shapes keep absolute world coordinates, and a node is in " +
+  "a group when its `parent` is that group's ID (groups can nest). get_scene adds each group's derived `bounds` " +
+  "(center x/z, bottom y, sizes). Tools act on a group as a unit. A group left empty disappears. " +
+  "Every node has a server-assigned ID (box_1, cylinder_1, freeform_1, line_1, ramp_1, group_1, ..., never reused), an optional `name` for people " +
   '("lobby"; not unique, tools always take IDs, so resolve names to IDs with get_scene), and records who created it (human or agent). ' +
   "To repeat things (a row of pillars, a second wing, another floor), copy them with move_nodes and copy: true " +
   "(count for several, each offset further) instead of retyping shapes with draw_shapes: copies get new IDs and keep " +
@@ -114,10 +125,8 @@ const INSTRUCTIONS =
   "with move_nodes, then mirror the copy, instead of computing reflected positions and angles by hand. " +
   "The scene's `selection` lists the IDs of the nodes the human has selected in the editor: when they say " +
   '"this" or "these", they mean the selection. ' +
-  "The scene's `view` is what the editor window currently shows: `focus` is the ground point at the screen center, " +
-  "`yaw` the camera rotation in degrees, and `bounds` (x, z, width, depth; x/z is its min corner) the axis-aligned area around the visible ground. " +
-  "The visible ground is a rotated quad, so keep drawings near `focus` and well inside `bounds` to be sure they are on screen; " +
-  "boxes outside it are valid but off-screen. " +
+  "The scene's `view` is what the editor shows: `focus` (the ground point at the screen center), `yaw` and `bounds` " +
+  "(x, z at its min corner, width, depth) around the visible ground; draw near `focus` to be on screen. " +
   "Every tool call that changes the scene is one step in the undo history shared with the human.";
 
 const json = (value: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }] });
@@ -181,8 +190,8 @@ function buildServer(workspace: Workspace) {
       title: "Draw shapes",
       description:
         `Add one or more shapes to the scene in a single batch; they appear live in the editor. Each has a \`type\` ` +
-        `(box, the default, cylinder, freeform or line) and that type's fields. For a box or cylinder (a room, a volume or a hole) only ` +
-        `kind, x, z, width and depth are required; for a free-form, kind and points; for a line, points. The rest have defaults (the kind's ` +
+        `(box, the default, cylinder, freeform, line or ramp) and that type's fields. For a box or cylinder (a room, a volume or a hole) only ` +
+        `kind, x, z, width and depth are required; for a free-form, kind and points; for a line, points; for a ramp, points or spiral. The rest have defaults (the kind's ` +
         `height, y 0, rotation 0, color ${DEFAULT_COLOR} (${DEFAULT_LINE_COLOR} for a line), ${DEFAULT_WALL} m room walls, no taper or bevel, no name, top level, a smooth cylinder, ` +
         `and a solid ${DEFAULT_THICKNESS} px line with no arrow). ` +
         `Set \`parent\` to a group's ID to draw straight into that group. ` +
@@ -192,11 +201,13 @@ function buildServer(workspace: Workspace) {
     async ({ shapes }) => {
       const created = store().drawShapes(shapes, "agent");
       const all = store().getScene().nodes;
-      const count = (kind: string) => all.filter((n) => isShape(n) && n.type !== "line" && n.kind === kind).length;
+      // Rooms, volumes and holes of every closed shape; a ramp counts as a ramp, whatever its kind.
+      const count = (kind: string) => all.filter((n) => isShape(n) && isClosed(n) && n.kind === kind).length;
       const totals = {
         rooms: count("room"),
         volumes: count("volume"),
         holes: count("hole"),
+        ramps: all.filter((n) => n.type === "ramp").length,
         lines: all.filter((n) => n.type === "line").length,
         groups: all.filter(isGroup).length,
       };
@@ -213,7 +224,8 @@ function buildServer(workspace: Workspace) {
         `A box takes any of: name, parent, kind, x, z, y, width, depth, height, rotation, color, wall (a room's; null = the default), ` +
         `taper and bevel (a volume's; 0 clears them), pitch and roll (a box or cylinder volume's; 0 levels it); ` +
         `a cylinder those and sides; a free-form name, parent, kind, y, height, color, wall, taper, bevel and points (the whole outline); a line name, parent, color, ` +
-        `points (the whole path, with y), thickness, dashed and arrow. ` +
+        `points (the whole path, with y), thickness, dashed and arrow; a ramp name, parent, kind (volume or hole), color, ` +
+        `points (with y), width, step (null = smooth) and base. ` +
         `A group takes only name and parent. ` +
         `{ id, type: "freeform" } alone converts a box or cylinder into a free-form with a new ID; a call that converts ` +
         `only converts (edit the new free-form in a second call). ` +

@@ -134,6 +134,31 @@ describe("picking sloped volumes", () => {
   });
 });
 
+describe("picking ramps", () => {
+  it("hits a stair's treads at their heights, and misses beside it", () => {
+    const stair = {
+      id: "ramp_1",
+      type: "ramp",
+      kind: "volume",
+      width: 2,
+      step: 0.5,
+      base: "solid",
+      color: "almost-white",
+      createdBy: "human",
+      points: [
+        { x: 0, y: 0, z: 0 },
+        { x: 6, y: 3, z: 0 },
+      ],
+    } as const;
+    const m = hitMesh({ ...stair, points: [...stair.points] })!;
+    const down = (x: number, z: number) => ({ origin: { x, y: 10, z }, dir: { x: 0, y: -1, z: 0 } });
+    // 6 steps of 0.5 over 6 m: the tread from x 2 to 3 is the third, at 1.5.
+    expect(10 - rayMesh(down(2.5, 0.5), m)!).toBeCloseTo(1.5);
+    expect(10 - rayMesh(down(5.5, -0.5), m)!).toBeCloseTo(3);
+    expect(rayMesh(down(3, 1.2), m)).toBeNull();
+  });
+});
+
 describe("worldToScreen and heightOnVertical", () => {
   it("round-trips the focus point to the screen center", () => {
     const s = worldToScreen(cam, size, { x: cam.focus.x, y: 0, z: cam.focus.z })!;

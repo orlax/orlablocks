@@ -28,11 +28,14 @@ import {
 } from "lucide-react";
 import type { MirrorAxis } from "../shared/geometry";
 import {
+  DEFAULT_RAMP_WIDTH,
   DEFAULT_WALL,
   MAX_SIDES,
   MAX_THICKNESS,
   MIN_SIDES,
   MIN_THICKNESS,
+  MIN_RAMP_WIDTH,
+  MIN_STEP,
   MIN_WALL,
   PALETTE,
   SHAPE_COLORS,
@@ -41,7 +44,8 @@ import {
   type ShapeColor,
   type ShapeKind,
 } from "../shared/scene.types";
-import type { LineStyle, Tool } from "./Viewport";
+import { Stairs } from "./icons";
+import type { LineStyle, RampStyle, Tool } from "./Viewport";
 
 export const MOD = /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl+";
 
@@ -52,6 +56,7 @@ export const TOOLS: { tool: Tool; label: string; key: string; icon: LucideIcon }
   { tool: "cylinder", label: "Cylinder", key: "c", icon: Cylinder },
   { tool: "pen", label: "Pen (free-form)", key: "p", icon: PenTool },
   { tool: "line", label: "Line", key: "l", icon: Waypoints },
+  { tool: "ramp", label: "Ramp (and stairs)", key: "r", icon: Stairs },
 ];
 
 /** What each tool does and its modifiers, shown in the info-label. */
@@ -62,6 +67,7 @@ export const HINTS: Record<Tool, string> = {
   cylinder: `drag to draw · Shift circle · Alt from center · ${MOD} no snap · Esc to cancel`,
   pen: `click for a corner · drag for a curve · click the first point or Enter to close · ⌫ removes the last point · ${MOD} no snap · Esc to cancel`,
   line: `click to place a point on the surface under the cursor · drag for a curve · double-click or Enter to finish · ⌫ removes the last point · ${MOD} no snap · Esc to cancel`,
+  ramp: `click on the floor, then on the top it climbs to (each point on the surface under the cursor) · drag for a curve · double-click or Enter to finish · ⌫ removes the last point · ${MOD} no snap · Esc to cancel`,
 };
 
 /** The hint while editing a free-form's points (the Select tool, after double-clicking it). */
@@ -161,6 +167,7 @@ export function ContextualBar({
   onConvert,
   editPoints,
   line,
+  ramp,
   children,
 }: {
   kind: ShapeKind | null;
@@ -185,6 +192,8 @@ export function ContextualBar({
   editPoints?: { active: boolean; onToggle: () => void };
   /** Shows the line controls (the Line tool, selected lines): thickness, dashes, arrows, and Reverse if given. */
   line?: { style: Partial<LineStyle>; onChange: (patch: Partial<LineStyle>) => void; onReverse?: () => void };
+  /** Shows the ramp controls (the Ramp tool, selected ramps): kind, width, steps and base, and Reverse if given. */
+  ramp?: { style: Partial<RampStyle>; onChange: (patch: Partial<RampStyle>) => void; onReverse?: () => void };
   children?: ReactNode;
 }) {
   return (
@@ -251,6 +260,12 @@ export function ContextualBar({
         <>
           <span className="sep" />
           <LineControls {...line} />
+        </>
+      )}
+      {ramp && (
+        <>
+          <span className="sep" />
+          <RampControls {...ramp} />
         </>
       )}
       {onMirror && (
@@ -480,6 +495,133 @@ function TiltControl({ pitch, roll, onChange }: { pitch: number | undefined; rol
       <AngleField label="roll" title="Roll: degrees around the shape's own z axis (the blue ring)" value={roll} onChange={(r) => onChange({ roll: r })} />
       <button className="labeled" disabled={level} title="Reset tilt: level it again (pitch and roll 0)" onClick={() => onChange({ pitch: 0, roll: 0 })}>
         <Rotate3d size={16} /> Reset tilt
+      </button>
+    </div>
+  );
+}
+
+/**
+ * A ramp's shape: volume or hole, its width (− / meters / +, in 0.25 m steps), smooth or stepped (with the riser
+ * height, − / meters / +, in 0.05 m steps), and a solid or floating base. A value that differs across the selection
+ * shows as not set.
+ */
+function RampControls({
+  style,
+  onChange,
+  onReverse,
+}: {
+  style: Partial<RampStyle>;
+  onChange: (patch: Partial<RampStyle>) => void;
+  onReverse?: () => void;
+}) {
+  const stepped = style.step !== undefined;
+  return (
+    <div className="ramp-controls">
+      <div className="segmented">
+        {KINDS.filter((k) => k.kind !== "room").map(({ kind: k, label, icon: Icon }) => (
+          <button key={k} className={style.kind === k ? "active" : ""} title={label} onClick={() => onChange({ kind: k as RampStyle["kind"] })}>
+            <Icon size={16} />
+          </button>
+        ))}
+      </div>
+      <MetersField
+        label="width"
+        title="Width, centered on the path"
+        value={style.width}
+        step={0.25}
+        min={MIN_RAMP_WIDTH}
+        fallback={DEFAULT_RAMP_WIDTH}
+        onChange={(width) => onChange({ width })}
+      />
+      <button
+        className={stepped ? "labeled" : "labeled active"}
+        title="Smooth: a ramp, no steps"
+        onClick={() => onChange({ step: undefined })}
+      >
+        smooth
+      </button>
+      <MetersField
+        label="steps"
+        title="The riser height: stairs"
+        value={style.step}
+        step={0.05}
+        min={MIN_STEP}
+        fallback={DEFAULT_STEP}
+        onChange={(step) => onChange({ step })}
+      />
+      <div className="segmented">
+        {(["solid", "floating"] as const).map((base) => (
+          <button
+            key={base}
+            className={style.base === base ? "active labeled" : "labeled"}
+            title={base === "solid" ? "Solid: filled down to its lowest point" : "Floating: a slab under the surface"}
+            onClick={() => onChange({ base })}
+          >
+            {base}
+          </button>
+        ))}
+      </div>
+      {onReverse && (
+        <button className="labeled" title="Reverse: the ramp runs the other way (the same shape)" onClick={onReverse}>
+          <ArrowLeftRight size={16} /> Reverse
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** The step a stepped ramp starts from (from smooth, − or + switch to it). */
+const DEFAULT_STEP = 0.2;
+
+/** A meters field with − / +: typing a value and pressing Enter (or leaving the field) sets it, at least `min`. */
+function MetersField({
+  label,
+  title,
+  value,
+  step,
+  min,
+  fallback,
+  onChange,
+}: {
+  label: string;
+  title: string;
+  value: number | undefined;
+  step: number;
+  min: number;
+  fallback?: number;
+  onChange: (v: number) => void;
+}) {
+  const [text, setText] = useState<string | null>(null);
+  const cancelled = useRef(false);
+  const set = (n: number) => onChange(Math.max(min, Math.round(n * 100) / 100));
+  const commit = () => {
+    if (!cancelled.current && text !== null && text.trim() !== "" && Number.isFinite(Number(text))) set(Number(text));
+    cancelled.current = false;
+    setText(null);
+  };
+  const current = value ?? fallback;
+  return (
+    <div className="sides angle" title={title}>
+      <span className="label">{label}</span>
+      <button title={`${label} −${step}`} onClick={() => set(current === undefined ? min : value === undefined ? current : current - step)}>
+        <Minus size={14} />
+      </button>
+      <input
+        type="text"
+        inputMode="decimal"
+        className="count"
+        value={text ?? (value === undefined ? "" : `${value} m`)}
+        placeholder="–"
+        onFocus={() => setText(value === undefined ? "" : String(value))}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") cancelled.current = true;
+          if (e.key === "Enter" || e.key === "Escape") e.currentTarget.blur();
+        }}
+      />
+      <button title={`${label} +${step}`} onClick={() => set(current === undefined ? min : value === undefined ? current : current + step)}>
+        <Plus size={14} />
       </button>
     </div>
   );

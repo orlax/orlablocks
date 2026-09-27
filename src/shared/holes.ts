@@ -1,9 +1,9 @@
-import { boundsOf, isClosed, verticalRange, type Bounds } from "./geometry";
-import type { ClosedShape, SceneNode } from "./scene.types";
+import { boundsOf, isSolid, verticalRange, type Bounds } from "./geometry";
+import type { ClosedShape, SceneNode, Solid } from "./scene.types";
 import { isGroup } from "./tree";
 
 /**
- * Holes: closed shapes of kind "hole", which cut themselves out of other shapes when drawn. Which shapes a hole cuts
+ * Holes: solids (closed shapes and ramps) of kind "hole", which cut themselves out of other solids when drawn. Which shapes a hole cuts
  * is decided by the node tree alone, one level each way, so nothing walks the whole hierarchy:
  * - the shapes directly in the hole's own group;
  * - the shapes directly in its group's sibling groups (the other groups directly in the same parent, or the other
@@ -11,18 +11,18 @@ import { isGroup } from "./tree";
  * A hole outside any group cuts nothing. Holes never cut holes, and never cut lines.
  */
 
-export const isHole = (n: SceneNode): n is ClosedShape => n.type !== "group" && isClosed(n) && n.kind === "hole";
+export const isHole = (n: SceneNode): n is Solid => n.type !== "group" && isSolid(n) && n.kind === "hole";
 
-/** Whether a node can be cut: a closed shape that isn't a hole. */
-const cuttable = (n: SceneNode): n is ClosedShape => n.type !== "group" && isClosed(n) && n.kind !== "hole";
+/** Whether a node can be cut: a solid that isn't a hole. */
+const cuttable = (n: SceneNode): n is Solid => n.type !== "group" && isSolid(n) && n.kind !== "hole";
 
 /** The shapes a hole may cut, by the tree (see above), whether or not they overlap it. */
-export function holeScope(nodes: SceneNode[], hole: ClosedShape): ClosedShape[] {
+export function holeScope(nodes: SceneNode[], hole: Solid): Solid[] {
   const group = hole.parent;
   if (group === undefined) return [];
   const own = nodes.find((n) => n.id === group);
   const siblings = new Set(nodes.filter((n) => isGroup(n) && n.id !== group && n.parent === own?.parent).map((n) => n.id));
-  return nodes.filter((n): n is ClosedShape => cuttable(n) && n.parent !== undefined && (n.parent === group || siblings.has(n.parent)));
+  return nodes.filter((n): n is Solid => cuttable(n) && n.parent !== undefined && (n.parent === group || siblings.has(n.parent)));
 }
 
 const overlaps = (a: Bounds, b: Bounds) =>
@@ -32,8 +32,8 @@ const overlaps = (a: Bounds, b: Bounds) =>
  * For each shape that a hole cuts, the holes that cut it (in scene order): the holes whose scope has it and whose
  * bounds overlap its bounds.
  */
-export function cutters(nodes: SceneNode[]): Map<string, ClosedShape[]> {
-  const out = new Map<string, ClosedShape[]>();
+export function cutters(nodes: SceneNode[]): Map<string, Solid[]> {
+  const out = new Map<string, Solid[]>();
   for (const hole of nodes.filter(isHole)) {
     const hb = boundsOf([hole]);
     for (const target of holeScope(nodes, hole)) {
@@ -47,7 +47,7 @@ export function cutters(nodes: SceneNode[]): Map<string, ClosedShape[]> {
 }
 
 /** The floor rule: a hole cuts a room's floor only if it reaches below the room's elevation (a door on the floor doesn't). */
-export const cutsFloor = (hole: ClosedShape, room: ClosedShape) => verticalRange(hole)[0] < room.y - 1e-6;
+export const cutsFloor = (hole: Solid, room: ClosedShape) => verticalRange(hole)[0] < room.y - 1e-6;
 
 /**
  * What's wrong with the holes, for the agent: a hole outside any group cuts nothing, and a hole whose group and

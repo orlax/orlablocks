@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { Box, Cylinder, Freeform } from "./scene.types";
-import { hitMesh, prism, shapeMesh, type Mesh } from "./mesh";
+import type { Box, Cylinder, Freeform, Ramp } from "./scene.types";
+import { spiralPoints } from "./geometry";
+import { hitMesh, prism, rampMesh, shapeMesh, type Mesh } from "./mesh";
 
 /** Every edge is used by exactly two triangles, once in each direction: closed, and consistently wound. */
 function watertight(m: Mesh): boolean {
@@ -197,5 +198,70 @@ describe("taper and bevel", () => {
     expect(volume(hill)).toBeGreaterThan(0);
     const all = shapeMesh({ ...blob, taper: 1, bevel: 1 }).body!;
     expect(watertight(all)).toBe(true);
+  });
+});
+
+describe("ramps", () => {
+  const ramp = (patch: Partial<Ramp>): Ramp => ({
+    id: "ramp_1",
+    type: "ramp",
+    kind: "volume",
+    width: 2,
+    base: "solid",
+    color: "almost-white",
+    createdBy: "human",
+    points: [
+      { x: 0, y: 0, z: 0 },
+      { x: 6, y: 3, z: 0 },
+    ],
+    ...patch,
+  });
+
+  it("makes a straight smooth ramp a watertight wedge", () => {
+    const m = rampMesh(ramp({}))!;
+    expect(watertight(m)).toBe(true);
+    // A wedge 6 long, 2 wide, 3 tall, over a 0.02 m slab under all of it.
+    expect(volume(m)).toBeCloseTo(0.5 * 6 * 3 * 2 + 6 * 2 * 0.02, 1);
+  });
+
+  it("makes stairs: 12 steps of 0.25, each flat, the last flush with the top", () => {
+    const m = rampMesh(ramp({ step: 0.25 }))!;
+    expect(watertight(m)).toBe(true);
+    // Each step is a full tread high, so the stairs hold more than the wedge under them.
+    const wedge = 0.5 * 6 * 3 * 2 + 6 * 2 * 0.02;
+    expect(volume(m)).toBeGreaterThan(wedge);
+    const ys = new Set<number>();
+    for (let i = 1; i < m.positions.length; i += 3) ys.add(Math.round(m.positions[i] * 100) / 100);
+    expect([...ys].filter((y) => y > 0).length).toBe(12);
+    expect(Math.max(...ys)).toBeCloseTo(3);
+  });
+
+  it("goes either way: a stair walked down is the same solid", () => {
+    const up = rampMesh(ramp({ step: 0.25 }))!;
+    const down = rampMesh(ramp({ step: 0.25, points: [{ x: 6, y: 3, z: 0 }, { x: 0, y: 0, z: 0 }] }))!;
+    expect(volume(down)).toBeCloseTo(volume(up));
+  });
+
+  it("floats as a slab, with a landing, around a corner", () => {
+    const m = rampMesh(
+      ramp({
+        base: "floating",
+        step: 0.2,
+        points: [
+          { x: 0, y: 0, z: 0 },
+          { x: 4, y: 1.6, z: 0 },
+          { x: 6, y: 1.6, z: 0 },
+          { x: 6, y: 3.2, z: -4 },
+        ],
+      }),
+    )!;
+    expect(watertight(m)).toBe(true);
+    expect(volume(m)).toBeGreaterThan(0);
+  });
+
+  it("curves: a spiral stair's mesh is watertight", () => {
+    const m = rampMesh(ramp({ step: 0.2, width: 1.2, points: spiralPoints({ x: 0, z: 0, radius: 2, turn: 360, y: 0, rise: 3 }) }))!;
+    expect(watertight(m)).toBe(true);
+    expect(volume(m)).toBeGreaterThan(0);
   });
 });

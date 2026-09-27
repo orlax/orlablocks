@@ -123,10 +123,39 @@ export type Line = {
   createdBy: Actor;
 };
 
+/** A ramp's point: in absolute world x/y/z (the surface's height there), with flat bezier handles (offsets on the ground). */
+export type RampPoint = { x: number; y: number; z: number; in?: Offset; out?: Offset };
+
+/** A ramp's underside: `solid` fills down to its lowest point, `floating` is a slab under its surface. */
+export type RampBase = "solid" | "floating";
+
+/**
+ * A ramp: a path with a width, walkable along its top: a ramp, a flight of stairs (with `step`), a landing (two
+ * points at the same height), a walkway or a spiral stair. Its points (2 or more) are the path's centerline in
+ * absolute world x/z, each with the surface's height `y` there; between two points the height changes evenly with
+ * the distance along the ground, and curves come from the points' flat handles. `step` is the riser height (none =
+ * smooth). A volume, or a hole (a sloped tunnel through something); never a room.
+ */
+export type Ramp = {
+  id: string; // "ramp_1", ...
+  type: "ramp";
+  name?: string;
+  parent?: string;
+  kind: "volume" | "hole";
+  points: RampPoint[];
+  width: number;
+  step?: number;
+  base: RampBase;
+  color: ShapeColor;
+  createdBy: Actor;
+};
+
 /** A closed shape: one with a footprint, a kind (room or volume), an elevation and a height. */
 export type ClosedShape = Box | Cylinder | Freeform;
+/** A solid: a shape with a kind and a mesh, that holes cut and can be (a closed shape or a ramp). */
+export type Solid = ClosedShape | Ramp;
 /** Anything drawn: every node that isn't a group. */
-export type Shape = ClosedShape | Line;
+export type Shape = ClosedShape | Line | Ramp;
 export type ShapeType = Shape["type"];
 
 /**
@@ -148,11 +177,14 @@ export type SceneNode = Shape | Group;
 /**
  * The shape fields an edit can change. `wall` is for rooms (undefined = the default), `taper` and `bevel` for
  * volumes (undefined = 0), `pitch` and `roll` for box and cylinder volumes (undefined = 0), `sides` for cylinders
- * (undefined = smooth), `points` for free-forms and lines, `thickness`, `dashed` and `arrow` for lines.
+ * (undefined = smooth), `points` for free-forms, lines and ramps, `thickness`, `dashed` and `arrow` for lines,
+ * `step` and `base` for ramps (whose `width` is their own).
  */
 export type ShapePatch = Partial<Pick<Footprinted, "name" | "kind" | "x" | "z" | "y" | "width" | "depth" | "height" | "rotation" | "color" | "wall" | "taper" | "bevel" | "pitch" | "roll">> & {
   sides?: number;
-  points?: FootPoint[] | LinePoint[];
+  points?: FootPoint[] | LinePoint[] | RampPoint[];
+  step?: number;
+  base?: RampBase;
   thickness?: number;
   dashed?: boolean;
   arrow?: LineArrow;
@@ -235,6 +267,18 @@ export const MAX_THICKNESS = 12;
 export const DEFAULT_THICKNESS = 3;
 export const DEFAULT_LINE_COLOR: ShapeColor = "black";
 export const LINE_ARROWS = ["none", "end", "both"] as const;
+/** A ramp is this wide unless it says otherwise, and at least MIN_RAMP_WIDTH. */
+export const DEFAULT_RAMP_WIDTH = 1.5;
+export const MIN_RAMP_WIDTH = 0.2;
+/** The smallest step (riser) a stepped ramp can have. */
+export const MIN_STEP = 0.05;
+/**
+ * A floating ramp's slab under its surface, and how far a solid ramp's flat bottom sits below its lowest point (so
+ * a landing on the floor still has some thickness).
+ */
+export const RAMP_SLAB = 0.2;
+export const RAMP_SINK = 0.02;
+export const RAMP_BASES = ["solid", "floating"] as const;
 
 export const ShapeKindSchema = z.enum(["room", "volume", "hole"]);
 export const ShapeColorSchema = z.enum(SHAPE_COLORS);
@@ -329,6 +373,21 @@ const LineSchema = z.object({
   createdBy: ActorSchema,
 });
 
+const RampPointSchema = z.object({ x: z.number(), y: z.number(), z: z.number(), in: OffsetSchema.optional(), out: OffsetSchema.optional() });
+const RampSchema = z.object({
+  id: z.string(),
+  type: z.literal("ramp"),
+  name: z.string().optional(),
+  parent: z.string().optional(),
+  kind: z.enum(["volume", "hole"]),
+  points: z.array(RampPointSchema).min(MIN_LINE_POINTS).max(MAX_POINTS),
+  width: z.number().min(MIN_RAMP_WIDTH),
+  step: z.number().min(MIN_STEP).optional(),
+  base: z.enum(RAMP_BASES),
+  color: ShapeColorSchema,
+  createdBy: ActorSchema,
+});
+
 const GroupSchema = z.object({
   id: z.string(),
   type: z.literal("group"),
@@ -338,7 +397,7 @@ const GroupSchema = z.object({
 });
 
 /** A stored node, as in `scene.json` (and on the clipboard). */
-export const NodeSchema: z.ZodType<SceneNode> = z.discriminatedUnion("type", [BoxSchema, CylinderSchema, FreeformSchema, LineSchema, GroupSchema]);
+export const NodeSchema: z.ZodType<SceneNode> = z.discriminatedUnion("type", [BoxSchema, CylinderSchema, FreeformSchema, LineSchema, RampSchema, GroupSchema]);
 
 export const BoxInputSchema = z.strictObject({
   kind: field.kind,
@@ -419,6 +478,51 @@ export const LineInputSchema = z.strictObject({
   parent: BoxInputSchema.shape.parent,
 });
 
+const RampPointInputSchema = z.strictObject({
+  x: z.number().describe("World x, meters"),
+  y: z.number().describe("The surface's height here, meters (a floor's y, a platform's top)"),
+  z: z.number().describe("World z, meters"),
+  in: OffsetInputSchema.optional().describe("Flat bezier handle toward the previous point, as an offset { x, z } on the ground"),
+  out: OffsetInputSchema.optional().describe("Flat bezier handle toward the next point, as an offset { x, z } on the ground"),
+});
+const rampField = {
+  width: z.number().min(MIN_RAMP_WIDTH).describe(`Meters, centered on the path, >= ${MIN_RAMP_WIDTH}. Defaults to ${DEFAULT_RAMP_WIDTH}`),
+  step: z.number().min(MIN_STEP).describe(`The riser height in meters (>= ${MIN_STEP}): stairs. Omit for a smooth ramp`),
+  base: z.enum(RAMP_BASES).describe("solid (the default) fills down to its lowest point; floating is a slab under the surface"),
+};
+
+/**
+ * A ramp for `draw_shapes`: its path as points, or as a `spiral` the server turns into points; the rest optional.
+ */
+export const RampInputSchema = z.strictObject({
+  type: z.literal("ramp").describe("A path with a width: a ramp, stairs (with step), a landing, a walkway, a spiral stair"),
+  kind: z.enum(["volume", "hole"]).optional().describe("volume (the default) or hole (a sloped tunnel through what it cuts)"),
+  points: z
+    .array(RampPointInputSchema)
+    .min(MIN_LINE_POINTS)
+    .max(MAX_POINTS)
+    .optional()
+    .describe("The centerline, 2 or more points in absolute world x/z with the surface's y at each (give points or spiral)"),
+  spiral: z
+    .strictObject({
+      x: z.number().describe("The spiral's center x"),
+      z: z.number().describe("The spiral's center z"),
+      radius: z.number().positive().describe("The centerline's radius, meters"),
+      turn: z.number().describe("Degrees around, counterclockwise seen from above (negative: clockwise)"),
+      y: z.number().describe("The start's height"),
+      rise: z.number().describe("How much it climbs over the whole turn (negative: descends)"),
+      from: z.number().optional().describe("The start's angle in degrees: 0 = east (+x), 90 = north (-z). Default 0"),
+    })
+    .optional()
+    .describe("A spiral stair or ramp, instead of points: the server turns it into points (one every 90°)"),
+  width: rampField.width.optional(),
+  step: rampField.step.optional(),
+  base: rampField.base.optional(),
+  color: field.color.optional().describe(`Palette key: ${SHAPE_COLORS.join(", ")}. Defaults to ${DEFAULT_COLOR}`),
+  name: field.name.optional(),
+  parent: field.parent.optional().describe("ID of the group to put it in, e.g. group_1. Omit for the top level"),
+});
+
 /**
  * A new shape for `draw_shapes`: its `type` (box, the default, cylinder, freeform or line) and that type's fields.
  * Boxes and cylinders share every field; `sides` is for cylinders only (the store rejects it on a box).
@@ -430,6 +534,7 @@ export const ShapeInputSchema = z.discriminatedUnion("type", [
   }),
   FreeformInputSchema,
   LineInputSchema,
+  RampInputSchema,
 ]);
 export type ShapeInput = z.input<typeof ShapeInputSchema>;
 
@@ -444,7 +549,7 @@ export const NodeUpdateSchema = z.strictObject({
   x: field.x.optional(),
   z: field.z.optional(),
   y: field.y.optional(),
-  width: field.width.optional(),
+  width: field.width.optional().describe("Boxes and cylinders: the local x extent; ramps: the width, meters"),
   depth: field.depth.optional(),
   height: field.height.optional(),
   rotation: field.rotation.optional(),
@@ -471,7 +576,9 @@ export const NodeUpdateSchema = z.strictObject({
     .min(MIN_LINE_POINTS)
     .max(MAX_POINTS)
     .optional()
-    .describe("Free-forms and lines: the whole new outline or path (it replaces the old one), points as in draw_shapes"),
+    .describe("Free-forms, lines and ramps: the whole new outline or path (it replaces the old one), points as in draw_shapes"),
+  step: rampField.step.nullable().optional().describe(`Ramps only: the riser height (>= ${MIN_STEP}), or null for a smooth ramp`),
+  base: rampField.base.optional().describe("Ramps only: solid or floating"),
   thickness: lineField.thickness.optional().describe(`Lines only: ${MIN_THICKNESS}..${MAX_THICKNESS} screen pixels`),
   dashed: lineField.dashed.optional().describe("Lines only: dashed or solid"),
   arrow: lineField.arrow.optional().describe("Lines only: none, end or both"),

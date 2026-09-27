@@ -496,7 +496,7 @@ Adopted as recommended (say if any should change):
   - `draw_shapes`, `update_nodes`, `group_nodes`, `ungroup` and `get_scene` add `warnings` when a hole cuts nothing.
 - **Checks:**
   - typecheck;
-  - 265 tests. The new ones:
+  - 264 tests. The new ones:
     - `holes.test.ts`: the scope (a sibling room is cut; a deeper group, a loose shape in the parent and other holes aren't), the overlap filter, the warnings and the floor rule;
     - `toLocal3` inverting `toWorld3`;
     - "scene store holes";
@@ -508,4 +508,115 @@ Adopted as recommended (say if any should change):
     - grouping them cleared the warnings;
     - a group holding only the window warned that there was nothing to cut, and ungrouping it cleared that;
   - **not checked: the cut itself in a browser.** It needs Orlando's browser check.
+
+### 07.5 — Ramps and the Ramp tool (done; browser check pending with the rest of the phase)
+
+- **Types (`scene.types.ts`):**
+  - `Ramp` is `{ kind: "volume" | "hole", points: RampPoint[], width, step?, base, color }`. A `RampPoint` is `{ x, y, z, in?, out? }` with flat `{ x, z }` handles.
+  - `Solid = ClosedShape | Ramp` is what has a kind and a mesh. `Shape` now includes ramps.
+  - Constants: `DEFAULT_RAMP_WIDTH` 1.5, `MIN_RAMP_WIDTH` 0.2, `MIN_STEP` 0.05, `RAMP_SLAB` 0.2 (a floating ramp's underside), and `RAMP_SINK` 0.02 (a solid ramp's flat bottom sits that far below its lowest point, so a landing on the floor still has thickness and the mesh never has a zero-height column).
+  - `RampInputSchema` takes `points` or a `spiral` (`{ x, z, radius, turn, y, rise, from? }`). `update_nodes` gains `step` (null = smooth) and `base`, and a ramp's `width` and `points` go through the same fields.
+  - `nextId` gains `ramp`.
+- **`geometry.ts`:**
+  - `isClosed` now leaves ramps out, and `isSolid` takes closed shapes and ramps.
+  - `rampStations` samples the centerline (curved edges with `CURVE_SEGMENTS`). Each station has its distance along the ground, the smooth height there, and its left and right edges, mitered at corners (up to 4×). `rampPointDistances` gives each point's distance along the path.
+  - `rampEdges` and `rampRange` give the bounds (through `groundPoints` and `verticalRange`), and `rampBottom` gives the underside.
+  - `rampProblem` refuses fewer than 2 points, neighbors in the same place on the ground, a turn too tight for the width (an edge segment reverses, named by the nearest point), and more than `MAX_STEPS` (1000).
+  - `spiralPoints` puts a point every 90° at most, with circle handles (4/3·tan(θ/4)·r) and an even rise.
+  - `moveShape`, `rotateShape`, `mirrorShape` and `anchorOf` treat a ramp's points like a line's, and `toWorld3` / `toLocal3` are the identity for a ramp.
+- **`mesh.ts`: `rampMesh`** builds one watertight solid:
+  - The profile, seen from the side, is the top (the smooth slope, or treads) over the underside (flat just below the lowest point, or the slope lowered by the slab), along the distance s.
+  - Steps: an edge rising `rise` gets n = max(1, round(|rise| / step)) steps with equal treads. From its lower end the first riser is at the start and the top tread is flush with the higher end, so walking the path the other way gives the same solid (tested).
+  - The profile is cut into columns at every station, riser and point. Each side is triangulated strip by strip by zipping the two columns' vertices (so no triangulation library, and no T-junctions at the risers). The profile's outline is swept across the width, and the triangles are flipped if the signed volume came out negative.
+  - `shapeMesh` and `hitMesh` take any solid, so picking, the marquee and holes work on ramps unchanged. A ramp can be cut by holes, and can be a hole itself.
+- **The store:**
+  - `drawShapes` draws ramps (defaults: volume, 1.5 m, smooth, solid, `almost-white`), turns a `spiral` into points, and requires exactly one of points and spiral.
+  - `checkRamp` rounds the points and flattens their handles, then validates.
+  - `updateNodes` changes a ramp's points (each needs a y), width, step and base. It refuses x, z, y, depth, height, rotation, wall, taper, bevel, pitch, roll and kind room on a ramp, and step and base on anything else. The undo label is `Change steps of ramp_1`. Paste checks ramps.
+- **Editor:**
+  - **The Ramp tool (`R`)** shares the Line tool's point placing (`isPointTool`, `Pen.owner` `ramp`, the surface under the cursor), with a live draft of the ramp once it's valid. Finishing refuses an invalid ramp with the reason, as the Pen does.
+  - **The contextual bar's `RampControls`:** volume or hole, width (0.25 m steps), smooth or a step height (0.05 m steps, from 0.2), solid or floating, and color. With ramps selected they act on every one, plus **Reverse**.
+  - **Point editing** works on ramps like on lines (double-click, the y arrow), with a live `rampProblem` check.
+  - **Info:** the selection info reads `spiral stair (ramp_1) · 5 points · 13.8 m long · 1.2 m wide · rises 3 m · 15 steps of 0.2 · solid`. The counts add `· N ramps`. The outliner and the tool bar use a stairs icon made with lucide's `createLucideIcon` (`icons.ts`), since lucide has none.
+  - Filters that treated "not a line" as closed now use `isClosed` (the counts, the kind toggle, wall, taper, bevel and tilt).
+- **MCP:**
+  - A ramp paragraph: points with the surface's y, landings, flat handles, `step`, `base`, `spiral` (don't compute a helix by hand), no x/z/y/height/rotation. Plus: cut a floor hole for a stair to a floor above, and keep it thin, since a hole cuts the stair in its group too (found by the scripted check below).
+  - The group and view paragraphs were shortened. The instructions are 9.4 kB.
+  - `draw_shapes` totals add `ramps`, and count rooms, volumes and holes over closed shapes only (the scripted check caught a ramp counted as a volume).
+- **Checks:**
+  - typecheck;
+  - 273 tests. The new ones:
+    - ramp meshes: a wedge at its exact volume, 12 stairs with 12 tread heights and the top flush, the same stair walked down, a floating stair with a landing around a corner, a spiral stair, all watertight;
+    - picking the stairs' treads;
+    - "scene store ramps": the defaults, a spiral's points going counterclockwise from east through north, the refusals, and step, width, base, move, mirror and copy;
+  - the editor bundles;
+  - **the acceptance scenario (§11.7), as the agent on `:5171`:**
+    - one `draw_shapes` drew a round tower's two floors, a spiral stair (`spiral`, 330°, 15 steps of 0.2), a stairwell hole and a lying round window on the north wall, and one `group_nodes` put them in a group. The warnings cleared once they were grouped;
+    - a tight spiral was refused;
+    - then, in node, the saved scene was cut with manifold by the editor's own rules (`cutters`, `cutsFloor`, `holeInFrameOf`'s transform):
+      - the window made a through-hole in the ground floor's wall (genus 1 → 2);
+      - the stairwell opened the upper floor (its floor lost 4.5 m², π × 1.2²) and left the ground floor's floor alone;
+      - the thin stairwell took only 0.05 m³ off the stair.
+
+### Phase 07 built (2026-09-27); waiting for Orlando's browser acceptance
+
+Orlando was away for 07.2–07.5 and asked for the phase to be finished on its own. Each increment was committed after its typecheck, tests, bundle and scripted checks, but **no browser check has run since 07.1**. Nothing in 07.2–07.5 has been seen on screen.
+
+**What to check in the browser (§11, with what the scripts couldn't cover):**
+1. **Walls:** passed in 07.1.
+2. **Taper and bevel:**
+   - the sliders on a volume (taper 1 is a pyramid, a tall smooth cylinder at bevel 1 has a dome, 0.6 / 0.5 is a hill);
+   - the lighting on the slopes and the dome (creased normals);
+   - they're hidden for rooms, and a volume made a room drops them.
+3. **Tilt:**
+   - the red and blue rings on a single box or cylinder volume: drag each (15° snaps, the label), and check the roll ring follows the pitch;
+   - the yaw ring still turns a tilted shape, Reset tilt levels it, and the scale handles hide while it's tilted;
+   - the ring drag when a ring is seen edge-on (the fallback path);
+   - mirroring a tilted shape twice.
+4. **Holes, the part only a browser can show:**
+   - manifold loads (the WASM in dev);
+   - a door through a room's wall, and through two back-to-back walls of sibling room groups;
+   - a round window, an arched doorway, a floor hole, and a door on the floor that doesn't notch it;
+   - the ghosts and their dashed edges, Show holes, the yellow warning diamond and the outliner warning;
+   - dragging a hole cuts live, and moving it out of its group un-cuts it;
+   - the error panel stays empty.
+5. **Ramps:**
+   - the Ramp tool: floor, then platform top, is two clicks, and step 0.25 makes stairs;
+   - a curve (click-drag), a landing, floating, a hole ramp through a volume, Reverse, point editing with the y arrow, and a tight turn refused with its reason;
+   - the draft while drawing;
+   - the look of risers and curved sides.
+6. **Everything else on every shape:** picking, the marquee, move, Alt-drag copy, `Alt+J`, copy and paste, mirror, groups, delete and undo, with ramps, holes and tilted shapes included.
+7. **The agent's tower:** scripted above. The browser should show the stair winding up through the stairwell and light through the window.
+8. **`/mcp`:** 9 tools, version 0.0.8, checked by script. **Restart the server and reconnect with `/mcp`.**
+
+**Decisions made while Orlando was away (say if any should change):**
+- **The boolean library is `manifold-3d`** (07.4, see the spike).
+- **Ramp steps:** round(rise / step) equal steps per edge, the top tread flush with the higher end, the same whichever way the path runs.
+- **A solid ramp's bottom sits 0.02 m below its lowest point** (`RAMP_SINK`), and a floating ramp's slab is 0.2 m under its slope.
+- **A ramp's handles are flat.** Height follows the distance along the ground, never the handles.
+- **Holes cut ramps in their scope**, stairs included. The agent is told to keep a stairwell hole thin.
+- **Hidden holes can't be clicked** (unless selected), and holes aren't elevation snap targets.
+- **The tilt rings' sign convention:** + pitch leans the top toward local +z, + roll toward local -x (both right-handed, like three's `YXZ` Euler).
+- **No stairs icon exists in lucide,** so `icons.ts` draws one.
+
+### Notes for the next session (written 2026-09-27, at the end of phase 07)
+
+**Where things stand:**
+- Phase 07 is built on branch `claude-auto-geometry-tools` (07.1 was committed on it too), one commit per increment. The tree is clean, with 273 tests.
+- **Before anything else, Orlando runs the browser acceptance above.** Fix what he finds, then merge.
+- **Phase 08 is semantics and prefabs.** Its starting notes are in `06-more-shapes`'s notes (the array tool, a semantic scene summary for the agent, entities) and `thinking-01-entities` (flags, notes, prefabs).
+  - Orlando's model: a room is a group holding its walls (a room shape) and its doors and windows (holes). So 08's semantics can read meaning from groups, names and kinds rather than new geometry.
+
+**Loose ends (none block anything):**
+- **The MCP instructions are 9.4 kB,** past the 9 kB aim. 08 will add more, so consider moving per-type detail into the tool descriptions, or a `describe_conventions` tool.
+- **The Viewport computes `cutters` over every shape on every render.** That's fine at today's scene sizes, but memoize it if big scenes get slow.
+- **Picking and the Line / Ramp tools' surface snapping ignore cuts**, as decided: a point clicked in a doorway lands on the hole.
+- **A free-form's taper and bevel scale toward the centroid,** so concave shapes (a crescent) lean oddly at high values.
+- **A tilted shape's scale handles are hidden.** Resizing it means leveling it first, or the agent.
+
+**Things that bit me:**
+- **`cat > file` with no heredoc waits on stdin forever** in the Bash tool. It hung one command.
+- **macOS has no `timeout`.** Use `perl -e 'alarm 60; exec @ARGV' <command>`.
+- **manifold in node:** run scratch scripts as `.mts` (top-level await), import `manifold-3d/manifold.js` by path, and call `setup()` after `Module()`. In the browser, `csg.ts` passes `locateFile` the `?url` of `manifold-3d/manifold.wasm`, which needs `vite-env.d.ts` for the `?url` type.
+- **An `isTilted`-style type guard that narrows to `Box | Cylinder`** makes TypeScript treat the untilted branch as `never` in `footprintBounds`. It returns a plain boolean now.
 

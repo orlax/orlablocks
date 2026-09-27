@@ -3,7 +3,7 @@ import Module, { type ManifoldToplevel } from "manifold-3d";
 import wasmUrl from "manifold-3d/manifold.wasm?url";
 import { toLocal3 } from "../shared/geometry";
 import { hitMesh, type Mesh } from "../shared/mesh";
-import type { ClosedShape } from "../shared/scene.types";
+import type { Solid } from "../shared/scene.types";
 import { reportError } from "./errors";
 
 /**
@@ -42,7 +42,7 @@ export function useManifold(): boolean {
 }
 
 /** A hole's solid in `target`'s own frame (the frame `shapeMesh` builds the target in). */
-export function holeInFrameOf(target: ClosedShape, hole: ClosedShape): Mesh | null {
+export function holeInFrameOf(target: Solid, hole: Solid): Mesh | null {
   const m = hitMesh(hole);
   if (!m) return null;
   const positions: number[] = [];

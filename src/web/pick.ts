@@ -1,5 +1,5 @@
 import type { Line, Shape } from "../shared/scene.types";
-import { isClosed, polyline } from "../shared/geometry";
+import { isSolid, polyline } from "../shared/geometry";
 import { hitMesh, type BoundedMesh } from "../shared/mesh";
 import { worldToScreen, type CameraState, type Size, type Vec3 } from "./camera";
 
@@ -17,7 +17,7 @@ export function pickShape(ray: Ray, boxes: Shape[]): string | null {
 export function pickHit(ray: Ray, boxes: Shape[]): { id: string; point: Vec3 } | null {
   let best: { id: string; t: number } | null = null;
   for (const box of boxes) {
-    if (!isClosed(box)) continue;
+    if (!isSolid(box)) continue;
     const mesh = hitMesh(box);
     const t = mesh && rayMesh(ray, mesh);
     if (t !== null && (!best || t < best.t)) best = { id: box.id, t };

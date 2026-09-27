@@ -4,16 +4,16 @@ import { toCreasedNormals } from "three/examples/jsm/utils/BufferGeometryUtils.j
 import { isFootprinted, localFootprint, shapeFrame, wallOf } from "../shared/geometry";
 import { cutsFloor } from "../shared/holes";
 import { shapeMesh, type Mesh } from "../shared/mesh";
-import { PALETTE, type ClosedShape, type ShapeColor } from "../shared/scene.types";
+import { PALETTE, type ShapeColor, type Solid } from "../shared/scene.types";
 import { holeInFrameOf, subtract, useManifold } from "./csg";
 
 type Props = {
-  shape: ClosedShape;
+  shape: Solid;
   /** The live preview while drawing: translucent blue, so it reads as not-yet-placed. */
   draft?: boolean;
   highlight?: "hover" | "selected";
   /** The holes that cut this shape (see `cutters`): its mesh is drawn minus them. */
-  cuts?: ClosedShape[];
+  cuts?: Solid[];
 };
 
 /** Room floors are a slightly darker shade of the room's color. */
@@ -150,7 +150,7 @@ const CREASE = (30 * Math.PI) / 180;
  * with other shapes), its half size for a rotated one (tiles start at a corner). A free-form's frame is the
  * world's, so its tiles always line up with the grid.
  */
-function uvOffset(shape: ClosedShape): [number, number] {
+function uvOffset(shape: Solid): [number, number] {
   if (!isFootprinted(shape)) return [0, 0];
   return shape.rotation === 0 ? [shape.x, shape.z] : [shape.width / 2, shape.depth / 2];
 }
@@ -162,22 +162,28 @@ function uvOffset(shape: ClosedShape): [number, number] {
  * and have faint outlined edges. A hole is a translucent ghost with dashed edges.
  */
 export function ShapeMesh({ shape, draft = false, highlight, cuts }: Props) {
-  const { kind, y, height, color } = shape;
-  const frame = shapeFrame(shape);
+  const { kind, color } = shape;
+  // A ramp's mesh is in world coordinates (its frame is the world's, at height 0).
+  const { y, height } = shape.type === "ramp" ? { y: 0, height: 0 } : shape;
+  const frame = shape.type === "ramp" ? { x: 0, z: 0, rotation: 0 } : shapeFrame(shape);
   const [ox, oz] = uvOffset(shape);
   const ready = useManifold();
   // Geometry is rebuilt only when what it's made from changes (the shape is a new object every render), and cut
   // again when a hole that cuts it changes (its position, the target's tilt and turn included).
-  const key = JSON.stringify([kind, localFootprint(shape), height, ox, y, oz, kind === "room" ? wallOf(shape) : 0, shape.taper, shape.bevel]);
-  const cutKey = cuts && cuts.length > 0 && ready ? JSON.stringify([cuts, frame, shape.pitch, shape.roll]) : "";
+  const key =
+    shape.type === "ramp"
+      ? JSON.stringify([kind, shape.points, shape.width, shape.step, shape.base])
+      : JSON.stringify([kind, localFootprint(shape), height, ox, y, oz, kind === "room" ? wallOf(shape) : 0, shape.taper, shape.bevel]);
+  const tilt = shape.type === "ramp" ? [0, 0] : [shape.pitch ?? 0, shape.roll ?? 0];
+  const cutKey = cuts && cuts.length > 0 && ready ? JSON.stringify([cuts, frame, tilt]) : "";
 
   // An outline with no area (a stored shape is never one, but a preview can be) has no meshes: nothing to draw.
   // Rooms too narrow to have an inside come out as solid blocks (walls with no inner ring).
   const parts = useMemo(() => {
     const p = shapeMesh(shape);
     if (!cutKey || !cuts) return p;
-    const holes = cuts.map((h) => ({ hole: h, mesh: holeInFrameOf(shape, h) })).filter((h): h is { hole: ClosedShape; mesh: Mesh } => h.mesh !== null);
-    const floorHoles = holes.filter((h) => cutsFloor(h.hole, shape)).map((h) => h.mesh);
+    const holes = cuts.map((h) => ({ hole: h, mesh: holeInFrameOf(shape, h) })).filter((h): h is { hole: Solid; mesh: Mesh } => h.mesh !== null);
+    const floorHoles = shape.type === "ramp" ? [] : holes.filter((h) => cutsFloor(h.hole, shape)).map((h) => h.mesh);
     return {
       body: p.body && subtract(p.body, holes.map((h) => h.mesh)),
       floor: p.floor && (floorHoles.length > 0 ? subtract(p.floor, floorHoles) : p.floor),
@@ -216,7 +222,7 @@ export function ShapeMesh({ shape, draft = false, highlight, cuts }: Props) {
 
   // Turned around the vertical, then (inside) tilted around the shape's center: roll, then pitch (see `toWorld3`).
   const deg = Math.PI / 180;
-  const turn = new THREE.Euler((shape.pitch ?? 0) * deg, frame.rotation * deg, (shape.roll ?? 0) * deg, "YXZ");
+  const turn = new THREE.Euler(tilt[0] * deg, frame.rotation * deg, tilt[1] * deg, "YXZ");
   return (
     <group position={[frame.x, y + height / 2, frame.z]} rotation={turn}>
       <group position={[0, -height / 2, 0]}>

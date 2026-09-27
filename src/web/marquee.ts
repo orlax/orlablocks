@@ -1,6 +1,6 @@
-import type { ClosedShape, Shape } from "../shared/scene.types";
+import type { Shape, Solid } from "../shared/scene.types";
 import { worldToScreen, type CameraState, type Size } from "./camera";
-import { isClosed, polyline } from "../shared/geometry";
+import { isSolid, polyline } from "../shared/geometry";
 import { hitMesh } from "../shared/mesh";
 
 /**
@@ -25,7 +25,7 @@ export const rectFrom = (a: ScreenPoint, b: ScreenPoint): ScreenRect => ({
  * it. A concave outline's inside isn't covered by any triangle, so a rect in a crescent's hollow misses it. False if
  * any vertex is behind the camera.
  */
-function shapeTouches(cam: CameraState, size: Size, shape: ClosedShape, rect: ScreenRect): boolean {
+function shapeTouches(cam: CameraState, size: Size, shape: Solid, rect: ScreenRect): boolean {
   const mesh = hitMesh(shape);
   if (!mesh) return false;
   const screen: ScreenPoint[] = [];
@@ -108,7 +108,7 @@ function pathOverlapsRect(path: ScreenPoint[], rect: ScreenRect): boolean {
 export function marqueeHits(cam: CameraState, size: Size, boxes: Shape[], rect: ScreenRect): string[] {
   return boxes
     .filter((b) => {
-      if (isClosed(b)) return shapeTouches(cam, size, b, rect);
+      if (isSolid(b)) return shapeTouches(cam, size, b, rect);
       const path = polyline(b).map((p) => worldToScreen(cam, size, p));
       return path.every((p) => p !== null) && pathOverlapsRect(path, rect);
     })

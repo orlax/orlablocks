@@ -5,18 +5,21 @@ import {
   DEFAULT_LINE_COLOR,
   DEFAULT_THICKNESS,
   DEFAULT_VIEW,
+  DEFAULT_RAMP_WIDTH,
   DEFAULT_WALL,
   type Box,
   type ClosedShape,
   type Cylinder,
   type Line,
+  type LinePoint,
+  type Ramp,
   type Shape,
   type ShapeColor,
   type ShapeKind,
   type SceneNode,
   type View,
 } from "../shared/scene.types";
-import { footprintBounds, isTilted, polyline, reversePoints, round2, wallOf } from "../shared/geometry";
+import { footprintBounds, isClosed, isTilted, polyline, rampStations, reversePoints, round2, wallOf } from "../shared/geometry";
 import { shapesUnder, childrenOf, isShape, isGroup } from "../shared/tree";
 import type { CameraState, GroundPoint } from "./camera";
 import { clipboardText, readClipboard } from "./clipboard";
@@ -27,7 +30,7 @@ import { Outliner } from "./Outliner";
 import { ProjectPicker } from "./ProjectPicker";
 import { ContextualBar, EDIT_POINTS_HINT, HINTS, TOOLS, ToolBar } from "./ToolBar";
 import { useScene } from "./useScene";
-import { Viewport, type KindFields, type LineStyle, type Tool } from "./Viewport";
+import { Viewport, type KindFields, type LineStyle, type RampStyle, type Tool } from "./Viewport";
 
 /** Fixed-width number (e.g. "  12.50", " -3.00") so the info-label never jitters. */
 const coord = (n?: number) => (n === undefined ? "–".padStart(7) : n.toFixed(2).padStart(7));
@@ -64,6 +67,14 @@ const describe = (s: Shape) => {
     const length = path.slice(1).reduce((sum, p, i) => sum + Math.hypot(p.x - path[i].x, p.y - path[i].y, p.z - path[i].z), 0);
     const arrow = s.arrow === "end" ? " · arrow at the end" : s.arrow === "both" ? " · arrows at both ends" : "";
     return `${title(s)} · ${s.points.length} points · ${round2(length)} m long · ${s.thickness} px${s.dashed ? " · dashed" : ""}${arrow}`;
+  }
+  if (s.type === "ramp") {
+    const stations = rampStations(s);
+    const ys = s.points.map((p) => p.y);
+    const rise = round2(Math.max(...ys) - Math.min(...ys));
+    const steps = s.step === undefined ? 0 : s.points.slice(1).reduce((n, p, i) => n + (p.y === s.points[i].y ? 0 : Math.max(1, Math.round(Math.abs(p.y - s.points[i].y) / s.step!))), 0);
+    const how = s.step === undefined ? "smooth" : `${steps} steps of ${s.step}`;
+    return `${title(s)} · ${s.points.length} points · ${round2(stations.at(-1)!.s)} m long · ${s.width} m wide · rises ${rise} m · ${how} · ${s.base}${s.kind === "hole" ? " · hole" : ""}`;
   }
   const wall =
     s.kind === "room"
@@ -108,6 +119,8 @@ export function App() {
   const pendingSelect = useRef<PendingSelect | null>(null);
   // The last Alt-drag copy's offset (world axes), which Alt+J repeats. Forgotten when the scene changes.
   const lastCopy = useRef<{ dx: number; dy: number; dz: number } | null>(null);
+  // The Ramp tool's next ramp.
+  const [nextRamp, setNextRamp] = useState<RampStyle>({ kind: "volume", width: DEFAULT_RAMP_WIDTH, base: "solid", color: DEFAULT_COLOR });
   // Whether holes show as ghosts (off: only what they cut away shows).
   const [showHoles, setShowHoles] = useState(true);
   // A one-off message in the info-label, in place of the tool hint.
@@ -122,9 +135,11 @@ export function App() {
   const boxes = nodes.filter(isShape);
   const selectedNodes = nodes.filter((n) => selection.includes(n.id));
   const selectedShapes = shapesUnder(nodes, selection);
-  const rooms = boxes.filter((b) => b.type !== "line" && b.kind === "room").length;
-  const volumes = boxes.filter((b) => b.type !== "line" && b.kind === "volume").length;
-  const holes = boxes.filter((b) => b.type !== "line" && b.kind === "hole").length;
+  // Rooms, volumes and holes of every closed shape (a ramp counts as a ramp, whatever its kind).
+  const rooms = boxes.filter((b) => isClosed(b) && b.kind === "room").length;
+  const volumes = boxes.filter((b) => isClosed(b) && b.kind === "volume").length;
+  const holes = boxes.filter((b) => isClosed(b) && b.kind === "hole").length;
+  const ramps = boxes.filter((b) => b.type === "ramp").length;
   const lines = boxes.filter((b) => b.type === "line").length;
   const groups = nodes.filter(isGroup).length;
 
@@ -360,14 +375,14 @@ export function App() {
   };
   const editable = singleShape?.type === "freeform" || singleShape?.type === "line" ? singleShape : null;
   // Kind is for closed shapes: hidden when only lines are selected, disabled unless a single closed shape is.
-  const singleClosed = singleShape && singleShape.type !== "line" ? singleShape : null;
+  const singleClosed = singleShape && isClosed(singleShape) ? singleShape : null;
   const selectedLines = selectedShapes.filter((s): s is Line => s.type === "line");
   const onlyLines = selectedShapes.length > 0 && selectedLines.length === selectedShapes.length;
   // The selected lines' style: each value when they all share it.
   const shared = <K extends keyof LineStyle>(k: K) =>
     selectedLines.every((l) => l[k] === selectedLines[0][k]) ? selectedLines[0]?.[k] : undefined;
   // The wall control acts on every room in the selection; it shows their thickness when they share one.
-  const selectedRooms = selectedShapes.filter((s): s is ClosedShape => s.type !== "line" && s.kind === "room");
+  const selectedRooms = selectedShapes.filter((s): s is ClosedShape => isClosed(s) && s.kind === "room");
   const wallControl =
     selectedRooms.length > 0
       ? {
@@ -376,7 +391,7 @@ export function App() {
         }
       : undefined;
   // The taper and bevel sliders act on every volume and hole in the selection, showing each value when they all share it.
-  const selectedVolumes = selectedShapes.filter((s): s is ClosedShape => s.type !== "line" && s.kind !== "room");
+  const selectedVolumes = selectedShapes.filter((s): s is ClosedShape => isClosed(s) && s.kind !== "room");
   const sharedOf = (f: "taper" | "bevel") =>
     selectedVolumes.every((v) => (v[f] ?? 0) === (selectedVolumes[0][f] ?? 0)) ? (selectedVolumes[0]?.[f] ?? 0) : undefined;
   const profileControl =
@@ -414,6 +429,23 @@ export function App() {
             setNext(Object.fromEntries(Object.entries(patch).map(([k, v]) => [k, v === 0 ? undefined : v]))),
         }
       : undefined;
+  // The ramp controls act on every selected ramp, showing each value when they all share it.
+  const selectedRamps = selectedShapes.filter((s): s is Ramp => s.type === "ramp");
+  const sharedRamp = <K extends keyof RampStyle>(k: K) =>
+    selectedRamps.every((r) => r[k] === selectedRamps[0][k]) ? selectedRamps[0]?.[k] : undefined;
+  const rampControls =
+    selectedRamps.length > 0
+      ? {
+          style: { kind: sharedRamp("kind"), width: sharedRamp("width"), step: sharedRamp("step"), base: sharedRamp("base") },
+          onChange: (patch: Partial<RampStyle>) =>
+            send({
+              type: "update_nodes",
+              changes: selectedRamps.map((r) => ({ id: r.id, ...patch, ...("step" in patch && patch.step === undefined ? { step: null } : {}) })),
+            }),
+          onReverse: () =>
+            send({ type: "update_nodes", changes: selectedRamps.map((r) => ({ id: r.id, points: reversePoints(r.points as LinePoint[]) })) }),
+        }
+      : undefined;
   const lineControls =
     selectedLines.length > 0
       ? {
@@ -438,9 +470,15 @@ export function App() {
         nextSides={nextSides}
         nextFields={nextFields}
         nextLine={nextLine}
+        nextRamp={nextRamp}
         showHoles={showHoles}
         onSelect={setSelection}
-        onDrawShape={(shape) => send({ type: "add_shapes", shapes: [{ ...shape, color: shape.type === "line" ? nextLine.color : nextColor }] })}
+        onDrawShape={(shape) =>
+          send({
+            type: "add_shapes",
+            shapes: [{ ...shape, color: shape.type === "line" ? nextLine.color : shape.type === "ramp" ? nextRamp.color : nextColor }],
+          })
+        }
         onUpdate={(changes) => send({ type: "update_nodes", changes })}
         onDuplicate={({ ids, ...offset }) => {
           lastCopy.current = offset;
@@ -498,7 +536,7 @@ export function App() {
         <span className="sep" />
         <span className="counts">
           {scene
-            ? `${rooms} rooms · ${volumes} volumes${holes > 0 ? ` · ${holes} hole${holes === 1 ? "" : "s"}` : ""}${lines > 0 ? ` · ${lines} line${lines === 1 ? "" : "s"}` : ""} · ${groups} groups`
+            ? `${rooms} rooms · ${volumes} volumes${holes > 0 ? ` · ${holes} hole${holes === 1 ? "" : "s"}` : ""}${ramps > 0 ? ` · ${ramps} ramp${ramps === 1 ? "" : "s"}` : ""}${lines > 0 ? ` · ${lines} line${lines === 1 ? "" : "s"}` : ""} · ${groups} groups`
             : "—"}
         </span>
         <span className="sep" />
@@ -536,6 +574,16 @@ export function App() {
             next line
           </ContextualBar>
         )}
+        {tool === "ramp" && (
+          <ContextualBar
+            kind={null}
+            color={nextRamp.color}
+            onColor={(color) => setNextRamp({ ...nextRamp, color })}
+            ramp={{ style: nextRamp, onChange: (patch) => setNextRamp({ ...nextRamp, ...patch }) }}
+          >
+            next ramp
+          </ContextualBar>
+        )}
         {tool === "cylinder" && (
           <ContextualBar
             kind={nextKind}
@@ -553,7 +601,9 @@ export function App() {
           <ContextualBar
             kind={singleClosed?.kind ?? null}
             kindDisabled={!singleClosed}
-            onKind={onlyLines ? undefined : (kind) => singleClosed && send({ type: "update_nodes", changes: [{ id: singleClosed.id, kind }] })}
+            onKind={
+              !selectedShapes.some(isClosed) ? undefined : (kind) => singleClosed && send({ type: "update_nodes", changes: [{ id: singleClosed.id, kind }] })
+            }
             color={sharedColor}
             onColor={(color) => send({ type: "update_nodes", changes: selectedShapes.map((b) => ({ id: b.id, color })) })}
             onMirror={(axis) => send({ type: "mirror_nodes", ids: selection, axis })}
@@ -567,6 +617,7 @@ export function App() {
             tilt={tiltControl}
             onConvert={convertible.length > 0 ? convert : undefined}
             line={lineControls}
+            ramp={rampControls}
             editPoints={editable ? { active: editing === editable.id, onToggle: () => setEditing(editing ? null : editable.id) } : undefined}
           >
             {editing && editable

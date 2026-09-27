@@ -5,6 +5,7 @@ import {
   footprintBounds,
   fromShapeLocal,
   handleFrame,
+  isClosed,
   isFootprinted,
   moveShape,
   normalizeDeg,
@@ -395,7 +396,7 @@ export function dragUpdate(
 
   if (part === "height") {
     const box = origin[0];
-    if (box.type === "line") return { patches, label: "" };
+    if (!isClosed(box)) return { patches, label: "" };
     const s = paramOnLine(cam, size, sx, sy, anchor, AXES.y);
     const raw = box.height + s - (drag.grab as number);
     const height = round2(Math.max(MIN_HEIGHT, mods.snap ? snapTo(raw, HEIGHT_SNAP) : raw));
