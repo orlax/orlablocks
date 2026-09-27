@@ -329,3 +329,21 @@ Adopted as recommended (say if any should change):
   - 134 tests (the new ones: replay, labels across a restart, the undefined-patch round trip, catching up a missed commit and a missed undo, the log behind, a broken line, a scene without a log);
   - a scripted run on `:5171` with a scratch `DATA_DIR`. Draw, rename, move, draw, undo, then restart. Undo and redo carried over with their labels, and undoing the rename after the restart removed the name.
 
+### 04.3 — Project picker (done)
+
+- **Server:** `update_project` (name, description), `create_scene` (opens it), `rename_scene`, `duplicate_scene` (copies the folder with its history, names it "\<name> copy", opens the copy) and `open_scene`, all over WS in `workspace.ts`.
+  - Renaming the open scene updates it in memory and writes it. Renaming another scene rewrites only its `name`. Neither is a history step.
+  - Every file operation refuses a file that doesn't load, and writes nothing. A scene that fails to open leaves the current one open.
+  - A rename or description change of the open project or scene re-sends `opened`, so the project bar and title follow it.
+- **Editor:**
+  - the project bar is a button in the info-label;
+  - the picker (`ProjectPicker.tsx`) has projects on the left and the selected project's description (saved on blur) and scenes on the right;
+  - `Esc`, the close button or a backdrop click closes it, except while nothing is open.
+- **Change from §5:** a scene is renamed with a pencil button on its row, not a double-click. A click already opens the scene and closes the picker, so a double-click could never reach rename. Projects rename on double-click as planned (a click only selects them). Duplicate is the other row button.
+- **Switching scenes** (`opened` with another scene ID) closes the picker and drops the editor's selection, entered group, outliner hover and outliner state (the outliner is keyed by scene). Other tabs switch too. Camera restore is 04.4.
+- Shortcuts are off while the picker is open.
+- **Checks:**
+  - typecheck;
+  - 139 tests (new: create and switch scenes with separate history, renaming the open scene and another one, renaming a project and editing its description, duplicating with history, a failed open that keeps the current scene);
+  - a scripted run on `:5171` with two WS clients: create scene, switch, duplicate, rename, describe, and an unknown scene's error. The second client followed every switch, and Vite compiled the new UI files.
+

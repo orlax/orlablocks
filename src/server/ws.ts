@@ -50,6 +50,11 @@ export function attachWebSocket(httpServer: Server, workspace: Workspace) {
         if (msg.type === "set_selection") return store.setSelection(msg.ids);
         if (msg.type === "set_view") return store.setView(msg.view);
         if (msg.type === "create_project") return void workspace.createProject(withoutType(msg));
+        if (msg.type === "update_project") return workspace.updateProject(withoutType(msg));
+        if (msg.type === "create_scene") return void workspace.createScene(withoutType(msg));
+        if (msg.type === "rename_scene") return workspace.renameScene(withoutType(msg));
+        if (msg.type === "duplicate_scene") return void workspace.duplicateScene(withoutType(msg));
+        if (msg.type === "open_scene") return workspace.openScene(withoutType(msg));
         const scene = workspace.requireScene();
         if (msg.type === "add_boxes") scene.drawBoxes(msg.boxes, "human");
         else if (msg.type === "update_nodes") scene.updateNodes(msg.changes, "human");

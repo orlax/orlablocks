@@ -134,7 +134,7 @@ describe("workspace", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const second = start(root);
     expect(second.workspace.getOpen()).toBeNull();
-    expect(() => second.workspace.openScene("castle", "entrance")).toThrow(/didn't load/);
+    expect(() => second.workspace.openScene({ project: "castle", scene: "entrance" })).toThrow(/didn't load/);
     expect(fs.readFileSync(file, "utf8")).toBe('{"name": "Entrance", "nodes": "broken"}');
     warn.mockRestore();
   });
@@ -237,7 +237,7 @@ describe("workspace", () => {
 
       const { workspace } = quietly(() => start(root));
       expect(workspace.getOpen()).toBeNull();
-      expect(() => workspace.openScene("castle", "entrance")).toThrow(/ends at step 1, but scene.json is at step 2/);
+      expect(() => workspace.openScene({ project: "castle", scene: "entrance" })).toThrow(/ends at step 1, but scene.json is at step 2/);
       expect(fs.readFileSync(log, "utf8")).toBe(shortLog);
       expect(fs.readFileSync(path.join(sceneDir(root), "scene.json"), "utf8")).toBe(sceneBefore);
     });
@@ -249,7 +249,7 @@ describe("workspace", () => {
       first.stop();
       fs.appendFileSync(path.join(sceneDir(root), "history.jsonl"), '{"seq": 2, "type": "und');
       const { workspace } = quietly(() => start(root));
-      expect(() => workspace.openScene("castle", "entrance")).toThrow(/history\.jsonl line 2/);
+      expect(() => workspace.openScene({ project: "castle", scene: "entrance" })).toThrow(/history\.jsonl line 2/);
     });
 
     it("opens a scene saved before the log existed, with an empty history that continues from its seq", () => {
@@ -266,4 +266,83 @@ describe("workspace", () => {
       expect(logLines(root).map((l) => l.seq)).toEqual([2]);
     });
   });
+
+  describe("projects and scenes", () => {
+    it("creates and opens a second scene, and each scene keeps its own nodes and history", () => {
+      const root = tempRoot();
+      const { workspace, store } = startWithScene(root);
+      store.drawBoxes([{ kind: "room", x: 0, z: 0, width: 6, depth: 4 }], "human");
+      expect(workspace.createScene({ project: "castle", name: "Crypt" })).toBe("crypt");
+      expect(workspace.getOpen()!.scene).toEqual({ id: "crypt", name: "Crypt" });
+      expect(store.getScene().nodes).toEqual([]);
+      expect(store.getHistory().canUndo).toBe(false);
+      store.drawBoxes([{ kind: "volume", x: 1, z: 1, width: 1, depth: 1 }], "human");
+
+      workspace.openScene({ project: "castle", scene: "entrance" });
+      expect(store.getScene().nodes.map((n) => n.type === "box" && n.kind)).toEqual(["room"]);
+      expect(store.getHistory().undoLabel).toBe("Draw box_1");
+      expect(workspace.projects()[0].scenes.map((s) => s.name)).toEqual(["Entrance", "Crypt"]);
+    });
+
+    it("renames the open scene and another one, keeping their folders", () => {
+      const root = tempRoot();
+      const { workspace, store } = startWithScene(root);
+      workspace.createScene({ project: "castle", name: "Crypt" });
+      store.drawBoxes([{ kind: "room", x: 0, z: 0, width: 6, depth: 4 }], "human");
+      const opened = vi.fn();
+      workspace.onOpened(opened);
+
+      workspace.renameScene({ project: "castle", scene: "crypt", name: "Catacombs" });
+      expect(opened).toHaveBeenCalledWith(expect.objectContaining({ scene: { id: "crypt", name: "Catacombs" } }));
+      workspace.renameScene({ project: "castle", scene: "entrance", name: "Gate" });
+      expect(sceneJson(root, "castle", "crypt")).toMatchObject({ name: "Catacombs", seq: 1 });
+      expect(sceneJson(root, "castle", "entrance")).toMatchObject({ name: "Gate" });
+      // Edits after a rename keep the new name.
+      store.drawBoxes([{ kind: "room", x: 9, z: 0, width: 2, depth: 2 }], "human");
+      expect(sceneJson(root, "castle", "crypt").name).toBe("Catacombs");
+      expect(() => workspace.renameScene({ project: "castle", scene: "crypt", name: " " })).toThrow(SceneError);
+    });
+
+    it("renames a project and edits its description; the open scene reports it", () => {
+      const root = tempRoot();
+      const { workspace } = startWithScene(root);
+      workspace.updateProject({ project: "castle", name: "Keep", description: "Now with a moat" });
+      expect(workspace.getOpen()!.project).toEqual({ id: "castle", name: "Keep", description: "Now with a moat" });
+      expect(JSON.parse(fs.readFileSync(path.join(root, "projects", "castle", "project.json"), "utf8"))).toMatchObject({
+        name: "Keep",
+        description: "Now with a moat",
+      });
+      expect(() => workspace.updateProject({ project: "nope", name: "X" })).toThrow(/No project "nope"/);
+    });
+
+    it("duplicates a scene with its history, opens the copy, and leaves the original alone", () => {
+      const root = tempRoot();
+      const { workspace, store } = startWithScene(root);
+      store.drawBoxes([{ kind: "room", x: 0, z: 0, width: 6, depth: 4 }], "human");
+      store.moveNodes({ ids: ["box_1"], dx: 2 }, "human");
+
+      expect(workspace.duplicateScene({ project: "castle", scene: "entrance" })).toBe("entrance-copy");
+      expect(workspace.getOpen()!.scene).toEqual({ id: "entrance-copy", name: "Entrance copy" });
+      store.moveNodes({ ids: ["box_1"], dx: 5 }, "human");
+      store.undo();
+      store.undo();
+      expect(store.getScene().nodes[0]).toMatchObject({ x: 0 });
+
+      workspace.openScene({ project: "castle", scene: "entrance" });
+      expect(store.getScene().nodes[0]).toMatchObject({ x: 2 });
+      expect(store.getHistory().undoLabel).toBe("Move box_1");
+    });
+
+    it("doesn't switch away from the open scene when the other one fails to open", () => {
+      const root = tempRoot();
+      const { workspace } = startWithScene(root);
+      workspace.createScene({ project: "castle", name: "Crypt" });
+      fs.writeFileSync(path.join(root, "projects", "castle", "scenes", "entrance", "scene.json"), "{");
+      expect(() => workspace.openScene({ project: "castle", scene: "entrance" })).toThrow(/didn't load/);
+      expect(() => workspace.duplicateScene({ project: "castle", scene: "entrance" })).toThrow(/wasn't duplicated/);
+      expect(workspace.getOpen()!.scene.id).toBe("crypt");
+      expect(workspace.projects()[0].scenes.map((s) => s.id)).toEqual(["crypt", "entrance"]);
+    });
+  });
 });
+

@@ -51,10 +51,12 @@ export function useScene() {
     };
   }, []);
 
+  const clearError = useCallback(() => setError(null), []);
+
   const send = useCallback((msg: ClientMessage) => {
     const ws = wsRef.current;
     if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
   }, []);
 
-  return { scene, history, projects, open, connected, error, send };
+  return { scene, history, projects, open, connected, error, clearError, send };
 }

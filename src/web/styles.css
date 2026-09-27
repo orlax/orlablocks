@@ -268,8 +268,19 @@ body {
   pointer-events: auto;
 }
 
-/* Which project and scene are open, first in the info-label. */
-.info-label .where { color: var(--bar-text); font: 600 12px/1.4 system-ui, sans-serif; }
+/* Which project and scene are open, first in the info-label. It opens the project picker. */
+.info-label .where {
+  margin: -3px -6px;
+  padding: 2px 6px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--bar-text);
+  font: 600 12px/1.4 system-ui, sans-serif;
+  cursor: pointer;
+  pointer-events: auto;
+}
+.info-label .where:hover { background: rgba(255, 255, 255, 0.1); }
 
 /* Modals (the project picker): centered on a dimmed backdrop, above everything. */
 .modal-backdrop {
@@ -295,7 +306,9 @@ body {
   color: var(--bar-text);
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
 }
+.modal-header { display: flex; align-items: center; justify-content: space-between; }
 .modal h2 { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 15px; }
+.modal-form { display: flex; flex-direction: column; gap: 12px; }
 .modal .muted { margin: 0; color: var(--muted); font-size: 12px; font-weight: 400; }
 .modal label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 600; }
 .modal input,
@@ -321,5 +334,50 @@ body {
   font: 600 13px/1.4 system-ui, sans-serif;
   cursor: pointer;
 }
+.modal button.icon { display: inline-flex; padding: 3px; border: 0; border-radius: 5px; color: var(--muted); }
+.modal button.icon:hover { background: rgba(255, 255, 255, 0.1); color: var(--bar-text); }
 .modal button.primary { border-color: #3d7be0; background: #3d7be0; color: #fff; }
 .modal button:disabled { opacity: 0.4; cursor: default; }
+
+/* The project picker: projects on the left, the selected project's description and scenes on the right. */
+.modal.project-picker { width: 640px; }
+.picker-columns { display: grid; grid-template-columns: 200px 1fr; gap: 16px; min-height: 260px; max-height: 60vh; }
+.picker-list { display: flex; flex-direction: column; gap: 1px; overflow-y: auto; }
+.picker-detail { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.picker-subhead { color: var(--muted); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+.picker-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 0 6px 0 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+.picker-row:hover { background: rgba(255, 255, 255, 0.07); }
+.picker-row.selected { background: rgba(61, 123, 224, 0.45); }
+.picker-row.current { font-weight: 600; }
+.picker-row.broken { color: var(--muted); cursor: default; }
+.picker-row .label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.picker-row .warn { flex: none; color: #e0a055; }
+.picker-row .open-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: #7fc98f; }
+.picker-row .row-actions { display: none; gap: 2px; }
+.picker-row:hover .row-actions { display: flex; }
+.picker-row input.rename { flex: 1; min-width: 0; padding: 3px 6px; font-size: 13px; }
+.modal button.add {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  margin-top: 4px;
+  padding: 4px 8px;
+  border: 0;
+  color: var(--muted);
+  font-weight: 400;
+}
+.modal button.add:hover { background: rgba(255, 255, 255, 0.07); color: var(--bar-text); }
+.modal textarea.description { width: 100%; }
+@media (max-width: 560px) {
+  .picker-columns { grid-template-columns: 1fr; max-height: none; }
+}

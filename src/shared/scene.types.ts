@@ -199,6 +199,18 @@ export const CreateProjectSchema = z.strictObject({
   sceneName: NameSchema.optional(),
 });
 
+export const UpdateProjectSchema = z.strictObject({
+  project: z.string(),
+  name: NameSchema.optional(),
+  description: z.string().trim().max(2000).optional(),
+});
+/** Creates an empty scene in a project, and opens it. */
+export const CreateSceneSchema = z.strictObject({ project: z.string(), name: NameSchema });
+export const RenameSceneSchema = z.strictObject({ project: z.string(), scene: z.string(), name: NameSchema });
+/** Copies a scene (state and history) and opens the copy. The name defaults to "<name> copy". */
+export const DuplicateSceneSchema = z.strictObject({ project: z.string(), scene: z.string(), name: NameSchema.optional() });
+export const OpenSceneSchema = z.strictObject({ project: z.string(), scene: z.string() });
+
 /** A project in the picker's list, with its scenes in creation order. `error`: its files didn't load. */
 export type ProjectSummary = {
   id: string;
@@ -216,6 +228,11 @@ export type OpenScene = {
 
 export const ClientMessageSchema = z.discriminatedUnion("type", [
   CreateProjectSchema.extend({ type: z.literal("create_project") }),
+  UpdateProjectSchema.extend({ type: z.literal("update_project") }),
+  CreateSceneSchema.extend({ type: z.literal("create_scene") }),
+  RenameSceneSchema.extend({ type: z.literal("rename_scene") }),
+  DuplicateSceneSchema.extend({ type: z.literal("duplicate_scene") }),
+  OpenSceneSchema.extend({ type: z.literal("open_scene") }),
   z.object({ type: z.literal("add_boxes"), boxes: z.array(BoxInputSchema).min(1) }),
   z.object({ type: z.literal("update_nodes"), changes: z.array(NodeUpdateSchema).min(1) }),
   z.object({ type: z.literal("remove_nodes"), ids: IdsSchema }),

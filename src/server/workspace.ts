@@ -1,9 +1,36 @@
 import { z } from "zod";
-import { CreateProjectSchema, DEFAULT_SCENE_NAME, type OpenScene, type ProjectSummary } from "../shared/scene.types";
+import {
+  CreateProjectSchema,
+  CreateSceneSchema,
+  DEFAULT_SCENE_NAME,
+  DuplicateSceneSchema,
+  OpenSceneSchema,
+  RenameSceneSchema,
+  UpdateProjectSchema,
+  type OpenScene,
+  type ProjectSummary,
+} from "../shared/scene.types";
 import type { NextId, SceneFile } from "../shared/project.types";
 import { applyOp, createHistory, type HistoryEntry } from "./commands";
 import type { DataDir, HistoryLine } from "./persist";
 import { createSceneStore, SceneError, type SceneStore, type Step } from "./scene";
+
+/** Parses with a zod schema or throws a SceneError starting with `failure`. */
+function parse<T extends z.ZodType>(schema: T, input: unknown, failure: string): z.output<T> {
+  const result = schema.safeParse(input);
+  if (!result.success) throw new SceneError(`${failure}\n${z.prettifyError(result.error)}`);
+  return result.data;
+}
+
+/** Runs a file operation, turning a file that doesn't load into a SceneError starting with `failure`. */
+function fileOp<T>(failure: string, fn: () => T): T {
+  try {
+    return fn();
+  } catch (err) {
+    if (err instanceof SceneError) throw err;
+    throw new SceneError(`${failure}\n${(err as Error).message}`);
+  }
+}
 
 export const NO_SCENE_OPEN = "No scene is open. Ask the human to create or open a project in the editor.";
 
@@ -108,6 +135,17 @@ export function createWorkspace(data: DataDir) {
     const projects = data.listProjects();
     projectsListeners.forEach((l) => l(projects));
   };
+  const openedChanged = () => {
+    const current = publicOpen();
+    openedListeners.forEach((l) => l(current));
+  };
+
+  const requireProject = (project: string, failure: string) => {
+    if (!data.projectExists(project)) throw new SceneError(`${failure}\nNo project "${project}"`);
+  };
+  const requireSceneFolder = (project: string, scene: string, failure: string) => {
+    if (!data.sceneExists(project, scene)) throw new SceneError(`${failure}\nNo scene "${scene}" in project "${project}"`);
+  };
 
   /** Loads a scene into the store and makes it the open one. Throws a SceneError if it's missing or doesn't load. */
   const openScene = (project: string, scene: string) => {
@@ -131,8 +169,7 @@ export function createWorkspace(data: DataDir) {
       writeScene();
     }
     data.writeApp({ lastOpen: { project, scene } });
-    const current = publicOpen();
-    openedListeners.forEach((l) => l(current));
+    openedChanged();
   };
 
   return {
@@ -170,9 +207,7 @@ export function createWorkspace(data: DataDir) {
 
     /** Creates a project and its first scene, and opens that scene. */
     createProject(input: z.input<typeof CreateProjectSchema>): OpenScene {
-      const result = CreateProjectSchema.safeParse(input);
-      if (!result.success) throw new SceneError(`The project wasn't created.\n${z.prettifyError(result.error)}`);
-      const { name, description = "", sceneName = DEFAULT_SCENE_NAME } = result.data;
+      const { name, description = "", sceneName = DEFAULT_SCENE_NAME } = parse(CreateProjectSchema, input, "The project wasn't created.");
       const project = data.createProject(name, description);
       const scene = data.createScene(project, sceneName);
       projectsChanged();
@@ -180,7 +215,63 @@ export function createWorkspace(data: DataDir) {
       return publicOpen()!;
     },
 
-    openScene(project: string, scene: string): void {
+    /** Renames a project and/or changes its description. The folder keeps its slug. */
+    updateProject(input: z.input<typeof UpdateProjectSchema>): void {
+      const failure = "The project wasn't changed.";
+      const { project, ...changes } = parse(UpdateProjectSchema, input, failure);
+      requireProject(project, failure);
+      if (changes.name === undefined && changes.description === undefined) return;
+      fileOp(failure, () => data.updateProject(project, changes));
+      projectsChanged();
+      if (open?.project.id === project) {
+        open.project = { ...open.project, ...changes };
+        openedChanged();
+      }
+    },
+
+    /** Creates an empty scene in a project, and opens it. Returns its ID. */
+    createScene(input: z.input<typeof CreateSceneSchema>): string {
+      const failure = "The scene wasn't created.";
+      const { project, name } = parse(CreateSceneSchema, input, failure);
+      requireProject(project, failure);
+      const scene = data.createScene(project, name);
+      projectsChanged();
+      openScene(project, scene);
+      return scene;
+    },
+
+    /** Renames a scene. Not a history step. The folder keeps its slug. */
+    renameScene(input: z.input<typeof RenameSceneSchema>): void {
+      const failure = "The scene wasn't renamed.";
+      const { project, scene, name } = parse(RenameSceneSchema, input, failure);
+      requireSceneFolder(project, scene, failure);
+      if (open?.project.id === project && open.scene.id === scene) {
+        // The open scene's state is in memory: write it with the new name.
+        open.scene = { ...open.scene, name };
+        writeScene();
+        openedChanged();
+      } else {
+        fileOp(failure, () => data.writeScene(project, scene, { ...data.readScene(project, scene), name }));
+      }
+      projectsChanged();
+    },
+
+    /** Copies a scene, history included, and opens the copy. Returns its ID. */
+    duplicateScene(input: z.input<typeof DuplicateSceneSchema>): string {
+      const failure = "The scene wasn't duplicated.";
+      const { project, scene, name } = parse(DuplicateSceneSchema, input, failure);
+      requireSceneFolder(project, scene, failure);
+      const copy = fileOp(failure, () => {
+        const source = data.readScene(project, scene);
+        return data.duplicateScene(project, scene, name ?? `${source.name} copy`.slice(0, 80));
+      });
+      projectsChanged();
+      openScene(project, copy);
+      return copy;
+    },
+
+    openScene(input: z.input<typeof OpenSceneSchema>): void {
+      const { project, scene } = parse(OpenSceneSchema, input, "The scene wasn't opened.");
       openScene(project, scene);
     },
 

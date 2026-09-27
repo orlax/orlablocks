@@ -215,6 +215,16 @@ export function openDataDir(root: string) {
       return readJson(path.join(projectDir(project), "project.json"), ProjectFileSchema);
     },
 
+    /** Changes a project's name and/or description. Throws (writing nothing) if `project.json` doesn't load. */
+    updateProject(project: string, changes: { name?: string; description?: string }): void {
+      const file = readJson(path.join(projectDir(project), "project.json"), ProjectFileSchema);
+      writeJson(path.join(projectDir(project), "project.json"), { ...file, ...changes });
+    },
+
+    projectExists(project: string): boolean {
+      return fs.existsSync(path.join(projectDir(project), "project.json"));
+    },
+
     /** Makes an empty scene in the project. Returns its ID. */
     createScene(project: string, name: string): string {
       const id = freeSlug(scenesDir(project), slugify(name, "scene"));
@@ -227,6 +237,18 @@ export function openDataDir(root: string) {
     /** Whether the scene's folder exists (a folder deleted by hand is simply gone). */
     sceneExists(project: string, scene: string): boolean {
       return fs.existsSync(path.join(scenesDir(project), scene));
+    },
+
+    /**
+     * Copies a scene's folder (state, history and editor state) into a new scene named `name`, with a new
+     * creation time. Throws, copying nothing, if the source doesn't load. Returns the copy's ID.
+     */
+    duplicateScene(project: string, scene: string, name: string): string {
+      const source = readJson(sceneFile(project, scene), SceneFileSchema);
+      const id = freeSlug(scenesDir(project), slugify(name, "scene"));
+      fs.cpSync(path.join(scenesDir(project), scene), path.join(scenesDir(project), id), { recursive: true });
+      writeJson(sceneFile(project, id), { ...source, name, createdAt: new Date().toISOString() });
+      return id;
     },
 
     readScene(project: string, scene: string): SceneFile {

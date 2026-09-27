@@ -20,7 +20,8 @@ const title = (n: SceneNode) => (n.name ? `${n.name} (${n.id})` : n.id);
 const describe = (b: Box) => `${title(b)} · ${b.width} × ${b.depth} × ${b.height} m · y ${b.y} · ${b.rotation}°`;
 
 export function App() {
-  const { scene, history, open, connected, error, send } = useScene();
+  const { scene, history, projects, open, connected, error, clearError, send } = useScene();
+  const [pickerOpen, setPickerOpen] = useState(false);
   const [view, setView] = useState<View>(DEFAULT_VIEW);
   const [cursor, setCursor] = useState<GroundPoint | null>(null);
   const [tool, setTool] = useState<Tool>("select");
@@ -40,8 +41,8 @@ export function App() {
 
   const nodes = scene?.nodes ?? [];
   // The key handler is installed once; it reads the current state from here.
-  const state = useRef({ nodes, selection, context, open });
-  state.current = { nodes, selection, context, open };
+  const state = useRef({ nodes, selection, context, open, pickerOpen });
+  state.current = { nodes, selection, context, open, pickerOpen };
 
   const activeTool: Tool = spaceHand ? "hand" : tool;
   const boxes = nodes.filter(isBox);
@@ -50,6 +51,17 @@ export function App() {
   const rooms = boxes.filter((b) => b.kind === "room").length;
   const volumes = boxes.length - rooms;
   const groups = nodes.filter(isGroup).length;
+
+  // Another scene opened (here, in another tab, or at start): close the picker and drop the local state that
+  // belonged to the old scene. A rename keeps the IDs, so it changes nothing here.
+  const sceneKey = open ? `${open.project.id}/${open.scene.id}` : "";
+  useEffect(() => {
+    setPickerOpen(false);
+    setSelection([]);
+    setContext(null);
+    setOutlinerHover(null);
+    pendingGroup.current = null;
+  }, [sceneKey]);
 
   // The tab's title follows the open scene.
   useEffect(() => {
@@ -93,9 +105,9 @@ export function App() {
     const onKeyDown = (e: KeyboardEvent) => {
       if (typingInField(e)) return;
       const key = e.key.toLowerCase();
-      const { nodes, selection, context, open } = state.current;
-      // Nothing to edit while nothing is open (the create project form is up).
-      if (!open) return;
+      const { nodes, selection, context, open, pickerOpen } = state.current;
+      // Nothing to edit while the picker is up (and while nothing is open, it always is).
+      if (!open || pickerOpen) return;
       const mod = (e.metaKey || e.ctrlKey) && !e.altKey;
       if (mod && (key === "z" || key === "y")) {
         e.preventDefault();
@@ -187,6 +199,7 @@ export function App() {
       />
 
       <Outliner
+        key={sceneKey}
         nodes={nodes}
         selection={selection}
         onSelect={(ids, ctx) => {
@@ -204,9 +217,17 @@ export function App() {
           {connected ? "connected" : "offline"}
         </span>
         {open && (
-          <span className="where">
+          <button
+            type="button"
+            className="where"
+            title="Projects and scenes"
+            onClick={() => {
+              clearError();
+              setPickerOpen(true);
+            }}
+          >
             {open.project.name} ▸ {open.scene.name}
-          </span>
+          </button>
         )}
         <span className="coords">
           x {coord(cursor?.x)} · z {coord(cursor?.z)} m
@@ -247,8 +268,14 @@ export function App() {
         />
       </div>
 
-      {connected && open === null && (
-        <ProjectPicker error={error} onCreate={(project) => send({ type: "create_project", ...project })} />
+      {connected && (open === null || pickerOpen) && (
+        <ProjectPicker
+          projects={projects}
+          open={open ?? null}
+          error={error}
+          onClose={open ? () => setPickerOpen(false) : undefined}
+          send={send}
+        />
       )}
     </div>
   );
