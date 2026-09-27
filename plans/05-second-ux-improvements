@@ -1,0 +1,216 @@
+# 05 — Second UX Improvements
+
+> **For the agent reading this:** Read `plans/03-UX-improvements` (the editor, the gizmo, the modifier keys) and `plans/04-persistence` §12 (projects, scenes, the history log) first. This phase is about **making more of what's already there, fast**:
+> - **Alt-drag** copies instead of moving, and **Alt+J** repeats the last copy's offset;
+> - **Mirror X / Z** flips the selection in place;
+> - **copy, cut and paste** work across scenes and tabs.
+>
+> The agent gets **copying through `move_nodes`**, one new tool (**`mirror_nodes`**), and a smaller context: the conventions text moves out of every tool description into the server's instructions. **Live arrays are not in this phase.** They share their machinery with prefabs (copies that follow a source), so both come in `07`. The work is split into small increments (§9). Each one ends with the human ↔ agent loop still working and a browser checklist for Orlando. Add this phase's terms to `GLOSSARY.md` (marked "from 05") as they land. Log progress in a §12 at the end of this file, as 04 did.
+
+---
+
+## 1. Goal
+
+One demo, end to end:
+
+1. Orlando draws a pillar, holds `Alt` and drags it 4 m east. The original stays in place and a copy lands 4 m away. `Alt+J`, `Alt+J`: a row of four pillars, evenly spaced. Every copy is one undo step.
+2. He builds an L-shaped wing as a group, Alt-drags a copy of it to the other side of the hall, and presses `Shift+X`. The copy flips, and the hall is symmetric.
+3. He selects the wing, presses `⌘C`, opens another scene and presses `⌘V`. The wing appears in the middle of the view, at the same height, with its groups and names intact.
+4. He asks the agent to *"copy the lobby 20 m east, twice"*. The agent makes one `move_nodes` call with `copy: true, count: 2`, instead of retyping every box.
+
+---
+
+## 2. Scope
+
+### In
+
+- **A duplicate command** on the server: copies nodes (whole groups included) with new IDs, keeping names and structure. It's one undo step, and it's the base for everything below.
+- **Alt-drag to copy** with the body drag and the x, z and y arrows.
+- **Alt+J** repeats the last copy's offset on the current selection.
+- **Mirror X / Mirror Z** in place, across the center of the selection's bounds (`Shift+X`, `Shift+Z`, and contextual bar buttons).
+- **Copy, cut and paste** (`⌘C`, `⌘X`, `⌘V`) through the system clipboard: across scenes, tabs and reloads.
+- **Agent:** `copy` and `count` on `move_nodes`, a new `mirror_nodes` tool, and the conventions text moved into the server instructions.
+
+### Out (deliberately deferred)
+
+- **Live arrays** (row, grid, circle, random offsets): in `07`, together with prefabs.
+- **Mirroring as a copy.** Alt-drag a copy, then mirror it.
+- Mirroring on y (upside down).
+- Copying while rotating or scaling.
+- Alt-drag in the outliner.
+- `⌘D`.
+- Paste at the cursor.
+- Live symmetry, where edits on one side appear on the other.
+- **The agent can't use the clipboard or Alt+J.** It sees only the open scene, and Alt+J is a keyboard convenience.
+
+---
+
+## 3. The duplicate command
+
+**Store:** `duplicateNodes({ ids, dx, dy, dz, count = 1 }, actor)`.
+
+- **What gets copied:** each listed node with its whole subtree. A listed node whose ancestor is also listed is copied as part of that ancestor, the same rule as `groupNodes`.
+- **Copy `i` (1..count)** is offset by `i × (dx, dy, dz)`, so `count` makes a row.
+- **IDs:** fresh `box_N` / `group_N` IDs, in list order. `parent` references inside the copied set are remapped. A copied root keeps its original's parent, so a copy of a box in a group lands in the same group.
+- **Names and `createdBy`:** each copy keeps its original's name. `createdBy` is the actor who copied.
+- **Where copies go:** right after the original subtree in the node list, so the outliner shows each copy next to its original. With `count` > 1, copy 1, copy 2... in order.
+- **Returns** the copied roots. The editor selects them.
+- **Validation and undo:** one undoable step, with one `add` op carrying `indices`. Unknown or repeated IDs reject everything. `count` is 1..100, and the offsets can be 0 (a copy in place).
+- **Labels:** `Copy box_3`, `Copy group_1 ×3`, `Agent: copy lobby (group_1)`.
+
+This is the same "add a subtree with fresh IDs" that paste needs (§6), so both share one helper in `src/shared/tree.ts` (pure, tested).
+
+---
+
+## 4. Alt-drag and Alt+J
+
+### Alt-drag
+
+- **Where it works:** the body drag and the x, z and y arrows. Holding `Alt` shows the original in place and a **copy** following the cursor. The copy is previewed like a move, with the original drawn normally.
+- **`Alt` counts at release,** so pressing or releasing it mid-drag switches between move and copy, as in Figma. The live label adds `copy` (`x 4.50 · z 2.00 · copy`).
+- **The other modifiers are unchanged:** snapping, `Shift` axis lock, `Cmd/Ctrl` for no snap, and elevation snapping on the y arrow (copy upward to stack floors).
+- **The result:** one step, sent as `duplicate_nodes` with the drag's offset. The copies become the selection.
+- A drag that ends where it started, with no offset, makes no copy.
+- **Only move drags copy.** On the scale handles and when drawing, `Alt` still means "from the center". Rotate doesn't copy.
+
+### Alt+J (repeat copy)
+
+- Every Alt-drag copy remembers its **offset** (dx, dy, dz, world axes) in the tab.
+- **`Alt+J` duplicates the current selection by that offset** and selects the new copies, so pressing it again continues the row. It works on any selection, not only the last copy.
+- **Alt+J with nothing to repeat** (no copy yet in this tab, or nothing selected) shows a hint in the info-label: "Alt-drag a copy first".
+- The offset is forgotten when the scene changes.
+- **The key is matched on `e.code === "KeyJ"`,** because on a Mac `Alt+J` types `∆`.
+
+---
+
+## 5. Mirror
+
+- **Mirror X** swaps east and west: every box's `x` reflects across the center of the selection's bounds. **Mirror Z** does the same along z. `y` never changes.
+- **Rotation:** every box's rotation becomes `-rotation` (normalized to 0..360), for both axes. A box is symmetric, so reflecting it only needs its center and its angle.
+- **Groups** mirror everything inside them as a unit. The pivot is the center of the whole selection's axis-aligned footprint bounds.
+- **Keys and buttons:** `Shift+X` and `Shift+Z`, and two buttons on the Select tool's contextual bar, labeled **X** and **Z** in the axis colors (red, blue), matching the gizmo. They're world axes, not screen directions: the camera turns, and the world axes don't.
+- **Undo:** one `update` step. `Mirror box_3 on X` / `Agent: mirror group_1 on Z`. A single unrotated box looks the same after a mirror, so no step is recorded.
+- **Looking ahead (06):** asymmetric shapes (free-form outlines, entities that face a direction) will need their points or facing reflected too. Keep the mirror math in `geometry.ts` as a function of a node, so new shapes add their own case.
+
+---
+
+## 6. Copy, cut and paste
+
+- **`⌘C` copies the selection:**
+  - The nodes and their whole subtrees go into the **system clipboard** as JSON: `{ "dungeonDesigner": "nodes", "nodes": [...] }`.
+  - It goes through the browser's `copy` event, not `navigator.clipboard`, so there's no permission prompt. It works across scenes, tabs and reloads.
+- **`⌘X` cuts:** it copies, then removes, as one step (`Cut box_3`).
+- **`⌘V` pastes:**
+  - The editor reads the `paste` event. Anything that isn't our JSON, or doesn't pass the node schema, is ignored silently.
+  - It sends `paste_nodes { nodes, focus, parent }`. The server gives the nodes fresh IDs with the §3 helper and adds them as one step (`Paste 12 nodes`), and the pasted roots become the selection.
+- **Where it lands:**
+  - **Centered on the view** (the focus point), keeping each box's `y`.
+  - The x/z offset is rounded to the 0.5 m snap, so pasted boxes stay on the grid they came from.
+  - Pasting while inside an entered group puts the nodes into that group. Otherwise they go to the top level.
+- **Checks:**
+  - The snapshot is checked with zod on the server, like a file.
+  - Parent references pointing outside the snapshot are dropped, so those nodes become roots.
+  - At most 1,000 nodes per paste.
+- **Shortcuts:** they're off while typing in a field or while the picker is open. Typing text in a field uses the normal browser copy and paste.
+
+---
+
+## 7. MCP surface
+
+| Tool | Change |
+|---|---|
+| `move_nodes` | gains `copy?: boolean` and `count?: 1..100`. With `copy`, it leaves the nodes in place and adds `count` copies, each offset by `(dx, dy, dz)` more than the last, and returns the copies. |
+| `mirror_nodes` | **new**: `{ ids, axis: "x" \| "z" }`. It flips boxes and whole groups in place across the center of their combined bounds. |
+| the other 7 | unchanged |
+
+- **The conventions text moves into the server's `instructions`,** which a client receives once when it connects, instead of being appended to every tool description. That's about 690 tokens × 8 today, roughly 5,500 tokens. Each description keeps only what's specific to its tool.
+  - With `mirror_nodes`, the agent's context still shrinks by about 4,500 tokens.
+  - Check that Claude Code shows the instructions (they appear in its MCP instructions section). If it doesn't, keep a short conventions pointer in `get_scene`'s description.
+- **What the conventions text explains:** copies keep their names and get new IDs, `move_nodes` with `copy` is the way to repeat things (not retyping boxes with `draw_boxes`), and mirror axes are world axes.
+- **Server version 0.0.6.** **Restart the server and reconnect with `/mcp`.**
+- **CLAUDE.md:** the tool list gains `mirror_nodes`, and `move_nodes` gains `copy`.
+
+---
+
+## 8. Editor ↔ server protocol
+
+```
+client → server  { type: "duplicate_nodes", ids, dx, dy, dz, count? }       // Alt-drag, Alt+J
+client → server  { type: "mirror_nodes", ids, axis }
+client → server  { type: "paste_nodes", nodes: [SceneNode], focus: { x, z }, parent: string | null }
+client → server  { type: "remove_nodes", ids, cut?: true }                  // cut: same op, labelled "Cut"
+server → client  unchanged (the copies' IDs come back in the next `scene`; the editor selects them, as it does after Cmd+G)
+```
+
+---
+
+## 9. Increments
+
+Each increment is verified before the next one starts: typecheck, tests, a scripted check on a spare port with a scratch `DATA_DIR`, and Orlando's browser checklist.
+
+### 05.1 — Duplicate command and the agent's context
+
+- The subtree-copy helper in `tree.ts`, `duplicateNodes` in the store, and the `duplicate_nodes` WS message.
+- MCP: `copy` and `count` on `move_nodes`, and the conventions text moved into the server instructions.
+- **Check:** the agent copies a nested group 20 m east with one call. The copies keep their names and structure, get new IDs, sit next to the originals in the outliner, and `⌘Z` removes them in one step. `/mcp` still works, and the tool descriptions are short.
+
+### 05.2 — Alt-drag and Alt+J
+
+- Alt-drag copy on the body drag and the x/z/y arrows, with a live toggle and the `copy` label.
+- The copies are selected afterwards.
+- The remembered offset and `Alt+J`.
+- **Check:** stamp a row of pillars with Alt-drag and Alt+J, and copy a room upward onto itself as a second floor. Undo removes one copy at a time.
+
+### 05.3 — Mirror
+
+- The mirror math in `geometry.ts` and `mirrorNodes` in the store.
+- `Shift+X` / `Shift+Z` and the X / Z contextual bar buttons.
+- The MCP `mirror_nodes` tool.
+- **Check:** mirror an L-shaped group of rotated boxes on X and on Z. It reads as a true mirror image, and mirroring twice restores it exactly.
+
+### 05.4 — Copy, cut and paste
+
+- The `copy` / `cut` / `paste` events, the clipboard JSON, and `paste_nodes` with placement at the view center.
+- Paste into the entered group, and cut as one step.
+- **Check:** copy a nested group in one scene and paste it into another scene and into another tab. It lands centered in the view at its original height, with groups and names intact. Pasting plain text does nothing.
+
+---
+
+## 10. Acceptance test (end of phase)
+
+1. **Alt-drag:** Alt-drag a pillar 4 m east. The original stays, and the copy is selected. Press `Alt` only halfway through a drag: it copies. Release `Alt` before letting go: it moves.
+2. **Alt+J:** `Alt+J` twice gives a row of four, 4 m apart. Select a different box and press `Alt+J`: it's copied 4 m east too. `⌘Z` three times removes the last three copies, one at a time.
+3. **Copy upward:** drag the y arrow of a room with `Alt`. The copy snaps onto the room's wall top, making a second floor.
+4. **Mirror:** build an L-shaped group of rotated boxes, then `Shift+X`. It's the mirror image in place. `Shift+Z`, then `Shift+Z` again: back to the previous state exactly. A single unrotated box records no step.
+5. **Copy and paste across scenes:** `⌘C` the group, open another scene and `⌘V`. It's centered in the view at its original height, with the same names and nesting and new IDs. Paste again: a second copy. Paste into another tab: it works there too.
+6. **Cut:** `⌘X` removes the selection in one step, and `⌘V` brings it back, centered in the view.
+7. **Paste into a group:** enter a group with a double-click and paste. The pasted nodes go inside it.
+8. **Not our clipboard:** copy some text from another app and press `⌘V` in the view. Nothing happens. Copy and paste inside the outliner's rename field still edit text.
+9. **Agent:** *"copy the lobby 20 m east, twice"* is one `move_nodes` call with `copy: true, count: 2`. *"Mirror it on Z"* is one `mirror_nodes` call. Both are single undo steps, and the copies keep the lobby's name.
+10. **The agent's context:** `/mcp` lists 9 tools, and the tool descriptions no longer repeat the conventions.
+
+---
+
+## 11. Decisions
+
+Settled with Orlando:
+
+1. **Live arrays** are what we want, and they come in `07` together with prefabs. There are no one-shot arrays in 05: Alt-drag and Alt+J cover rows.
+2. **Alt-drag** copies on move drags.
+3. **Alt+J applies the last copy's offset to the current selection.**
+4. **Mirror is in place only,** across the center of the selection, on world **X and Z**. To mirror a copy, Alt-drag it first. The keys are `Shift+X` / `Shift+Z`.
+5. **Copies keep the original's name.**
+6. **Copy, cut and paste work across scenes** (and tabs).
+7. **Paste lands centered in the view, keeping `y`.**
+8. **As few agent tools as possible:** copying goes through `move_nodes` (`copy`, `count`). `mirror_nodes` is the one new tool, because reflection is exactly the geometry an agent gets wrong by hand.
+9. **The conventions text moves into the server instructions,** and the tool descriptions stay short.
+
+Adopted as recommended (say if any should change):
+
+10. **`Alt` counts at release,** so it can be toggled mid-drag, as in Figma. Scale handles and drawing keep `Alt` = from the center.
+11. **Copies go right after their originals** in the node list, and become the selection.
+12. **`count` is 1..100** per call, and a paste is at most 1,000 nodes.
+13. **The clipboard is the system clipboard,** through the browser's copy and paste events: no permission prompt, and it works across tabs and reloads. Anything that isn't ours is ignored.
+14. **The paste offset is rounded to the 0.5 m snap,** so pasted geometry stays on its grid.
+15. **Pasting inside an entered group** puts the nodes into that group.
+16. **Mirror button labels** are X and Z in the axis colors, not flip icons: they're world axes, and the camera turns.
