@@ -233,6 +233,8 @@ export function Viewport({
   cameraRestore,
 }: Props) {
   const cam = useRef<CameraState>({ ...DEFAULT_CAMERA });
+  // The compass rose, turned every frame to where north is on screen.
+  const rose = useRef<HTMLDivElement>(null);
 
   // A scene opened with a saved camera: jump to it. The rig renders it and reports the new view.
   useEffect(() => {
@@ -935,6 +937,7 @@ export function Viewport({
       >
         <color attach="background" args={[BACKGROUND]} />
         <CameraRig cam={cam} yawKeys={yawKeys} onViewChange={onViewChange} />
+        <CompassSync cam={cam} rose={rose} />
         <Lighting cam={cam} />
         <Grid cam={cam} />
         <OriginAxes />
@@ -966,6 +969,22 @@ export function Viewport({
       {pen.points.length > 0 && pen.cursor && (
         <PenLabel pen={pen} at={onScreen(pen.cursor)} />
       )}
+      <button
+        type="button"
+        className="compass"
+        title="Compass: north is -z. Click to turn the view north-up"
+        // Not a press on the view (no marquee, no deselect).
+        onPointerDown={(e) => e.stopPropagation()}
+        onDoubleClick={(e) => e.stopPropagation()}
+        onClick={() => {
+          cam.current = { ...cam.current, yaw: 0 };
+          invalidate();
+        }}
+      >
+        <div ref={rose} className="rose">
+          <CompassRose />
+        </div>
+      </button>
       {marquee?.active && (
         <div
           className="marquee"
@@ -1213,6 +1232,40 @@ function PointOverlay({ points, y, selected, bad }: { points: FootPoint[]; y: nu
         <pointsMaterial color={color} size={6} sizeAttenuation={false} depthTest={false} transparent />
       </points>
     </>
+  );
+}
+
+/**
+ * Turns the compass rose (a DOM element over the view) every frame so its N points where north (-z) is on screen,
+ * measured at the focus point, so it's exact under the camera's pitch.
+ */
+function CompassSync({ cam, rose }: { cam: RefObject<CameraState>; rose: RefObject<HTMLDivElement | null> }) {
+  const size = useThree((s) => s.size);
+  useFrame(() => {
+    const el = rose.current;
+    const c = cam.current;
+    const at = { x: c.focus.x, y: 0, z: c.focus.z };
+    const a = worldToScreen(c, size, at);
+    const b = worldToScreen(c, size, { ...at, z: at.z - 1 });
+    if (!el || !a || !b) return;
+    // Clockwise from straight up the screen.
+    el.style.transform = `rotate(${(Math.atan2(b.sx - a.sx, a.sy - b.sy) * 180) / Math.PI}deg)`;
+  });
+  return null;
+}
+
+/** A compass card: a red needle and N to the north, E / S / W around it. */
+function CompassRose() {
+  return (
+    <svg viewBox="-30 -30 60 60" width="60" height="60" aria-hidden>
+      <circle r="27" className="rim" />
+      <path d="M0 -17 L5 0 L-5 0 Z" className="needle-n" />
+      <path d="M0 17 L5 0 L-5 0 Z" className="needle-s" />
+      <text y="-19" className="n">N</text>
+      <text x="21" className="dir">E</text>
+      <text y="21" className="dir">S</text>
+      <text x="-21" className="dir">W</text>
+    </svg>
   );
 }
 

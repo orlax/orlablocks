@@ -532,3 +532,26 @@ body {
 /* Buttons with a word next to the icon (Convert to free-form, Edit points). */
 .contextual-bar button.labeled { gap: 6px; height: 28px; padding: 0 8px; white-space: nowrap; }
 .contextual-bar button.labeled.active { background: rgba(143, 180, 242, 0.22); border-color: rgba(143, 180, 242, 0.5); }
+
+/* The compass rose, bottom right of the view: turns with the camera so N points north (-z). Click: north-up. */
+.compass {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  width: 60px;
+  height: 60px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  cursor: pointer;
+}
+.compass .rose { width: 60px; height: 60px; }
+.compass svg { display: block; }
+.compass .rim { fill: var(--bar-bg); stroke: rgba(255, 255, 255, 0.15); stroke-width: 1; }
+.compass:hover .rim { stroke: #8fb4f2; }
+.compass .needle-n { fill: #e05555; }
+.compass .needle-s { fill: #d8dbe2; }
+.compass text { font: 700 9px/1 system-ui, sans-serif; text-anchor: middle; dominant-baseline: central; }
+.compass .n { fill: #f07a70; }
+.compass .dir { fill: var(--muted); font-weight: 600; }

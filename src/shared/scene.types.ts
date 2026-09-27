@@ -137,6 +137,11 @@ export const DEFAULT_VIEW: View = {
   yaw: 45,
   bounds: { x: -30, z: -20, width: 60, depth: 40 },
 };
+/**
+ * The compass: which world axis each direction is, the same for every scene. With y up and +x east, north is -z
+ * (at yaw 0 the camera looks north, so north is up the screen).
+ */
+export const COMPASS = { north: "-z", east: "+x", south: "+z", west: "-x" } as const;
 /** Ground snap for footprints. */
 export const SNAP = 0.5;
 /** Vertical snap for heights, and the smallest height a box can have. */
@@ -311,7 +316,7 @@ export const MoveNodesSchema = z.strictObject({
   ids: IdsSchema.describe("IDs of boxes and/or groups; a group moves everything in it"),
   dx: z.number().optional().describe("Meters along +x (east), default 0"),
   dy: z.number().optional().describe("Meters up, default 0"),
-  dz: z.number().optional().describe("Meters along +z, default 0"),
+  dz: z.number().optional().describe("Meters along +z (south), default 0"),
 });
 export const MAX_COPIES = 100;
 /** Copies nodes (whole groups included) with new IDs; copy i (1..count) is offset by i × (dx, dy, dz). */
@@ -341,7 +346,7 @@ export const RotateNodesSchema = z.strictObject({
 export const ConvertNodesSchema = z.strictObject({ ids: IdsSchema.describe("IDs of boxes and cylinders") });
 export const MirrorNodesSchema = z.strictObject({
   ids: IdsSchema.describe("IDs of boxes and/or groups; a group mirrors everything in it as a unit"),
-  axis: z.enum(["x", "z"]).describe("World axis: x swaps east and west, z swaps +z and -z"),
+  axis: z.enum(["x", "z"]).describe("World axis: x swaps east and west, z swaps north and south"),
 });
 export const GroupNodesSchema = z.strictObject({
   ids: IdsSchema.describe("IDs of the boxes and/or groups to put in a new group"),

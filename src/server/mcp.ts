@@ -5,6 +5,7 @@ import { z } from "zod";
 import { boundsOf, round2 } from "../shared/geometry";
 import {
   SHAPE_COLORS,
+  COMPASS,
   DEFAULT_COLOR,
   DEFAULT_HEIGHT,
   DuplicateNodesSchema,
@@ -36,6 +37,8 @@ const INSTRUCTIONS =
   "the human opens and switches scenes in the editor. Every change is saved as it happens (there's no save step), " +
   "and the undo history survives server restarts. " +
   "Units are meters; decimals are allowed and kept to 2 places. The world is 3D with y up and the ground at y = 0. " +
+  "The compass is fixed for every scene: NORTH is -z, south +z, east +x, west -x (get_scene repeats it as `compass`), " +
+  'so "the north wall" is a shape\'s -z side and "go east" is +x; the editor shows a compass rose. ' +
   "The scene is a flat list of nodes: shapes and groups. The shapes are boxes (type: box), cylinders (type: cylinder) and free-forms (type: freeform). " +
   "A box's footprint is CENTERED at (x, z), with `width` along the box's local x and " +
   "`depth` along its local z. It rises from its elevation `y` (its bottom: 0 = on the ground, negative = below ground) " +
@@ -89,6 +92,7 @@ const json = (value: unknown) => ({ content: [{ type: "text" as const, text: JSO
 function describeScene(open: OpenScene, scene: Scene) {
   return {
     ...open,
+    compass: COMPASS,
     ...scene,
     nodes: scene.nodes.map((n) => {
       if (!isGroup(n)) return n;
@@ -117,7 +121,7 @@ function buildServer(workspace: Workspace) {
     "get_scene",
     {
       title: "Get scene",
-      description: `Return the open scene as JSON: its project (id, name, description) and scene (id, name), the visible view, the editor's selection and every node (boxes and groups).`,
+      description: `Return the open scene as JSON: its project (id, name, description) and scene (id, name), the compass (north is -z), the visible view, the editor's selection and every node (shapes and groups).`,
     },
     async () => {
       const scene = store().getScene();
@@ -233,7 +237,7 @@ function buildServer(workspace: Workspace) {
       title: "Mirror nodes",
       description:
         `Flip boxes and/or whole groups in place on a world axis, across the center of their combined bounds: ` +
-        `axis x swaps east and west (every x reflects), axis z swaps +z and -z. y never changes, and every rotation ` +
+        `axis x swaps east and west (every x reflects), axis z swaps north (-z) and south (+z). y never changes, and every rotation ` +
         `becomes -rotation (an odd-sided cylinder mirrored on x: 180 - rotation; a free-form's points reflect). A group mirrors as a unit. ` +
         `Mirroring twice restores the original exactly.`,
       inputSchema: MirrorNodesSchema.shape,

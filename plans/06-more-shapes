@@ -496,12 +496,20 @@ Orlando confirmed 06.3's browser checklist passed (no bugs found), and settled d
     - a WS `convert_nodes` converted a rotated box and an octagon in place (`Convert box_1, cylinder_2 to freeform_2, freeform_3`), converting a free-form was refused, and undo put the box and octagon back in their places;
   - Orlando's browser check passed. The agent drew the shrine, converted it and flattened its south side (3 steps). It took +z as south because the scene has no declared north, so a compass is queued as a side mission (see the notes below).
 
+### Compass (side mission, done)
+
+The agent drew the shrine taking +z as south, because nothing declared north. Now something does:
+- **The convention:** north is -z, south +z, east +x, west -x, the same for every scene (`COMPASS` in `scene.types.ts`). It follows from the tools' existing "+x is east" with y up, and at yaw 0 the camera already looks north. There's no per-project setting, so the data doesn't change.
+- **The agent:** the instructions state it ("the north wall" is a shape's -z side), and `get_scene` adds `compass`. The `move_nodes` `dz` and `mirror_nodes` axis descriptions name north and south. The server version stays 0.0.7. **Restart the server and reconnect with `/mcp`.**
+- **The view:** a compass rose at the bottom right (`CompassRose`). `CompassSync` turns it every frame, from where -z projects on screen at the focus point, so it's exact under the pitch. Clicking it sets yaw 0 (north-up), and a press on it never reaches the view (no marquee, no deselect).
+- **Checks:** typecheck, the 214 tests, the bundle, and a scripted `initialize` and `get_scene` on `:5171` (the instructions sentence and `compass: { north: "-z", east: "+x", south: "+z", west: "-x" }`). Orlando's browser check passed.
+
 ### Notes for the next session (updated 2026-09-27)
 
 **Where things stand:**
 - 06.1, 06.2 and 06.3 are committed, one commit each, and their browser checklists passed.
 - 06.4 is committed, and its browser check passed.
-- **Side mission, asked for by Orlando: a compass.** The scene has a declared north, reported to the agent (in `get_scene` and the instructions), and the view shows a compass gizmo in a lower corner. Settle which way north points before building it.
+- **Side mission, done: the compass.** Orlando settled north = -z (with +x east, as the tools already said), fixed for every scene, and a rose in the lower right. See the Compass section below.
 - **Next is 06.5, lines and the Line tool (§7).** Point editing is written for free-forms, but the drag, the hit-testing and the overlay work on a list of points, so lines can reuse them. A line adds the y arrow on the selected point.
 
 **06.4, how I planned it (built as described in the 06.4 section, with the differences noted there):**
