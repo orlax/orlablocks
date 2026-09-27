@@ -146,12 +146,36 @@ Each increment ends with typecheck, the tests, a bundle build and a browser chec
 3. **07B.3 — Handles:** wall, taper and bevel knobs, and scale and height handles for tilted shapes.
 4. **07B.4 — Drawing on surfaces.**
 
+## 8B. Added after 07B.4: view and editing aids (07B.5–07B.7)
+
+Orlando's second pass, after 07B.4. The stairs bug was fixed and committed with 07B.4. The three aids are built together.
+
+- **07B.5 — The view bar:** a small bar at the top right, next to the error panel.
+  - It holds the **holes** toggle (moved from the status bar) and a **grid** toggle.
+  - While a node is isolated, it also shows that node's name with ✕.
+  - These are for clean views, and later for images.
+- **07B.6 — Isolate:**
+  - **How:** the outliner row's isolate button, or `I` on the single selected node. Only that node and what's in it show.
+  - **Groups:** isolating a group enters it, and what's drawn in an entered group now goes into it.
+  - **New things show:** anything new while isolated shows too, whether drawn, pasted or made by the agent.
+  - **Hidden nodes** can't be seen, picked, drawn on or snapped to, but holes outside the isolation still cut what shows.
+  - **Ending it:** `I` again, the ✕, or `Esc` with nothing selected.
+  - **Scope:** it's for this tab only and isn't an edit. The agent sees it as `view.isolated`.
+- **07B.7 — Lock:**
+  - **What it is:** `locked: true` on any node, with the outliner row's lock button or `update_nodes`.
+  - **What it stops:** a locked node and what's in it can't be clicked, hovered, marquee-selected or picked by `Cmd/Ctrl+A` in the view.
+  - **What still works:** they still count as surfaces to draw on and snap to. The outliner still selects them, and then they edit normally.
+  - **Undo:** locking and unlocking are undo steps (`Lock box_3`).
+  - **The agent** may still change locked nodes, and its instructions ask it to leave them alone unless asked.
+
 ## 9. Decisions
 
 - **Top-level holes:** a hole in a top-level group also cuts the loose top-level shapes it overlaps (the rule as written, with no exceptions).
 - **Doors cut their room and the rooms beside it:** P's sibling groups are in reach, so a doorway through two rooms' walls works with the door group inside one room.
 - **The inspector is draggable,** and kept on screen.
 - **The error-tab entry** is treated as the copy takeover (§4) unless it shows up again.
+- **The view bar** holds holes and grid (Orlando, after 07B.4).
+- **Isolating a group enters it,** so new shapes land inside. The agent sees the isolation, and may change locked nodes; locking is mostly a human's aid (Orlando).
 
 ## 10. Progress
 
@@ -291,4 +315,53 @@ Each increment ends with typecheck, the tests, a bundle build and a browser chec
 3. **Cylinders and slopes:** the Cylinder tool does the same. Over a tapered hill's slope, or a tilted shape, it falls through to the ground (no label).
 4. **The Pen:** its first click on a platform's top keeps every later point, the preview and the free-form at that height, with the label showing `y …`.
 5. **Unchanged:** Line and Ramp work as before, and drawing on empty ground is unchanged.
+
+### 07B.5–07B.7 — View bar, isolate and lock (done; checked in the browser by Orlando, with 07B.4)
+
+**What changed:**
+- **The rotated-stairs fix** (committed with 07B.4):
+  - **Cause:** `rampMesh` rounded its cut positions to 1e-7 but looked up each riser's tread with a 1e-9 tolerance. A stair whose length isn't round (anything not world-aligned) therefore read the wrong tread at some risers and dropped them.
+  - **Fix:** the tolerances are 1e-6 now. A regression test builds a turned stair with the same triangles as the aligned one.
+- **The view bar** (`ViewBar` in `ToolBar.tsx`) sits with the error panel in a new `.top-right` row: holes, grid, and the isolated node with ✕. The status bar lost its holes toggle.
+- **Isolate:**
+  - **State:** `App` keeps `isolation` (the node, and the IDs that existed when it started), and derives `visible`: the node's subtree plus everything new since.
+  - **The view** draws, picks, box-selects, finds surfaces and snaps only among visible shapes, while `cutters` still runs on everything.
+  - **The outliner** dims the rows that don't show.
+  - **Keys:** `I` toggles it. `Esc` first deselects (staying in the isolated group), then ends it.
+  - **Ending it** also happens when the isolated node goes away.
+  - **The agent:** `set_view` carries `isolated`, which the server keeps only while that node exists.
+- **Drawing in an entered group:** new shapes from any drawing tool get `parent` = the entered group.
+- **Lock:**
+  - **Data:** every node schema has `locked?: true`, `update_nodes` takes `locked: true / false` on any node (groups too), and the undo labels are `Lock …` and `Unlock …`.
+  - **Helper:** `lockedIds` (`tree.ts`) gives a node and its locked ancestors' subtrees.
+  - **The view:** `selectable` = the pickable shapes minus the locked ones (unless selected), used by clicking, hovering and the marquee. Surfaces and snapping still use everything that shows. `Cmd/Ctrl+A` skips locked and hidden nodes.
+  - **The outliner:** each row has a lock button (dim when a group it's in locks it) and an isolate button.
+- **Agent and docs:**
+  - The MCP instructions cover `view.isolated` and `locked`, and the server version is 0.0.10.
+  - The instructions are now 9.9 kB, still over the 9 kB budget: phase 08 should restructure them.
+  - CLAUDE.md and the glossary are updated (view bar, isolate, lock, entered group, grid, outliner, view, info-label).
+
+**Verified:**
+- Typecheck, 290 unit tests and the bundle build pass.
+- The new tests cover:
+  - `lockedIds` through groups;
+  - lock and unlock on a shape and on a group, with the undo labels;
+  - `view.isolated` kept only for an existing node;
+  - the rotated stair.
+- Scripted MCP check (5171): version 0.0.10, `update_nodes locked: true`, and `set_view` with `isolated` showing up in `get_scene`.
+
+**Browser checklist (also covers 07B.4, above):**
+1. **Rotated stairs:** a stepped ramp turned with the rotate handle (or drawn diagonally) looks like a proper staircase, and so does an L-shaped one.
+2. **View bar:** top right, holes and grid. Holes off hides the ghosts, but they still cut. Grid off hides the grid. It sits beside the error panel when there are errors.
+3. **Isolate:**
+   - Hover an outliner row of a room group, click the isolate button, and only that room shows. The view bar shows its name with ✕, and the other rows are dimmed.
+   - Draw a box: it lands inside that group and shows.
+   - A hole outside the room that cuts its wall still cuts it.
+4. **Ending isolation:** `I` with a node selected isolates it, `I` again ends it. `Esc` deselects first, then ends it. The ✕ ends it.
+5. **Lock:**
+   - Lock an island volume from its row. Clicking it, hovering it, box-selecting over it and Cmd+A don't pick it.
+   - Drawing a box on it still lands on its top.
+   - Clicking its row selects it, and the gizmo works.
+   - Unlock is one undo step.
+6. **Locked groups:** lock a group, and its children's rows show a dim lock and can't be picked in the view.
 

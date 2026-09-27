@@ -89,3 +89,10 @@ export function copyNodes(
     return copy;
   });
 }
+
+/** The nodes that are locked, by their own `locked` or an ancestor's: none of them can be picked in the view. */
+export function lockedIds(nodes: SceneNode[]): Set<string> {
+  const locked = new Set(nodes.filter((n) => n.locked).map((n) => n.id));
+  if (locked.size === 0) return locked;
+  return new Set(nodes.filter((n) => ancestry(nodes, n.id).some((id) => locked.has(id))).map((n) => n.id));
+}

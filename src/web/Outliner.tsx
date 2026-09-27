@@ -5,7 +5,10 @@ import {
   ChevronsDownUp,
   Circle,
   CircleDashed,
+  Focus,
   Folder,
+  Lock,
+  LockOpen,
   Square,
   SquareDashed,
   Squircle,
@@ -16,7 +19,7 @@ import {
 import { isHole } from "../shared/holes";
 import { Stairs } from "./icons";
 import type { SceneNode } from "../shared/scene.types";
-import { ancestry, childrenOf, isGroup, subtreeIds } from "../shared/tree";
+import { ancestry, childrenOf, isGroup, lockedIds, subtreeIds } from "../shared/tree";
 
 // A hole uses its shape's solid icon, drawn dotted (the `hole` class).
 const SHAPE_ICONS = {
@@ -48,7 +51,10 @@ function rowsOf(nodes: SceneNode[], collapsed: Set<string>): Row[] {
 /**
  * The outliner: the node tree as a collapsible panel on the left. Click selects (Shift or Cmd/Ctrl toggles),
  * double-click renames, dragging a row drops it before, after or into another (groups only), hovering a row
- * highlights its boxes in the view. Selecting something inside a collapsed group expands its ancestors.
+ * highlights its boxes in the view. Selecting something inside a collapsed group expands its ancestors. Each row
+ * has a lock (a locked node and what's in it can't be picked in the view; the outliner still selects them) and an
+ * isolate button (only that node and what's in it show), shown on hover or while on; rows outside the isolated
+ * node are dimmed.
  */
 export function Outliner({
   nodes,
@@ -57,6 +63,10 @@ export function Outliner({
   onHover,
   onRename,
   onPlace,
+  isolated,
+  visible,
+  onIsolate,
+  onLock,
 }: {
   nodes: SceneNode[];
   selection: string[];
@@ -65,7 +75,15 @@ export function Outliner({
   onHover: (id: string | null) => void;
   onRename: (id: string, name: string) => void;
   onPlace: (ids: string[], parent: string | null, before: string | null) => void;
+  /** The isolated node (null = everything shows), and isolating one (or ending it: null). */
+  isolated: string | null;
+  /** What the view shows while isolated (the isolated node's subtree, and what's new since); null = everything. */
+  visible: Set<string> | null;
+  onIsolate: (id: string | null) => void;
+  onLock: (id: string, locked: boolean) => void;
 }) {
+  const locked = lockedIds(nodes);
+
   const [open, setOpen] = useState(true);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [renaming, setRenaming] = useState<{ id: string; value: string } | null>(null);
@@ -181,6 +199,7 @@ export function Outliner({
             const classes = ["outliner-row"];
             if (selection.includes(node.id)) classes.push("selected");
             if (drop?.id === node.id) classes.push(`drop-${drop.where}`);
+            if (visible && !visible.has(node.id)) classes.push("outside");
             return (
               <div
                 key={node.id}
@@ -233,6 +252,38 @@ export function Outliner({
                         <TriangleAlert size={12} />
                       </span>
                     )}
+                    <span className="row-actions">
+                      <button
+                        type="button"
+                        className={node.locked ? "row-action on" : locked.has(node.id) ? "row-action inherited" : "row-action"}
+                        title={
+                          node.locked
+                            ? "Unlock: pick it in the view again"
+                            : locked.has(node.id)
+                              ? "Locked by a group it's in"
+                              : "Lock: it can't be picked in the view (the outliner still selects it)"
+                        }
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onLock(node.id, !node.locked);
+                        }}
+                        onDoubleClick={(e) => e.stopPropagation()}
+                      >
+                        {locked.has(node.id) ? <Lock size={12} /> : <LockOpen size={12} />}
+                      </button>
+                      <button
+                        type="button"
+                        className={isolated === node.id ? "row-action on" : "row-action"}
+                        title={isolated === node.id ? "End isolation: show everything (I)" : "Isolate: show only this and what's in it (I)"}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onIsolate(isolated === node.id ? null : node.id);
+                        }}
+                        onDoubleClick={(e) => e.stopPropagation()}
+                      >
+                        <Focus size={12} />
+                      </button>
+                    </span>
                   </>
                 )}
               </div>

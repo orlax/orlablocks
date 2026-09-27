@@ -38,6 +38,7 @@ type Footprinted = {
   id: string; // server-assigned, "box_1", "cylinder_1", ... never reused
   name?: string; // for people and the agent ("lobby"); not unique
   parent?: string; // the group it's in; none = top level
+  locked?: true; // can't be picked in the view (a human's editing aid; the outliner and the agent still reach it)
   kind: ShapeKind;
   x: number;
   z: number;
@@ -83,6 +84,7 @@ export type Freeform = {
   type: "freeform";
   name?: string;
   parent?: string;
+  locked?: true;
   kind: ShapeKind;
   y: number;
   height: number;
@@ -115,6 +117,7 @@ export type Line = {
   type: "line";
   name?: string;
   parent?: string;
+  locked?: true;
   color: ShapeColor;
   points: LinePoint[];
   thickness: number;
@@ -141,6 +144,7 @@ export type Ramp = {
   type: "ramp";
   name?: string;
   parent?: string;
+  locked?: true;
   kind: "volume";
   points: RampPoint[];
   width: number;
@@ -168,6 +172,7 @@ export type Group = {
   type: "group";
   name?: string;
   parent?: string;
+  locked?: true;
   createdBy: Actor;
 };
 
@@ -190,7 +195,7 @@ export type ShapePatch = Partial<Pick<Footprinted, "name" | "kind" | "x" | "z" |
   arrow?: LineArrow;
 };
 /** What an update op can change on any node: shape fields (shapes only), `name` and `parent`. */
-export type NodePatch = ShapePatch & { parent?: string };
+export type NodePatch = ShapePatch & { parent?: string; locked?: true };
 
 /**
  * What the editor currently shows. The camera looks down at the ground (x/z plane, y up) at a fixed pitch,
@@ -200,6 +205,7 @@ export type View = {
   focus: { x: number; z: number }; // ground point under the screen center
   yaw: number; // degrees, 0..360
   bounds: { x: number; z: number; width: number; depth: number };
+  isolated?: string; // the node isolated in the editor (only it and what's in it show); none = everything shows
 };
 
 export type Scene = {
@@ -321,6 +327,7 @@ const footprinted = {
   id: z.string(),
   name: z.string().optional(),
   parent: z.string().optional(),
+  locked: z.literal(true).optional(),
   kind: ShapeKindSchema,
   x: z.number(),
   z: z.number(),
@@ -349,6 +356,7 @@ const FreeformSchema = z.object({
   type: z.literal("freeform"),
   name: z.string().optional(),
   parent: z.string().optional(),
+  locked: z.literal(true).optional(),
   kind: ShapeKindSchema,
   y: z.number(),
   height: z.number().min(MIN_HEIGHT),
@@ -365,6 +373,7 @@ const LineSchema = z.object({
   type: z.literal("line"),
   name: z.string().optional(),
   parent: z.string().optional(),
+  locked: z.literal(true).optional(),
   color: ShapeColorSchema,
   points: z.array(LinePointSchema).min(MIN_LINE_POINTS).max(MAX_POINTS),
   thickness: z.number().min(MIN_THICKNESS).max(MAX_THICKNESS),
@@ -379,6 +388,7 @@ const RampSchema = z.object({
   type: z.literal("ramp"),
   name: z.string().optional(),
   parent: z.string().optional(),
+  locked: z.literal(true).optional(),
   // 07 let a ramp be a hole: those load as volumes.
   kind: z.enum(["volume", "hole"]).transform((): "volume" => "volume"),
   points: z.array(RampPointSchema).min(MIN_LINE_POINTS).max(MAX_POINTS),
@@ -394,6 +404,7 @@ const GroupSchema = z.object({
   type: z.literal("group"),
   name: z.string().optional(),
   parent: z.string().optional(),
+  locked: z.literal(true).optional(),
   createdBy: ActorSchema,
 });
 
@@ -588,6 +599,10 @@ export const NodeUpdateSchema = z.strictObject({
     .nullable()
     .optional()
     .describe("ID of the group to move it into, e.g. group_1; null moves it to the top level"),
+  locked: z
+    .boolean()
+    .optional()
+    .describe("Any node: true locks it (the human can't pick it or what's in it in the view), false unlocks it"),
 });
 export type NodeUpdate = z.input<typeof NodeUpdateSchema>;
 
@@ -645,6 +660,8 @@ export const ViewSchema = z.object({
   focus: z.object({ x: z.number(), z: z.number() }),
   yaw: z.number(),
   bounds: z.object({ x: z.number(), z: z.number(), width: z.number().positive(), depth: z.number().positive() }),
+  // The node the human has isolated (only it and what's in it show), if any.
+  isolated: z.string().optional(),
 });
 
 /** A project or scene name: trimmed, not empty. */

@@ -125,6 +125,30 @@ describe("scene store", () => {
     expect(listener).not.toHaveBeenCalled();
   });
 
+  it("reports the isolated node in the view, while it exists", () => {
+    const store = createSceneStore();
+    const [room] = store.drawShapes([{ kind: "room", x: 0, z: 0, width: 4, depth: 4 }], "human");
+    const view = { focus: { x: 0, z: 0 }, yaw: 45, bounds: { x: -30, z: -20, width: 60, depth: 40 } };
+    store.setView({ ...view, isolated: room.id });
+    expect(store.getScene().view.isolated).toBe(room.id);
+    store.setView({ ...view, isolated: "box_99" });
+    expect(store.getScene().view.isolated).toBeUndefined();
+  });
+
+  it("locks and unlocks any node, as one step each", () => {
+    const store = createSceneStore();
+    const [island] = store.drawShapes([{ kind: "volume", x: 0, z: 0, width: 20, depth: 20 }], "human");
+    const group = store.groupNodes({ ids: [island.id] }, "human");
+    store.updateNodes([{ id: island.id, locked: true }], "human");
+    expect(store.getScene().nodes.find((n) => n.id === island.id)).toMatchObject({ locked: true });
+    expect(store.getHistory().undoLabel).toBe(`Lock ${island.id}`);
+    store.updateNodes([{ id: island.id, locked: false }], "human");
+    expect(store.getScene().nodes.find((n) => n.id === island.id)?.locked).toBeUndefined();
+    expect(store.getHistory().undoLabel).toBe(`Unlock ${island.id}`);
+    store.updateNodes([{ id: group.id, locked: true }], "agent");
+    expect(store.getScene().nodes.find((n) => n.id === group.id)).toMatchObject({ locked: true });
+  });
+
   it("clears the scene without reusing IDs", () => {
     const store = createSceneStore();
     store.drawShapes([{ kind: "room", x: 0, z: 0, width: 1, depth: 1 }], "human");
@@ -465,7 +489,7 @@ describe("scene store groups", () => {
     expect(store.getHistory().undoLabel).toBe("Regroup box_2");
     store.groupNodes({ ids: ["box_2"] }, "human"); // group_2 inside group_1
     expect(() => store.updateNodes([{ id: "group_1", parent: "group_2" }], "agent")).toThrow(/"group_2" is inside "group_1"/);
-    expect(() => store.updateNodes([{ id: "group_1", x: 3 }], "agent")).toThrow(/only name and parent/);
+    expect(() => store.updateNodes([{ id: "group_1", x: 3 }], "agent")).toThrow(/only name, parent and locked/);
     store.updateNodes([{ id: "group_1", name: "lobby" }], "agent");
     expect(node(store, "group_1").name).toBe("lobby");
   });

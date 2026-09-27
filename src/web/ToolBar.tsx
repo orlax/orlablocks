@@ -1,6 +1,10 @@
 import {
   Box as BoxIcon,
   Cylinder,
+  Eye,
+  EyeOff,
+  Focus,
+  Grid3x3,
   Hand,
   MousePointer2,
   PenTool,
@@ -11,6 +15,7 @@ import {
   Trash2,
   Undo2,
   Waypoints,
+  X,
   type LucideIcon,
 } from "lucide-react";
 import { PALETTE, SHAPE_COLORS, type HistorySummary, type ShapeColor, type ShapeKind } from "../shared/scene.types";
@@ -161,3 +166,45 @@ export function ContextualBar({
     </div>
   );
 }
+
+/**
+ * The view bar, top right: what the view shows. Holes as ghosts (off: only what they cut away shows, for a clean
+ * look) and the grid, both for this tab only; and while a node is isolated, which one, with ✕ to show everything.
+ */
+export function ViewBar({
+  holes,
+  grid,
+  isolated,
+}: {
+  holes: { on: boolean; onToggle: () => void };
+  grid: { on: boolean; onToggle: () => void };
+  isolated: { label: string; onEnd: () => void } | null;
+}) {
+  return (
+    <div className="view-bar">
+      {isolated && (
+        <>
+          <span className="isolated" title="Only this and what's in it show (Esc with nothing selected, or I, shows everything)">
+            <Focus size={13} /> {isolated.label}
+            <button type="button" title="Show everything" onClick={isolated.onEnd}>
+              <X size={13} />
+            </button>
+          </span>
+          <span className="sep" />
+        </>
+      )}
+      <button
+        type="button"
+        className={holes.on ? "toggle" : "toggle off"}
+        title={holes.on ? "Hide holes: see only what they cut away" : "Show holes as ghosts"}
+        onClick={holes.onToggle}
+      >
+        {holes.on ? <Eye size={13} /> : <EyeOff size={13} />} holes
+      </button>
+      <button type="button" className={grid.on ? "toggle" : "toggle off"} title={grid.on ? "Hide the grid" : "Show the grid"} onClick={grid.onToggle}>
+        <Grid3x3 size={13} /> grid
+      </button>
+    </div>
+  );
+}
+

@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState, type ComponentProps } from "react";
-import { ChevronDown, Eye, EyeOff, Map as MapIcon } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps } from "react";
+import { ChevronDown, Map as MapIcon } from "lucide-react";
 import {
   DEFAULT_COLOR,
   DEFAULT_LINE_COLOR,
@@ -21,7 +21,7 @@ import {
   type View,
 } from "../shared/scene.types";
 import { footprintBounds, isClosed, isTilted, polyline, rampStations, reversePoints, round2, wallOf } from "../shared/geometry";
-import { shapesUnder, childrenOf, isShape, isGroup } from "../shared/tree";
+import { shapesUnder, childrenOf, isShape, isGroup, lockedIds, subtreeIds } from "../shared/tree";
 import type { CameraState, GroundPoint } from "./camera";
 import { clipboardText, readClipboard } from "./clipboard";
 import { ErrorPanel } from "./ErrorPanel";
@@ -30,7 +30,7 @@ import { Inspector, type InspectorProps } from "./Inspector";
 import { highlightedText, typingInField } from "./keys";
 import { Outliner } from "./Outliner";
 import { ProjectPicker } from "./ProjectPicker";
-import { ContextualBar, EDIT_POINTS_HINT, HINTS, TOOLS, ToolBar } from "./ToolBar";
+import { ContextualBar, EDIT_POINTS_HINT, HINTS, TOOLS, ToolBar, ViewBar } from "./ToolBar";
 import { useScene } from "./useScene";
 import { Viewport, type KindFields, type LineStyle, type RampStyle, type Tool } from "./Viewport";
 
@@ -123,8 +123,12 @@ export function App() {
   const lastCopy = useRef<{ dx: number; dy: number; dz: number } | null>(null);
   // The Ramp tool's next ramp.
   const [nextRamp, setNextRamp] = useState<RampStyle>({ kind: "volume", width: DEFAULT_RAMP_WIDTH, base: "solid", color: DEFAULT_COLOR });
-  // Whether holes show as ghosts (off: only what they cut away shows).
+  // The view bar: whether holes show as ghosts (off: only what they cut away shows), and the grid.
   const [showHoles, setShowHoles] = useState(true);
+  const [showGrid, setShowGrid] = useState(true);
+  // Isolation: only this node and what's in it show, plus anything new since it started (`before`: the IDs then),
+  // so what's drawn or pasted meanwhile doesn't vanish. For this tab only; not an edit.
+  const [isolation, setIsolation] = useState<{ id: string; before: Set<string> } | null>(null);
   // The inspector's sliders while held: their values on the shapes, before they're sent. Cleared when the next scene
   // (the sent value) arrives, when the selection changes, and on an error.
   const [preview, setPreview] = useState<Record<string, ShapePatch> | null>(null);
@@ -132,9 +136,38 @@ export function App() {
   const [notice, setNotice] = useState<string | null>(null);
 
   const nodes = scene?.nodes ?? [];
+  const isolated = isolation?.id ?? null;
+  const isolatedNode = isolated !== null ? nodes.find((n) => n.id === isolated) : undefined;
+  const visible = useMemo(() => {
+    if (!isolation) return null;
+    const inside = subtreeIds(nodes, isolation.id);
+    return new Set(nodes.filter((n) => inside.has(n.id) || !isolation.before.has(n.id)).map((n) => n.id));
+  }, [nodes, isolation]);
   // The key handler is installed once; it reads the current state from here.
-  const state = useRef({ nodes, selection, context, open, pickerOpen, view });
-  state.current = { nodes, selection, context, open, pickerOpen, view };
+  const state = useRef({ nodes, selection, context, open, pickerOpen, view, visible, isolated });
+  state.current = { nodes, selection, context, open, pickerOpen, view, visible, isolated };
+
+  /** Isolates a node (null ends it). Isolating a group enters it, so what's drawn next goes in it. */
+  const isolate = useCallback(
+    (id: string | null) => {
+      const all = state.current.nodes;
+      const node = id === null ? undefined : all.find((n) => n.id === id);
+      if (!node) {
+        setIsolation(null);
+        return;
+      }
+      setIsolation({ id: node.id, before: new Set(all.map((n) => n.id)) });
+      if (isGroup(node)) {
+        setContext(node.id);
+        setSelection((sel) => sel.filter((s) => s !== node.id));
+      }
+    },
+    [],
+  );
+  // An isolated node that's gone (deleted, undone, another scene) ends the isolation.
+  useEffect(() => {
+    if (isolation && !nodes.some((n) => n.id === isolation.id)) setIsolation(null);
+  }, [nodes, isolation]);
 
   const activeTool: Tool = spaceHand ? "hand" : tool;
   const boxes = nodes.filter(isShape);
@@ -199,8 +232,8 @@ export function App() {
   // Tell the server what's visible so the agent's get_scene knows where to draw, and where the camera is, so the
   // scene reopens there.
   useEffect(() => {
-    if (connected && camera) send({ type: "set_view", view, camera });
-  }, [connected, view, camera, send]);
+    if (connected && camera) send({ type: "set_view", view: { ...view, ...(isolated ? { isolated } : {}) }, camera });
+  }, [connected, view, camera, send, isolated]);
 
   // Tell the server what's selected so the agent knows what "this" means. The last tab to change it wins.
   const selectionKey = selection.join(",");
@@ -232,7 +265,7 @@ export function App() {
     const onKeyDown = (e: KeyboardEvent) => {
       if (typingInField(e)) return;
       const key = e.key.toLowerCase();
-      const { nodes, selection, context, open, pickerOpen } = state.current;
+      const { nodes, selection, context, open, pickerOpen, visible, isolated } = state.current;
       // Nothing to edit while the picker is up (and while nothing is open, it always is).
       if (!open || pickerOpen) return;
       const mod = (e.metaKey || e.ctrlKey) && !e.altKey;
@@ -243,7 +276,9 @@ export function App() {
       }
       if (mod && !e.shiftKey && key === "a") {
         e.preventDefault();
-        setSelection(childrenOf(nodes, context ?? undefined).map((n) => n.id));
+        // Not what's locked or hidden by the isolation.
+        const locked = lockedIds(nodes);
+        setSelection(childrenOf(nodes, context ?? undefined).filter((n) => !locked.has(n.id) && (!visible || visible.has(n.id))).map((n) => n.id));
         return;
       }
       if (mod && key === "g") {
@@ -290,8 +325,19 @@ export function App() {
         return;
       }
       if (e.key === "Escape") {
-        setSelection([]);
-        setContext(null);
+        // While isolated, Esc deselects first (staying in the isolated group), then ends the isolation.
+        if (isolated && selection.length > 0) setSelection([]);
+        else {
+          setSelection([]);
+          setContext(null);
+          if (isolated) isolate(null);
+        }
+      }
+      // I isolates the single selected node, or ends the isolation.
+      if (key === "i") {
+        if (selection.length === 1 && selection[0] !== isolated) isolate(selection[0]);
+        else if (isolated) isolate(null);
+        return;
       }
       if ((e.key === "Delete" || e.key === "Backspace") && selection.length > 0) {
         e.preventDefault();
@@ -531,12 +577,21 @@ export function App() {
         nextLine={nextLine}
         nextRamp={nextRamp}
         showHoles={showHoles}
+        showGrid={showGrid}
+        visible={visible}
         preview={preview}
         onSelect={setSelection}
         onDrawShape={(shape) =>
           send({
             type: "add_shapes",
-            shapes: [{ ...shape, color: shape.type === "line" ? nextLine.color : shape.type === "ramp" ? nextRamp.color : nextColor }],
+            // Into the entered group (an isolated group is entered), like a paste.
+            shapes: [
+              {
+                ...shape,
+                ...(context !== null ? { parent: context } : {}),
+                color: shape.type === "line" ? nextLine.color : shape.type === "ramp" ? nextRamp.color : nextColor,
+              },
+            ],
           })
         }
         onUpdate={(changes) => send({ type: "update_nodes", changes })}
@@ -564,6 +619,10 @@ export function App() {
         onHover={setOutlinerHover}
         onRename={(id, name) => send({ type: "update_nodes", changes: [{ id, name }] })}
         onPlace={(ids, parent, before) => send({ type: "place_nodes", ids, parent, before })}
+        isolated={isolated}
+        visible={visible}
+        onIsolate={isolate}
+        onLock={(id, locked) => send({ type: "update_nodes", changes: [{ id, locked }] })}
       />
 
       {open && (
@@ -600,15 +659,6 @@ export function App() {
             : "—"}
         </span>
         <span className="sep" />
-        <button
-          type="button"
-          className={showHoles ? "holes-toggle" : "holes-toggle off"}
-          title={showHoles ? "Hide holes: see only what they cut away" : "Show holes as ghosts"}
-          onClick={() => setShowHoles(!showHoles)}
-        >
-          {showHoles ? <Eye size={13} /> : <EyeOff size={13} />} holes
-        </button>
-        <span className="sep" />
         <span className={notice ? "hint notice" : "hint"}>{notice ?? (editing && activeTool === "select" ? EDIT_POINTS_HINT : HINTS[activeTool])}</span>
       </div>
 
@@ -628,7 +678,20 @@ export function App() {
 
       {inspector && <Inspector {...inspector} />}
 
-      <ErrorPanel />
+      <div className="top-right">
+        {open && (
+          <ViewBar
+            holes={{ on: showHoles, onToggle: () => setShowHoles(!showHoles) }}
+            grid={{ on: showGrid, onToggle: () => setShowGrid(!showGrid) }}
+            isolated={
+              isolated
+                ? { label: isolatedNode ? title(isolatedNode) : isolated, onEnd: () => isolate(null) }
+                : null
+            }
+          />
+        )}
+        <ErrorPanel />
+      </div>
 
       {connected && (open === null || pickerOpen) && (
         <ProjectPicker

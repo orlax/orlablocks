@@ -437,10 +437,6 @@ body {
 
 /* The error panel, top right: a red count while there are errors, which opens the log. */
 .error-panel {
-  position: fixed;
-  top: 12px;
-  right: 12px;
-  z-index: 20;
   display: flex;
   flex-direction: column;
   align-items: flex-end;
@@ -534,20 +530,67 @@ body {
 /* A hole's icon is its shape's, dotted; a hole that cuts nothing (outside any group) gets a warning. */
 .outliner-row .icon.hole { stroke-dasharray: 2 2.5; }
 .outliner-row .warn { display: inline-flex; margin-left: auto; color: #f5c518; }
+/* A row's lock and isolate buttons: shown on hover, or while on (a lock from a group it's in shows dim). */
+.outliner-row .row-actions { display: inline-flex; gap: 1px; margin-left: auto; flex: none; }
+.outliner-row .id + .row-actions, .outliner-row .warn + .row-actions { margin-left: 4px; }
+.outliner-row .row-action {
+  display: inline-flex;
+  padding: 2px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  visibility: hidden;
+}
+.outliner-row:hover .row-action, .outliner-row .row-action.on, .outliner-row .row-action.inherited { visibility: visible; }
+.outliner-row .row-action.inherited { opacity: 0.5; }
+.outliner-row .row-action.on { color: #8fb4f2; }
+.outliner-row .row-action:hover { background: rgba(255, 255, 255, 0.1); color: var(--bar-text); }
+/* Rows outside the isolated node: hidden in the view. */
+.outliner-row.outside { opacity: 0.45; }
 
-/* The info-label's Show holes toggle. */
-.info-label .holes-toggle {
+/* Top right: the view bar, then the error panel (while there are errors). */
+.top-right {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  z-index: 20;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  max-width: calc(100vw - 24px);
+}
+/* The view bar: holes and grid toggles, and the isolated node. */
+.view-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 30px;
+  padding: 0 6px;
+  border-radius: 8px;
+  background: var(--bar-bg);
+  color: var(--bar-text);
+  font: 12px/1 system-ui, sans-serif;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.25);
+}
+.view-bar button {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  height: 22px;
+  padding: 0 6px;
   border: 0;
+  border-radius: 5px;
   background: none;
   color: inherit;
   font: inherit;
   cursor: pointer;
-  padding: 0 4px;
 }
-.info-label .holes-toggle.off { opacity: 0.55; }
+.view-bar button:hover { background: rgba(255, 255, 255, 0.08); }
+.view-bar button.toggle.off { opacity: 0.5; }
+.view-bar .isolated { display: inline-flex; align-items: center; gap: 5px; padding-left: 4px; color: #8fb4f2; font-weight: 600; white-space: nowrap; }
+.view-bar .isolated button { padding: 0 3px; color: var(--bar-text); }
 
 /* The inspector: a floating panel, top right below the error panel, dragged by its header. Its fields sit in
    labeled rows, grouped in sections. */

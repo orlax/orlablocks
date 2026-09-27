@@ -128,6 +128,9 @@ const INSTRUCTIONS =
   '"this" or "these", they mean the selection. ' +
   "The scene's `view` is what the editor shows: `focus` (the ground point at the screen center), `yaw` and `bounds` " +
   "(x, z at its min corner, width, depth) around the visible ground; draw near `focus` to be on screen. " +
+  "`view.isolated` is the node the human has isolated (only it and what's in it show, so \"this room\" is it); put " +
+  "new shapes for it inside it. A node with `locked: true` can't be picked in the editor (the human's aid, e.g. an " +
+  "island they draw on top of): leave locked nodes alone unless asked (update_nodes locked: true / false). " +
   "Every tool call that changes the scene is one step in the undo history shared with the human.";
 
 const json = (value: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }] });
@@ -169,7 +172,7 @@ function buildServer(workspace: Workspace) {
     const warnings = holeWarnings(store().getScene().nodes);
     return warnings.length > 0 ? { ...result, warnings } : result;
   };
-  const server = new McpServer({ name: "dungeon-designer", version: "0.0.9" }, { instructions: INSTRUCTIONS });
+  const server = new McpServer({ name: "dungeon-designer", version: "0.0.10" }, { instructions: INSTRUCTIONS });
   // Every tool reads or edits the open scene, and fails with a clear message while nothing is open.
   const store = () => workspace.requireScene();
 
@@ -227,7 +230,7 @@ function buildServer(workspace: Workspace) {
         `a cylinder those and sides; a free-form name, parent, kind, y, height, color, wall, taper, bevel and points (the whole outline); a line name, parent, color, ` +
         `points (the whole path, with y), thickness, dashed and arrow; a ramp name, parent, color, ` +
         `points (with y), width, step (null = smooth) and base. ` +
-        `A group takes only name and parent. ` +
+        `A group takes only name, parent and locked (any node takes locked). ` +
         `{ id, type: "freeform" } alone converts a box or cylinder into a free-form with a new ID; a call that converts ` +
         `only converts (edit the new free-form in a second call). ` +
         `Values are absolute (x: 4 moves the center to x = 4); to shift boxes or whole groups by an offset, use move_nodes instead. ` +

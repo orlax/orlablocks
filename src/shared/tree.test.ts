@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Box, Group, SceneNode } from "./scene.types";
-import { ancestry, shapesUnder, childrenOf, commonParent, copyNodes, selectableAt, subtreeIds, topmost } from "./tree";
+import { ancestry, shapesUnder, childrenOf, commonParent, copyNodes, lockedIds, selectableAt, subtreeIds, topmost } from "./tree";
 
 const group = (id: string, parent?: string): Group => ({ id, type: "group", createdBy: "human", ...(parent ? { parent } : {}) });
 const box = (id: string, parent?: string): Box => ({
@@ -24,6 +24,12 @@ const box = (id: string, parent?: string): Box => ({
 const nodes: SceneNode[] = [box("box_2", "group_2"), group("group_1"), box("box_1", "group_1"), group("group_2", "group_1"), box("box_3", "group_2"), box("box_4")];
 
 describe("tree", () => {
+  it("locks a node and everything in it", () => {
+    expect(lockedIds(nodes).size).toBe(0);
+    const locked = nodes.map((n) => (n.id === "group_2" || n.id === "box_4" ? { ...n, locked: true as const } : n));
+    expect([...lockedIds(locked)].sort()).toEqual(["box_2", "box_3", "box_4", "group_2"]);
+  });
+
   it("lists children in list order", () => {
     expect(childrenOf(nodes, undefined).map((n) => n.id)).toEqual(["group_1", "box_4"]);
     expect(childrenOf(nodes, "group_2").map((n) => n.id)).toEqual(["box_2", "box_3"]);

@@ -40,7 +40,7 @@ import {
   type Point,
   type Point3,
 } from "../shared/geometry";
-import { shapesUnder, isGroup, isShape, selectableAt } from "../shared/tree";
+import { shapesUnder, isGroup, isShape, lockedIds, selectableAt } from "../shared/tree";
 import { cutters, isHole } from "../shared/holes";
 import { ShapeMesh } from "./ShapeMesh";
 import {
@@ -272,6 +272,10 @@ type Props = {
   nextRamp: RampStyle;
   /** Whether holes show as ghosts (off: only the result shows, and hidden holes can't be clicked). */
   showHoles: boolean;
+  /** Whether the grid shows (the view bar). */
+  showGrid: boolean;
+  /** While a node is isolated, the nodes that show (null = everything): the rest can't be seen, picked or snapped to. */
+  visible: Set<string> | null;
   /** Values held in the inspector (a slider being dragged), shown on their shapes before they're sent. */
   preview: Record<string, ShapePatch> | null;
   onSelect: (ids: string[]) => void;
@@ -308,6 +312,8 @@ export function Viewport({
   nextLine,
   nextRamp,
   showHoles,
+  showGrid,
+  visible,
   preview,
   onSelect,
   onDrawShape,
@@ -388,7 +394,15 @@ export function Viewport({
   const ghosts = override?.copy ? override.origin.map((b) => ({ ...moved(b), id: `${b.id}:copy` }) as Shape) : [];
   // Hidden holes (Show holes off) can't be clicked or marquee-selected, unless they're selected.
   const selectedIds = new Set(shapesUnder(nodes, selection).map((b) => b.id));
-  const pickable = showHoles ? shown : shown.filter((b) => !isHole(b) || selectedIds.has(b.id));
+  // Isolation hides what's outside it (holes outside it still cut what shows: the cut follows the data).
+  const onView = visible ? shown.filter((b) => visible.has(b.id)) : shown;
+  const onViewRef = useRef(onView);
+  onViewRef.current = onView;
+  const pickable = showHoles ? onView : onView.filter((b) => !isHole(b) || selectedIds.has(b.id));
+  // Locked nodes (and what's in them) can't be clicked, hovered or marquee-selected, unless selected from the
+  // outliner; they still count as surfaces to draw on and snap to.
+  const locked = lockedIds(nodes);
+  const selectable = pickable.filter((b) => !locked.has(b.id) || selectedIds.has(b.id));
   // Which holes cut which shapes, as shown (so a drag cuts live).
   const cuts = cutters([...nodes.filter(isGroup), ...shown, ...ghosts]);
   // The free-form or line in point editing, as shown. A free-form's points sit on its top face (`editTop`); a
@@ -476,7 +490,7 @@ export function Viewport({
    * within a few px of their path on screen), else the first closed shape the ray hits.
    */
   const hitAt = (sx: number, sy: number, size: Size) =>
-    pickLine(cam.current, size, sx, sy, pickable) ?? pickHit(screenRay(cam.current, size, sx, sy), pickable);
+    pickLine(cam.current, size, sx, sy, selectable) ?? pickHit(screenRay(cam.current, size, sx, sy), selectable);
   const pickAt = (sx: number, sy: number, size: Size) => {
     const id = hitAt(sx, sy, size)?.id;
     return id === undefined ? null : resolve(id).id;
@@ -542,7 +556,7 @@ export function Viewport({
    */
   const dragTo = (d: Drag, sx: number, sy: number, keys: { shiftKey: boolean; altKey: boolean; metaKey: boolean; ctrlKey: boolean }): Drag => {
     const copy = keys.altKey && canCopy(d.part);
-    const others = copy ? boxesRef.current : boxesRef.current.filter((b) => !d.ids.includes(b.id));
+    const others = copy ? onViewRef.current : onViewRef.current.filter((b) => !d.ids.includes(b.id));
     const mods = { shift: keys.shiftKey, alt: keys.altKey, snap: !noSnap(keys) };
     const size = { width: wrap.current!.clientWidth, height: wrap.current!.clientHeight };
     const { patches, label, turn } = dragUpdate(d, cam.current, size, sx, sy, mods, others);
@@ -737,7 +751,7 @@ export function Viewport({
       const from = pointY(q, 0);
       const raw = from + paramOnLine(cam.current, size, sx, sy, { x: q.x, y: from, z: q.z }, AXES.y) - d.grabY!;
       const near = { minX: q.x - 0.01, maxX: q.x + 0.01, minY: from, maxY: from, minZ: q.z - 0.01, maxZ: q.z + 0.01 };
-      const y = snapElevation(raw, elevationTargets(near, boxesRef.current), !noSnap(e));
+      const y = snapElevation(raw, elevationTargets(near, onViewRef.current), !noSnap(e));
       const points = movePoints(d.start, d.indices, 0, 0, y - from);
       setPointDrag({ ...d, points, problem: pointsProblem(points), sx, sy, label: `y ${y.toFixed(2)} m` });
       return;
@@ -867,7 +881,7 @@ export function Viewport({
         // The selection follows the marquee live.
         // Boxes resolve to the nodes at the current level; inside a group, boxes outside it don't count.
         const hits: string[] = [];
-        for (const id of marqueeHits(cam.current, size, pickable, rectFrom(marquee.start, end))) {
+        for (const id of marqueeHits(cam.current, size, selectable, rectFrom(marquee.start, end))) {
           const r = resolve(id);
           if (!r.leaves && !hits.includes(r.id)) hits.push(r.id);
         }
@@ -1183,10 +1197,10 @@ export function Viewport({
         <CameraRig cam={cam} yawKeys={yawKeys} onViewChange={onViewChange} />
         <CompassSync cam={cam} rose={rose} />
         <Lighting cam={cam} />
-        <Grid cam={cam} />
+        {showGrid && <Grid cam={cam} />}
         <OriginAxes />
         <Boxes
-          boxes={[...shown, ...ghosts]}
+          boxes={[...onView, ...ghosts]}
           cuts={cuts}
           showHoles={showHoles}
           draft={draft}
