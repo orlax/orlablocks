@@ -1,0 +1,326 @@
+# 06 — More Shapes
+
+> **For the agent reading this:** Read `plans/03-UX-improvements` (the editor, the gizmo, picking, the marquee) and `plans/05-second-ux-improvements` (copy, mirror, the MCP instructions) first. The idea came from `plans/thinking-01-entities`. Until now the scene has had one shape, the box. This phase adds three:
+> - **cylinders**: circles, ovals and regular polygons, as rooms or volumes;
+> - **free-form shapes**: closed bezier outlines drawn with a pen, as rooms or volumes;
+> - **lines**: open 3D bezier paths with a thickness, dashes and arrows, for annotations.
+>
+> A box or cylinder can be **converted to free-form**, and free-forms and lines have a **point editing** mode. The groundwork comes first: every closed shape reduces to a **footprint polygon**, and rendering, picking, the marquee, bounds and room walls all run from it, so each new shape adds only its own small cases. The agent gets all of it through **`draw_shapes`** (which replaces `draw_boxes`) and `update_nodes`, with no other new tools. The work is split into small increments (§11). Each one ends with the human ↔ agent loop still working and a browser checklist for Orlando. Add this phase's terms to `GLOSSARY.md` (marked "from 06") as they land. Log progress in a §14 at the end of this file, as 05 did.
+
+---
+
+## 1. Goal
+
+One demo, end to end:
+
+1. Orlando presses `C` and drags a round tower room. On the contextual bar he sets **sides** to 8, and it becomes an octagon with flat walls facing north, south, east and west. `Shift` while dragging a second one keeps it a circle, and without it he gets an oval arena.
+2. He presses `P` and clicks out a cave: some corners, and some click-drags that pull out curves. Clicking the first point closes it, and it becomes a room with curved walls.
+3. He selects a box room, clicks **Convert to free-form**, and double-clicks it. Its four corners show as points. He drags one out to make the room a trapezoid, clicks an edge to add a point, and pulls a handle to curve a wall.
+4. He presses `L` and clicks a platform's top, then the ground 6 m away, dragging the second click to curve it: a jump arc. On the contextual bar he turns on **dashes** and an **end arrow** and makes the line thicker.
+5. He asks the agent for *"a circular shrine room, 10 m across, with a crescent-shaped pool in it and a dashed path from the door to the altar"*. It's one `draw_shapes` call: a cylinder, a free-form volume and a line.
+
+---
+
+## 2. Scope
+
+### In
+
+- **The footprint refactor:** every closed shape gives a footprint polygon (in world x/z), and rendering, picking, the marquee, bounds and room walls use it. Move, rotate, mirror, copy and paste become one function per shape type in `geometry.ts`. Boxes look and behave exactly as before.
+- **Cylinder:** a new shape type with the box's fields plus `sides`. Ovals are allowed. Cylinder tool (`C`).
+- **Free-form:** a new shape type, a closed outline of points with bezier handles, in absolute world coordinates. Pen tool (`P`).
+- **Line:** a new node type, an open path of 3D points with bezier handles, with a thickness, dashes and arrows. Line tool (`L`).
+- **Point editing** for free-forms and lines: move points and handles, add and remove points, switch between corner and smooth.
+- **Convert to free-form** for boxes and cylinders.
+- **Agent:** `draw_shapes` replaces `draw_boxes`. `update_nodes` gains the new fields, and conversion goes through it. Every other tool works on every shape unchanged.
+
+### Out (deliberately deferred)
+
+- **Boolean operations** (union, subtract). This is a layout tool, not a modeler.
+- **Free-forms with holes** (a room around a courtyard).
+- **Open walls and corridors with a width** (the vision's "path with width").
+- **Ramps and sloped tops** (points at different heights on a free-form). They matter a lot for a platformer, so they get their own discussion.
+- **Snapping to other shapes' points and edges.** Points snap to the 0.5 m grid only.
+- Spheres, cones and other primitives.
+- Closed lines (loops), and text on lines.
+- Converting a free-form back to a box or cylinder, and converting lines.
+- **Doors, windows and holes** (entities, a later phase). §9 keeps their anchoring possible.
+
+---
+
+## 3. Naming and data
+
+**A shape** is any node that isn't a group: a box, a cylinder, a free-form or a line. Boxes, cylinders and free-forms have a **kind** (room or volume), an elevation and a height. A line has neither.
+
+| type | ID | fields (besides `id`, `type`, `name?`, `parent?`, `createdBy`) |
+|---|---|---|
+| `box` | `box_N` | unchanged: `kind, x, z, y, width, depth, height, rotation, color` |
+| `cylinder` | `cylinder_N` | the box's fields, plus `sides?` |
+| `freeform` | `freeform_N` | `kind, y, height, color, points: FootPoint[]` (3 or more) |
+| `line` | `line_N` | `color, points: LinePoint[]` (2 or more), `thickness`, `dashed`, `arrow` |
+| `group` | `group_N` | unchanged |
+
+- **Points:**
+  - A `FootPoint` is `{ x, z, in?, out? }`.
+  - A `LinePoint` is `{ x, y, z, in?, out? }`.
+  - `in` and `out` are the point's bezier handles, as offsets from the point (`{ x, z }` for a free-form, `{ x, y, z }` for a line). A point with no handles is a corner. An edge between two points is straight unless one of its ends has a handle on that side (`out` of the first point, `in` of the second).
+- **Absolute world coordinates** for free-form and line points (decision 2). They have no `x, z` and no `rotation`, like a group. The agent reads and writes points where they are, with no trig.
+- **Every value is rounded to 2 decimals,** as today.
+- **ID counters:** the scene file's `nextId` gains `cylinder`, `freeform` and `line`, each defaulting to 1 so that existing scenes load unchanged. Each type has its own counter, like `box` and `group` today.
+- **Counts:** the info-label's `3 rooms · 2 volumes · 1 group` counts every room and volume, whatever the shape, and adds lines when there are any (`· 2 lines`). `get_scene`'s summary does the same.
+
+---
+
+## 4. The footprint refactor
+
+- **`footprint(node)`** in `geometry.ts` returns the closed shape's outline as a world x/z polygon, counterclockwise seen from above:
+  - a box: its 4 corners;
+  - a cylinder: its `sides` corners, or 64 for a smooth one;
+  - a free-form: its points, with each curved edge sampled into 16 segments (`sampleEdge`).
+- **Lines** have a `polyline(line)` instead: the 3D points with the curves sampled the same way.
+- **Everything else runs from those two,** instead of from `width`, `depth` and `rotation`:
+  - **Bounds:** `boundsOf` takes any shape, so group bounds, the rotate pivot, the mirror pivot, paste's centering and elevation snap targets all include the new shapes. A line's bounds come from its polyline, including y.
+  - **Rendering:**
+    - `BoxMesh` becomes `ShapeMesh`. A volume is the footprint extruded from `y` to `y + height`.
+    - A room is walls made from the footprint offset outward and inward by half the wall thickness (the outer polygon with the inner one as a hole), plus a floor slab. That generalizes today's `wallGeometry`.
+    - A room too narrow to have an inside renders solid, as now.
+    - UVs keep today's rule: pick the plane from the face's dominant normal and tile every 1 m. Unrotated shapes then line up with the grid.
+    - Lines have their own mesh (§7).
+  - **Picking:** the ray against a prism with a polygon footprint. It tests the top face (point in polygon) and each side edge's vertical quad. Rooms keep the open top, so a ray that enters it hits the floor or an inner wall. This replaces the box slab test, and lines are picked on screen (§7).
+  - **The marquee:** today it overlaps the rectangle with the convex hull of a box's corners. A free-form can be concave, so the test becomes "any edge of the projected footprint crosses the rectangle, or one contains the other". It uses the projected top and bottom outlines, which covers walls. Lines test their projected polyline.
+- **Per-type edit cases** in `geometry.ts`: `moveShape(node, dx, dy, dz)`, `rotateShape(node, pivot, degrees)`, `mirrorShape(node, axis, sum)` and `scaleShape` return a patch.
+  - **Boxes and cylinders** keep today's math.
+  - **Free-forms and lines** change their points.
+  - The store, copy (`copyNodes`), paste and the gizmo's drag previews call these instead of assuming box fields. `BoxPatch` becomes `ShapePatch`, which includes `points`.
+- **`draw_boxes` becomes `draw_shapes`** in this increment (boxes only for now), so the agent's surface changes once (§10).
+
+---
+
+## 5. Cylinder
+
+- **Data:** the box's fields plus `sides?`, an integer from 3 to 64. When it's left out, the cylinder is smooth. `width` and `depth` can differ, which gives an oval or a stretched polygon (decision 4).
+- **Where the corners go:** on the ellipse inscribed in the width × depth footprint, with a **flat edge facing local +x**. Corner `i` sits at angle `(i + ½) × 360° / sides`, measured from local +x. An octagon then has flat walls facing N, S, E and W, and `sides: 4` is a box.
+- **The editor:**
+  - **Cylinder tool (`C`)**, a new tool-bar button. It drags a footprint exactly like the Box tool: corner to corner, `Shift` for a circle, `Alt` from the center, `Cmd/Ctrl` for no snap. The contextual bar has the box tool's kind and color, plus **sides**: a small field with − / + buttons and a **smooth** toggle.
+  - **Selected, the gizmo is the box's:** 8 scale handles on the footprint rectangle, the height handle, rotate and the arrows. The contextual bar shows sides for a single cylinder.
+- **Mirror** has its own case:
+  - Mirroring on **Z**: `rotation → −rotation`, as for a box.
+  - Mirroring on **X**: `rotation → 180 − rotation` when the side count is odd. A triangle or pentagon isn't symmetric across its local z axis, so the box rule would give the wrong shape. Even and smooth cylinders are symmetric both ways and keep `−rotation`. It's tested with a pentagon: mirroring twice restores it exactly.
+- **Default heights:** the same as a box's (3 m for a room, 0.25 m for a volume).
+- **Outliner icon:** a circle, drawn with a room or volume style that matches the box icons.
+
+---
+
+## 6. Free-form and the Pen tool
+
+### Data and rules
+
+- Closed, with 3 or more points, in absolute world x/z at elevation `y`, rising to `y + height`.
+- **Rejected by the server:** fewer than 3 distinct points, a sampled outline that crosses itself, or a zero area. The error names the problem ("the outline crosses itself between points 2 and 5").
+- **Winding doesn't matter.** Points are stored in the order they were drawn. The footprint is normalized to counterclockwise when it's computed, so a mirror never needs to reorder points, and point indices stay stable (§9).
+
+### The Pen tool (`P`)
+
+- **Click** adds a corner point. **Click and drag** adds a smooth point: the drag pulls out the `out` handle, and `in` mirrors it.
+- **Points snap to the 0.5 m grid** (`Cmd/Ctrl` turns it off). Handles aren't snapped.
+- **The preview** shows the placed points and the edge that follows the cursor, drawn like a draft. It turns red if the outline would cross itself.
+- **Closing:** click the first point, or press `Enter` (the closing edge is added). Either one commits one step, `Draw freeform_1`, with the contextual bar's kind and color. `Backspace` removes the last point, and `Esc` cancels the whole outline.
+- **Where points go:** on the ground plane at elevation 0. A new free-form starts on the ground, like a drawn box.
+- **After drawing,** the selection doesn't change and the tool stays Pen, as with the Box tool.
+
+### Selected
+
+- **The gizmo** has the body drag, the x/z/y arrows, the rotate handle and the height handle, as for a box.
+- **The scale handles** sit on the footprint's **world-axis-aligned bounds**, because a free-form has no rotation of its own. Scaling moves every point and scales the handles with it, with the opposite side fixed. `Shift` keeps the aspect ratio, and `Alt` scales from the center.
+- **Rotating** turns the points and handles around the pivot. The turn is baked into the points (decision 2), so there's a few millimeters of rounding after many turns. That's accepted.
+- **Mirroring** reflects each point's coordinate on that axis (with the same half-to-even sum as boxes) and negates the handles on that axis. Mirroring twice restores the exact values.
+- **The outliner icon** is a pen-nib or blob shape, in room and volume styles.
+
+### Room walls on curves
+
+- The walls are the footprint offset outward and inward by 0.1 m.
+- A plain miter offset breaks at sharp inner corners and on thin parts. So the offset uses **a polygon-offset library**, a JS port of Clipper2 (picked in 06.3). It gives robust, rounded or mitered joins.
+- If the inward offset leaves nothing (a very thin part), that part renders solid, as a narrow box does today.
+- This is the phase's main technical risk, so it's tested with a star, a crescent and a sharp V.
+
+---
+
+## 7. Line and the Line tool
+
+### Data
+
+- `points` (2 or more `LinePoint`s, absolute world x/y/z), `color`, `thickness`, `dashed` and `arrow`.
+- `thickness` is in screen pixels, from 1 to 12, 3 by default. It stays constant on screen at any zoom (decision 5).
+- `dashed` is a boolean, false by default.
+- `arrow` is `"none" | "end" | "both"`, `"none"` by default. `end` is at the last point. To point the other way, reverse the line (a contextual bar button).
+- **Color:** the palette. New lines default to **`black`**, not `almost-white`, because a near-white line vanishes on the ground.
+
+### Rendering
+
+- A fat line of constant screen width (`Line2` / `LineMaterial` from three's examples, so no new dependency), drawn along the sampled polyline. Dashes use the material's dash settings, scaled to the thickness.
+- **Arrowheads** are small flat triangles at the ends, facing along the last segment, sized from the thickness so they stay readable at any zoom.
+- Lines cast and receive no shadows. They're drawn after the shapes and not hidden by them, so a line behind a wall stays visible, fainter.
+- Selected and hovered lines use the same blue and yellow as boxes, by changing the line's color.
+
+### The Line tool (`L`)
+
+- The same point placing as the Pen: click for a corner, click and drag for a smooth point, `Backspace` removes the last point, and `Esc` cancels.
+- **`Enter` or a double-click finishes** the line. Lines never close.
+- **Each point lands on the surface under the cursor:** the top of a volume, a room's floor or the top of its wall, or the ground (`pickHit` already returns that world point). A jump arc is then two clicks, platform to ground.
+- Grid snap applies to x/z, and the y comes from the surface.
+- **The contextual bar** has color, a thickness slider, a dashes toggle and the arrow choice (none, end, both). Selected lines show the same controls, plus **Reverse**.
+
+### Selected
+
+- **The gizmo** has the body drag, the x/z/y arrows (the y arrow moves every point) and the rotate handle. There are no scale or height handles.
+- **Mirror** reflects the points like a free-form's.
+- **Picking** is on screen: a line is hit within `max(6, thickness / 2 + 4)` px of its projected polyline. The nearest hit wins when a shape is also under the cursor, because a line is always drawn on top.
+- **The outliner icon** is a line.
+
+---
+
+## 8. Point editing and convert
+
+### Point editing
+
+- **Double-clicking a free-form or a line enters point editing** (the same "enter" idea as a group). The contextual bar says `editing freeform_1`. `Esc`, or clicking empty ground, leaves it.
+- **What you see and do:**
+  - The points show as small squares, and a selected point's handles show as dots on thin stems.
+  - **Drag a point** to move it (grid snap, `Cmd/Ctrl` for free). **Drag a handle** to shape the curve, which keeps its opposite handle mirrored. `Alt`-drag a handle to break the mirroring.
+  - **Double-click a point** to toggle corner ↔ smooth: smooth gets handles along the neighbors' direction, and corner drops them.
+  - **Click an edge** to insert a point there. It's placed on the curve, splitting it so the shape doesn't change (de Casteljau).
+  - **`Delete`** removes the selected point, as long as the minimum count is kept (3 for a free-form, 2 for a line).
+  - **`Shift`-click** selects several points, which then drag together.
+- **On a line,** the selected point also gets a y arrow to move it up and down, with the elevation snapping to tops and the ground.
+- **Each drag or change is one step:** `Edit points of freeform_1`. A free-form edit that would cross itself shows red and isn't committed. The status bar says why.
+
+### Convert to free-form
+
+- **A contextual bar button on a single box or cylinder,** **Convert to free-form**. It's one step: `Convert box_3 to freeform_4`.
+- **The new shape keeps** the name, parent, kind, color, `y`, `height` and place in the node list. It gets a **new ID**, because the ID prefix names the type. The editor selects it.
+- **How each shape converts:**
+  - **A box:** its 4 world corners.
+  - **A cylinder with sides:** its corners.
+  - **A smooth cylinder:** 4 smooth points on the ellipse's axes, with handles at the standard circle constant (0.5523 × the radius along each axis). It's still a true circle or oval to edit, not a 64-gon.
+- **Multi-selection:** the button converts every box and cylinder in the selection, as one step.
+- **Double-clicking a box or cylinder doesn't convert it.** Converting is explicit.
+
+---
+
+## 9. Looking ahead: openings
+
+The vision (`00-initial`) anchors a door or window with an edge index plus `t` along the edge. Every closed shape now has indexed edges:
+
+- a box's 4 sides;
+- a cylinder's `sides` edges (a smooth one takes an angle instead);
+- a free-form's edges from point `i` to point `i + 1`.
+
+Point editing keeps indices stable except when a point is inserted or deleted, and a later phase can remap anchors there. Nothing in 06 needs to change for this, but don't reorder points anywhere (the mirror doesn't, §6).
+
+---
+
+## 10. MCP surface
+
+| Tool | Change |
+|---|---|
+| `draw_shapes` | **replaces `draw_boxes`**: `{ shapes: [...] }`, each with `type` (`box`, `cylinder`, `freeform`, `line`; default `box`) and that type's fields. Returns the created shapes. |
+| `update_nodes` | gains `sides` (cylinder), `points` (free-form, line; the whole list replaces the old one), `thickness`, `dashed` and `arrow` (line). `type: "freeform"` on a box or cylinder **converts** it, and the result gives the new ID. |
+| `get_scene` | reports the new types. Its summary counts rooms and volumes of every shape, plus lines. |
+| the other 7 | unchanged in shape. `move_nodes` (with `copy`), `rotate_nodes`, `mirror_nodes`, `remove_nodes` and the group tools work on every shape. |
+
+- **The server instructions** gain a short section per shape:
+  - a cylinder's flat edge faces local +x;
+  - free-form and line points are absolute world coordinates, and handles are offsets from their point;
+  - a free-form must not cross itself;
+  - rotating or mirroring a free-form or a line changes its points;
+  - convert with `update_nodes { type: "freeform" }` rather than computing circle handles by hand.
+- **Keep it short.** The per-type fields are described once, in the instructions, not repeated in every tool.
+- **Server version 0.0.7.** **Restart the server and reconnect with `/mcp`.**
+- **CLAUDE.md:** the tool list changes (`draw_boxes` → `draw_shapes`), and the "Working with the scene" paragraph says the scene holds shapes (boxes, cylinders, free-forms, lines), with the coordinate rules for points.
+
+### Editor ↔ server protocol
+
+```
+client → server  { type: "add_shapes", shapes: [ShapeInput] }             // replaces add_boxes
+client → server  { type: "update_nodes", changes: [...] }                  // gains sides, points, thickness, dashed, arrow
+client → server  { type: "convert_nodes", ids }                            // to free-form, one step
+server → client  unchanged (the new nodes come back in the next `scene`)
+```
+
+---
+
+## 11. Increments
+
+Each increment is verified before the next one starts: typecheck, tests, a scripted check on a spare port with a scratch `DATA_DIR`, and Orlando's browser checklist.
+
+### 06.1 — Footprint refactor
+
+- `footprint`, `polyline`, `sampleEdge`, and polygon picking and marquee.
+- `boundsOf` over any shape, `ShapeMesh` with polygon walls (still only boxes), and the per-type move / rotate / mirror / scale cases.
+- `draw_boxes` → `draw_shapes`, and `add_boxes` → `add_shapes`.
+- **Check:** every existing test still passes, and old scenes look identical: walls, tiles, outlines, picking, marquee, gizmo, copy, mirror and paste. The agent draws boxes with `draw_shapes`.
+
+### 06.2 — Cylinder
+
+- The type, the ID counter, the Cylinder tool, sides on the contextual bar, the mirror case, the outliner icon and MCP.
+- **Check:** draw a circle room, an oval volume and an octagon. Resize and rotate them with the box gizmo. Mirror a rotated pentagon on X twice, and it's restored exactly. The agent draws a 10 m round room in one call.
+
+### 06.3 — Free-form and the Pen tool
+
+- The type, the self-intersection check, the Pen tool, the polygon-offset library for walls, and the scale, rotate and mirror cases.
+- **Check:** draw a star room, a crescent volume and a sharp V room with the Pen, with clean walls at every corner. A crossing outline shows red and isn't drawn. Move, rotate, scale, mirror, copy, group and paste them. The agent draws a curved free-form with handles.
+
+### 06.4 — Point editing and convert
+
+- Point editing mode (move, handles, insert, delete, corner ↔ smooth), `convert_nodes`, and `update_nodes { type: "freeform" }`.
+- **Check:** convert a box, an octagon and a smooth circle. The circle converts to 4 smooth points and looks the same. Edit points on each shape, with each edit one undo step. An edit that would cross itself isn't committed.
+
+### 06.5 — Lines and the Line tool
+
+- The type, the Line tool with surface-snapped points, `Line2` rendering, thickness, dashes, arrows, Reverse, screen picking, and point editing with the y arrow.
+- **Check:** draw a dashed jump arc with an end arrow from a platform top to the ground. Change its thickness with the slider. Select it through a wall. Move, copy and mirror it. The agent draws a dashed path with an arrow.
+
+---
+
+## 12. Acceptance test (end of phase)
+
+1. **Cylinders:** `C`, drag with `Shift`: a circle room. Sides 8: an octagon with flat walls facing the world axes. Without `Shift`: an oval. The scale, height and rotate handles work as on a box.
+2. **Mirror:** a rotated pentagon mirrored on X is its mirror image. Mirroring again restores the exact values. The same goes for a free-form and a line.
+3. **Pen:** draw a cave with corners and curves. Clicking the first point closes it into a room with clean curved walls. A crossing outline shows red and isn't committed.
+4. **Point editing:** double-click the cave, drag a point, pull a handle, `Alt`-drag to break it, insert a point on a curve (the shape doesn't change), delete one, and `Esc` out. Every edit is one undo step.
+5. **Convert:** a box converts to a 4-point free-form and a smooth cylinder to 4 smooth points, keeping name, group, kind, color and place in the outliner, with a new ID.
+6. **Lines:** `L`, click a platform's top, then click-drag on the ground: a curved line from the top down. Dashes, an end arrow and a thicker slider value all show. Reverse flips the arrow. It stays the same thickness on screen when zooming.
+7. **Everything else still works on every shape:** marquee (including a concave free-form's inside, which doesn't count as a hit), Alt-drag copy and `Alt+J`, copy and paste across scenes, groups, delete and undo.
+8. **Old scenes:** a scene saved in phase 05 opens unchanged and keeps its history.
+9. **Agent:** *"a circular shrine room, 10 m across, with a crescent-shaped pool in it and a dashed path from the door to the altar"* is one `draw_shapes` call. *"Turn the shrine into a free-form and flatten its south side"* is an `update_nodes` convert, then a `points` edit.
+10. **The agent's context:** `/mcp` lists 9 tools, with `draw_shapes` instead of `draw_boxes`.
+
+---
+
+## 13. Decisions
+
+Settled with Orlando:
+
+1. **Two tools:** Pen (`P`) for free-forms, which always close, and Line (`L`) for lines, which never close.
+2. **Free-form and line points are absolute world coordinates,** with no `x, z` and no rotation, so the agent never needs trig. Rotating bakes the turn into the points.
+3. **Lines have arrows** (none, end, both), **dashes**, and a **thickness** set with a slider.
+4. **Cylinders can be ovals** (`width ≠ depth`), so they use the box's gizmo unchanged.
+5. **Line thickness is in screen pixels:** constant at any zoom, and set by the slider.
+
+Adopted as recommended (say if any should change):
+
+6. **The footprint refactor comes first,** with no visible change, so each new shape adds only its own cases.
+7. **`draw_boxes` becomes `draw_shapes`** with a `type` field, which keeps the tool count at 9. Conversion goes through `update_nodes { type: "freeform" }`.
+8. **A cylinder's flat edge faces local +x.** Mirroring an odd-sided one on X sets `180 − rotation`.
+9. **Converting gives a new ID** (the prefix names the type) and keeps name, parent, kind, color and place in the list. A smooth cylinder converts to 4 bezier points, not a polygon.
+10. **Point editing is entered by double-click** on a free-form or line. Double-clicking a box or cylinder doesn't convert it.
+11. **The server rejects self-crossing free-forms,** and the editor shows them red.
+12. **Points snap to the 0.5 m grid, and handles don't.** Line points take their y from the surface under the cursor.
+13. **Walls on free-forms use a Clipper2 port** for the offset.
+14. **Lines default to `black`,** draw on top of shapes, and cast no shadows.
+15. **New free-forms start on the ground** (y 0), like drawn boxes.
+
+---
+
+## 14. Progress
+
+Not started.
