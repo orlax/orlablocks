@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Box } from "../shared/scene.types";
 import { DEFAULT_CAMERA, heightOnVertical, screenRay, worldToScreen, type CameraState, type Vec3 } from "./camera";
-import { pickBox } from "./pick";
+import { pickBox, prismCrossings } from "./pick";
 
 const size = { width: 1200, height: 800 };
 const cam: CameraState = { ...DEFAULT_CAMERA, yaw: 30, distance: 60 };
@@ -49,6 +49,35 @@ describe("pickBox", () => {
     const long: Box = { ...volume, x: 20, z: 20, width: 10, depth: 1, rotation: 90 };
     expect(pickBox(rayAt({ x: 20, y: 1, z: 24 }), [long])).toBe("volume_1");
     expect(pickBox(rayAt({ x: 24, y: 1, z: 20 }), [long])).toBeNull();
+  });
+});
+
+describe("prismCrossings", () => {
+  // An L-shaped prism 0..2 m tall: 0..4 along x at z 0..1, and 0..1 along z up to 4.
+  const l = [
+    { x: 0, z: 0 },
+    { x: 4, z: 0 },
+    { x: 4, z: 1 },
+    { x: 1, z: 1 },
+    { x: 1, z: 4 },
+    { x: 0, z: 4 },
+  ];
+  const down = (x: number, z: number) => ({ origin: { x, y: 10, z }, dir: { x: 0, y: -1, z: 0 } });
+
+  it("finds the top and the bottom straight down through an arm", () => {
+    expect(prismCrossings(down(3, 0.5), l, 0, 2)).toEqual([
+      { t: 8, face: "top" },
+      { t: 10, face: "bottom" },
+    ]);
+  });
+
+  it("misses the inside corner of a concave outline", () => {
+    expect(prismCrossings(down(3, 3), l, 0, 2)).toEqual([]);
+  });
+
+  it("finds a side face hit by a level ray", () => {
+    const [first] = prismCrossings({ origin: { x: -5, y: 1, z: 2 }, dir: { x: 1, y: 0, z: 0 } }, l, 0, 2);
+    expect(first).toEqual({ t: 5, face: "side" });
   });
 });
 

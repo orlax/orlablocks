@@ -1,5 +1,16 @@
 import { HEIGHT_SNAP, MIN_HEIGHT, SNAP, type Box, type BoxPatch } from "../shared/scene.types";
-import { boundsOf, boxAxes, footprintBounds, fromBoxLocal, normalizeDeg, rotateAround, round2, toBoxLocal, type Bounds } from "../shared/geometry";
+import {
+  boundsOf,
+  boxAxes,
+  footprintBounds,
+  fromBoxLocal,
+  moveShape,
+  normalizeDeg,
+  rotateAround,
+  round2,
+  toBoxLocal,
+  type Bounds,
+} from "../shared/geometry";
 import { paramOnLine, screenToPlane, worldToScreen, type CameraState, type Size, type Vec3 } from "./camera";
 
 /**
@@ -261,7 +272,7 @@ export function dragUpdate(
     const s = paramOnLine(cam, size, sx, sy, anchor, AXES.y);
     const bottom = snapElevation(bounds.minY + s - (drag.grab as number), elevationTargets(bounds, others), mods.snap);
     const dy = bottom - bounds.minY;
-    for (const box of origin) patches[box.id] = { y: round2(box.y + dy) };
+    for (const box of origin) patches[box.id] = moveShape(box, 0, dy, 0);
     return { patches, label: `y ${bottom.toFixed(2)} m` };
   }
 
@@ -285,7 +296,7 @@ export function dragUpdate(
     dx = snapTo(dx, SNAP);
     dz = snapTo(dz, SNAP);
   }
-  for (const box of origin) patches[box.id] = { x: round2(box.x + dx), z: round2(box.z + dz) };
+  for (const box of origin) patches[box.id] = moveShape(box, dx, 0, dz);
   return { patches, label: `x ${(anchor.x + dx).toFixed(2)} · z ${(anchor.z + dz).toFixed(2)}` };
 }
 

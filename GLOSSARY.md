@@ -41,6 +41,7 @@ Shared vocabulary for this project, for humans and agents alike. Use these names
 - **data folder**: where the server saves everything: `./data` where it runs (gitignored), or `DATA_DIR`. It holds `app.json` (the last open scene), `projects/`, and a `.lock` so only one server uses it (from 04).
 - **editor state**: a scene's `editor.json`: the camera (focus, yaw, zoom distance) and the selection. It's written 500 ms after they stop changing, and right away before switching scenes or stopping the server. It's restored when the scene opens. It isn't design data and isn't undoable (from 04).
 - **elevation (`y`)**: the height of a box's bottom above the ground, in meters. 0 = on the ground; negative is below ground (from 03).
+- **footprint**: a closed shape's outline on the ground, as a polygon in world x/z (`footprint()` in `geometry.ts`; a box's is its 4 corners). Rendering, picking, the marquee and room walls all work from it, so a new shape type only adds its footprint and its move / rotate / mirror cases. For a room it's the wall centerline, and the walls are the footprint grown and shrunk by half the wall thickness (from 06).
 - **group**: a node that contains other nodes (via their `parent`), with ID `group_N`. It has no position of its own: its bounds come from its boxes (`get_scene` reports them as `bounds`), and moving, rotating or deleting it acts on everything inside as one command. A group left empty disappears in the same command (from 03).
 - **history**: the single linear list of commands shared by the human and the agent. Undo reverts the latest command, whoever made it (from 02) From 04 it's per scene and survives restarts, rebuilt from the **history log**.
 - **history log**: a scene's `history.jsonl`, append-only, one line per step (`commit` with its ops and inverse, `undo`, `redo`), numbered by `seq`. `scene.json` records the `seq` it includes. The log is written first, so after a crash it can be one step ahead, and opening the scene applies that step (from 04).
@@ -55,6 +56,7 @@ Shared vocabulary for this project, for humans and agents alike. Use these names
 - **project**: a folder of scenes for one game, with a name and a description the agent reads. Its ID is a slug of its name at creation, and it holds `scenes/` plus the empty semantic folders `abilities/`, `entities/` and `rules/` (from 04).
 - **scene**: the full design state the server owns: the `view`, the `selection` and all nodes (`scene.nodes`, from 03). The editor and the agent both read and edit the same scene. From 04 it's one scene (one level) of a project, saved on disk in `scenes/<id>/scene.json` after every step, and its ID is a slug of its name at creation.
 - **selection (scene)**: the IDs of the selected nodes, reported in `scene.selection` so the agent knows what "this" means. Last tab wins, not undoable (from 03).
+- **shape**: any node that isn't a group. So far only the box; phase 06 adds cylinders, free-forms and lines. The agent draws them with `draw_shapes`, each with a `type` (from 06).
 - **snap**: rounding a drawn footprint to the nearest 0.5 m. On by default, and holding `Cmd/Ctrl` while drawing turns it off (from 03; `Alt` in 02).
 - **snap (vertical)**: rounding heights to the nearest 0.05 m. It's also the minimum height (from 02).
 - **view**: what the editor currently shows: the focus point, the yaw and `bounds`, the axis-aligned box around the visible ground. The editor reports it to the server so the agent knows where to draw.
@@ -64,6 +66,6 @@ Shared vocabulary for this project, for humans and agents alike. Use these names
 
 ## System
 
-- **MCP server / tools**: the `/mcp` endpoint Claude Code connects to. Current tools: `get_scene`, `draw_boxes`, `update_nodes`, `remove_nodes`, `move_nodes` (with `copy`, from 05), `rotate_nodes`, `mirror_nodes` (from 05), `group_nodes`, `ungroup`.
+- **MCP server / tools**: the `/mcp` endpoint Claude Code connects to. Current tools: `get_scene`, `draw_shapes` (was `draw_boxes` until 06), `update_nodes`, `remove_nodes`, `move_nodes` (with `copy`, from 05), `rotate_nodes`, `mirror_nodes` (from 05), `group_nodes`, `ungroup`.
 - **server instructions**: the conventions text (units, boxes, groups, IDs, the view, copying) the MCP server sends once when a client connects, instead of repeating it in every tool description (from 05).
 - **server**: the single local process (`npm run dev`) that owns the open scene, saves it in the data folder, and serves the editor, the WebSocket (`/ws`) and MCP (`/mcp`).

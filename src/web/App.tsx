@@ -285,7 +285,7 @@ export function App() {
         outsideHover={outlinerHover}
         nextKind={nextKind}
         onSelect={setSelection}
-        onDrawBox={(box) => send({ type: "add_boxes", boxes: [{ ...box, color: nextColor }] })}
+        onDrawShape={(shape) => send({ type: "add_shapes", shapes: [{ ...shape, color: nextColor }] })}
         onUpdate={(changes) => send({ type: "update_nodes", changes })}
         onDuplicate={({ ids, ...offset }) => {
           lastCopy.current = offset;

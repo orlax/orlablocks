@@ -105,11 +105,12 @@ describe("dragUpdate", () => {
     const drag = startHandleDrag(cam, size, start.sx, start.sy, "x", [a]);
     const end = screen({ x: top.x + 1 + 3.2, y: top.y, z: top.z });
     const { patches, label } = dragUpdate(drag, cam, size, end.sx, end.sy, snapOn, []);
-    expect(patches).toEqual({ box_1: { x: 4, z: 1 } });
+    // Only the axes that move are in the patch.
+    expect(patches).toEqual({ box_1: { x: 4 } });
     expect(label).toBe("x 4.00 · z 1.00");
     // Wandering off the axis never changes z.
     const off = screen({ x: top.x + 1, y: top.y, z: top.z + 5 });
-    expect(dragUpdate(drag, cam, size, off.sx, off.sy, snapOn, []).patches.box_1.z).toBe(1);
+    expect(dragUpdate(drag, cam, size, off.sx, off.sy, snapOn, []).patches.box_1.z).toBeUndefined();
   });
 
   it("a body drag keeps the grabbed point under the cursor, and Shift locks it to the dominant axis", () => {
@@ -118,7 +119,7 @@ describe("dragUpdate", () => {
     const end = screen({ x: grab.x + 2, y: grab.y, z: grab.z + 0.5 });
     expect(dragUpdate(drag, cam, size, end.sx, end.sy, snapOn, []).patches).toEqual({ box_1: { x: 3, z: 1.5 } });
     expect(dragUpdate(drag, cam, size, end.sx, end.sy, { shift: true, alt: false, snap: true }, []).patches).toEqual({
-      box_1: { x: 3, z: 1 },
+      box_1: { x: 3 },
     });
   });
 

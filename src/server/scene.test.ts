@@ -11,7 +11,7 @@ describe("scene store", () => {
     const listener = vi.fn();
     store.onChange(listener);
 
-    const created = store.drawBoxes(
+    const created = store.drawShapes(
       [
         { kind: "room", x: 0, z: 0, width: 6, depth: 4, height: 5 },
         { kind: "volume", x: 1, z: 1, width: 2, depth: 2, height: 1 },
@@ -28,7 +28,7 @@ describe("scene store", () => {
 
   it("fills in defaults: rooms 3 m, volumes 0.25 m, on the ground, unrotated, almost-white, unnamed", () => {
     const store = createSceneStore();
-    const [room, volume] = store.drawBoxes(
+    const [room, volume] = store.drawShapes(
       [
         { kind: "room", x: 0, z: 0, width: 4, depth: 4 },
         { kind: "volume", x: 0, z: 0, width: 1, depth: 1 },
@@ -43,7 +43,7 @@ describe("scene store", () => {
 
   it("keeps elevation, rotation, color and name, normalizing rotation to 0..360", () => {
     const store = createSceneStore();
-    const [a, b] = store.drawBoxes(
+    const [a, b] = store.drawShapes(
       [
         { kind: "volume", x: 0, z: 0, width: 1, depth: 1, y: -2.5, rotation: -90, color: "blue", name: "  pit  " },
         { kind: "room", x: 0, z: 0, width: 1, depth: 1, rotation: 720, name: "   " },
@@ -58,11 +58,11 @@ describe("scene store", () => {
   it("rejects unknown colors and unknown fields", () => {
     const store = createSceneStore();
     // @ts-expect-error unknown color on purpose
-    expect(() => store.drawBoxes([{ kind: "room", x: 0, z: 0, width: 1, depth: 1, color: "teal" }], "agent")).toThrow(
-      /boxes\[0\]\.color/,
+    expect(() => store.drawShapes([{ kind: "room", x: 0, z: 0, width: 1, depth: 1, color: "teal" }], "agent")).toThrow(
+      /shapes\[0\]\.color/,
     );
     // @ts-expect-error unknown field on purpose
-    expect(() => store.drawBoxes([{ kind: "room", x: 0, z: 0, width: 1, depth: 1, level: 2 }], "agent")).toThrow(/level/);
+    expect(() => store.drawShapes([{ kind: "room", x: 0, z: 0, width: 1, depth: 1, level: 2 }], "agent")).toThrow(/level/);
   });
 
   it("rejects the whole batch when one item is invalid", () => {
@@ -71,14 +71,14 @@ describe("scene store", () => {
     store.onChange(listener);
 
     expect(() =>
-      store.drawBoxes(
+      store.drawShapes(
         [
           { kind: "room", x: 0, z: 0, width: 1, depth: 1 },
           { kind: "volume", x: 1, z: 1, width: 2, depth: -2 },
         ],
         "agent",
       ),
-    ).toThrow(/boxes\[1\]\.depth/);
+    ).toThrow(/shapes\[1\]\.depth/);
     expect(store.getScene().nodes).toHaveLength(0);
     expect(listener).not.toHaveBeenCalled();
   });
@@ -86,30 +86,30 @@ describe("scene store", () => {
   it("requires a known kind, width and depth", () => {
     const store = createSceneStore();
     // @ts-expect-error missing depth on purpose
-    expect(() => store.drawBoxes([{ kind: "room", x: 3, z: 4, width: 2 }], "human")).toThrow(/boxes\[0\]\.depth/);
+    expect(() => store.drawShapes([{ kind: "room", x: 3, z: 4, width: 2 }], "human")).toThrow(/shapes\[0\]\.depth/);
     // @ts-expect-error unknown kind on purpose
-    expect(() => store.drawBoxes([{ kind: "tower", x: 0, z: 0, width: 1, depth: 1 }], "agent")).toThrow(/boxes\[0\]\.kind/);
+    expect(() => store.drawShapes([{ kind: "tower", x: 0, z: 0, width: 1, depth: 1 }], "agent")).toThrow(/shapes\[0\]\.kind/);
   });
 
   it("rejects heights below one vertical snap step (0.05 m)", () => {
     const store = createSceneStore();
-    expect(() => store.drawBoxes([{ kind: "volume", x: 0, z: 0, width: 1, depth: 1, height: 0.04 }], "agent")).toThrow(
-      /boxes\[0\]\.height/,
+    expect(() => store.drawShapes([{ kind: "volume", x: 0, z: 0, width: 1, depth: 1, height: 0.04 }], "agent")).toThrow(
+      /shapes\[0\]\.height/,
     );
-    const [ok] = store.drawBoxes([{ kind: "volume", x: 0, z: 0, width: 1, depth: 1, height: 0.05 }], "agent");
+    const [ok] = store.drawShapes([{ kind: "volume", x: 0, z: 0, width: 1, depth: 1, height: 0.05 }], "agent");
     expect(ok.height).toBe(0.05);
   });
 
   it("keeps non-integer values, rounded to 2 decimals", () => {
     const store = createSceneStore();
-    const [box] = store.drawBoxes([{ kind: "room", x: 10.25, z: 4.3333, width: 3.5, depth: 1.25, height: 2.456 }], "agent");
+    const [box] = store.drawShapes([{ kind: "room", x: 10.25, z: 4.3333, width: 3.5, depth: 1.25, height: 2.456 }], "agent");
     expect(box).toMatchObject({ x: 10.25, z: 4.33, width: 3.5, depth: 1.25, height: 2.46 });
   });
 
   it("rejects footprints that round to 0 and empty batches", () => {
     const store = createSceneStore();
-    expect(() => store.drawBoxes([{ kind: "room", x: 0, z: 0, width: 1, depth: 0.001 }], "agent")).toThrow(SceneError);
-    expect(() => store.drawBoxes([], "agent")).toThrow(SceneError);
+    expect(() => store.drawShapes([{ kind: "room", x: 0, z: 0, width: 1, depth: 0.001 }], "agent")).toThrow(SceneError);
+    expect(() => store.drawShapes([], "agent")).toThrow(SceneError);
   });
 
   it("stores the reported view without notifying listeners", () => {
@@ -127,10 +127,10 @@ describe("scene store", () => {
 
   it("clears the scene without reusing IDs", () => {
     const store = createSceneStore();
-    store.drawBoxes([{ kind: "room", x: 0, z: 0, width: 1, depth: 1 }], "human");
+    store.drawShapes([{ kind: "room", x: 0, z: 0, width: 1, depth: 1 }], "human");
     store.clear("human");
     expect(store.getScene().nodes).toHaveLength(0);
-    const [next] = store.drawBoxes([{ kind: "room", x: 0, z: 0, width: 1, depth: 1 }], "human");
+    const [next] = store.drawShapes([{ kind: "room", x: 0, z: 0, width: 1, depth: 1 }], "human");
     expect(next.id).toBe("box_2");
   });
 });
@@ -141,8 +141,8 @@ describe("scene store history", () => {
 
   it("undoes and redoes a draw, keeping the same IDs", () => {
     const store = createSceneStore();
-    store.drawBoxes([room(0)], "human");
-    store.drawBoxes([room(5)], "human");
+    store.drawShapes([room(0)], "human");
+    store.drawShapes([room(5)], "human");
     expect(store.getHistory()).toMatchObject({ canUndo: true, canRedo: false, undoLabel: "Draw box_2" });
 
     expect(store.undo()?.label).toBe("Draw box_2");
@@ -153,8 +153,8 @@ describe("scene store history", () => {
 
   it("an agent batch is one undo step, labeled as the agent's", () => {
     const store = createSceneStore();
-    store.drawBoxes([room(0)], "human");
-    store.drawBoxes([room(5), room(10), { kind: "volume", x: 1, z: 1, width: 1, depth: 1 }], "agent");
+    store.drawShapes([room(0)], "human");
+    store.drawShapes([room(5), room(10), { kind: "volume", x: 1, z: 1, width: 1, depth: 1 }], "agent");
     expect(store.getHistory().undoLabel).toBe("Agent: draw box_2, box_3, box_4");
     store.undo();
     expect(ids(store)).toEqual(["box_1"]);
@@ -162,16 +162,16 @@ describe("scene store history", () => {
 
   it("undo reverts the latest step whoever made it", () => {
     const store = createSceneStore();
-    store.drawBoxes([room(0)], "agent");
-    store.drawBoxes([room(5)], "human");
+    store.drawShapes([room(0)], "agent");
+    store.drawShapes([room(5)], "human");
     store.undo();
     expect(ids(store)).toEqual(["box_1"]);
   });
 
   it("Clear is undoable and restores boxes in their original order", () => {
     const store = createSceneStore();
-    store.drawBoxes([room(0), room(5)], "agent");
-    store.drawBoxes([{ kind: "volume", x: 1, z: 1, width: 1, depth: 1 }], "human");
+    store.drawShapes([room(0), room(5)], "agent");
+    store.drawShapes([{ kind: "volume", x: 1, z: 1, width: 1, depth: 1 }], "human");
     store.clear("human");
     expect(store.getHistory().undoLabel).toBe("Clear");
     store.undo();
@@ -186,16 +186,16 @@ describe("scene store history", () => {
 
   it("a new edit clears redo, and new IDs never reuse undone ones", () => {
     const store = createSceneStore();
-    store.drawBoxes([room(0)], "human");
+    store.drawShapes([room(0)], "human");
     store.undo();
-    store.drawBoxes([room(5)], "human");
+    store.drawShapes([room(5)], "human");
     expect(store.getHistory().canRedo).toBe(false);
     expect(ids(store)).toEqual(["box_2"]);
   });
 
   it("a rejected batch adds no step", () => {
     const store = createSceneStore();
-    expect(() => store.drawBoxes([{ kind: "room", x: 0, z: 0, width: -1, depth: 1 }], "agent")).toThrow(SceneError);
+    expect(() => store.drawShapes([{ kind: "room", x: 0, z: 0, width: -1, depth: 1 }], "agent")).toThrow(SceneError);
     expect(store.getHistory().canUndo).toBe(false);
   });
 
@@ -205,7 +205,7 @@ describe("scene store history", () => {
     store.onChange(listener);
     expect(store.undo()).toBeNull();
     expect(listener).not.toHaveBeenCalled();
-    store.drawBoxes([room(0)], "human");
+    store.drawShapes([room(0)], "human");
     store.undo();
     store.redo();
     expect(listener).toHaveBeenCalledTimes(3);
@@ -215,7 +215,7 @@ describe("scene store history", () => {
 describe("scene store updates", () => {
   const setup = () => {
     const store = createSceneStore();
-    store.drawBoxes(
+    store.drawShapes(
       [
         { kind: "room", x: 0, z: 0, width: 4, depth: 4 },
         { kind: "volume", x: 1, z: 1, width: 1, depth: 1 },
@@ -314,7 +314,7 @@ describe("scene store updates", () => {
 describe("scene store removal and selection", () => {
   const setup = () => {
     const store = createSceneStore();
-    store.drawBoxes(
+    store.drawShapes(
       [0, 5, 10].map((x) => ({ kind: "room" as const, x, z: 0, width: 4, depth: 4 })),
       "human",
     );
@@ -363,7 +363,7 @@ describe("scene store groups", () => {
   /** box_1 at x 0, box_2 at x 10, box_3 at x 20, all 2 × 2 × 1 volumes. */
   const setup = () => {
     const store = createSceneStore();
-    store.drawBoxes(
+    store.drawShapes(
       [0, 10, 20].map((x) => ({ kind: "volume" as const, x, z: 0, width: 2, depth: 2, height: 1 })),
       "human",
     );
@@ -456,10 +456,10 @@ describe("scene store groups", () => {
   it("draws into a group and reparents with update_nodes, rejecting bad parents and cycles", () => {
     const store = setup();
     store.groupNodes({ ids: ["box_1"] }, "human");
-    const [pillar] = store.drawBoxes([{ kind: "volume", x: 0, z: 0, width: 1, depth: 1, parent: "group_1" }], "agent");
+    const [pillar] = store.drawShapes([{ kind: "volume", x: 0, z: 0, width: 1, depth: 1, parent: "group_1" }], "agent");
     expect(pillar.parent).toBe("group_1");
-    expect(() => store.drawBoxes([{ kind: "room", x: 0, z: 0, width: 1, depth: 1, parent: "box_2" }], "agent")).toThrow(
-      /boxes\[0\]\.parent: "box_2" is a box/,
+    expect(() => store.drawShapes([{ kind: "room", x: 0, z: 0, width: 1, depth: 1, parent: "box_2" }], "agent")).toThrow(
+      /shapes\[0\]\.parent: "box_2" is a box/,
     );
     store.updateNodes([{ id: "box_2", parent: "group_1" }], "human");
     expect(store.getHistory().undoLabel).toBe("Regroup box_2");
@@ -483,7 +483,7 @@ describe("scene store copies", () => {
   /** lobby (group_1) holds box_1 and hall (group_2) with box_2; box_3 is at the top level. */
   const setup = () => {
     const store = createSceneStore();
-    store.drawBoxes(
+    store.drawShapes(
       [0, 10, 20].map((x) => ({ kind: "volume" as const, x, z: 0, width: 2, depth: 2, height: 1 })),
       "human",
     );
@@ -554,7 +554,7 @@ describe("scene store mirroring", () => {
   /** An L of rotated boxes, grouped as group_1, plus box_3 far away. */
   const setup = () => {
     const store = createSceneStore();
-    store.drawBoxes(
+    store.drawShapes(
       [
         { kind: "room", x: 4, z: 0, width: 8, depth: 2, rotation: 10 },
         { kind: "volume", x: 1, z: 3, width: 2, depth: 4, rotation: 30, y: 1 },
@@ -609,7 +609,7 @@ describe("scene store paste and cut", () => {
   /** lobby (group_1) holds hall (group_2) with box_1 (x 0) and box_2 (x 4); box_3 is at the top level. */
   const setup = () => {
     const store = createSceneStore();
-    store.drawBoxes(
+    store.drawShapes(
       [
         { kind: "room", x: 0, z: 0, width: 2, depth: 2, name: "a" },
         { kind: "volume", x: 4, z: 0, width: 2, depth: 2, y: 3, name: "b" },
@@ -690,7 +690,7 @@ describe("scene store placing (outliner drag and drop)", () => {
   /** box_1..box_4 at the top level; group_1 holds box_2 and box_3. */
   const setup = () => {
     const store = createSceneStore();
-    store.drawBoxes([0, 1, 2, 3].map((x) => ({ kind: "volume" as const, x, z: 0, width: 1, depth: 1 })), "human");
+    store.drawShapes([0, 1, 2, 3].map((x) => ({ kind: "volume" as const, x, z: 0, width: 1, depth: 1 })), "human");
     store.groupNodes({ ids: ["box_2", "box_3"] }, "human");
     return store;
   };

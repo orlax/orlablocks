@@ -1,4 +1,4 @@
-import { round2 } from "./geometry";
+import { moveShape } from "./geometry";
 import type { Box, Group, SceneNode } from "./scene.types";
 
 /**
@@ -75,7 +75,7 @@ export function topmost(nodes: SceneNode[], ids: string[]): string[] {
 /**
  * Copies of `source` (a set of nodes, each root with its subtree) with fresh IDs from `newId`, in the same order.
  * `parent` references inside the set are remapped to the copies; the others are kept, so a copied root stays in
- * its original's group. Boxes are offset by `dx, dy, dz` (2 decimals). Names and everything else are kept.
+ * its original's group. Shapes are offset by `dx, dy, dz` (2 decimals). Names and everything else are kept.
  */
 export function copyNodes(
   source: SceneNode[],
@@ -84,13 +84,8 @@ export function copyNodes(
 ): SceneNode[] {
   const ids = new Map(source.map((n) => [n.id, newId(n.type)]));
   return source.map((n) => {
-    const copy: SceneNode = { ...n, id: ids.get(n.id)! };
+    const copy: SceneNode = isBox(n) ? { ...n, ...moveShape(n, dx, dy, dz), id: ids.get(n.id)! } : { ...n, id: ids.get(n.id)! };
     if (n.parent !== undefined && ids.has(n.parent)) copy.parent = ids.get(n.parent);
-    if (isBox(copy)) {
-      copy.x = round2(copy.x + dx);
-      copy.y = round2(copy.y + dy);
-      copy.z = round2(copy.z + dz);
-    }
     return copy;
   });
 }

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Box } from "../shared/scene.types";
 import { DEFAULT_CAMERA, worldToScreen, type CameraState } from "./camera";
-import { convexHull, marqueeHits, polygonOverlapsRect, rectFrom } from "./marquee";
+import { marqueeHits, polygonOverlapsRect, rectFrom } from "./marquee";
 
 const size = { width: 1200, height: 800 };
 const cam: CameraState = { ...DEFAULT_CAMERA, yaw: 30, distance: 60 };
@@ -21,20 +21,6 @@ const box = (patch: Partial<Box>): Box => ({
   ...patch,
 });
 
-describe("convexHull", () => {
-  it("drops interior points", () => {
-    const hull = convexHull([
-      { sx: 0, sy: 0 },
-      { sx: 10, sy: 0 },
-      { sx: 5, sy: 5 },
-      { sx: 10, sy: 10 },
-      { sx: 0, sy: 10 },
-    ]);
-    expect(hull).toHaveLength(4);
-    expect(hull).not.toContainEqual({ sx: 5, sy: 5 });
-  });
-});
-
 describe("polygonOverlapsRect", () => {
   // A diamond centered at 10, 10 with radius 10.
   const diamond = [
@@ -52,6 +38,24 @@ describe("polygonOverlapsRect", () => {
 
   it("misses a rect in the diamond's bounding-box corner (bounds alone would say yes)", () => {
     expect(polygonOverlapsRect(diamond, { x0: 0, y0: 0, x1: 3, y1: 3 })).toBe(false);
+  });
+
+  // A U, open at the top: 0..30 wide, the notch 10..20 wide and 0..20 deep.
+  const u = [
+    { sx: 0, sy: 0 },
+    { sx: 10, sy: 0 },
+    { sx: 10, sy: 20 },
+    { sx: 20, sy: 20 },
+    { sx: 20, sy: 0 },
+    { sx: 30, sy: 0 },
+    { sx: 30, sy: 30 },
+    { sx: 0, sy: 30 },
+  ];
+
+  it("works on concave outlines: a rect in the U's notch misses, one on an arm hits", () => {
+    expect(polygonOverlapsRect(u, { x0: 12, y0: 2, x1: 18, y1: 15 })).toBe(false);
+    expect(polygonOverlapsRect(u, { x0: 2, y0: 2, x1: 5, y1: 5 })).toBe(true);
+    expect(polygonOverlapsRect(u, { x0: 12, y0: 15, x1: 18, y1: 25 })).toBe(true);
   });
 });
 

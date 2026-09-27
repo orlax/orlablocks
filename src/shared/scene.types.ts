@@ -167,6 +167,11 @@ export const BoxInputSchema = z.strictObject({
   parent: field.parent.optional().describe("ID of the group to put it in, e.g. group_1. Omit for the top level"),
 });
 export type BoxInput = z.input<typeof BoxInputSchema>;
+/** A new shape for `draw_shapes`: its `type` (only `box` so far, the default) and that type's fields. */
+export const ShapeInputSchema = BoxInputSchema.extend({
+  type: z.literal("box").optional().describe("The shape type. Defaults to box"),
+});
+export type ShapeInput = z.input<typeof ShapeInputSchema>;
 
 /** A change to an existing node, by ID: any of a box's editable fields; for a group only `name` and `parent`. */
 export const NodeUpdateSchema = z.strictObject({
@@ -294,7 +299,7 @@ export const ClientMessageSchema = z.discriminatedUnion("type", [
   RenameSceneSchema.extend({ type: z.literal("rename_scene") }),
   DuplicateSceneSchema.extend({ type: z.literal("duplicate_scene") }),
   OpenSceneSchema.extend({ type: z.literal("open_scene") }),
-  z.object({ type: z.literal("add_boxes"), boxes: z.array(BoxInputSchema).min(1) }),
+  z.object({ type: z.literal("add_shapes"), shapes: z.array(ShapeInputSchema).min(1) }),
   z.object({ type: z.literal("update_nodes"), changes: z.array(NodeUpdateSchema).min(1) }),
   // `cut`: the same removal, labeled "Cut" (the editor put the nodes on the clipboard first).
   z.object({ type: z.literal("remove_nodes"), ids: IdsSchema, cut: z.boolean().optional() }),

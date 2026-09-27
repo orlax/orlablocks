@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { boundsOf, mirrorAcross } from "./geometry";
+import { boundsOf, footprint, mirrorAcross, moveShape, offsetPolygon, pointInPolygon, signedArea2 } from "./geometry";
 import type { Box } from "./scene.types";
 
 const box = (patch: Partial<Box>): Box => ({
@@ -62,5 +62,67 @@ describe("mirror", () => {
     const one = [box({ x: 3.25, z: -1 })];
     expect(apply(one, mirrorAcross(one, "x"))).toEqual(one);
     expect(apply(one, mirrorAcross(one, "z"))).toEqual(one);
+  });
+});
+
+describe("footprint", () => {
+  it("is the box's 4 world corners, turned with it", () => {
+    const f = footprint(box({ x: 10, z: 5, width: 4, depth: 2, rotation: 90 }));
+    // Turned 90° counterclockwise seen from above, the width runs along world -z.
+    const round = f.map((p) => ({ x: Math.round(p.x * 100) / 100 + 0, z: Math.round(p.z * 100) / 100 + 0 }));
+    expect(round).toEqual([
+      { x: 9, z: 7 },
+      { x: 9, z: 3 },
+      { x: 11, z: 3 },
+      { x: 11, z: 7 },
+    ]);
+  });
+});
+
+describe("offsetPolygon", () => {
+  const square = [
+    { x: 0, z: 0 },
+    { x: 2, z: 0 },
+    { x: 2, z: 2 },
+    { x: 0, z: 2 },
+  ];
+
+  it("grows and shrinks a square by the same amount on every side, in either winding", () => {
+    for (const poly of [square, [...square].reverse()]) {
+      const grown = offsetPolygon(poly, 0.1)!;
+      expect(Math.abs(signedArea2(grown)) / 2).toBeCloseTo(2.2 * 2.2);
+      expect(grown.every((p) => Math.abs(p.x - 1) === 1.1 || Math.abs(Math.abs(p.x - 1) - 1.1) < 1e-9)).toBe(true);
+      expect(Math.abs(signedArea2(offsetPolygon(poly, -0.1)!)) / 2).toBeCloseTo(1.8 * 1.8);
+    }
+  });
+
+  it("returns null when shrinking collapses it", () => {
+    expect(offsetPolygon(square, -1)).toBeNull();
+    expect(offsetPolygon(square, -1.5)).toBeNull();
+  });
+});
+
+describe("pointInPolygon", () => {
+  // An L: 0..4 along x at z 0..1, and 0..1 along z up to 4.
+  const l = [
+    { x: 0, z: 0 },
+    { x: 4, z: 0 },
+    { x: 4, z: 1 },
+    { x: 1, z: 1 },
+    { x: 1, z: 4 },
+    { x: 0, z: 4 },
+  ];
+
+  it("works on concave outlines", () => {
+    expect(pointInPolygon(l, { x: 3, z: 0.5 })).toBe(true);
+    expect(pointInPolygon(l, { x: 0.5, z: 3 })).toBe(true);
+    expect(pointInPolygon(l, { x: 3, z: 3 })).toBe(false);
+  });
+});
+
+describe("moveShape", () => {
+  it("patches only the axes that move, rounded to 2 decimals", () => {
+    expect(moveShape(box({ x: 1, y: 0, z: 2 }), 0.333, 0, 0)).toEqual({ x: 1.33 });
+    expect(moveShape(box({}), 0, 0, 0)).toEqual({});
   });
 });

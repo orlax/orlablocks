@@ -6,16 +6,16 @@ import {
   DEFAULT_HEIGHT,
   SNAP,
   type Box,
-  type BoxInput,
   type BoxKind,
   type BoxPatch,
   type NodeUpdate,
   type SceneNode,
+  type ShapeInput,
   type View,
 } from "../shared/scene.types";
 import { boundsOf } from "../shared/geometry";
 import { boxesUnder, isBox, selectableAt } from "../shared/tree";
-import { BoxMesh } from "./BoxMesh";
+import { ShapeMesh } from "./ShapeMesh";
 import {
   cameraPosition,
   DEFAULT_CAMERA,
@@ -123,7 +123,7 @@ type Props = {
   /** The kind the Box tool draws (its draft is previewed at that kind's default height). */
   nextKind: BoxKind;
   onSelect: (ids: string[]) => void;
-  onDrawBox: (box: BoxInput) => void;
+  onDrawShape: (shape: ShapeInput) => void;
   /** One gizmo drag: one `update_nodes`, so one undo step. */
   onUpdate: (changes: NodeUpdate[]) => void;
   /** One Alt-drag: copies the nodes by the drag's offset, one undo step. */
@@ -148,7 +148,7 @@ export function Viewport({
   outsideHover,
   nextKind,
   onSelect,
-  onDrawBox,
+  onDrawShape,
   onUpdate,
   onDuplicate,
   onCursor,
@@ -428,7 +428,7 @@ export function Viewport({
     if (d?.pointerId === e.pointerId) {
       const f = footprintFrom(d.start, groundAt(e).point, e.shiftKey, e.altKey);
       if (round2(f.width) > 0 && round2(f.depth) > 0) {
-        onDrawBox({ kind: d.kind, x: round2(f.x), z: round2(f.z), width: round2(f.width), depth: round2(f.depth) });
+        onDrawShape({ type: "box", kind: d.kind, x: round2(f.x), z: round2(f.z), width: round2(f.width), depth: round2(f.depth) });
       }
       cancelDrawing();
     }
@@ -632,14 +632,26 @@ function Boxes({
   return (
     <>
       {boxes.map((b) => (
-        <BoxMesh
-          key={b.id}
-          {...b}
-          highlight={selected.has(b.id) ? "selected" : hovered.has(b.id) ? "hover" : undefined}
-        />
+        <ShapeMesh key={b.id} shape={b} highlight={selected.has(b.id) ? "selected" : hovered.has(b.id) ? "hover" : undefined} />
       ))}
       {draft && draft.width > 0 && draft.depth > 0 && (
-        <BoxMesh {...draft} y={0} rotation={0} color={DEFAULT_COLOR} height={DEFAULT_HEIGHT[draft.kind]} draft />
+        <ShapeMesh
+          shape={{
+            id: "draft",
+            type: "box",
+            kind: draft.kind,
+            x: draft.x,
+            z: draft.z,
+            width: draft.width,
+            depth: draft.depth,
+            y: 0,
+            height: DEFAULT_HEIGHT[draft.kind],
+            rotation: 0,
+            color: DEFAULT_COLOR,
+            createdBy: "human",
+          }}
+          draft
+        />
       )}
     </>
   );

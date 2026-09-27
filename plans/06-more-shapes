@@ -323,4 +323,33 @@ Adopted as recommended (say if any should change):
 
 ## 14. Progress
 
-Not started.
+### 06.1 — Footprint refactor (done)
+
+- **`geometry.ts`:**
+  - `localFootprint` (a box's 4 corners in its own frame), `shapeFrame` (where that frame sits and how it's turned) and `footprint` (the world polygon).
+  - Polygon helpers: `signedArea2`, `pointInPolygon` (even-odd, so concave works) and `offsetPolygon` (mitered, either winding). `offsetPolygon` returns null when shrinking collapses the polygon, detected as an edge turning around. The area sign isn't enough: a square shrunk past its middle flips on both axes and keeps its winding.
+  - The per-shape cases: `moveShape`, `rotateShape` (`rotateAround` maps it) and `mirrorShape` (was `mirrorBox`).
+  - `moveShape` patches only the axes that move, so a drag along x is a "move" and not also an elevation change. That's why two gizmo tests changed their expected patches.
+- **Picking (`pick.ts`):**
+  - `prismCrossings` gives every place the ray crosses a prism over a polygon, and it replaces the box slab test.
+  - A room's first hit through the open top, inside the walls, now goes to the next crossing of the inner prism: the actual inner wall or the floor. Before, it went to where the ray left the room's outer box. This is more exact, and a volume inside the room still wins.
+- **The marquee (`marquee.ts`):**
+  - A shape's outline on screen is the union of its projected faces (bottom, top, each side), and `polygonOverlapsRect` now works for concave polygons: vertex-in-rect, corner-in-polygon, or crossing edges.
+  - `convexHull` and its test are gone. There's a new test with a U-shaped outline.
+- **Rendering:**
+  - `BoxMesh` became `ShapeMesh` (`git mv`), taking `shape`. Volumes are the footprint extruded, and room walls are the footprint offset ±0.1 m (outer ring, inner hole), with a floor slab extruded from the footprint.
+  - The UVs, the UV offset rule, edges, materials and highlights are unchanged. Geometry is memoized on a key built from the outline, kind, height and offsets.
+- **The agent and protocol:**
+  - `draw_boxes` → `draw_shapes { shapes }`, where each shape has an optional `type: "box"` (`ShapeInputSchema`). The store's `drawBoxes` → `drawShapes`, with errors prefixed `shapes[i]`. `add_boxes` → `add_shapes`.
+  - The instructions say the scene holds shapes (only boxes so far) and point at `draw_shapes`. Server version 0.0.7. **Restart the server and reconnect with `/mcp`.**
+- **Not done yet, on purpose:**
+  - `sampleEdge` and `polyline` come with the first shapes that curve (06.3) and with lines (06.5).
+  - The type renames (`Shape`, `ShapePatch`, `shapesUnder`) come in 06.2, when a second shape type exists.
+  - The Clipper2 offset for concave outlines comes in 06.3. The mitered offset is exact for boxes and cylinders.
+- **Docs:** CLAUDE.md (tool list, "shapes", `geometry.ts`), GLOSSARY.md (footprint, shape, the MCP tool list).
+- **Checks:**
+  - typecheck;
+  - 174 tests (new: footprint, offsetPolygon, pointInPolygon and moveShape in `geometry.test.ts`, `prismCrossings` in `pick.test.ts`, the concave marquee case);
+  - the editor bundles with `vite build`;
+  - a scripted run on `:5171` with a scratch `DATA_DIR`: `initialize` reports 0.0.7 and instructions that mention `draw_shapes` and no longer mention `draw_boxes`. `tools/list` has 9 tools with `draw_shapes`. `draw_shapes` drew a room and a rotated volume, with and without `type`. A missing `depth` was rejected naming `shapes[0].depth`, and `draw_boxes` is gone. A WS `add_shapes` drew a box. `move_nodes` by dx moved only x, and a WS undo reverted it;
+  - Orlando's browser check passed.

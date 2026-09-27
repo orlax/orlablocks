@@ -1,17 +1,10 @@
 import { useEffect, useMemo } from "react";
 import * as THREE from "three";
-import { PALETTE, WALL_THICKNESS, type BoxColor, type BoxKind } from "../shared/scene.types";
+import { localFootprint, offsetPolygon, shapeFrame, type Point } from "../shared/geometry";
+import { PALETTE, WALL_THICKNESS, type Box, type BoxColor } from "../shared/scene.types";
 
 type Props = {
-  kind: BoxKind;
-  x: number; // footprint center
-  z: number;
-  y: number; // bottom
-  width: number;
-  depth: number;
-  height: number;
-  rotation: number; // degrees, counterclockwise seen from above
-  color: BoxColor;
+  shape: Box;
   /** The live preview while drawing: translucent blue, so it reads as not-yet-placed. */
   draft?: boolean;
   highlight?: "hover" | "selected";
@@ -91,9 +84,8 @@ function colorMaterials(color: BoxColor): ColorMaterials {
 }
 
 /**
- * Box-aligned UVs (1 unit = 1 m), picked per face from its dominant normal axis in the box's local frame, so tiles
- * follow the box's edges. `ox, oy, oz` offsets them: with the box's world position for an unrotated box (its tiles
- * line up with the ground grid and with other boxes), with its half size for a rotated one (tiles start at a corner).
+ * Shape-aligned UVs (1 unit = 1 m), picked per face from its dominant normal axis in the shape's own frame, so
+ * tiles follow its edges. `ox, oy, oz` offsets them (see `uvOffset`).
  */
 function applyBoxUVs(geometry: THREE.BufferGeometry, ox: number, oy: number, oz: number) {
   const pos = geometry.getAttribute("position");
@@ -115,59 +107,52 @@ function applyBoxUVs(geometry: THREE.BufferGeometry, ox: number, oy: number, oz:
 }
 
 /**
- * A ring of walls around the footprint, extruded up to `height`. Built as a rectangle with a rectangular hole
- * so it's one mesh with clean edges (no seams at the corners). Local coordinates: origin at the footprint's
- * center, on the box's bottom.
+ * A polygon on the ground (in the shape's frame) extruded from 0 up to `height`, with an optional hole, as one mesh
+ * with clean edges (no seams at the corners).
  */
-function wallGeometry(width: number, depth: number, height: number) {
-  const half = WALL_THICKNESS / 2;
-  // Shape is drawn in x / -z, then rotated so the extrusion points up (+y).
-  const outer = new THREE.Shape()
-    .moveTo(-half, half)
-    .lineTo(width + half, half)
-    .lineTo(width + half, -depth - half)
-    .lineTo(-half, -depth - half)
-    .closePath();
-  // Rooms narrower than two wall thicknesses have no inside left: they render as a solid block.
-  if (width > WALL_THICKNESS && depth > WALL_THICKNESS) {
-    outer.holes.push(
-      new THREE.Path()
-        .moveTo(half, -half)
-        .lineTo(half, -depth + half)
-        .lineTo(width - half, -depth + half)
-        .lineTo(width - half, -half)
-        .closePath(),
-    );
-  }
-  const geometry = new THREE.ExtrudeGeometry(outer, { depth: height, bevelEnabled: false });
+function extrude(outline: Point[], height: number, hole?: Point[] | null) {
+  // The shape is drawn in x / -z, then rotated so the extrusion points up (+y).
+  const flat = (points: Point[]) => points.map((p) => new THREE.Vector2(p.x, -p.z));
+  const shape = new THREE.Shape(flat(outline));
+  if (hole) shape.holes.push(new THREE.Path(flat(hole)));
+  const geometry = new THREE.ExtrudeGeometry(shape, { depth: height, bevelEnabled: false });
   geometry.rotateX(-Math.PI / 2);
-  geometry.translate(-width / 2, 0, -depth / 2);
   return geometry;
 }
 
 /**
- * Graybox rendering. A room is a floor slab plus thick walls, with no ceiling, so you see in from above.
- * A volume is a solid block. Both cast and receive shadows and have faint outlined edges.
+ * The UV offset: the frame's world position for an unrotated shape (its tiles line up with the ground grid and
+ * with other shapes), its half size for a rotated one (tiles start at a corner).
  */
-export function BoxMesh({ kind, x, z, y, width, depth, height, rotation, color, draft = false, highlight }: Props) {
-  // UV offset: see applyBoxUVs.
-  const [ox, oz] = rotation === 0 ? [x, z] : [width / 2, depth / 2];
+function uvOffset(box: Box): [number, number] {
+  return box.rotation === 0 ? [box.x, box.z] : [box.width / 2, box.depth / 2];
+}
+
+/**
+ * Graybox rendering of a closed shape, from its footprint polygon. A room is a floor slab plus thick walls (the
+ * footprint grown and shrunk by half the wall thickness, the outer ring with the inner one as a hole), with no
+ * ceiling, so you see in from above. A volume is the footprint extruded to its height. Both cast and receive
+ * shadows and have faint outlined edges.
+ */
+export function ShapeMesh({ shape, draft = false, highlight }: Props) {
+  const { kind, y, height, color } = shape;
+  const frame = shapeFrame(shape);
+  const outline = localFootprint(shape);
+  const [ox, oz] = uvOffset(shape);
+  // Geometry is rebuilt only when what it's made from changes (the outline is a new array every render).
+  const key = JSON.stringify([kind, outline, height, ox, y, oz]);
 
   const solid = useMemo(() => {
-    if (kind === "volume") {
-      const g = new THREE.BoxGeometry(width, height, depth);
-      g.translate(0, height / 2, 0);
-      return applyBoxUVs(g, ox, y, oz);
-    }
-    return applyBoxUVs(wallGeometry(width, depth, height), ox, y, oz);
-  }, [kind, ox, y, oz, width, depth, height]);
+    if (kind === "volume") return applyBoxUVs(extrude(outline, height), ox, y, oz);
+    // Rooms narrower than two wall thicknesses have no inside left: they render as a solid block.
+    const outer = offsetPolygon(outline, WALL_THICKNESS / 2)!;
+    return applyBoxUVs(extrude(outer, height, offsetPolygon(outline, -WALL_THICKNESS / 2)), ox, y, oz);
+  }, [key]);
 
-  const floor = useMemo(() => {
-    if (kind !== "room") return null;
-    const g = new THREE.BoxGeometry(width, FLOOR_THICKNESS, depth);
-    g.translate(0, FLOOR_THICKNESS / 2, 0);
-    return applyBoxUVs(g, ox, y, oz);
-  }, [kind, ox, y, oz, width, depth]);
+  const floor = useMemo(
+    () => (kind === "room" ? applyBoxUVs(extrude(outline, FLOOR_THICKNESS), ox, y, oz) : null),
+    [key],
+  );
 
   const edges = useMemo(() => new THREE.EdgesGeometry(solid, 15), [solid]);
 
@@ -184,7 +169,7 @@ export function BoxMesh({ kind, x, z, y, width, depth, height, rotation, color, 
   const edgeMaterial = draft ? s.draftEdge : sel ? s.edgeSelected : hover ? s.edgeHover : s.edge;
 
   return (
-    <group position={[x, y, z]} rotation={[0, (rotation * Math.PI) / 180, 0]}>
+    <group position={[frame.x, y, frame.z]} rotation={[0, (frame.rotation * Math.PI) / 180, 0]}>
       <mesh geometry={solid} material={bodyMaterial} castShadow={!draft} receiveShadow={!draft} />
       {floor && <mesh geometry={floor} material={floorMaterial} receiveShadow={!draft} />}
       <lineSegments geometry={edges} material={edgeMaterial} renderOrder={1} />

@@ -5,7 +5,6 @@ import { z } from "zod";
 import { boundsOf, round2 } from "../shared/geometry";
 import {
   BOX_COLORS,
-  BoxInputSchema,
   DEFAULT_COLOR,
   DEFAULT_HEIGHT,
   DuplicateNodesSchema,
@@ -16,6 +15,7 @@ import {
   MoveNodesSchema,
   NodeUpdateSchema,
   RotateNodesSchema,
+  ShapeInputSchema,
   UngroupSchema,
   WALL_THICKNESS,
   type OpenScene,
@@ -34,7 +34,7 @@ const INSTRUCTIONS =
   "the human opens and switches scenes in the editor. Every change is saved as it happens (there's no save step), " +
   "and the undo history survives server restarts. " +
   "Units are meters; decimals are allowed and kept to 2 places. The world is 3D with y up and the ground at y = 0. " +
-  "The scene is a flat list of nodes: boxes and groups. " +
+  "The scene is a flat list of nodes: shapes and groups. The only shape so far is the box (type: box). " +
   "A box's footprint is CENTERED at (x, z), with `width` along the box's local x and " +
   "`depth` along its local z. It rises from its elevation `y` (its bottom: 0 = on the ground, negative = below ground) " +
   "to y + height, so to stack box B on box A, set B.y = A.y + A.height. " +
@@ -51,7 +51,7 @@ const INSTRUCTIONS =
   "Every node has a server-assigned ID (box_1, group_1, ..., never reused), an optional `name` for people " +
   '("lobby"; not unique, tools always take IDs, so resolve names to IDs with get_scene), and records who created it (human or agent). ' +
   "To repeat things (a row of pillars, a second wing, another floor), copy them with move_nodes and copy: true " +
-  "(count for several, each offset further) instead of retyping boxes with draw_boxes: copies get new IDs and keep " +
+  "(count for several, each offset further) instead of retyping boxes with draw_shapes: copies get new IDs and keep " +
   "their names, structure and parent group. " +
   "For symmetry, mirror_nodes flips nodes in place on a WORLD axis (x or z, not the camera's view): copy a wing " +
   "with move_nodes, then mirror the copy, instead of computing reflected positions and angles by hand. " +
@@ -89,7 +89,7 @@ function describeScene(open: OpenScene, scene: Scene) {
 }
 
 function buildServer(workspace: Workspace) {
-  const server = new McpServer({ name: "dungeon-designer", version: "0.0.6" }, { instructions: INSTRUCTIONS });
+  const server = new McpServer({ name: "dungeon-designer", version: "0.0.7" }, { instructions: INSTRUCTIONS });
   // Every tool reads or edits the open scene, and fails with a clear message while nothing is open.
   const store = () => workspace.requireScene();
 
@@ -106,18 +106,19 @@ function buildServer(workspace: Workspace) {
   );
 
   server.registerTool(
-    "draw_boxes",
+    "draw_shapes",
     {
-      title: "Draw boxes",
+      title: "Draw shapes",
       description:
-        `Add one or more boxes (rooms and/or volumes) to the scene in a single batch; they appear live in the editor. ` +
-        `Only kind, x, z, width and depth are required; the rest have defaults (the kind's height, y 0, rotation 0, color ${DEFAULT_COLOR}, no name, top level). ` +
+        `Add one or more shapes to the scene in a single batch; they appear live in the editor. Each has a \`type\` ` +
+        `(box, the default) and that type's fields. For a box (a room or a volume) only kind, x, z, width and depth are ` +
+        `required; the rest have defaults (the kind's height, y 0, rotation 0, color ${DEFAULT_COLOR}, no name, top level). ` +
         `Set \`parent\` to a group's ID to draw straight into that group. ` +
-        `The batch is all-or-nothing: if any box is invalid, nothing is drawn and the error says which one.`,
-      inputSchema: { boxes: z.array(BoxInputSchema).min(1) },
+        `The batch is all-or-nothing: if any shape is invalid, nothing is drawn and the error says which one.`,
+      inputSchema: { shapes: z.array(ShapeInputSchema).min(1) },
     },
-    async ({ boxes }) => {
-      const created = store().drawBoxes(boxes, "agent");
+    async ({ shapes }) => {
+      const created = store().drawShapes(shapes, "agent");
       const all = store().getScene().nodes;
       const totals = {
         rooms: all.filter((n) => n.type === "box" && n.kind === "room").length,
@@ -211,7 +212,7 @@ function buildServer(workspace: Workspace) {
       title: "Group nodes",
       description:
         `Put boxes and/or groups in a new group, optionally named. The group is created inside the deepest group that ` +
-        `held them all. Returns the new group (use its ID with move_nodes, rotate_nodes, or as a parent in draw_boxes).`,
+        `held them all. Returns the new group (use its ID with move_nodes, rotate_nodes, or as a parent in draw_shapes).`,
       inputSchema: GroupNodesSchema.shape,
     },
     async (input) => json({ group: store().groupNodes(input, "agent") }),

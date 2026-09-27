@@ -1,7 +1,6 @@
 import type { z } from "zod";
-import { boundsOf, mirrorAcross, normalizeDeg, rotateAround, round2 } from "../shared/geometry";
+import { boundsOf, mirrorAcross, moveShape, normalizeDeg, rotateAround, round2 } from "../shared/geometry";
 import {
-  BoxInputSchema,
   DEFAULT_COLOR,
   DEFAULT_HEIGHT,
   DEFAULT_VIEW,
@@ -14,11 +13,11 @@ import {
   PasteNodesSchema,
   PlaceNodesSchema,
   RotateNodesSchema,
+  ShapeInputSchema,
   SNAP,
   UngroupSchema,
   type Actor,
   type Box,
-  type BoxInput,
   type BoxPatch,
   type Group,
   type HistorySummary,
@@ -26,6 +25,7 @@ import {
   type NodeUpdate,
   type Scene,
   type SceneNode,
+  type ShapeInput,
   type View,
 } from "../shared/scene.types";
 import type { NextId } from "../shared/project.types";
@@ -203,22 +203,22 @@ export function createSceneStore() {
      * Validates every input first; applies all or nothing. Missing fields get their defaults: the kind's height,
      * y 0, rotation 0, the default color, no name, the top level.
      */
-    drawBoxes(inputs: BoxInput[], actor: Actor): Box[] {
-      if (inputs.length === 0) throw new SceneError("boxes: at least one box is required");
+    drawShapes(inputs: ShapeInput[], actor: Actor): Box[] {
+      if (inputs.length === 0) throw new SceneError("shapes: at least one shape is required");
 
       const errors: string[] = [];
       const valid = inputs.map((input, i) => {
-        const result = BoxInputSchema.safeParse(input);
+        const result = ShapeInputSchema.safeParse(input);
         if (!result.success) {
-          errors.push(...issueLines(`boxes[${i}]`, result.error.issues));
+          errors.push(...issueLines(`shapes[${i}]`, result.error.issues));
           return null;
         }
         const d = result.data;
         const height = d.height ?? DEFAULT_HEIGHT[d.kind];
-        checkSizes(`boxes[${i}]`, { width: d.width, depth: d.depth, height }, errors);
+        checkSizes(`shapes[${i}]`, { width: d.width, depth: d.depth, height }, errors);
         if (d.parent !== undefined) {
           const e = parentError(d.parent);
-          if (e) errors.push(`boxes[${i}].parent: ${e}`);
+          if (e) errors.push(`shapes[${i}].parent: ${e}`);
         }
         const name = d.name?.trim();
         return {
@@ -240,7 +240,7 @@ export function createSceneStore() {
 
       const created: Box[] = valid.map((b) => ({ id: `box_${nextId.box++}`, ...b!, createdBy: actor }));
       const ids = created.map((b) => b.id);
-      commit(label("draw", listIds(ids, "boxes"), actor), actor, [{ op: "add", nodes: created }]);
+      commit(label("draw", listIds(ids, "shapes"), actor), actor, [{ op: "add", nodes: created }]);
       return created;
     },
 
@@ -338,9 +338,7 @@ export function createSceneStore() {
       checkIds("ids", ids, errors);
       failIf(errors, "Nothing was moved.");
       const boxes = boxesUnder(scene.nodes, ids);
-      const patches = Object.fromEntries(
-        boxes.map((b) => [b.id, { x: round2(b.x + dx), y: round2(b.y + dy), z: round2(b.z + dz) }]),
-      );
+      const patches = Object.fromEntries(boxes.map((b) => [b.id, moveShape(b, dx, dy, dz)]));
       const changes = effectiveBoxChanges(boxes, patches);
       if (changes.length > 0) commit(label("move", listIds(ids), actor), actor, [{ op: "update", changes }]);
       const moved = new Set(boxes.map((b) => b.id));
