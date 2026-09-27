@@ -7,9 +7,13 @@ import {
   OpenSceneSchema,
   RenameSceneSchema,
   UpdateProjectSchema,
+  type Camera,
+  type EditorRestore,
   type OpenScene,
   type ProjectSummary,
+  type View,
 } from "../shared/scene.types";
+import { round2 } from "../shared/geometry";
 import type { NextId, SceneFile } from "../shared/project.types";
 import { applyOp, createHistory, type HistoryEntry } from "./commands";
 import type { DataDir, HistoryLine } from "./persist";
@@ -31,6 +35,9 @@ function fileOp<T>(failure: string, fn: () => T): T {
     throw new SceneError(`${failure}\n${(err as Error).message}`);
   }
 }
+
+/** `editor.json` is written this long after the last camera or selection change (once it stops, not while it moves). */
+export const EDITOR_SAVE_DELAY_MS = 500;
 
 export const NO_SCENE_OPEN = "No scene is open. Ask the human to create or open a project in the editor.";
 
@@ -101,8 +108,8 @@ export function restoreScene(file: SceneFile, lines: HistoryLine[] | null) {
  */
 export function createWorkspace(data: DataDir) {
   const store = createSceneStore();
-  let open: (OpenScene & { createdAt: string; seq: number }) | null = null;
-  const openedListeners = new Set<(open: OpenScene | null) => void>();
+  let open: (OpenScene & { createdAt: string; seq: number; camera: Camera | null }) | null = null;
+  const openedListeners = new Set<(open: OpenScene | null, restore?: EditorRestore) => void>();
   const projectsListeners = new Set<(projects: ProjectSummary[]) => void>();
 
   const publicOpen = (): OpenScene | null => (open ? { project: open.project, scene: open.scene } : null);
@@ -135,9 +142,32 @@ export function createWorkspace(data: DataDir) {
     const projects = data.listProjects();
     projectsListeners.forEach((l) => l(projects));
   };
-  const openedChanged = () => {
+  const openedChanged = (restore?: EditorRestore) => {
     const current = publicOpen();
-    openedListeners.forEach((l) => l(current));
+    openedListeners.forEach((l) => l(current, restore));
+  };
+
+  const restoreOf = (): EditorRestore | undefined =>
+    open ? { camera: open.camera, selection: store.getScene().selection } : undefined;
+
+  // editor.json: debounced, so a pan writes once, after it stops.
+  let editorTimer: ReturnType<typeof setTimeout> | null = null;
+  const flushEditor = () => {
+    if (!editorTimer) return;
+    clearTimeout(editorTimer);
+    editorTimer = null;
+    if (!open) return;
+    try {
+      data.writeEditor(open.project.id, open.scene.id, restoreOf()!);
+    } catch (err) {
+      console.error("Saving the editor state failed", err);
+    }
+  };
+  const editorChanged = () => {
+    if (!open) return;
+    if (editorTimer) clearTimeout(editorTimer);
+    editorTimer = setTimeout(flushEditor, EDITOR_SAVE_DELAY_MS);
+    editorTimer.unref?.();
   };
 
   const requireProject = (project: string, failure: string) => {
@@ -150,6 +180,8 @@ export function createWorkspace(data: DataDir) {
   /** Loads a scene into the store and makes it the open one. Throws a SceneError if it's missing or doesn't load. */
   const openScene = (project: string, scene: string) => {
     if (!data.sceneExists(project, scene)) throw new SceneError(`No scene "${scene}" in project "${project}"`);
+    // The scene being left keeps its last camera and selection.
+    flushEditor();
     let loaded;
     try {
       const file = data.readScene(project, scene);
@@ -157,19 +189,28 @@ export function createWorkspace(data: DataDir) {
     } catch (err) {
       throw new SceneError(`The scene didn't load, so it wasn't opened:\n${(err as Error).message}`);
     }
+    // Editor state holds no work: if it doesn't load, the scene opens without it and it's replaced on the next change.
+    let editor = null;
+    try {
+      editor = data.readEditor(project, scene);
+    } catch (err) {
+      console.warn(`Ignoring the editor state: ${(err as Error).message}`);
+    }
     open = {
       project: { id: project, name: loaded.project.name, description: loaded.project.description },
       scene: { id: scene, name: loaded.file.name },
       createdAt: loaded.file.createdAt,
       seq: loaded.seq,
+      camera: editor?.camera ?? null,
     };
     store.load({ nodes: loaded.nodes, nextId: loaded.nextId, history: loaded.history });
+    store.setSelection(editor?.selection ?? []);
     if (loaded.caughtUp) {
       console.warn(`${project}/${scene}: scene.json missed the last step in history.jsonl; applied it`);
       writeScene();
     }
     data.writeApp({ lastOpen: { project, scene } });
-    openedChanged();
+    openedChanged(restoreOf());
   };
 
   return {
@@ -177,6 +218,31 @@ export function createWorkspace(data: DataDir) {
     store,
 
     getOpen: publicOpen,
+
+    /** The open scene's camera and selection, for a tab that just connected. */
+    getRestore: restoreOf,
+
+    /** The editor's view (for the agent) and camera (saved for the scene). Not edits: no broadcast, no history. */
+    setView(view: View, camera: Camera): void {
+      store.setView(view);
+      if (!open) return;
+      const next = { focus: { x: round2(camera.focus.x), z: round2(camera.focus.z) }, yaw: round2(camera.yaw), distance: round2(camera.distance) };
+      if (JSON.stringify(next) === JSON.stringify(open.camera)) return;
+      open.camera = next;
+      editorChanged();
+    },
+
+    /** The editor's selection (for the agent, and saved for the scene). */
+    setSelection(ids: string[]): void {
+      const before = store.getScene().selection.join(",");
+      store.setSelection(ids);
+      if (store.getScene().selection.join(",") !== before) editorChanged();
+    },
+
+    /** Writes a pending editor state now (the server is stopping). */
+    flush(): void {
+      flushEditor();
+    },
 
     projects(): ProjectSummary[] {
       return data.listProjects();
@@ -261,6 +327,8 @@ export function createWorkspace(data: DataDir) {
       const failure = "The scene wasn't duplicated.";
       const { project, scene, name } = parse(DuplicateSceneSchema, input, failure);
       requireSceneFolder(project, scene, failure);
+      // The copy starts from the open scene's latest camera.
+      flushEditor();
       const copy = fileOp(failure, () => {
         const source = data.readScene(project, scene);
         return data.duplicateScene(project, scene, name ?? `${source.name} copy`.slice(0, 80));
@@ -275,7 +343,8 @@ export function createWorkspace(data: DataDir) {
       openScene(project, scene);
     },
 
-    onOpened(listener: (open: OpenScene | null) => void): () => void {
+    /** When the open scene changes (with `restore`), or its project or name does (without). */
+    onOpened(listener: (open: OpenScene | null, restore?: EditorRestore) => void): () => void {
       openedListeners.add(listener);
       return () => openedListeners.delete(listener);
     },

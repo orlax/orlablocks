@@ -3,10 +3,12 @@ import path from "node:path";
 import { z } from "zod";
 import {
   AppFileSchema,
+  EditorFileSchema,
   NodeSchema,
   ProjectFileSchema,
   SceneFileSchema,
   type AppFile,
+  type EditorFile,
   type ProjectFile,
   type SceneFile,
 } from "../shared/project.types";
@@ -149,6 +151,7 @@ export function openDataDir(root: string) {
   const scenesDir = (project: string) => path.join(projectDir(project), "scenes");
   const sceneFile = (project: string, scene: string) => path.join(scenesDir(project), scene, "scene.json");
   const historyFile = (project: string, scene: string) => path.join(scenesDir(project), scene, "history.jsonl");
+  const editorFile = (project: string, scene: string) => path.join(scenesDir(project), scene, "editor.json");
   const appFile = path.join(root, "app.json");
 
   return {
@@ -257,6 +260,16 @@ export function openDataDir(root: string) {
 
     writeScene(project: string, scene: string, file: SceneFile): void {
       writeJson(sceneFile(project, scene), file);
+    },
+
+    /** The scene's `editor.json`, or null if it has none. Throws if it doesn't load. */
+    readEditor(project: string, scene: string): EditorFile | null {
+      const file = editorFile(project, scene);
+      return fs.existsSync(file) ? readJson(file, EditorFileSchema) : null;
+    },
+
+    writeEditor(project: string, scene: string, file: EditorFile): void {
+      writeJson(editorFile(project, scene), file);
     },
 
     /** Adds one line to the scene's history log. Lines are never rewritten. */

@@ -24,10 +24,13 @@ try {
   process.exit(1);
 }
 const dataDir = data;
-process.on("exit", () => dataDir.release());
+const workspace = createWorkspace(dataDir);
+process.on("exit", () => {
+  workspace.flush();
+  dataDir.release();
+});
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, () => process.exit(0));
 
-const workspace = createWorkspace(dataDir);
 workspace.restore();
 
 // Pre-configured with JSON body parsing and DNS-rebinding protection for localhost.

@@ -19,6 +19,7 @@ import { BoxMesh } from "./BoxMesh";
 import {
   cameraPosition,
   DEFAULT_CAMERA,
+  restoredCamera,
   FOV_DEG,
   MAX_DISTANCE,
   panTo,
@@ -120,7 +121,10 @@ type Props = {
   /** One gizmo drag: one `update_nodes`, so one undo step. */
   onUpdate: (changes: NodeUpdate[]) => void;
   onCursor: (point: GroundPoint | null) => void;
-  onViewChange: (view: View) => void;
+  /** Reports the view (for the agent) and the camera (saved for the scene), throttled. */
+  onViewChange: (view: View, camera: CameraState) => void;
+  /** A saved camera to jump to. A new object each time a scene opens; null keeps the current camera. */
+  cameraRestore: { camera: CameraState | null } | null;
 };
 
 /**
@@ -140,8 +144,16 @@ export function Viewport({
   onUpdate,
   onCursor,
   onViewChange,
+  cameraRestore,
 }: Props) {
   const cam = useRef<CameraState>({ ...DEFAULT_CAMERA });
+
+  // A scene opened with a saved camera: jump to it. The rig renders it and reports the new view.
+  useEffect(() => {
+    if (!cameraRestore?.camera) return;
+    cam.current = restoredCamera(cameraRestore.camera);
+    invalidate();
+  }, [cameraRestore]);
   const wrap = useRef<HTMLDivElement>(null);
   const yawKeys = useRef(new Set<YawKey>());
   const pan = useRef<{ pointerId: number; grabbed: GroundPoint; sx: number; sy: number } | null>(null);
@@ -587,7 +599,7 @@ function CameraRig({
 }: {
   cam: RefObject<CameraState>;
   yawKeys: RefObject<Set<YawKey>>;
-  onViewChange: (view: View) => void;
+  onViewChange: (view: View, camera: CameraState) => void;
 }) {
   const camera = useThree((s) => s.camera);
   const size = useThree((s) => s.size);
@@ -610,12 +622,12 @@ function CameraRig({
 
     // Report the view at most every VIEW_REPORT_MS. A final change still goes out on a later frame.
     const view = viewOf(c, size);
-    const key = JSON.stringify(view);
+    const key = JSON.stringify([view, c.distance]);
     const now = performance.now();
     if (key !== lastReport.current.key) {
       if (now - lastReport.current.at >= VIEW_REPORT_MS) {
         lastReport.current = { key, at: now };
-        onViewChange(view);
+        onViewChange(view, c);
       } else {
         invalidate();
       }

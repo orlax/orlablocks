@@ -26,13 +26,15 @@ export function attachWebSocket(httpServer: Server, workspace: Workspace) {
     for (const client of wss.clients) send(client, msg);
   };
   store.onChange(() => broadcast(sceneMessage()));
-  workspace.onOpened((open) => broadcast({ type: "opened", open }));
+  workspace.onOpened((open, restore) => broadcast({ type: "opened", open, ...(restore ? { restore } : {}) }));
   workspace.onProjectsChanged((projects) => broadcast({ type: "projects", projects }));
 
   wss.on("connection", (ws) => {
+    // The scene before `opened`, so the selection it restores is checked against this scene's nodes.
     send(ws, { type: "projects", projects: workspace.projects() });
-    send(ws, { type: "opened", open: workspace.getOpen() });
     send(ws, sceneMessage());
+    const restore = workspace.getRestore();
+    send(ws, { type: "opened", open: workspace.getOpen(), ...(restore ? { restore } : {}) });
 
     ws.on("message", (raw) => {
       let data: unknown;
@@ -47,8 +49,8 @@ export function attachWebSocket(httpServer: Server, workspace: Workspace) {
       try {
         const msg = parsed.data;
         // View and selection reports aren't edits, and the editor sends them even with nothing open.
-        if (msg.type === "set_selection") return store.setSelection(msg.ids);
-        if (msg.type === "set_view") return store.setView(msg.view);
+        if (msg.type === "set_selection") return workspace.setSelection(msg.ids);
+        if (msg.type === "set_view") return workspace.setView(msg.view, msg.camera);
         if (msg.type === "create_project") return void workspace.createProject(withoutType(msg));
         if (msg.type === "update_project") return workspace.updateProject(withoutType(msg));
         if (msg.type === "create_scene") return void workspace.createScene(withoutType(msg));

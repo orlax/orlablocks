@@ -132,6 +132,11 @@ export function panTo(cam: CameraState, size: Size, grabbed: GroundPoint, sx: nu
   return { ...cam, focus: { x: cam.focus.x + grabbed.x - under.x, z: cam.focus.z + grabbed.z - under.z } };
 }
 
+/** A saved camera made safe to use: yaw in 0..360, distance within the zoom range. */
+export function restoredCamera(saved: CameraState): CameraState {
+  return { focus: { ...saved.focus }, yaw: normalizeYaw(saved.yaw), distance: clampDistance(saved.distance) };
+}
+
 /** Wheel zoom toward the focus point. `deltaY` > 0 zooms out. Trackpad pinches (ctrlKey) send small deltas. */
 export function zoomBy(cam: CameraState, deltaY: number, pinch = false): CameraState {
   const factor = Math.exp(deltaY * (pinch ? 0.01 : 0.0015));

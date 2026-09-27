@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { BoxColorSchema, BoxKindSchema, MIN_HEIGHT, type SceneNode } from "./scene.types";
+import { BoxColorSchema, BoxKindSchema, CameraSchema, MIN_HEIGHT, type SceneNode } from "./scene.types";
 
 /**
  * The files in the data folder (plan 04 §3). Every file is checked with these on load, and a file that fails is
@@ -56,6 +56,13 @@ export const SceneFileSchema = z.object({
   nodes: z.array(NodeSchema),
 });
 export type SceneFile = z.infer<typeof SceneFileSchema>;
+
+/** `scenes/<id>/editor.json`: the editor's state for the scene. Not design data, not undoable. */
+export const EditorFileSchema = z.object({
+  camera: CameraSchema.nullable().default(null),
+  selection: z.array(z.string()).default([]),
+});
+export type EditorFile = z.infer<typeof EditorFileSchema>;
 
 /** `app.json`: the server-level state. */
 export const AppFileSchema = z.object({

@@ -226,6 +226,17 @@ export type OpenScene = {
   scene: { id: string; name: string };
 };
 
+/** The editor's camera (see `src/web/camera.ts`): saved per scene in `editor.json`, restored when the scene opens. */
+export const CameraSchema = z.object({
+  focus: z.object({ x: z.number(), z: z.number() }),
+  yaw: z.number(),
+  distance: z.number().positive(),
+});
+export type Camera = z.infer<typeof CameraSchema>;
+
+/** What a tab restores when a scene opens (or when it connects): the scene's saved camera (null = keep its own) and selection. */
+export type EditorRestore = { camera: Camera | null; selection: string[] };
+
 export const ClientMessageSchema = z.discriminatedUnion("type", [
   CreateProjectSchema.extend({ type: z.literal("create_project") }),
   UpdateProjectSchema.extend({ type: z.literal("update_project") }),
@@ -245,12 +256,13 @@ export const ClientMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("clear") }),
   z.object({ type: z.literal("undo") }),
   z.object({ type: z.literal("redo") }),
-  z.object({ type: z.literal("set_view"), view: ViewSchema }),
+  z.object({ type: z.literal("set_view"), view: ViewSchema, camera: CameraSchema }),
 ]);
 export type ClientMessage = z.input<typeof ClientMessageSchema>;
 
 export type ServerMessage =
   | { type: "scene"; scene: Scene; history: HistorySummary }
   | { type: "projects"; projects: ProjectSummary[] }
-  | { type: "opened"; open: OpenScene | null }
+  // `restore` only when a scene opens and on connect; a rename re-sends `opened` without it.
+  | { type: "opened"; open: OpenScene | null; restore?: EditorRestore }
   | { type: "error"; message: string };

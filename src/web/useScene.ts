@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { ClientMessage, HistorySummary, OpenScene, ProjectSummary, Scene, ServerMessage } from "../shared/scene.types";
+import type { ClientMessage, EditorRestore, HistorySummary, OpenScene, ProjectSummary, Scene, ServerMessage } from "../shared/scene.types";
 
 const NO_HISTORY: HistorySummary = { canUndo: false, canRedo: false };
 
@@ -10,6 +10,8 @@ export function useScene() {
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   // undefined until the server says; null = nothing is open.
   const [open, setOpen] = useState<OpenScene | null | undefined>(undefined);
+  // The camera and selection to restore: a new object each time a scene opens (or this tab connects).
+  const [restore, setRestore] = useState<EditorRestore | null>(null);
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -36,6 +38,7 @@ export function useScene() {
           setProjects(msg.projects);
         } else if (msg.type === "opened") {
           setOpen(msg.open);
+          if (msg.restore) setRestore({ ...msg.restore });
           setError(null);
         } else if (msg.type === "error") {
           setError(msg.message);
@@ -58,5 +61,5 @@ export function useScene() {
     if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
   }, []);
 
-  return { scene, history, projects, open, connected, error, clearError, send };
+  return { scene, history, projects, open, restore, connected, error, clearError, send };
 }

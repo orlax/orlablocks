@@ -63,7 +63,7 @@ describe("workspace", () => {
     workspace.createProject({ name: " Castle ", description: "Dungeon one", sceneName: "Entrance" });
     const open = { project: { id: "castle", name: "Castle", description: "Dungeon one" }, scene: { id: "entrance", name: "Entrance" } };
     expect(workspace.getOpen()).toEqual(open);
-    expect(opened).toHaveBeenCalledWith(open);
+    expect(opened).toHaveBeenCalledWith(open, { camera: null, selection: [] });
     expect(JSON.parse(fs.readFileSync(path.join(root, "app.json"), "utf8"))).toEqual({ lastOpen: { project: "castle", scene: "entrance" } });
   });
 
@@ -293,7 +293,7 @@ describe("workspace", () => {
       workspace.onOpened(opened);
 
       workspace.renameScene({ project: "castle", scene: "crypt", name: "Catacombs" });
-      expect(opened).toHaveBeenCalledWith(expect.objectContaining({ scene: { id: "crypt", name: "Catacombs" } }));
+      expect(opened).toHaveBeenCalledWith(expect.objectContaining({ scene: { id: "crypt", name: "Catacombs" } }), undefined);
       workspace.renameScene({ project: "castle", scene: "entrance", name: "Gate" });
       expect(sceneJson(root, "castle", "crypt")).toMatchObject({ name: "Catacombs", seq: 1 });
       expect(sceneJson(root, "castle", "entrance")).toMatchObject({ name: "Gate" });
@@ -342,6 +342,100 @@ describe("workspace", () => {
       expect(() => workspace.duplicateScene({ project: "castle", scene: "entrance" })).toThrow(/wasn't duplicated/);
       expect(workspace.getOpen()!.scene.id).toBe("crypt");
       expect(workspace.projects()[0].scenes.map((s) => s.id)).toEqual(["crypt", "entrance"]);
+    });
+  });
+
+  describe("editor state", () => {
+    const camera = { focus: { x: 4.123, z: -2 }, yaw: 90, distance: 40 };
+    const view = { focus: { x: 4, z: -2 }, yaw: 90, bounds: { x: -20, z: -20, width: 40, depth: 40 } };
+    const editorJson = (root: string, scene = "entrance") =>
+      JSON.parse(fs.readFileSync(path.join(root, "projects", "castle", "scenes", scene, "editor.json"), "utf8"));
+    const editorExists = (root: string, scene = "entrance") =>
+      fs.existsSync(path.join(root, "projects", "castle", "scenes", scene, "editor.json"));
+
+    it("writes editor.json once the camera and selection stop changing", () => {
+      vi.useFakeTimers();
+      try {
+        const root = tempRoot();
+        const { workspace, store } = startWithScene(root);
+        store.drawBoxes([{ kind: "room", x: 0, z: 0, width: 6, depth: 4 }], "human");
+        workspace.setView(view, camera);
+        vi.advanceTimersByTime(300);
+        workspace.setView(view, { ...camera, yaw: 120 });
+        workspace.setSelection(["box_1"]);
+        vi.advanceTimersByTime(300);
+        expect(editorExists(root)).toBe(false);
+        vi.advanceTimersByTime(300);
+        expect(editorJson(root)).toEqual({ camera: { focus: { x: 4.12, z: -2 }, yaw: 120, distance: 40 }, selection: ["box_1"] });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("restores the camera and selection on restart, and flush writes a pending change at once", () => {
+      const root = tempRoot();
+      const first = startWithScene(root);
+      first.store.drawBoxes([{ kind: "room", x: 0, z: 0, width: 6, depth: 4 }], "human");
+      first.workspace.setView(view, camera);
+      first.workspace.setSelection(["box_1"]);
+      first.workspace.flush();
+      first.stop();
+
+      const { workspace } = start(root);
+      expect(workspace.getRestore()).toEqual({ camera: { focus: { x: 4.12, z: -2 }, yaw: 90, distance: 40 }, selection: ["box_1"] });
+      // The agent sees the restored selection too.
+      expect(workspace.requireScene().getScene().selection).toEqual(["box_1"]);
+    });
+
+    it("saves the scene being left before switching, and each scene restores its own camera", () => {
+      const root = tempRoot();
+      const { workspace } = startWithScene(root);
+      const opened = vi.fn();
+      workspace.onOpened(opened);
+      workspace.setView(view, camera);
+      workspace.createScene({ project: "castle", name: "Crypt" });
+      expect(editorJson(root).camera).toMatchObject({ yaw: 90 });
+      expect(opened).toHaveBeenLastCalledWith(expect.anything(), { camera: null, selection: [] });
+      workspace.setView(view, { ...camera, yaw: 10 });
+
+      workspace.openScene({ project: "castle", scene: "entrance" });
+      expect(opened).toHaveBeenLastCalledWith(expect.anything(), { camera: expect.objectContaining({ yaw: 90 }), selection: [] });
+      expect(editorJson(root, "crypt").camera).toMatchObject({ yaw: 10 });
+    });
+
+    it("drops saved selection IDs that are gone, and a rename doesn't send a restore", () => {
+      const root = tempRoot();
+      const first = startWithScene(root);
+      first.store.drawBoxes([{ kind: "room", x: 0, z: 0, width: 6, depth: 4 }], "human");
+      first.stop();
+      fs.writeFileSync(
+        path.join(root, "projects", "castle", "scenes", "entrance", "editor.json"),
+        JSON.stringify({ camera: null, selection: ["box_1", "box_9"] }),
+      );
+      const { workspace } = start(root);
+      expect(workspace.getRestore()!.selection).toEqual(["box_1"]);
+      const opened = vi.fn();
+      workspace.onOpened(opened);
+      workspace.renameScene({ project: "castle", scene: "entrance", name: "Gate" });
+      expect(opened).toHaveBeenCalledWith(expect.anything(), undefined);
+    });
+
+    it("opens a scene whose editor.json doesn't load, without it", () => {
+      const root = tempRoot();
+      const first = startWithScene(root);
+      first.stop();
+      fs.writeFileSync(path.join(root, "projects", "castle", "scenes", "entrance", "editor.json"), "{ nope");
+      const { workspace } = quietly(() => start(root));
+      expect(workspace.getOpen()!.scene.id).toBe("entrance");
+      expect(workspace.getRestore()).toEqual({ camera: null, selection: [] });
+    });
+
+    it("a duplicate starts from the original's latest camera", () => {
+      const root = tempRoot();
+      const { workspace } = startWithScene(root);
+      workspace.setView(view, camera);
+      workspace.duplicateScene({ project: "castle", scene: "entrance" });
+      expect(workspace.getRestore()!.camera).toMatchObject({ yaw: 90, distance: 40 });
     });
   });
 });

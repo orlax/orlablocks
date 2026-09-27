@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { DEFAULT_COLOR, DEFAULT_VIEW, type Box, type BoxColor, type BoxKind, type SceneNode, type View } from "../shared/scene.types";
 import { boxesUnder, childrenOf, isBox, isGroup } from "../shared/tree";
-import type { GroundPoint } from "./camera";
+import type { CameraState, GroundPoint } from "./camera";
 import { typingInField } from "./keys";
 import { Outliner } from "./Outliner";
 import { ProjectPicker } from "./ProjectPicker";
@@ -20,9 +20,10 @@ const title = (n: SceneNode) => (n.name ? `${n.name} (${n.id})` : n.id);
 const describe = (b: Box) => `${title(b)} · ${b.width} × ${b.depth} × ${b.height} m · y ${b.y} · ${b.rotation}°`;
 
 export function App() {
-  const { scene, history, projects, open, connected, error, clearError, send } = useScene();
+  const { scene, history, projects, open, restore, connected, error, clearError, send } = useScene();
   const [pickerOpen, setPickerOpen] = useState(false);
   const [view, setView] = useState<View>(DEFAULT_VIEW);
+  const [camera, setCamera] = useState<CameraState | null>(null);
   const [cursor, setCursor] = useState<GroundPoint | null>(null);
   const [tool, setTool] = useState<Tool>("select");
   // Holding Space switches to the hand for as long as it's held.
@@ -52,26 +53,29 @@ export function App() {
   const volumes = boxes.length - rooms;
   const groups = nodes.filter(isGroup).length;
 
-  // Another scene opened (here, in another tab, or at start): close the picker and drop the local state that
-  // belonged to the old scene. A rename keeps the IDs, so it changes nothing here.
+  // A scene opened (here, in another tab, or when this tab connected): close the picker, drop the local state that
+  // belonged to the old scene, and restore the scene's selection (the Viewport restores its camera). A rename
+  // doesn't send `restore`, so it changes nothing here.
   const sceneKey = open ? `${open.project.id}/${open.scene.id}` : "";
   useEffect(() => {
+    if (!restore) return;
     setPickerOpen(false);
-    setSelection([]);
+    setSelection(restore.selection);
     setContext(null);
     setOutlinerHover(null);
     pendingGroup.current = null;
-  }, [sceneKey]);
+  }, [restore]);
 
   // The tab's title follows the open scene.
   useEffect(() => {
     document.title = open ? `${open.scene.name} — ${open.project.name}` : "Dungeon Designer";
   }, [open]);
 
-  // Tell the server what's visible so the agent's get_scene knows where to draw.
+  // Tell the server what's visible so the agent's get_scene knows where to draw, and where the camera is, so the
+  // scene reopens there.
   useEffect(() => {
-    if (connected) send({ type: "set_view", view });
-  }, [connected, view, send]);
+    if (connected && camera) send({ type: "set_view", view, camera });
+  }, [connected, view, camera, send]);
 
   // Tell the server what's selected so the agent knows what "this" means. The last tab to change it wins.
   const selectionKey = selection.join(",");
@@ -195,7 +199,11 @@ export function App() {
         onDrawBox={(box) => send({ type: "add_boxes", boxes: [{ ...box, color: nextColor }] })}
         onUpdate={(changes) => send({ type: "update_nodes", changes })}
         onCursor={setCursor}
-        onViewChange={setView}
+        onViewChange={(v, c) => {
+          setView(v);
+          setCamera({ focus: { ...c.focus }, yaw: c.yaw, distance: c.distance });
+        }}
+        cameraRestore={restore}
       />
 
       <Outliner

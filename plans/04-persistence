@@ -291,6 +291,19 @@ Adopted as recommended (say if any should change):
 
 ## 12. Progress
 
+**Phase complete (2026-09-27).** All four increments are done, and each passed Orlando's browser check. Work is saved in the data folder as projects of scenes, written on every edit. Undo and redo survive restarts through each scene's history log, and each scene reopens with its own camera and selection. The editor has a project picker, and the agent sees the open scene with its project's description.
+
+Beyond the plan:
+- scenes rename with a pencil button, not a double-click (see 04.3);
+- a broken `editor.json` is ignored, not refused (see 04.4);
+- on connect, `scene` is sent before `opened`.
+
+Candidates for the next phase:
+- from `thinking-01-entities`: duplicate with `Alt`-drag and repeat, array and mirror tools, entities (doors, windows, floor holes, flags, notes, a human reference figure), more primitives (cylinder, free-form shapes);
+- a summarized scene description for the agent as scenes grow;
+- from 03's deferred list: copy / paste, visibility and lock;
+- the semantic folders (`abilities/`, `entities/`, `rules/`) getting their first content.
+
 ### 04.1 — Projects and scenes on disk (done)
 
 - **Data folder:** `./data` or `DATA_DIR`, gitignored. `.lock` holds the server's PID, and a second server on the same folder exits with a message. A lock left by a process that's gone is taken over. The lock is released on exit (`SIGINT`, `SIGTERM`, `SIGHUP`).
@@ -346,4 +359,21 @@ Adopted as recommended (say if any should change):
   - typecheck;
   - 139 tests (new: create and switch scenes with separate history, renaming the open scene and another one, renaming a project and editing its description, duplicating with history, a failed open that keeps the current scene);
   - a scripted run on `:5171` with two WS clients: create scene, switch, duplicate, rename, describe, and an unknown scene's error. The second client followed every switch, and Vite compiled the new UI files.
+
+### 04.4 — Editor state (done)
+
+- **`editor.json`** holds `{ camera: { focus, yaw, distance } | null, selection }`. It's written **500 ms after the camera and selection stop changing** (a debounce: a long pan writes once), and right away before switching or duplicating a scene and when the server exits. The camera is rounded to 2 decimals, and an unchanged camera doesn't restart the timer.
+- **Protocol:**
+  - `set_view` carries `camera`, and `set_selection` goes through the workspace.
+  - `opened` carries `restore: { camera, selection }` when a scene opens and when a tab connects. A rename re-sends `opened` without it.
+  - On connect the server now sends `scene` before `opened`, so the restored selection is checked against the right nodes.
+- **Editor:**
+  - the Viewport jumps to `restore.camera` (with yaw normalized and the distance clamped). A scene with no saved camera (new, or created before 04.4) keeps the current camera.
+  - the App restores the selection, and the switch reset from 04.3 now runs on `restore`.
+- **The agent** sees the restored selection in `get_scene` right after a scene opens. Saved IDs that no longer exist are dropped.
+- **Exception to §3.2's "never write over a file that failed to load":** an `editor.json` that doesn't load is ignored, with a warning, and replaced on the next change. It holds no design work, and refusing to open the scene over a camera position would be worse.
+- **Checks:**
+  - typecheck;
+  - 145 tests (new: the debounce, a restart restoring camera and selection, switching scenes saving the one being left, stale selection IDs, no restore on rename, a broken `editor.json`, a duplicate starting from the latest camera);
+  - a scripted run on `:5171`: `editor.json` appeared only after the changes stopped. A camera change still pending when the server was stopped with SIGTERM was saved. After the restart the tab got the camera and selection, and each scene restored its own. Vite compiled the changed UI files.
 
