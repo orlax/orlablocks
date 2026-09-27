@@ -1,0 +1,288 @@
+# 04 — Persistence
+
+> **For the agent reading this:** Read `plans/03-UX-improvements` first (especially §13, Progress): it describes the editor as it exists today. This phase makes work survive a restart. The server saves everything in a **data folder**, organized as **projects** that each hold several **scenes**. Every edit is written to disk as it happens, so there's no save button. Each scene keeps its current state in one file and its **history log** in another, so **undo works across restarts**. The editor gets a **project picker** to create, open, rename and duplicate. The agent keeps seeing only the **open scene**. The work is split into small increments (§9). Each one ends with the human ↔ agent loop still working and a browser checklist for Orlando. Add this phase's terms to `GLOSSARY.md` (marked "from 04") as they land. Log progress in a §12 at the end of this file, as 03 did.
+
+---
+
+## 1. Goal
+
+One demo, end to end:
+
+1. Orlando starts the server with an empty data folder and opens the editor. A dialog asks him to **create a project**. He names it "Castle", adds a one-line description, and names its first scene "Entrance".
+2. He draws a few rooms, and the agent adds a pillar. He never saves.
+3. He stops the server and starts it again. The editor reopens **Castle ▸ Entrance** with the same boxes, the camera where he left it, and the same selection. `⌘Z` undoes the agent's pillar, and then his last room.
+4. From the **project picker** he creates a second scene, "Crypt", and draws in it. The agent's `get_scene` now reports the crypt, and it can't see the entrance.
+5. He **duplicates** "Entrance" as "Entrance B" to try a variant, and changes it without touching the original.
+
+---
+
+## 2. Scope
+
+### In
+
+- A **data folder** (`./data`, or `DATA_DIR`), gitignored, with one folder per project and one folder per scene.
+- **Write on every edit:** the scene state, and an append-only history log.
+- **Undo and redo across restarts,** rebuilt from the log.
+- **Editor state per scene:** the camera (focus, yaw, zoom distance) and the selection.
+- **The last open scene** reopens when the server starts.
+- **Project picker:** create a project (name, description, first scene), create a scene, open, rename a project or scene, edit a project's description, and duplicate a scene.
+- **The agent sees which project and scene are open** (including the project's description), and only that scene.
+
+### Out (deliberately deferred)
+
+- **Format versions and migrations.** The work done while developing will be thrown away. We try to avoid breaking changes (new fields are optional, with defaults). When one does break, Orlando deletes the project and creates a new one.
+- **Deleting projects or scenes from the UI.** To delete, remove the folder by hand, with the server stopped.
+- **Raw edits, ever.** Every change goes through MCP or the editor. The server reads a scene's files only when it opens the scene. There's no file watching and no `raw_edit` command.
+- **Multiple users.** This is a single-user app.
+- **Agent tools for projects:** listing, opening or creating scenes.
+- **The contents of the semantic folders** (§3.3). 04 only creates the empty folders.
+- A per-project color palette. The palette is app-level.
+- Import and export.
+
+---
+
+## 3. On disk
+
+### 3.1 Layout
+
+```
+data/                               # DATA_DIR, default ./data (relative to where the server runs); gitignored
+  .lock                             # PID of the server using this folder
+  app.json                          # { lastOpen: { project, scene } | null }
+  projects/
+    castle/                         # project ID: a slug of the name at creation, never renamed
+      project.json                  # { name, description, createdAt }
+      scenes/
+        entrance/                   # scene ID: a slug of the name at creation, never renamed
+          scene.json                # { name, createdAt, seq, nextId, nodes }
+          history.jsonl             # the history log: one line per step, append-only
+          editor.json               # { camera: { focus, yaw, distance }, selection }
+      abilities/                    # reserved for the semantic layer: player abilities
+      entities/                     # reserved: placeable things (NPCs, triggers, keys...)
+      rules/                        # reserved: design guide, rubric
+```
+
+- **IDs are slugs made once, at creation:** lowercase `a-z0-9-`, and `-2`, `-3`... if taken. Renaming only changes `name` in the JSON and never moves the folder.
+- The scenes of a project are its `scenes/` subfolders, ordered by `createdAt`. `project.json` doesn't list them, so there's nothing to keep in sync.
+- **JSON for every machine-written file:** pretty-printed with 2 spaces, and the history log with one compact entry per line. The semantic folders will hold files Orlando writes, and those can be markdown or YAML later.
+- Times: `createdAt` is an ISO string. History entries keep today's `at` in milliseconds.
+- `data/.lock` holds the PID of the server using the folder. A second server on the same folder refuses to start, unless that PID no longer runs. Single user or not, it stops a scripted check on `:5171` that forgot `DATA_DIR` from writing into Orlando's projects.
+
+### 3.2 The scene files
+
+```jsonc
+// scene.json: written in full after every change to the nodes (commit, undo, redo)
+{
+  "name": "Entrance",
+  "createdAt": "2026-09-26T10:00:00.000Z",
+  "seq": 14,                               // the last log entry this state includes
+  "nextId": { "box": 12, "group": 3 },     // must be saved: IDs are never reused, and history can hold removed nodes
+  "nodes": [ /* the flat node list, exactly as in get_scene */ ]
+}
+```
+
+```jsonc
+// history.jsonl: one line per step
+{"seq":12,"type":"commit","label":"Draw box_11","actor":"human","at":1790000000000,"ops":[...],"inverse":[...]}
+{"seq":13,"type":"undo","at":1790000005000}
+{"seq":14,"type":"redo","at":1790000006000}
+```
+
+- **The log is the record of what happened,** and nothing in it is ever rewritten. The in-memory undo stack keeps its 200-entry limit, but the log keeps everything.
+- **On open, replay the log** to rebuild the undo and redo stacks, following the same rules as `createHistory`:
+  - a commit pushes onto the undo stack and clears redo;
+  - an undo moves the top entry to redo;
+  - a redo moves it back.
+  The replay moves entries between the stacks without applying ops. The nodes come from `scene.json`.
+- **Order of writes on every change:** append to the log first, then write `scene.json` atomically (write a temp file, then rename it).
+  - A crash between the two leaves the log exactly one step ahead: its last `seq` is `scene.seq + 1`.
+  - On open, detect that case and apply the missing step (a commit's ops, an undo's inverse, a redo's ops). Then write `scene.json` again.
+- **Load safely.** Every file is checked with zod on open. If a file doesn't parse, or the log is behind `scene.json`, the scene doesn't open. The picker shows the error, and **the server never writes over a file it failed to load**.
+- Writes are synchronous. The scene is small, and the order of writes is guaranteed.
+- Renaming a scene rewrites `scene.json` but isn't a history step, so it can't be undone.
+
+### 3.3 Editor state and app state
+
+- **`editor.json` holds the camera and the selection for its scene.** They aren't design data and aren't undoable, so they stay out of `scene.json`. Panning doesn't touch the scene file, and its diffs stay clean.
+- **The camera is `CameraState`** (`focus`, `yaw`, `distance`), not the server's `View`. `View.bounds` depends on the window size, and `View` has no zoom. `set_view` gains `distance`. The server keeps deriving `view` for the agent as today, and saves `camera`.
+- `editor.json` is written with a **debounce of about 500 ms**, because `set_view` fires on every camera change.
+- **`app.json` holds the last open scene,** written whenever a scene opens. On start, the server opens that scene. If the scene's folder is gone (deleted by hand) or fails to load, the server starts with nothing open.
+
+---
+
+## 4. The open scene
+
+- **The server has one open scene** (or none). Opening a scene switches every tab and the agent. The scene's store is loaded from disk, history included.
+- **Undo acts within the open scene.** Opening another scene isn't a step.
+- **Before any project exists,** or when the last open scene is gone:
+  - Nothing is open.
+  - The editor shows the picker, and it can't be dismissed.
+  - With no projects at all, the picker shows only the **create project** form.
+  - No project is created automatically, so nothing untitled is ever left on disk.
+- **With nothing open, the MCP tools that edit or read the scene return an error:** "No scene is open. Ask the human to create or open a project in the editor." This error is an MCP tool result, not a crash.
+- **Creating a project also creates its first scene** and opens it. The form asks for the project name, a description (optional) and the first scene's name (default "Scene 1").
+- **Duplicating a scene** copies the whole scene folder into a new one:
+  - Its three files are copied, so the copy keeps the history (undo works the same as in the original).
+  - The copy is named "\<name> copy" by default, gets its own slug, and opens.
+
+---
+
+## 5. Editor UI
+
+- **Project bar:** a small breadcrumb at the top left, above the outliner: **Castle ▸ Entrance**. Clicking it opens the picker.
+- **Project picker:** a modal with two columns.
+  - **Projects:** the list, with **New project**. Selecting a project shows its description, which can be edited.
+  - **Scenes** of the selected project: the list, with **New scene** and **Duplicate**. Clicking a scene opens it and closes the picker.
+  - **Double-click renames** a project or scene in place, the same as the outliner (`Enter` or blur saves, `Esc` cancels). An empty name is rejected.
+  - A scene that failed to load shows its error in the list and can't be opened.
+  - `Esc` closes the picker, except while nothing is open.
+- **Switching scenes resets the editor's local state:** it cancels any drag, leaves an entered group, clears hover, and restores the new scene's camera and selection.
+- The document title follows the open scene: `Entrance — Castle`.
+- Shortcuts are off while the picker is open (the shared `typingInField` guard covers the inputs, and the picker also blocks the editor's keys).
+
+---
+
+## 6. Editor ↔ server protocol
+
+```
+client → server  { type: "create_project", name, description?, sceneName? }   // also creates and opens the first scene
+client → server  { type: "update_project", project, name?, description? }
+client → server  { type: "create_scene", project, name }                     // opens it
+client → server  { type: "rename_scene", project, scene, name }
+client → server  { type: "duplicate_scene", project, scene, name? }          // opens the copy
+client → server  { type: "open_scene", project, scene }
+client → server  { type: "set_view", view, camera }                          // camera = { focus, yaw, distance } (new)
+                 (every scene edit, set_selection, undo / redo / clear unchanged; they fail with an error while nothing is open)
+
+server → client  { type: "projects", projects: [{ id, name, description, scenes: [{ id, name, error? }] }] }
+                   // on connect, and broadcast whenever the list changes
+server → client  { type: "opened", project: { id, name, description } | null, scene: { id, name } | null, camera?, selection? }
+                   // on connect, and broadcast when the open scene changes; the editor restores camera and selection only here
+server → client  scene (+ history), error                                    // unchanged
+```
+
+---
+
+## 7. MCP surface
+
+- **No new tools.** The 8 tools from 03 stay as they are.
+- `get_scene` adds `project: { id, name, description }` and `scene: { id, name }`. The description gives the agent the project's context.
+- Every tool errors while nothing is open (§4).
+- The conventions text explains:
+  - the scene is one scene of a project;
+  - edits are saved as they happen;
+  - undo history survives restarts;
+  - the agent sees only the open scene, and the human switches scenes in the editor.
+- Server version 0.0.5. **Restart the server and reconnect with `/mcp`.**
+- **CLAUDE.md:**
+  - replace "The scene is in memory only" with the data folder and the open scene;
+  - add "Don't read or edit files under `data/`. Use the MCP tools.";
+  - mention `DATA_DIR` for scripted checks (§8).
+
+---
+
+## 8. Code
+
+- **`src/server/persist.ts`:** file access only.
+  - `DATA_DIR`, the lock, slugs and atomic writes.
+  - Reading and writing each file, appending to the log.
+  - Listing projects and scenes, and copying a scene folder.
+  - Tested against temp folders.
+- **`src/server/workspace.ts`:** the open scene.
+  - Opens a scene: loads its files, repairs a log that's one step ahead, and loads the store.
+  - Creates, renames and duplicates projects and scenes, and keeps `app.json`.
+  - `ws.ts` and `mcp.ts` go through it to reach the store.
+- **`src/server/scene.ts` stays pure,** with no fs. It gains:
+  - `load({ nodes, nextId, entries })`, which resets the nodes, the ID counters and the history (replaying the log's entries);
+  - an `onStep(listener)` hook that reports `{ type: "commit", entry } | { type: "undo" } | { type: "redo" }` after each change. The workspace writes it to disk.
+- **`src/server/commands.ts`:** `createHistory` gains a replay that rebuilds both stacks from log entries without applying ops.
+- **Shared types:** the zod schemas for the files and the new messages go in `src/shared/`.
+- **Web:**
+  - `ProjectBar.tsx` and `ProjectPicker.tsx`;
+  - `useScene.ts` handles `projects` and `opened`;
+  - the viewport can set its camera from `opened`.
+- `.gitignore` gets `data/`.
+- **Scripted checks** run on a spare port with a scratch folder: `PORT=5171 DATA_DIR=<scratch>/data npm run dev`. They never touch `./data`.
+
+---
+
+## 9. Increments
+
+Each increment is verified before the next one starts: typecheck, tests, a scripted check on a spare port with a scratch `DATA_DIR`, and Orlando's browser checklist.
+
+### 04.1 — Projects and scenes on disk
+
+- The data folder: `DATA_DIR`, `.lock`, `.gitignore`.
+- `persist.ts` and `workspace.ts`: create a project with its first scene, write `scene.json` (with `seq` and `nextId`) after every change, and `app.json`.
+- The server reopens the last scene on start.
+- The first-run **create project** form (the picker's first piece), and the `projects` and `opened` messages.
+- MCP: `project` and `scene` in `get_scene`, and the "no scene open" error.
+- History is still in memory in this increment: undo works until a restart.
+- **Check:** create a project, draw, restart the server. The boxes are back. New boxes continue the old IDs (`box_12` after `box_11`, even if `box_11` was deleted). The agent sees the project name and description.
+
+### 04.2 — History log and undo across restarts
+
+- `history.jsonl`: an append on every commit, undo and redo, with `seq`.
+- Replay on open, and repair when the log is one step ahead.
+- Refuse to open when a file doesn't parse (and never write over it).
+- **Check:** draw, move, undo once, restart. `⌘Z` / `⌘⇧Z` continue exactly where they were, labels included. Tests cover replay, the one-step-ahead repair, and a corrupt file left untouched.
+
+### 04.3 — Project picker
+
+- The project bar and the picker: list, open, new project, new scene, rename, edit description, duplicate scene.
+- Switching scenes switches every tab and resets the editor's local state.
+- The document title follows the open scene.
+- **Check:** two scenes in a project, switch between them; each keeps its own boxes and undo history. Duplicate a scene and change the copy; the original is unchanged. Rename and restart: the new names stick, and the folders keep their slugs. The agent sees only the open scene.
+
+### 04.4 — Editor state
+
+- `set_view` sends `camera`, and `editor.json` is written with a debounce.
+- On open, `opened` carries the camera and the selection, and the editor restores them.
+- **Check:** pan, rotate, zoom, select two boxes, restart. The view and selection come back. Switching scenes restores each scene's own camera.
+
+---
+
+## 10. Acceptance test (end of phase)
+
+1. Stop the server, move `./data` aside, start it. The editor shows the create project form and can't be dismissed. `get_scene` from the agent returns the "no scene open" error.
+2. Create "Castle" with a description and a first scene "Entrance". The bar shows **Castle ▸ Entrance**, and `data/projects/castle/scenes/entrance/` exists, along with `abilities/`, `entities/` and `rules/`.
+3. Draw three rooms. Ask the agent to add a pillar in the middle one. `get_scene` shows the project, its description and the scene.
+4. Pan, rotate, zoom, and select a room. Restart the server and reload the page. The same scene, boxes, camera and selection come back.
+5. `⌘Z` removes the pillar, and `⌘Z` again removes the last room. `⌘⇧Z` twice brings both back. The labels match the steps (`Agent: draw box_4`).
+6. Draw one more box. It gets the next ID, never a reused one.
+7. Picker: create scene "Crypt" and draw in it. The agent sees the crypt only. Go back to "Entrance": its boxes, camera and undo history are its own.
+8. Duplicate "Entrance" as "Entrance B" and move a room in the copy. "Entrance" is unchanged. `⌘Z` in the copy works back through the history it inherited.
+9. Rename "Crypt" to "Catacombs". The folder stays `crypt/`, and the new name survives a restart.
+10. Two tabs: opening a scene in one switches the other.
+11. Start a second server on `:5171` with no `DATA_DIR`. It refuses to start because `./data` is locked.
+
+---
+
+## 11. Decisions
+
+Settled with Orlando:
+
+1. **The data folder** is `./data` where the server runs, gitignored, and `DATA_DIR` overrides it.
+2. **Projects, each with several scenes.** Each project has a `project.json` (name, description), and each scene lives in `scenes/<id>/`, with its state and its history in separate files.
+3. **Write on every edit.** There's no save button.
+4. **Undo across restarts** is the point of the history log.
+5. **The camera, selection and last open scene are saved.**
+6. **No format versions or migrations.** Avoid breaking changes, and when one happens, delete the project and start again.
+7. **No project is created automatically.** With nothing open, the editor asks to create one.
+8. **Folder names are slugs made at creation,** and never change on rename.
+9. **The color palette is app-level,** not per project.
+10. **No delete in the UI.** Delete folders by hand.
+11. **Duplicate scene is in scope.**
+12. **No raw edits, ever.** Everything goes through MCP or the editor.
+13. **Single user.**
+14. **The agent sees only the open scene,** with no project or scene tools.
+15. **JSON for machine-written files.**
+
+Adopted as recommended (say if any should change):
+
+16. **One open scene per server.** Switching it switches every tab and the agent.
+17. **Creating a project also creates and opens its first scene** (default name "Scene 1").
+18. **The semantic folders are `abilities/`, `entities/` and `rules/`,** created empty. "Palette" stays the name of the color palette, and "skills" is avoided because it clashes with Claude skills.
+19. **A duplicate copies the history** along with the state.
+20. **A lock file** stops two servers from sharing a data folder.
+21. **A file that fails to load is never overwritten.** Its scene doesn't open, and the picker shows why.
