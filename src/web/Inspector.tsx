@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
+  ArrowDownToLine,
+  ArrowUpToLine,
+  Link,
   Ellipsis,
   Slash,
   Sparkles,
@@ -150,6 +153,17 @@ export type ArrayControls = {
   shortfall: string | null;
   /** The whole new list of entities, with their weights. */
   onEntities: (entities: { entity: string; weight?: number }[]) => void;
+  /**
+   * A path's follow (10.3): what it follows (its name, and whether it's a closed shape, which has a top and a
+   * bottom), or null; whether the view is picking a target; pick, change, unlink.
+   */
+  follow?: {
+    along: { id: string; name?: string; closed: boolean; at: "top" | "bottom"; offset: number } | null;
+    picking: boolean;
+    onPick: () => void;
+    onChange: (patch: { at?: "top" | "bottom"; offset?: number }) => void;
+    onUnlink: () => void;
+  };
   onLayoutType: (type: ArrayLayoutType) => void;
   onLayout: (patch: Record<string, unknown>) => void;
   onChange: (patch: { facing?: ArrayFacing; rotation?: number; jitter?: number; turnJitter?: number; seed?: number }) => void;
@@ -564,7 +578,8 @@ function CountField({ title, value, onChange }: { title: string; value: number; 
  * layout's fields, how its items face and turn, and Edit entity and Detach. Each field sends one step.
  */
 function ArraySection(props: ArrayControls & { lib: Library }) {
-  const { entities, library, lib, layout, facing, rotation, jitter, turnJitter, seed, items, skipped, shortfall, onEntities, onLayoutType, onLayout, onChange, onEdit, onDetach } = props;
+  const { entities, library, lib, layout, facing, rotation, jitter, turnJitter, seed, items, skipped, shortfall, follow, onEntities, onLayoutType, onLayout, onChange, onEdit, onDetach } = props;
+  const along = follow?.along ?? null;
   const facings = FACINGS[layout.type];
   return (
     <Section label="Array">
@@ -579,6 +594,54 @@ function ArraySection(props: ArrayControls & { lib: Library }) {
           ))}
         </div>
       </Row>
+      {layout.type === "path" && follow && (
+        <Row label="follows">
+          {along ? (
+            <>
+              <span className="array-follows" title={`Its path is ${along.id}'s: it follows every change to it`}>
+                {along.name ? `${along.name} (${along.id})` : along.id}
+              </span>
+              <button className="labeled" title="Unlink: keep the path it has now as its own points (it stops following)" onClick={follow.onUnlink}>
+                <Unlink size={14} /> Unlink
+              </button>
+            </>
+          ) : (
+            <button
+              className={follow.picking ? "labeled active" : "labeled"}
+              title={follow.picking ? "Click a shape in the view to follow it (Esc cancels)" : "Follow: take the path from a shape (a room's wall top, a volume's edge, a ramp, a line), live"}
+              onClick={follow.onPick}
+            >
+              <Link size={14} /> {follow.picking ? "Click a shape…" : "Follow a shape"}
+            </button>
+          )}
+        </Row>
+      )}
+      {layout.type === "path" && follow && along && (
+        <>
+          {along.closed && (
+            <Row label="at">
+              <div className="segmented">
+                <button className={along.at === "top" ? "active" : ""} title="Top: its wall top (a volume's top)" onClick={() => follow.onChange({ at: "top" })}>
+                  <ArrowUpToLine size={16} />
+                </button>
+                <button className={along.at === "bottom" ? "active" : ""} title="Bottom: its floor" onClick={() => follow.onChange({ at: "bottom" })}>
+                  <ArrowDownToLine size={16} />
+                </button>
+              </div>
+            </Row>
+          )}
+          <Row label="offset">
+            <NumberField
+              title={along.closed ? "Meters inward from its outline (half a room's wall is its centerline)" : "Meters to the right of travel"}
+              value={along.offset}
+              unit="m"
+              step={0.05}
+              fallback={0}
+              onChange={(offset) => follow.onChange({ offset })}
+            />
+          </Row>
+        </>
+      )}
       {layout.type === "path" && (
         <>
           <Row label="items">
@@ -608,12 +671,14 @@ function ArraySection(props: ArrayControls & { lib: Library }) {
               <CountField title="How many items, evenly along the path" value={layout.count ?? 1} onChange={(count) => onLayout({ count })} />
             </Row>
           )}
-          <Row label="closed">
-            <label className="note-done" title="Closed: the path loops back to its first point">
-              <input type="checkbox" checked={!!layout.closed} onChange={(e) => onLayout({ closed: e.target.checked })} />
-              loop
-            </label>
-          </Row>
+          {!along && (
+            <Row label="closed">
+              <label className="note-done" title="Closed: the path loops back to its first point">
+                <input type="checkbox" checked={!!layout.closed} onChange={(e) => onLayout({ closed: e.target.checked })} />
+                loop
+              </label>
+            </Row>
+          )}
         </>
       )}
       {layout.type === "scatter" && (

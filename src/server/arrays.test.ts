@@ -404,3 +404,129 @@ describe("a scatter's items", () => {
     expect(s.getHistory().undoLabel).toBe(`Reroll ${a.id}`);
   });
 });
+
+describe("following an outline", () => {
+  const store = () => createSceneStore({ entityName: (id) => (["block", "window"].includes(id) ? id : undefined) });
+  const room = { kind: "room" as const, x: 0, z: 0, width: 10, depth: 6, height: 4, name: "keep" };
+  const follower = (id: string, fields: Record<string, unknown> = {}) => ({
+    type: "array" as const,
+    entity: "block",
+    layout: { type: "path" as const, along: { id }, spacing: 2, ...fields },
+  });
+
+  it("stands on a room's wall top, on the wall's centerline, all the way round", () => {
+    const s = store();
+    const [keep] = s.drawShapes([room], "agent");
+    const [a] = s.drawShapes([follower(keep.id)], "agent") as ArrayNode[];
+    expect(a.layout).toMatchObject({ type: "path", closed: true, along: { id: keep.id }, place: "spacing", spacing: 2 });
+    const items = arrayItems(a);
+    // A 9.8 × 5.8 centerline (the wall is 0.2 thick) is 31.2 m round: 16 gaps of 1.95 m.
+    expect(items).toHaveLength(16);
+    for (const i of items) {
+      expect(i.y).toBe(4);
+      expect(Math.abs(i.x) === 4.9 || Math.abs(i.z) === 2.9).toBe(true);
+    }
+  });
+
+  it("follows the room when it changes, in the room's own step, and undo takes both back", () => {
+    const s = store();
+    const [keep] = s.drawShapes([room], "agent");
+    const [a] = s.drawShapes([follower(keep.id)], "agent");
+    s.updateNodes([{ id: keep.id, width: 14 }], "human");
+    s.updateNodes([{ id: keep.id, height: 6 }], "human");
+    const moved = s.getScene().nodes.find((n) => n.id === a.id) as ArrayNode;
+    expect(arrayItems(moved).length).toBeGreaterThan(16);
+    expect(arrayItems(moved)[0].y).toBe(6);
+    expect(s.getHistory().undoLabel).toBe(`Change height of ${keep.id}`);
+    s.undo();
+    s.undo();
+    expect(arrayItems(s.getScene().nodes.find((n) => n.id === a.id) as ArrayNode)).toHaveLength(16);
+  });
+
+  it("goes with its room in a group move, and refuses to move alone", () => {
+    const s = store();
+    const [keep] = s.drawShapes([room], "agent");
+    const [a] = s.drawShapes([follower(keep.id)], "agent");
+    const g = s.groupNodes({ ids: [keep.id, a.id] }, "agent");
+    s.moveNodes({ ids: [g.id], dx: 5 }, "human");
+    const after = s.getScene().nodes.find((n) => n.id === a.id) as ArrayNode;
+    expect(Math.min(...arrayItems(after).map((i) => i.x))).toBe(0.1);
+    expect(() => s.moveNodes({ ids: [a.id], dx: 1 }, "human")).toThrow(/follows box_1/);
+  });
+
+  it("unlinks when its target is removed, keeping its path; undo links it again", () => {
+    const s = store();
+    const [keep] = s.drawShapes([room], "agent");
+    const [a] = s.drawShapes([follower(keep.id)], "agent");
+    s.removeNodes([keep.id], "human");
+    const left = s.getScene().nodes.find((n) => n.id === a.id) as ArrayNode;
+    expect(left.layout).not.toHaveProperty("along");
+    expect(arrayItems(left)).toHaveLength(16);
+    s.undo();
+    expect((s.getScene().nodes.find((n) => n.id === a.id) as ArrayNode).layout).toHaveProperty("along", { id: keep.id });
+  });
+
+  it("follows the free-form a box becomes, and copies follow their copied target", () => {
+    const s = store();
+    const [keep] = s.drawShapes([room], "agent");
+    const [a] = s.drawShapes([follower(keep.id)], "agent");
+    const before = arrayItems(a as ArrayNode).map((i) => [i.x, i.z]);
+    const [ff] = s.updateNodes([{ id: keep.id, type: "freeform" }], "human");
+    const now = s.getScene().nodes.find((n) => n.id === a.id) as ArrayNode;
+    expect(now.layout).toHaveProperty("along", { id: ff.id });
+    expect(arrayItems(now).map((i) => [i.x, i.z])).toEqual(before);
+    const g = s.groupNodes({ ids: [ff.id, a.id] }, "agent");
+    s.duplicateNodes({ ids: [g.id], dx: 20 }, "human");
+    const copies = s.getScene().nodes.filter((n) => n.type === "array" && n.id !== a.id) as ArrayNode[];
+    expect(copies).toHaveLength(1);
+    const copiedTarget = s.getScene().nodes.find((n) => n.type === "freeform" && n.id !== ff.id)!;
+    expect(copies[0].layout).toHaveProperty("along", { id: copiedTarget.id });
+    // Copied alone, it's unlinked.
+    const [alone] = s.duplicateNodes({ ids: [a.id], dz: 10 }, "human") as ArrayNode[];
+    expect(alone.layout).not.toHaveProperty("along");
+  });
+
+  it("puts one on every corner or mid-edge, and follows a volume's edge, a floor, a ramp and a line", () => {
+    const s = store();
+    const [tower] = s.drawShapes([{ type: "cylinder", sides: 10, kind: "room", x: 0, z: 0, width: 20, depth: 20, height: 8 }], "agent");
+    const [mid] = s.drawShapes([follower(tower.id, { place: "midpoints", spacing: undefined })], "agent");
+    expect(arrayItems(mid as ArrayNode)).toHaveLength(10);
+    // Mid-face on the wall's centerline: 10 cos 18° − 0.1.
+    for (const i of arrayItems(mid as ArrayNode)) expect(Math.hypot(i.x, i.z)).toBeCloseTo(9.41, 1);
+    const [block] = s.drawShapes([{ kind: "volume", x: 30, z: 0, width: 4, depth: 4, height: 1 }], "agent");
+    const [corners] = s.drawShapes([follower(block.id, { place: "corners", spacing: undefined })], "agent");
+    expect(arrayItems(corners as ArrayNode).map((i) => [i.x, i.y, i.z])).toEqual([
+      [28, 1, 2],
+      [32, 1, 2],
+      [32, 1, -2],
+      [28, 1, -2],
+    ]);
+    const [floor] = s.drawShapes([{ type: "array", entity: "block", layout: { type: "path", along: { id: tower.id, at: "bottom" }, place: "count", count: 4 } }], "agent");
+    expect(arrayItems(floor as ArrayNode)[0].y).toBe(0);
+    const [ramp] = s.drawShapes([{ type: "ramp", points: [{ x: 0, y: 0, z: 40 }, { x: 10, y: 5, z: 40 }], width: 2 }], "agent");
+    const [posts] = s.drawShapes([{ type: "array", entity: "block", layout: { type: "path", along: { id: ramp.id, offset: 1 }, place: "count", count: 3 } }], "agent");
+    // To the right of travel going east is south (+z); the posts climb with the ramp.
+    expect(arrayItems(posts as ArrayNode).map((i) => [i.x, i.y, i.z])).toEqual([
+      [0, 0, 41],
+      [5, 2.5, 41],
+      [10, 5, 41],
+    ]);
+    const [line] = s.drawShapes([{ type: "line", points: [{ x: 0, y: 1, z: 60 }, { x: 4, y: 1, z: 60 }] }], "agent");
+    const [torches] = s.drawShapes([{ type: "array", entity: "block", layout: { type: "path", along: { id: line.id }, spacing: 2 } }], "agent");
+    expect(arrayItems(torches as ArrayNode).map((i) => i.x)).toEqual([0, 2, 4]);
+  });
+
+  it("refuses what it can't follow, and unlinks on request", () => {
+    const s = store();
+    const [keep] = s.drawShapes([room], "agent");
+    const [tilted] = s.drawShapes([{ kind: "volume", x: 20, z: 0, width: 2, depth: 2, height: 2, pitch: 30 }], "agent");
+    expect(() => s.drawShapes([follower(tilted.id)], "agent")).toThrow(/tilted/);
+    expect(() => s.drawShapes([follower("box_99")], "agent")).toThrow(/no node "box_99"/);
+    const [a] = s.drawShapes([follower(keep.id)], "agent");
+    const [unlinked] = s.updateNodes([{ id: a.id, layout: { along: null } }], "human") as ArrayNode[];
+    expect(unlinked.layout).not.toHaveProperty("along");
+    const [again] = s.updateNodes([{ id: a.id, layout: { along: { id: keep.id, offset: 0 } } }], "human") as ArrayNode[];
+    expect(again.layout).toHaveProperty("along", { id: keep.id, offset: 0 });
+    expect(arrayItems(again).every((i) => Math.abs(i.x) === 5 || Math.abs(i.z) === 3)).toBe(true);
+  });
+});

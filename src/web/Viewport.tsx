@@ -100,7 +100,7 @@ import { typingInField } from "./keys";
 import { Lighting } from "./Lighting";
 import { marqueeHits, rectFrom, type ScreenPoint } from "./marquee";
 import { LineMesh } from "./LineMesh";
-import { layoutGuide } from "../shared/arrays";
+import { isFollowing, layoutGuide, withFollowed } from "../shared/arrays";
 import { pickHit, pickLine, pickNote, surfaceUnder, type Surface } from "./pick";
 import { NoteMesh } from "./NoteMesh";
 import { expandNodes, expandShapes, ownerOf } from "../shared/entities";
@@ -188,7 +188,7 @@ const YAW_KEYS: Record<string, YawKey> = { a: "left", arrowleft: "left", d: "rig
 const editablePoints = (s: Shape): EditPoint[] | null =>
   s.type === "freeform" || s.type === "line" || s.type === "ramp"
     ? s.points
-    : s.type === "array" && s.layout.type === "path"
+    : s.type === "array" && s.layout.type === "path" && !s.layout.along
       ? s.layout.points
       : s.type === "array" && s.layout.type === "scatter" && s.layout.area
         ? s.layout.area
@@ -364,6 +364,11 @@ type Props = {
   entityMode: boolean;
   /** Double-clicking an instance opens its entity for editing. */
   onOpenEntity: (entity: string) => void;
+  /**
+   * Picking what an array follows (10.3): while set, a click on a shape (a leaf, not its group) picks it, and
+   * hovering lights the shape up.
+   */
+  onPickTarget?: (id: string) => void;
   /** An entity being placed from the Library (its ID): the next click puts an instance there. */
   placing: string | null;
   /** An instance of `entity` goes here (a click while placing, or an entity dropped from the Library). */
@@ -448,6 +453,7 @@ export function Viewport({
   onPlaceNote,
   entityMode,
   onOpenEntity,
+  onPickTarget,
   placing,
   onPlaceInstance,
   visible,
@@ -939,9 +945,12 @@ export function Viewport({
   const moved = (b: Shape): Shape => (override?.patches[b.id] ? ({ ...b, ...override.patches[b.id] } as Shape) : b);
   const pointPreview = pointDrag && (pointDrag.active || pointDrag.inserted) ? pointDrag : null;
   const previewed = preview ? boxes.map((b) => (preview[b.id] ? ({ ...b, ...preview[b.id] } as Shape) : b)) : boxes;
-  const shown = (override && !override.copy ? previewed.map(moved) : previewed).map((b) =>
+  const unfollowed = (override && !override.copy ? previewed.map(moved) : previewed).map((b) =>
     pointPreview && !pointPreview.problem && b.id === editing ? withEditedPoints(b, roundPoints(pointPreview.points)) : b,
   );
+  // A following array takes its path from what it follows as shown, so it follows a drag live (10.3).
+  const unfollowedById = new Map(unfollowed.map((b) => [b.id, b]));
+  const shown = unfollowed.map((b) => (b.type === "array" ? withFollowed(b, (id) => unfollowedById.get(id)) : b));
   const ghosts = override?.copy ? override.origin.map((b) => ({ ...moved(b), id: `${b.id}:copy` }) as Shape) : [];
   // Hidden holes (Show holes off) can't be clicked or marquee-selected, unless they're selected.
   const selectedIds = new Set(shapesUnder(nodes, selection).map((b) => b.id));
@@ -996,7 +1005,9 @@ export function Viewport({
   // The transform gizmo: on the selection, in the Select tool only (and not in point editing). Height and scale
   // are for a single box (not a group); move and rotate work on any selection.
   // While copying, the copies carry the selection (they become it on release).
-  const selectedBoxes = tool !== "select" || editShape ? [] : ghosts.length > 0 ? ghosts : shownUnder(selection);
+  const selectedAll = tool !== "select" || editShape ? [] : ghosts.length > 0 ? ghosts : shownUnder(selection);
+  // A following array goes where what it follows goes: the gizmo leaves it out (so one on its own has none).
+  const selectedBoxes = selectedAll.filter((b) => !isFollowing(b));
   const single =
     selection.length === 1 && selectedBoxes.length === 1 && selectedBoxes[0].id === selection[0] ? selectedBoxes[0] : undefined;
   // Height and scale handles and the profile knobs are for a single closed shape (a line has none; a tilted
@@ -1389,6 +1400,12 @@ export function Viewport({
       onPlaceNote({ x: round2(p.x), y: round2(p.y), z: round2(p.z) });
       return;
     }
+    if (e.button === 0 && tool === "select" && onPickTarget) {
+      // Picking what an array follows: the shape under the cursor itself, not its group.
+      const hit = hitAt(sx, sy, size);
+      if (hit) onPickTarget(hit.id);
+      return;
+    }
     if (e.button === 0 && tool === "select") {
       // In point editing, a press grabs a point, a handle or an edge. Pressing the free-form elsewhere deselects
       // the points; pressing anything else leaves point editing (empty ground does only that).
@@ -1528,7 +1545,7 @@ export function Viewport({
     }
     const hot = gizmoAt(sx, sy, size);
     setHotPart(hot);
-    setHoveredId(tool === "select" && !hot ? pickAt(sx, sy, size) : null);
+    setHoveredId(tool === "select" && onPickTarget ? (hitAt(sx, sy, size)?.id ?? null) : tool === "select" && !hot ? pickAt(sx, sy, size) : null);
     const note = tool === "select" && !hot ? pickNote(cam.current, size, sx, sy, selectable) : null;
     setNoteHover(note ? { id: note.id, sx, sy } : null);
   };
@@ -1786,6 +1803,7 @@ export function Viewport({
     if (activePart && isProfilePart(activePart)) return "shaping";
     if (activePart) return "moving";
     if (panning) return "panning";
+    if (onPickTarget) return "drawing";
     return DRAWS[tool] || isPointTool(tool) || tool === "walk" ? "drawing" : tool === "select" ? "selecting" : "";
   })();
 
@@ -1858,7 +1876,7 @@ export function Viewport({
         {walk && <Avatar shapes={avatar} group={avatarGroup} />}
         {pen.points.length > 0 && <PenPreview pen={pen} kind={nextKind} fields={nextFields} line={nextLine} ramp={nextRamp} />}
         {!walk &&
-          selectedBoxes.flatMap((b) =>
+          selectedAll.flatMap((b) =>
             b.type === "array"
               ? [
                   <LineMesh

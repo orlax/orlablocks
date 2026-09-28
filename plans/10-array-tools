@@ -463,3 +463,26 @@ Adopted as recommended (say if any should change):
 8. Ask the agent for a forest in an area: one `draw_shapes` call with entities by weight.
 9. The inspector is wider and nothing wraps or overflows in the array section. The entity picker on an instance and on each Entities row: click it, type part of a name or `#tag`, move with ↑ / ↓, Enter picks; Esc and a click outside close it; it opens upward near the bottom of the screen.
 10. The choice buttons (an array's layout, circle / area, a ramp's solid / floating and smooth, a line's dashes) are icons with tooltips; row labels and action buttons keep their words.
+
+### 10.3 — Following an outline (done; checked in the browser by Orlando)
+
+- **How it's kept (a change from §6):** a following array stores its target's path as its own `points`, next to `along`, and the store brings those points up to date in `commit`, as part of every step that changes the target (`refollow`: one extra update op in the same entry, so undo takes both back and the label is the target's). The plan had the items derived live from the target; storing the path keeps every consumer (geometry, bounds, holes, captures, the agent's outline) pure over the array alone, and removing the target leaves a valid array: it just loses `along` (unlinked), with the path it had. The editor also recomputes the path from what's on screen (`withFollowed` over the shown shapes), so the items follow a drag live.
+- **What's followed (`followPath` in `arrays.ts`, cached per target):** a box's outline shrunk by the offset (exact), a sided cylinder's by a mitered inset, a smooth cylinder's as 4 smooth points on the shrunk ellipse, a free-form's own points (curves kept) or, inset, its Clipper offset; a tapered or beveled volume's top ring at the top. Every outline runs counterclockwise seen from above, and an inset ring starts at the corner nearest the outline's first point, so a box converted to a free-form keeps its items where they were (tested). A ramp gives its stations at the surface's height, a line its points (or, offset, its sampled path), moved to the right of travel. Groups, notes, instances, arrays and tilted shapes are refused.
+- **Corners and midpoints** were already in 10.1; on a followed outline they give a pillar per corner and a window per face (a 10-sided tower's midpoints sit 9.41 m out: 10 cos 18° − 0.1, tested).
+- **The store:** `along` in `draw_shapes` (points or along, not both) and in `update_nodes` (it merges: `{ along: { offset: 0.3 } }`; `{ along: null }` unlinks; points given to a following path are ignored); `refollow` in `commit`; conversion relinks followers to the new free-form; copies (`duplicateNodes`, paste) follow the copied target or are unlinked; move, turn and mirror leave followers to follow, and refuse one named on its own whose target isn't moving.
+- **Agent:** `remove_nodes` reports `unlinked`; a warning when a target can't be followed any more; the `arrays` topic's FOLLOWING paragraph (battlements on a keep are one call). Server 0.0.23.
+- **Editor:** in a path array's section, **Follow a shape** (then click a shape in the view; hover lights the shape itself, not its group; Esc or selecting something else cancels), and while following: what it follows, **Unlink**, **At** top / bottom (closed shapes) and **Offset**. No gizmo and no Edit points on a following array; its dashed guide still shows. A followed shape's info ends `followed by array_2`.
+- **A slip, fixed:** running prettier over 7 files reflowed them to 80 columns (+6500 lines of diff). The files were restored from HEAD and the edits replayed; the result was checked equal, formatting aside, to what had been written. (Noted in memory: no formatter in this repo.)
+- **Checks:** typecheck; 434 tests (7 new); the editor bundles. Scripted on port 5171: a merlon entity and a 16 × 12 keep; one `draw_shapes` array along the keep at spacing 1.2 gives 46 merlons on the wall's centerline at y 10; widening the keep to 20 gives 53 in the same step; `move_nodes` on the array alone is refused; removing the keep reports `unlinked: ["array_1"]`.
+
+**Browser checklist for Orlando (10.3):**
+1. Make a merlon entity, place one, press **Array**, then **Follow a shape** and click a room's wall: merlons all round its wall top, on the wall's centerline.
+2. Resize the room with the gizmo: the merlons follow live during the drag, and it's one undo step.
+3. **At** bottom puts them on its floor; **Offset** moves them in and out; on a volume they sit on its edge.
+4. **Mid-edge** on a 10-sided tower puts one per face; **on the corners** on a box, one per corner.
+5. Follow a ramp (posts climbing with it, offset ± half its width for both sides) and a line.
+6. Select the array alone: no gizmo. Group the room with it and move the group: they go together.
+7. Convert the room to a free-form: the merlons stay put. Delete the room: the array stays where it was, unlinked; undo relinks it.
+8. Copy the group: the copy's merlons follow the copied room. Alt-drag the array alone: the copy is unlinked.
+9. **Unlink** keeps the path as points (Edit points works again); the room's info says `followed by array_…` while it's followed.
+10. Ask the agent for battlements on a keep: one `draw_shapes` call, and they follow when you resize the keep.

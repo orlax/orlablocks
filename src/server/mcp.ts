@@ -4,7 +4,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { z } from "zod";
 import { isClosed } from "../shared/geometry";
 import { holeWarnings } from "../shared/holes";
-import { arrayShortfall } from "../shared/arrays";
+import { arrayShortfall, followPath, isFollowing } from "../shared/arrays";
 import {
   DEFAULT_COLOR,
   DEFAULT_LINE_COLOR,
@@ -22,6 +22,7 @@ import {
   RotateNodesSchema,
   ShapeInputSchema,
   UngroupSchema,
+  type SceneNode,
 } from "../shared/scene.types";
 import { EMPTY_LIBRARY, LibraryEditSchema, unknownRefs, type Library } from "../shared/library";
 import { isGroup, isShape } from "../shared/tree";
@@ -81,6 +82,12 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
   const warned = <T extends object>(result: T) => {
     const own = (result as { warnings?: string[] }).warnings ?? [];
     const nodes = store().getScene().nodes;
+    // A following array whose target can't be followed any more keeps its last path.
+    const followWarning = (n: SceneNode) => {
+      if (!isFollowing(n)) return [];
+      const f = followPath(nodes.find((t) => t.id === n.layout.along.id), n.layout.along);
+      return "problem" in f ? [`${n.id} can't follow ${n.layout.along.id} any more (${f.problem}): it keeps its last path`] : [];
+    };
     const known = (entity: string) => !!definitionOf(entity) && library().entities.some((e) => e.id === entity);
     const missing = nodes.flatMap((n) =>
       n.type === "instance" && !known(n.entity)
@@ -91,6 +98,7 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
                 .filter((e) => !known(e.entity))
                 .map((e) => `${n.id} repeats entity "${e.entity}", which isn't in the library (its items show as red blocks): change its entities or remove it`),
               ...(arrayShortfall(n) ? [`${n.id}: ${arrayShortfall(n)}`] : []),
+              ...followWarning(n),
             ]
           : [],
     );
@@ -99,7 +107,7 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
     const warnings = [...own, ...holes, ...missing];
     return warnings.length > 0 ? { ...result, warnings } : result;
   };
-  const server = new McpServer({ name: "orlablocks", version: "0.0.22" }, { instructions: INSTRUCTIONS });
+  const server = new McpServer({ name: "orlablocks", version: "0.0.23" }, { instructions: INSTRUCTIONS });
   // Every tool reads or edits the open scene, and fails with a clear message while nothing is open.
   const store = () => workspace.requireScene();
   const library = (): Library => (workspace.getOpen() ? workspace.library.get() : EMPTY_LIBRARY);
@@ -358,8 +366,14 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
       inputSchema: { ids: z.array(z.string()).min(1).describe("IDs of existing nodes, e.g. box_3 or group_1") },
     },
     async ({ ids }) => {
+      const following = (nodes: SceneNode[]) => new Set(nodes.filter(isFollowing).map((n) => n.id));
+      const before = following(store().getScene().nodes);
       store().removeNodes(ids, "agent");
-      return json({ removed: ids, remaining: store().getScene().nodes.length });
+      const after = following(store().getScene().nodes);
+      const kept = new Set(store().getScene().nodes.map((n) => n.id));
+      // Arrays that followed a removed node keep the path they had, unlinked.
+      const unlinked = [...before].filter((id) => !after.has(id) && kept.has(id));
+      return json({ removed: ids, remaining: store().getScene().nodes.length, ...(unlinked.length > 0 ? { unlinked } : {}) });
     },
   );
 

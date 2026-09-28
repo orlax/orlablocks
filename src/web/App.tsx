@@ -12,6 +12,7 @@ import {
   type ArrayLayout,
   type ArrayLayoutType,
   type ArrayNode,
+  type Follow,
   type Box,
   type ClosedShape,
   type Cylinder,
@@ -33,7 +34,7 @@ import {
 import { boundsOf, footprintBounds, isClosed, isTilted, polyline, rampStations, reversePoints, round2, wallOf } from "../shared/geometry";
 import { shapesUnder, childrenOf, countsText, isShape, isGroup, hiddenIds, lockedIds, subtreeIds, tagsOf } from "../shared/tree";
 import { definitionOf, expandShapes } from "../shared/entities";
-import { arrayItems, arrayLayout, arrayShortfall, describeLayout, facingOf, layoutAnchor } from "../shared/arrays";
+import { arrayItems, arrayLayout, arrayShortfall, defaultFollowOffset, describeLayout, facingOf, isFollowing, layoutAnchor } from "../shared/arrays";
 import type { Box3, CameraState, GroundPoint } from "./camera";
 import { clipboardText, readClipboard } from "./clipboard";
 import { ErrorPanel } from "./ErrorPanel";
@@ -229,6 +230,8 @@ export function App() {
   const [showNotes, setShowNotes] = useState(true);
   // An entity being placed from the Library: the next click in the view puts an instance there.
   const [placing, setPlacing] = useState<string | null>(null);
+  // The array whose target the next click in the view picks (10.3: Follow), or null.
+  const [followPick, setFollowPick] = useState<string | null>(null);
   // What the camera flies to frame (double-clicking an outliner row's icon): a new object each time.
   const [cameraFrame, setCameraFrame] = useState<{ bounds: Box3 } | { camera: CameraState } | null>(null);
   // The Note tool's next color, and the note it just placed (its text field takes the focus once it's selected).
@@ -340,8 +343,12 @@ export function App() {
     return new Set(nodes.filter((n) => !hidden.has(n.id) && isolatedIn(n.id)).map((n) => n.id));
   }, [nodes, isolation]);
   // The key handler is installed once; it reads the current state from here.
-  const state = useRef({ nodes, selection, context, open, pickerOpen, view, visible, isolated, placing });
-  state.current = { nodes, selection, context, open, pickerOpen, view, visible, isolated, placing };
+  // Picking a target ends when its array is no longer the one selected.
+  useEffect(() => {
+    if (followPick && !(selection.length === 1 && selection[0] === followPick)) setFollowPick(null);
+  }, [followPick, selection]);
+  const state = useRef({ nodes, selection, context, open, pickerOpen, view, visible, isolated, placing, followPick });
+  state.current = { nodes, selection, context, open, pickerOpen, view, visible, isolated, placing, followPick };
 
   /** Isolates a node (null ends it). Isolating a group enters it, so what's drawn next goes in it. */
   const isolate = useCallback(
@@ -523,6 +530,10 @@ export function App() {
         setPlacing(null);
         return;
       }
+      if (e.key === "Escape" && state.current.followPick) {
+        setFollowPick(null);
+        return;
+      }
       // In Edit entity mode, Esc with nothing selected (and nothing isolated) goes back to the scene.
       if (e.key === "Escape" && state.current.open?.entity && selection.length === 0 && !isolated && context === null) {
         send({ type: "close_entity" });
@@ -604,6 +615,19 @@ export function App() {
     };
   }, [send]);
 
+  /** A path array's follow controls (10.3): what it follows (or null), picking a target in the view, At, Offset and Unlink. */
+  const followControls = (along: Follow | undefined, id: string, update: (change: Record<string, unknown>) => void) => {
+    const target = along ? nodes.find((n) => n.id === along.id) : undefined;
+    const shape = target && isShape(target) ? target : undefined;
+    return {
+      along: along ? { id: along.id, name: target?.name, closed: !!shape && isClosed(shape), at: along.at ?? ("top" as const), offset: along.offset ?? (shape ? defaultFollowOffset(shape) : 0) } : null,
+      picking: followPick === id,
+      onPick: () => setFollowPick(followPick === id ? null : id),
+      onChange: (patch: { at?: "top" | "bottom"; offset?: number }) => update({ layout: { along: patch } }),
+      onUnlink: () => update({ layout: { along: null } }),
+    };
+  };
+
   // Kind and sides are for a single shape; color applies to every shape in the selection (groups included).
   const single = selectedNodes.length === 1 ? selectedNodes[0] : null;
   const singleShape = single && isShape(single) ? single : null;
@@ -613,8 +637,11 @@ export function App() {
   const contextNode = context !== null ? nodes.find((n) => n.id === context) : undefined;
   const selectionTitle = single ? title(single) : `${selectedNodes.length} selected`;
   // A single group shows what's in it, like the agent's outline.
+  // What follows the selected shape (10.3): `followed by array_2`.
+  const followers = singleShape ? nodes.filter((n) => isFollowing(n) && n.layout.along.id === singleShape.id).map((n) => n.id) : [];
+  const followedBy = followers.length > 0 ? ` · followed by ${followers.join(", ")}` : "";
   const selectionInfo = singleShape
-    ? details(singleShape, library)
+    ? details(singleShape, library) + followedBy
     : single
       ? countsText(nodes.filter((n) => n.id !== single.id && subtreeIds(nodes, single.id).has(n.id)))
       : `${selectedShapes.length} shape${selectedShapes.length === 1 ? "" : "s"}`;
@@ -806,6 +833,7 @@ export function App() {
                         skipped: single.skip?.length ?? 0,
                         shortfall: arrayShortfall(single),
                         onEntities: (entities: { entity: string; weight?: number }[]) => update({ entities }),
+                        follow: single.layout.type === "path" ? followControls(single.layout.along, single.id, update) : undefined,
                         onLayoutType: (type: ArrayLayoutType) => update(layoutAround(single, type)),
                         onLayout: (patch: Record<string, unknown>) => update({ layout: patch }),
                         onChange: (patch: Record<string, unknown>) => update(patch),
@@ -893,6 +921,14 @@ export function App() {
         showNotes={showNotes}
         entityMode={!!editingEntity}
         onOpenEntity={(entity) => send({ type: "open_entity", entity })}
+        onPickTarget={
+          followPick
+            ? (id) => {
+                send({ type: "update_nodes", changes: [{ id: followPick, layout: { along: { id } } }] });
+                setFollowPick(null);
+              }
+            : undefined
+        }
         placing={placing}
         onPlaceInstance={(entity, at) => {
           pendingSelect.current = { before: new Set(nodes.map((n) => n.id)), pick: (added) => added.filter((n) => n.type === "instance").map((n) => n.id) };

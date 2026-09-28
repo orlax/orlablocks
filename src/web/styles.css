@@ -1288,3 +1288,4 @@ body {
 .entity-option .size { flex: none; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
 .entity-option.active { background: rgba(255, 255, 255, 0.1); }
 .entity-option.current .name { font-weight: 600; }
+.inspector .array-follows { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }

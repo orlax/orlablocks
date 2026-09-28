@@ -151,6 +151,18 @@ const GUIDE: Record<Exclude<GuideTopic, "design">, string> = {
     "land evenly (every 1.2 m on a 45.5 m wall is 38 gaps of 1.197 m), with one at each end of an open path and none " +
     "repeated on a closed one; count puts `count` evenly; corners one on every point (a pillar on each corner); " +
     "midpoints one mid-edge (a window on every face). A vertical path stacks (floors of a tower, a pile). " +
+    "FOLLOWING: instead of points, a path can follow another node, live: layout: { type: \"path\", along: { id, at?, " +
+    "offset? }, spacing }. A box, cylinder or free-form gives its outline (a loop, counterclockwise seen from above) at " +
+    "its top (the default; a tapered volume's top ring) or bottom (at: \"bottom\", its floor), moved `offset` m " +
+    "inward: by default half a room's wall, so items stand on the wall's centerline, and 0 for a volume (on its edge). " +
+    "A ramp gives its centerline at its surface's height, and a line its path, `offset` m to the right of travel. " +
+    "Battlements on a keep are one call: { type: \"array\", entity: \"merlon\", layout: { type: \"path\", along: { id: " +
+    "\"box_5\" }, spacing: 1.2 } }; posts along both sides of a stair are two, offset ± half its width. When the " +
+    "followed node changes (resized, reshaped, raised) the items follow in that same step. A following array has no " +
+    "place of its own: move, turn or mirror what it follows (it's refused alone; in a group it goes with its target). " +
+    "Removing the followed node unlinks the array (it keeps its last path; remove_nodes says which), converting it to " +
+    "a free-form keeps the follow, a copy made with its target follows the copy and one made without it is unlinked. " +
+    "update_nodes { layout: { along: { offset: 0.3 } } } changes the follow, { along: null } unlinks it. " +
     "{ type: \"circle\", x, z, y?, radius, count, start?, sweep? }: angles in degrees from 0 = east (+x), 90 = north " +
     "(-z), counterclockwise; sweep under 360 is an arc with items at both ends. { type: \"grid\", x, z, y?, rotation?, " +
     "columns, rows, layers?, spacing: { x, z, y? }, stagger? }: centered on x, z, columns along its local x, rows along " +

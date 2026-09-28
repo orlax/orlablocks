@@ -24,6 +24,7 @@ import {
   type ArrayEntity,
   type ArrayLayout,
   type ArrayNode,
+  type Follow,
   ConvertNodesSchema,
   DEFAULT_COLOR,
   DEFAULT_WALL,
@@ -73,7 +74,7 @@ import {
   type View,
 } from "../shared/scene.types";
 import { firstIds, type NextId } from "../shared/project.types";
-import { arrayItems, tidyArrayPatch } from "../shared/arrays";
+import { arrayItems, followPath, isFollowing, tidyArrayPatch, withFollowed } from "../shared/arrays";
 import { definitionOf, expandInstance } from "../shared/entities";
 import { shapesUnder, commonParent, copyNodes, isShape, isGroup, subtreeIds, topmost } from "../shared/tree";
 import { applyOp, createHistory, invertOp, runOps, type History, type HistoryEntry, type Op } from "./commands";
@@ -252,6 +253,14 @@ export function createSceneStore({
   const commit = (label: string, actor: Actor, ops: Op[]) => {
     const all = [...ops];
     let { nodes, inverse } = runOps(scene.nodes, ops);
+    // Arrays that follow a node (10.3) take its path as it is now, in the same step: a follower whose target is
+    // gone is unlinked, keeping the path it had.
+    const follow = refollow(nodes);
+    if (follow) {
+      inverse = [invertOp(nodes, follow), ...inverse];
+      nodes = applyOp(nodes, follow);
+      all.push(follow);
+    }
     for (;;) {
       const empty = nodes.filter((n) => isGroup(n) && !nodes.some((c) => c.parent === n.id)).map((n) => n.id);
       if (empty.length === 0) break;
@@ -265,6 +274,54 @@ export function createSceneStore({
     history.push(entry);
     step({ type: "commit", entry });
     emit();
+  };
+
+  /** The update that brings every following array's path up to date with what it follows, or null if none changed. */
+  const refollow = (nodes: SceneNode[]): Op | null => {
+    const byIdNow = new Map(nodes.map((n) => [n.id, n]));
+    const changes: { id: string; patch: NodePatch }[] = [];
+    for (const n of nodes) {
+      if (!isFollowing(n)) continue;
+      if (!byIdNow.has(n.layout.along.id)) {
+        const { along: _along, ...unlinked } = n.layout;
+        changes.push({ id: n.id, patch: { layout: unlinked } });
+        continue;
+      }
+      const next = withFollowed(n, (id) => byIdNow.get(id));
+      if (next !== n) changes.push({ id: n.id, patch: { layout: next.layout } });
+    }
+    return changes.length > 0 ? { op: "update", changes } : null;
+  };
+
+  /**
+   * Copies' follows (10.3): a copied array that follows a node copied with it follows the copy; one copied without
+   * its target is unlinked (it keeps its path, moved with the copy).
+   */
+  const relinkCopies = (source: SceneNode[], copies: SceneNode[]): SceneNode[] => {
+    const ids = new Map(source.map((n, i) => [n.id, copies[i].id]));
+    return copies.map((c) => {
+      if (!isFollowing(c)) return c;
+      const to = ids.get(c.layout.along.id);
+      if (to) return { ...c, layout: { ...c.layout, along: { ...c.layout.along, id: to } } };
+      const { along: _along, ...unlinked } = c.layout;
+      return { ...c, layout: unlinked };
+    });
+  };
+
+  /**
+   * The shapes a move, turn or mirror acts on, without following arrays (their paths come from what they follow, so
+   * they go where it goes). Refused when an array that follows something that isn't moving is named on its own.
+   */
+  const withoutFollowers = (ids: string[], boxes: Shape[], what: string): Shape[] => {
+    const moving = new Set(boxes.map((b) => b.id));
+    const stuck = boxes.filter((b) => isFollowing(b) && ids.includes(b.id) && !moving.has(b.layout.along.id));
+    if (stuck.length > 0) {
+      const a = stuck[0] as ArrayNode & { layout: { along: Follow } };
+      throw new SceneError(
+        `${a.id} follows ${a.layout.along.id}, so it goes where ${a.layout.along.id} goes: ${what} ${a.layout.along.id}, or unlink it first (update_nodes layout: { along: null }). Nothing changed.`,
+      );
+    }
+    return boxes.filter((b) => !isFollowing(b));
   };
 
   /** Errors for IDs that don't exist or repeat. `prefix` is e.g. "ids". */
@@ -370,9 +427,15 @@ export function createSceneStore({
       made.map((n) => n.id),
       "free-forms",
     );
+    // Arrays following a converted shape follow its free-form (10.3).
+    const newIds = new Map(ids.map((id, i) => [id, made[i].id]));
+    const relink = scene.nodes.filter(isFollowing).filter((a) => newIds.has(a.layout.along.id));
     commit(label("convert", `${listIds(ids)} to ${to}`, actor), actor, [
       { op: "remove", ids },
       { op: "add", nodes: made, indices },
+      ...(relink.length > 0
+        ? [{ op: "update" as const, changes: relink.map((a) => ({ id: a.id, patch: { layout: { ...a.layout, along: { ...a.layout.along, id: newIds.get(a.layout.along.id)! } } } })) }]
+        : []),
     ]);
     return made;
   };
@@ -438,8 +501,21 @@ export function createSceneStore({
   ): ArrayLayout => {
     const turn = (v: number | undefined) => (v === undefined || normalizeRotation(v) === 0 ? {} : { value: normalizeRotation(v) });
     if (d.type === "path") {
-      const points = checkLinePoints(prefix, d.points, errors);
-      if (d.closed && points.length < 3) errors.push(`${prefix}.closed: a closed path needs at least 3 points`);
+      // A following path takes its points (and whether it's closed) from what it follows.
+      let points: LinePoint[] = [
+        { x: 0, y: 0, z: 0 },
+        { x: 1, y: 0, z: 0 },
+      ];
+      let closed = !!d.closed;
+      let along: Follow | undefined;
+      if (d.along) {
+        along = { id: d.along.id, ...(d.along.at === "bottom" ? { at: "bottom" as const } : {}), ...(d.along.offset !== undefined ? { offset: round2(d.along.offset) } : {}) };
+        const f = followPath(byId().get(along.id), along);
+        if ("problem" in f) errors.push(`${prefix}.along: ${f.problem}`);
+        else [points, closed] = [f.points, f.closed];
+      } else if (d.points) points = checkLinePoints(prefix, d.points, errors);
+      else errors.push(`${prefix}: give a path either points or along (a node to follow)`);
+      if (!along && closed && points.length < 3) errors.push(`${prefix}.closed: a closed path needs at least 3 points`);
       const place = d.place ?? (d.count !== undefined && d.spacing === undefined ? "count" : "spacing");
       if (place === "count" && d.count === undefined) errors.push(`${prefix}.count: place: count needs a count`);
       const spacing = round2(d.spacing ?? fallback.spacing);
@@ -447,7 +523,8 @@ export function createSceneStore({
       return {
         type: "path",
         points,
-        ...(d.closed ? { closed: true as const } : {}),
+        ...(closed ? { closed: true as const } : {}),
+        ...(along ? { along } : {}),
         place,
         ...(place === "spacing" ? { spacing } : {}),
         ...(place === "count" ? { count: d.count ?? 1 } : {}),
@@ -533,6 +610,18 @@ export function createSceneStore({
       if (rest.count !== undefined) input.place = "count";
       else if (typeof rest.spacing === "number") input.place = "spacing";
     }
+    // A path's `along` merges into what it follows (null unlinks it: it keeps the path it has now).
+    if (same && node.layout.type === "path" && "along" in rest) {
+      if (rest.along === null) delete input.along;
+      else {
+        const merged: Record<string, unknown> = { ...(node.layout.along ?? {}), ...rest.along };
+        if (merged.offset === null) delete merged.offset;
+        input.along = merged;
+      }
+    }
+    // A following path's points are its target's (and can be more than a path given as points may have): they
+    // come from what it follows, and points given with it are ignored (unlink it first).
+    if (input.along) delete input.points;
     // A scatter given an area leaves its circle, and given a circle's field leaves its area.
     if (same && node.layout.type === "scatter") {
       if (rest.area !== undefined) for (const k of ["x", "z", "radius"]) if (!(k in rest)) delete input[k];
@@ -646,6 +735,7 @@ export function createSceneStore({
         }
         if (d.type === "array") {
           if ((d.entity === undefined) === (d.entities === undefined)) errors.push(`${prefix}: give an array either entity or entities (one of them)`);
+          if (d.layout.type === "path" && d.layout.points && d.layout.along) errors.push(`${prefix}.layout: give a path either points or along, not both`);
           const entities = arrayEntitiesFrom(`${prefix}.entities`, d.entities ?? (d.entity !== undefined ? [{ entity: d.entity }] : []), errors);
           const layout = arrayLayoutFrom(`${prefix}.layout`, d.layout, arrayDefaults(entities), errors);
           return defined({
@@ -1016,7 +1106,7 @@ export function createSceneStore({
       const errors: string[] = [];
       checkIds("ids", ids, errors);
       failIf(errors, "Nothing was moved.");
-      const boxes = shapesUnder(scene.nodes, ids);
+      const boxes = withoutFollowers(ids, shapesUnder(scene.nodes, ids), "move");
       const patches = Object.fromEntries(boxes.map((b) => [b.id, moveShape(b, dx, dy, dz)]));
       const changes = effectiveShapeChanges(boxes, patches);
       if (changes.length > 0) commit(label("move", listIds(ids), actor), actor, [{ op: "update", changes }]);
@@ -1046,7 +1136,7 @@ export function createSceneStore({
       });
       for (let i = 1; i <= count; i++) {
         for (const { id, nodes } of subtrees) {
-          const copies = copyNodes(nodes, newId, { dx: dx * i, dy: dy * i, dz: dz * i }).map((n) => ({ ...n, createdBy: actor }));
+          const copies = relinkCopies(nodes, copyNodes(nodes, newId, { dx: dx * i, dy: dy * i, dz: dz * i })).map((n) => ({ ...n, createdBy: actor }));
           copiedRoots.push(copies[nodes.findIndex((n) => n.id === id)]);
           const last = nodes.at(-1)!.id;
           copiesAfter.set(last, [...(copiesAfter.get(last) ?? []), ...copies]);
@@ -1072,8 +1162,9 @@ export function createSceneStore({
       const errors: string[] = [];
       checkIds("ids", ids, errors);
       failIf(errors, "Nothing was rotated.");
-      const boxes = shapesUnder(scene.nodes, ids);
-      const b = boundsOf(boxes);
+      const all = shapesUnder(scene.nodes, ids);
+      const boxes = withoutFollowers(ids, all, "turn");
+      const b = boundsOf(all);
       const pivot = given ?? { x: round2((b.minX + b.maxX) / 2), z: round2((b.minZ + b.maxZ) / 2) };
       const patches = rotateAround(boxes, pivot, degrees);
       const changes = effectiveShapeChanges(boxes, patches);
@@ -1131,7 +1222,7 @@ export function createSceneStore({
       const offset = (to: number, center: number) => round2(Math.round((to - center) / SNAP) * SNAP);
       const dx = offset(focus.x, (b.minX + b.maxX) / 2);
       const dz = offset(focus.z, (b.minZ + b.maxZ) / 2);
-      const pasted = copyNodes(nodes, newId, { dx, dz }).map((n, i): SceneNode => {
+      const pasted = relinkCopies(nodes, copyNodes(nodes, newId, { dx, dz })).map((n, i): SceneNode => {
         const root = nodes[i].parent === undefined;
         return { ...n, createdBy: actor, ...(root && target !== undefined ? { parent: target } : {}) };
       });
@@ -1157,7 +1248,7 @@ export function createSceneStore({
       const errors: string[] = [];
       checkIds("ids", ids, errors);
       failIf(errors, "Nothing was mirrored.");
-      const boxes = shapesUnder(scene.nodes, ids);
+      const boxes = withoutFollowers(ids, shapesUnder(scene.nodes, ids), "mirror");
       const changes = effectiveShapeChanges(boxes, mirrorAcross(boxes, axis));
       if (changes.length > 0) commit(label("mirror", `${listIds(ids)} on ${axis.toUpperCase()}`, actor), actor, [{ op: "update", changes }]);
       const mirrored = new Set(boxes.map((b) => b.id));

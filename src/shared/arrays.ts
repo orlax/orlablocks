@@ -1,5 +1,46 @@
-import { normalizeDeg, pointInPolygon, round2, roundPoints, sampleEdge3, sampleOutline, shapeAxes, type MirrorAxis, type Point, type Point3 } from "./geometry";
-import { MAX_ARRAY_ITEMS, type ArrayFacing, type ArrayLayout, type ArrayNode, type FootPoint, type LinePoint, type ShapePatch } from "./scene.types";
+import {
+  footprint,
+  fromShapeLocal,
+  isClosed,
+  isFootprinted,
+  isTilted,
+  localFootprint,
+  normalizeDeg,
+  offsetPolygon,
+  offsetRings,
+  pointInPolygon,
+  polyline,
+  rampStations,
+  round2,
+  roundPoints,
+  sampleEdge3,
+  sampleOutline,
+  shapeAxes,
+  shapeFrame,
+  signedArea2,
+  toFreeformPoints,
+  volumeRings,
+  wallOf,
+  type MirrorAxis,
+  type Point,
+  type Point3,
+} from "./geometry";
+import {
+  MAX_ARRAY_ITEMS,
+  type ArrayFacing,
+  type ArrayLayout,
+  type ArrayNode,
+  type ClosedShape,
+  type FootPoint,
+  type Follow,
+  type LinePoint,
+  type SceneNode,
+  type Shape,
+  type ShapePatch,
+} from "./scene.types";
+
+/** Whether an array follows another node (its path is that node's). */
+export const isFollowing = (n: SceneNode): n is ArrayNode & { layout: { type: "path"; along: Follow } } => n.type === "array" && n.layout.type === "path" && !!n.layout.along;
 
 /**
  * Arrays (plan 10 §4): where an array's items go, as one pure function of the array, and how moving, turning and
@@ -312,6 +353,7 @@ export function describeLayout(layout: ArrayLayout): string {
   if (layout.type === "path") {
     const how =
       layout.place === "spacing" ? `every ${layout.spacing} m` : layout.place === "count" ? `${layout.count} evenly` : layout.place === "corners" ? "on its corners" : "mid-edge";
+    if (layout.along) return `along ${layout.along.id}${layout.along.at === "bottom" ? " (bottom)" : ""}, ${how}`;
     return `${layout.closed ? "loop" : "path"}, ${how}`;
   }
   if (layout.type === "circle") return `circle r ${layout.radius}${layout.sweep !== undefined ? `, arc ${layout.sweep}°` : ""}`;
@@ -514,4 +556,146 @@ export function mirrorArray(array: ArrayNode, axis: MirrorAxis, sum: number): Sh
     };
   }
   return { layout: { ...l, ...center, rotation: turnValue(-(l.rotation ?? 0)) }, rotation: axis === "x" ? turnValue(180 - r) : turnValue(-r) };
+}
+
+// ---- Following (10.3) ----
+
+/** A closed outline counterclockwise seen from above (x east, z south): the way every followed outline runs. */
+function counterclockwise<P extends FootPoint>(points: P[], polygon: Point[] = points): P[] {
+  // With z pointing south, a positive signed area runs clockwise seen from above.
+  if (signedArea2(polygon) <= 0) return points;
+  return [...points].reverse().map(({ in: i, out: o, ...p }) => ({ ...p, ...(o ? { in: o } : {}), ...(i ? { out: i } : {}) }) as P);
+}
+
+/** The default inward offset of a followed closed shape: on a room's wall's centerline, on a volume's edge. */
+export const defaultFollowOffset = (target: Shape) => (isClosed(target) && target.kind === "room" ? wallOf(target) / 2 : 0);
+
+/** Why a node can't be followed, or null. */
+export function followProblem(target: SceneNode | undefined, id: string): string | null {
+  if (!target) return `no node "${id}" to follow`;
+  if (target.type === "group") return `"${id}" is a group; an array follows one shape (a box, a cylinder, a free-form, a ramp or a line)`;
+  if (target.type === "note" || target.type === "instance" || target.type === "array") {
+    return `"${id}" is a ${target.type}; an array follows a box, a cylinder, a free-form, a ramp or a line`;
+  }
+  if (isTilted(target)) return `"${id}" is tilted; an array can't follow a tilted shape (level it, or give the array points)`;
+  return null;
+}
+
+/** A followed closed shape's outline at its top or bottom, inset by `d` meters, as free-form points (maybe curved). */
+function closedOutline(shape: ClosedShape, top: boolean, d: number): FootPoint[] | null {
+  const frame = shapeFrame(shape);
+  const world = (ring: Point[]) => ring.map((p) => fromShapeLocal(frame, p));
+  const inset = (poly: Point[]) => {
+    if (Math.abs(d) < 1e-9) return poly;
+    if (isFootprinted(shape)) return offsetPolygon(poly, -d);
+    const rings = offsetRings(poly, -d, false);
+    return rings.length > 0 ? rings.reduce((a, b) => (Math.abs(signedArea2(b)) > Math.abs(signedArea2(a)) ? b : a)) : null;
+  };
+  // A ring from an inset or a taper starts at its corner nearest the outline's own first point, so the items
+  // don't shift round when the same outline comes another way (a box converted to a free-form).
+  const first = counterclockwise(shape.type === "freeform" ? shape.points : footprint(shape))[0];
+  const fromFirst = (ring: Point[]) => {
+    const ccw = counterclockwise(ring);
+    let k = 0;
+    ccw.forEach((p, i) => {
+      if (Math.hypot(p.x - first.x, p.z - first.z) < Math.hypot(ccw[k].x - first.x, ccw[k].z - first.z)) k = i;
+    });
+    return [...ccw.slice(k), ...ccw.slice(0, k)];
+  };
+  // A tapered or beveled volume's top is its top ring.
+  if (top && (shape.taper || shape.bevel)) {
+    const ring = inset(world(volumeRings(shape).at(-1)!.ring));
+    return ring && ring.length >= 3 ? fromFirst(ring) : null;
+  }
+  if (shape.type === "box") {
+    const [w, dp] = [shape.width - 2 * d, shape.depth - 2 * d];
+    return w > 0 && dp > 0 ? counterclockwise(world(localFootprint({ ...shape, width: w, depth: dp }))) : null;
+  }
+  if (shape.type === "cylinder" && shape.sides === undefined) {
+    const [w, dp] = [shape.width - 2 * d, shape.depth - 2 * d];
+    return w > 0 && dp > 0 ? toFreeformPoints({ ...shape, width: w, depth: dp }) : null;
+  }
+  if (shape.type === "cylinder") {
+    const ring = inset(footprint(shape));
+    return ring ? counterclockwise(ring) : null;
+  }
+  const curved = shape.points.some((p) => p.in || p.out);
+  if (Math.abs(d) < 1e-9) return counterclockwise(shape.points, sampleOutline(shape.points).polygon);
+  const ring = inset(curved ? sampleOutline(shape.points).polygon : shape.points);
+  return ring && ring.length >= 3 ? fromFirst(ring) : null;
+}
+
+/** A polyline moved `d` meters to the right of travel, on the ground (each point along the average of its segments' normals). */
+function offsetRight(points: Point3[], d: number): Point3[] {
+  if (Math.abs(d) < 1e-9) return points;
+  const dir = (a: Point3, b: Point3) => {
+    const l = Math.hypot(b.x - a.x, b.z - a.z) || 1;
+    return { x: (b.x - a.x) / l, z: (b.z - a.z) / l };
+  };
+  return points.map((p, k) => {
+    const din = k > 0 ? dir(points[k - 1], p) : dir(p, points[k + 1]);
+    const dout = k + 1 < points.length ? dir(p, points[k + 1]) : din;
+    // The right normal of heading (x, z) is (-z, x) (heading east, right is south).
+    const n = { x: -(din.z + dout.z) / 2, z: (din.x + dout.x) / 2 };
+    const l = Math.hypot(n.x, n.z) || 1;
+    return { ...p, x: p.x + (n.x / l) * d, z: p.z + (n.z / l) * d };
+  });
+}
+
+type Followed = { points: LinePoint[]; closed: boolean } | { problem: string };
+const followCache = new WeakMap<Shape, Map<string, Followed>>();
+
+/**
+ * The path an array following `node` takes (plan 10 §6): a closed shape's outline (counterclockwise seen from
+ * above, closed) at its top or bottom, inset by the offset; a ramp's centerline at its surface's height, moved to
+ * the right of travel; a line's path, the same. Rounded to 2 decimals. Cached per target object and follow.
+ */
+export function followPath(node: SceneNode | undefined, follow: Follow): Followed {
+  const problem = followProblem(node, follow.id);
+  if (problem || !node || node.type === "group") return { problem: problem! };
+  const target: Shape = node;
+  const key = JSON.stringify([follow.at, follow.offset]);
+  const cached = followCache.get(target)?.get(key);
+  if (cached) return cached;
+  let result: Followed;
+  if (isClosed(target)) {
+    const top = follow.at !== "bottom";
+    const y = top ? target.y + target.height : target.y;
+    const outline = closedOutline(target, top, follow.offset ?? defaultFollowOffset(target));
+    const toLine = (p: FootPoint): LinePoint => ({
+      x: p.x,
+      y,
+      z: p.z,
+      ...(p.in ? { in: { x: p.in.x, y: 0, z: p.in.z } } : {}),
+      ...(p.out ? { out: { x: p.out.x, y: 0, z: p.out.z } } : {}),
+    });
+    result = outline ? { points: roundPoints(outline.map(toLine)), closed: true } : { problem: `the offset ${follow.offset} is more than "${follow.id}" is wide` };
+  } else if (target.type === "ramp") {
+    const centerline = rampStations(target).map((st) => ({ x: st.x, y: st.y, z: st.z }));
+    result = { points: roundPoints(dedupe(offsetRight(centerline, follow.offset ?? 0))), closed: false };
+  } else {
+    const line = target as Extract<Shape, { type: "line" }>;
+    const d = follow.offset ?? 0;
+    result = { points: Math.abs(d) < 1e-9 ? line.points : roundPoints(dedupe(offsetRight(polyline(line), d))), closed: false };
+  }
+  if (!followCache.has(target)) followCache.set(target, new Map());
+  followCache.get(target)!.set(key, result);
+  return result;
+}
+
+/** Points without neighbors in the same place. */
+const dedupe = (points: Point3[]) => points.filter((p, k) => k === 0 || p.x !== points[k - 1].x || p.y !== points[k - 1].y || p.z !== points[k - 1].z);
+
+/**
+ * The array with its path taken from what it follows, as `find` shows it: the same object when nothing changed (or
+ * it follows nothing, or its target is gone or can't be followed: then it keeps the path it had).
+ */
+export function withFollowed(array: ArrayNode, find: (id: string) => SceneNode | undefined): ArrayNode {
+  const l = array.layout;
+  if (l.type !== "path" || !l.along) return array;
+  const f = followPath(find(l.along.id), l.along);
+  if ("problem" in f) return array;
+  if (!!l.closed === f.closed && JSON.stringify(f.points) === JSON.stringify(l.points)) return array;
+  const { closed: _closed, ...rest } = l;
+  return { ...array, layout: { ...rest, points: f.points, ...(f.closed ? { closed: true as const } : {}) } };
 }

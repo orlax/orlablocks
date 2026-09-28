@@ -219,10 +219,18 @@ export type ArrayPlace = "spacing" | "count" | "corners" | "midpoints";
  * closed; a circle is a center, a radius and angles (from 0 = east, counterclockwise seen from above); a grid is a
  * center and a turn, with columns along its local x, rows along its local z and layers up.
  */
+/**
+ * What a path array follows (10.3): another node's outline, `id` a box, cylinder, free-form, ramp or line. A closed
+ * shape's outline at its top (the default) or bottom, moved `offset` meters inward (default: half a room's wall, 0
+ * for a volume); a ramp's surface along its centerline, or a line's path, `offset` meters to the right of travel.
+ */
+export type Follow = { id: string; at?: "top" | "bottom"; offset?: number };
+
 export type PathLayout = {
   type: "path";
-  points: LinePoint[];
+  points: LinePoint[]; // a following path's are its target's path as it is now (the store keeps them up to date)
   closed?: true;
+  along?: Follow;
   place: ArrayPlace;
   spacing?: number; // place: spacing, meters (the real spacing is fitted to the path)
   count?: number; // place: count
@@ -613,13 +621,15 @@ const InstanceSchema = z.object({
 });
 
 const count = z.number().int().min(1);
+const FollowSchema = z.object({ id: z.string(), at: z.enum(["top", "bottom"]).optional(), offset: z.number().optional() });
 const ArrayEntitySchema = z.object({ entity: z.string(), weight: z.number().positive().optional() });
 /** An array's layout as stored (see `ArrayLayout`). */
 export const ArrayLayoutSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("path"),
-    points: z.array(LinePointSchema).min(MIN_LINE_POINTS).max(MAX_POINTS),
+    points: z.array(LinePointSchema).min(MIN_LINE_POINTS).max(MAX_POINTS * 20),
     closed: z.literal(true).optional(),
+    along: FollowSchema.optional(),
     place: z.enum(ARRAY_PLACES),
     spacing: z.number().min(MIN_ARRAY_SPACING).optional(),
     count: count.optional(),
@@ -856,6 +866,14 @@ export const InstanceInputSchema = z.strictObject({
 });
 
 const arrayCount = z.number().int().min(1).max(MAX_ARRAY_ITEMS);
+const FollowInputSchema = z.strictObject({
+  id: z.string().describe("A box, cylinder or free-form (its outline), a ramp (its surface) or a line (its path)"),
+  at: z.enum(["top", "bottom"]).optional().describe("A closed shape's top (default: its wall top, a volume's top) or bottom (its floor)"),
+  offset: z
+    .number()
+    .optional()
+    .describe("A closed shape: meters inward from its outline (default: half a room's wall, on its centerline; 0 for a volume). A ramp or line: meters to the right of travel (default 0)"),
+});
 /** An array's layout for `draw_shapes` and `update_nodes` (see get_guide arrays). */
 export const ArrayLayoutInputSchema = z.discriminatedUnion("type", [
   z.strictObject({
@@ -864,8 +882,10 @@ export const ArrayLayoutInputSchema = z.discriminatedUnion("type", [
       .array(LinePointInputSchema)
       .min(MIN_LINE_POINTS)
       .max(MAX_POINTS)
-      .describe("The path, points in absolute world x/y/z as a line's (items stand at the path's height)"),
+      .optional()
+      .describe("The path, points in absolute world x/y/z as a line's (items stand at the path's height). Give points or along"),
     closed: z.boolean().optional().describe("The last point joins the first (a loop). Default false"),
+    along: FollowInputSchema.optional().describe("Instead of points, FOLLOW another node's path, live: its items move when it changes"),
     place: z
       .enum(ARRAY_PLACES)
       .optional()
@@ -1014,6 +1034,10 @@ export const NodeUpdateSchema = z.strictObject({
       type: z.enum(ARRAY_LAYOUTS).optional(),
       points: z.array(LinePointInputSchema).min(MIN_LINE_POINTS).max(MAX_POINTS).optional(),
       closed: z.boolean().optional(),
+      along: z
+        .strictObject({ id: z.string().optional(), at: z.enum(["top", "bottom"]).optional(), offset: z.number().nullable().optional() })
+        .nullable()
+        .optional(),
       place: z.enum(ARRAY_PLACES).optional(),
       spacing: z.union([z.number(), z.strictObject({ x: z.number(), z: z.number(), y: z.number().optional() })]).optional(),
       count: z.number().int().optional(),
