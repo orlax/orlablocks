@@ -135,7 +135,7 @@ describe("scene store", () => {
     expect(store.getScene().view.isolated).toBeUndefined();
   });
 
-  it("locks and unlocks any node, as one step each", () => {
+  it("locks and unlocks, hides and shows any node, as one step each", () => {
     const store = createSceneStore();
     const [island] = store.drawShapes([{ kind: "volume", x: 0, z: 0, width: 20, depth: 20 }], "human");
     const group = store.groupNodes({ ids: [island.id] }, "human");
@@ -147,6 +147,12 @@ describe("scene store", () => {
     expect(store.getHistory().undoLabel).toBe(`Unlock ${island.id}`);
     store.updateNodes([{ id: group.id, locked: true }], "agent");
     expect(store.getScene().nodes.find((n) => n.id === group.id)).toMatchObject({ locked: true });
+    store.updateNodes([{ id: group.id, hidden: true }], "human");
+    expect(store.getScene().nodes.find((n) => n.id === group.id)).toMatchObject({ hidden: true });
+    expect(store.getHistory().undoLabel).toBe(`Hide ${group.id}`);
+    store.updateNodes([{ id: group.id, hidden: false }], "human");
+    expect(store.getScene().nodes.find((n) => n.id === group.id)?.hidden).toBeUndefined();
+    expect(store.getHistory().undoLabel).toBe(`Show ${group.id}`);
   });
 
   it("clears the scene without reusing IDs", () => {
@@ -489,7 +495,7 @@ describe("scene store groups", () => {
     expect(store.getHistory().undoLabel).toBe("Regroup box_2");
     store.groupNodes({ ids: ["box_2"] }, "human"); // group_2 inside group_1
     expect(() => store.updateNodes([{ id: "group_1", parent: "group_2" }], "agent")).toThrow(/"group_2" is inside "group_1"/);
-    expect(() => store.updateNodes([{ id: "group_1", x: 3 }], "agent")).toThrow(/only name, parent and locked/);
+    expect(() => store.updateNodes([{ id: "group_1", x: 3 }], "agent")).toThrow(/only name, parent, locked and hidden/);
     store.updateNodes([{ id: "group_1", name: "lobby" }], "agent");
     expect(node(store, "group_1").name).toBe("lobby");
   });

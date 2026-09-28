@@ -21,7 +21,7 @@ import {
   type View,
 } from "../shared/scene.types";
 import { footprintBounds, isClosed, isTilted, polyline, rampStations, reversePoints, round2, wallOf } from "../shared/geometry";
-import { shapesUnder, childrenOf, isShape, isGroup, lockedIds, subtreeIds } from "../shared/tree";
+import { shapesUnder, childrenOf, isShape, isGroup, hiddenIds, lockedIds, subtreeIds } from "../shared/tree";
 import type { CameraState, GroundPoint } from "./camera";
 import { clipboardText, readClipboard } from "./clipboard";
 import { ErrorPanel } from "./ErrorPanel";
@@ -138,10 +138,13 @@ export function App() {
   const nodes = scene?.nodes ?? [];
   const isolated = isolation?.id ?? null;
   const isolatedNode = isolated !== null ? nodes.find((n) => n.id === isolated) : undefined;
+  // What the view shows (null = everything): not what's hidden, and while isolated only the isolation.
   const visible = useMemo(() => {
-    if (!isolation) return null;
-    const inside = subtreeIds(nodes, isolation.id);
-    return new Set(nodes.filter((n) => inside.has(n.id) || !isolation.before.has(n.id)).map((n) => n.id));
+    const hidden = hiddenIds(nodes);
+    if (!isolation && hidden.size === 0) return null;
+    const inside = isolation ? subtreeIds(nodes, isolation.id) : null;
+    const isolatedIn = (id: string) => !isolation || inside!.has(id) || !isolation.before.has(id);
+    return new Set(nodes.filter((n) => !hidden.has(n.id) && isolatedIn(n.id)).map((n) => n.id));
   }, [nodes, isolation]);
   // The key handler is installed once; it reads the current state from here.
   const state = useRef({ nodes, selection, context, open, pickerOpen, view, visible, isolated });
@@ -623,6 +626,7 @@ export function App() {
         visible={visible}
         onIsolate={isolate}
         onLock={(id, locked) => send({ type: "update_nodes", changes: [{ id, locked }] })}
+        onHide={(id, hidden) => send({ type: "update_nodes", changes: [{ id, hidden }] })}
       />
 
       {open && (

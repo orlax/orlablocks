@@ -116,6 +116,7 @@ const FIELD_VERBS: Record<keyof NodePatch, string> = {
   step: "change steps of",
   base: "restyle",
   locked: "lock",
+  hidden: "hide",
 };
 
 /** What a kind-specific field is called in errors ("only a room has walls"). */
@@ -130,7 +131,8 @@ const kindAllows = (f: KindField, kind: ShapeKind) => (KIND_FIELDS[f] as readonl
 function updateVerb(patches: NodePatch[]): string {
   const dropped = (p: NodePatch, k: string) => "kind" in p && k in KIND_FIELDS && p[k as KindField] === undefined;
   const keys = (p: NodePatch) => Object.keys(p).filter((k) => !dropped(p, k));
-  const verb = (p: NodePatch, k: string) => (k === "locked" && p.locked === undefined ? "unlock" : FIELD_VERBS[k as keyof NodePatch]);
+  const verb = (p: NodePatch, k: string) =>
+    k === "locked" && p.locked === undefined ? "unlock" : k === "hidden" && p.hidden === undefined ? "show" : FIELD_VERBS[k as keyof NodePatch];
   const verbs = new Set(patches.flatMap((p) => keys(p).map((k) => verb(p, k))));
   return verbs.size === 1 ? [...verbs][0] : "edit";
 }
@@ -502,8 +504,8 @@ export function createSceneStore() {
         seen.add(id);
         if (Object.keys(fields).length === 0) errors.push(`changes[${i}]: nothing to change`);
         if (node && isGroup(node)) {
-          const shapeOnly = Object.keys(fields).filter((k) => k !== "name" && k !== "parent" && k !== "locked");
-          if (shapeOnly.length > 0) errors.push(`changes[${i}]: "${id}" is a group; only name, parent and locked can change (not ${shapeOnly.join(", ")})`);
+          const shapeOnly = Object.keys(fields).filter((k) => k !== "name" && k !== "parent" && k !== "locked" && k !== "hidden");
+          if (shapeOnly.length > 0) errors.push(`changes[${i}]: "${id}" is a group; only name, parent, locked and hidden can change (not ${shapeOnly.join(", ")})`);
         } else if (node) {
           if (fields.sides !== undefined && node.type !== "cylinder") {
             errors.push(`changes[${i}].sides: only a cylinder has sides ("${id}" is a ${node.type})`);
@@ -629,6 +631,7 @@ export function createSceneStore() {
         if (fields.name !== undefined) patch.name = fields.name.trim() || undefined;
         if (fields.parent !== undefined) patch.parent = parent;
         if (fields.locked !== undefined) patch.locked = fields.locked || undefined;
+        if (fields.hidden !== undefined) patch.hidden = fields.hidden || undefined;
 
         // Keep only what differs from the node as it is.
         const effective: NodePatch = {};

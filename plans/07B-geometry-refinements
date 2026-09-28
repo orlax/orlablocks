@@ -168,6 +168,11 @@ Orlando's second pass, after 07B.4. The stairs bug was fixed and committed with 
   - **Undo:** locking and unlocking are undo steps (`Lock box_3`).
   - **The agent** may still change locked nodes, and its instructions ask it to leave them alone unless asked.
 
+- **07B.8 — Hide** (asked for after 07B.7): `hidden: true` on any node, with the outliner row's eye or `update_nodes`.
+  - **In the view:** it and what's in it aren't drawn, picked, drawn on or snapped to.
+  - **Holes:** a hidden hole cuts nothing, unlike a hole outside an isolation, which still cuts. Hiding means "as if it weren't there" in the view.
+  - **Saved** with the scene, and hiding or showing is one undo step, like a lock.
+
 ## 9. Decisions
 
 - **Top-level holes:** a hole in a top-level group also cuts the loose top-level shapes it overlaps (the rule as written, with no exceptions).
@@ -364,4 +369,28 @@ Orlando's second pass, after 07B.4. The stairs bug was fixed and committed with 
    - Clicking its row selects it, and the gizmo works.
    - Unlock is one undo step.
 6. **Locked groups:** lock a group, and its children's rows show a dim lock and can't be picked in the view.
+
+### 07B.8 — Hide (done; checked in the browser by Orlando)
+
+**What changed:**
+- **Data:** every node schema has `hidden?: true`, and `update_nodes` takes `hidden: true / false` on any node (groups too). The undo labels are `Hide …` and `Show …`.
+- **Helper:** `hiddenIds` (`tree.ts`, sharing `flaggedIds` with `lockedIds`) gives a node and its hidden ancestors' subtrees.
+- **App:** `visible` now leaves out hidden nodes as well as what's outside an isolation, and it is null only when nothing is hidden or isolated. So the view (drawing, picking, marquee, surfaces, snapping), `Cmd/Ctrl+A` and the outliner's dimming all follow it.
+- **Holes:** the view's `cutters` leaves out hidden holes, and still counts holes outside an isolation.
+- **The outliner:** each row has an eye before the lock, dim when a group it's in hides it.
+- **Agent:**
+  - The MCP instructions say a hidden node still exists and isn't drawn in the editor.
+  - The server version is 0.0.11, and the instructions are about 10.1 kB.
+
+**Verified:** typecheck, 291 unit tests and the bundle build pass. The new tests cover `hiddenIds` through groups, and hide and show on a group with the undo labels.
+
+**Browser checklist:**
+1. **Hide a room:** hover an outliner row and click the eye. The room disappears, its row dims, and the eye stays shown (crossed out).
+   - Clicking where it was picks what's behind.
+   - Drawing there lands on the ground.
+   - Clicking the eye again shows it, and each of those is one undo step.
+2. **Hide a group:** its children's rows show a dim crossed eye, and everything in it is gone from the view.
+3. **Hide a door hole:** the wall is whole again. With a hole outside an isolated room instead, it still cuts.
+4. **Select a hidden node:** its outliner row still selects it, the gizmo shows where it is, and the inspector edits it.
+5. **Together with isolation:** hide something inside an isolated room, and it disappears there too.
 

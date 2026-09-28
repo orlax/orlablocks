@@ -39,6 +39,7 @@ type Footprinted = {
   name?: string; // for people and the agent ("lobby"); not unique
   parent?: string; // the group it's in; none = top level
   locked?: true; // can't be picked in the view (a human's editing aid; the outliner and the agent still reach it)
+  hidden?: true; // not drawn in the view (a human's aid, like locked; a hidden hole cuts nothing there)
   kind: ShapeKind;
   x: number;
   z: number;
@@ -85,6 +86,7 @@ export type Freeform = {
   name?: string;
   parent?: string;
   locked?: true;
+  hidden?: true;
   kind: ShapeKind;
   y: number;
   height: number;
@@ -118,6 +120,7 @@ export type Line = {
   name?: string;
   parent?: string;
   locked?: true;
+  hidden?: true;
   color: ShapeColor;
   points: LinePoint[];
   thickness: number;
@@ -145,6 +148,7 @@ export type Ramp = {
   name?: string;
   parent?: string;
   locked?: true;
+  hidden?: true;
   kind: "volume";
   points: RampPoint[];
   width: number;
@@ -173,6 +177,7 @@ export type Group = {
   name?: string;
   parent?: string;
   locked?: true;
+  hidden?: true;
   createdBy: Actor;
 };
 
@@ -195,7 +200,7 @@ export type ShapePatch = Partial<Pick<Footprinted, "name" | "kind" | "x" | "z" |
   arrow?: LineArrow;
 };
 /** What an update op can change on any node: shape fields (shapes only), `name` and `parent`. */
-export type NodePatch = ShapePatch & { parent?: string; locked?: true };
+export type NodePatch = ShapePatch & { parent?: string; locked?: true; hidden?: true };
 
 /**
  * What the editor currently shows. The camera looks down at the ground (x/z plane, y up) at a fixed pitch,
@@ -328,6 +333,7 @@ const footprinted = {
   name: z.string().optional(),
   parent: z.string().optional(),
   locked: z.literal(true).optional(),
+  hidden: z.literal(true).optional(),
   kind: ShapeKindSchema,
   x: z.number(),
   z: z.number(),
@@ -357,6 +363,7 @@ const FreeformSchema = z.object({
   name: z.string().optional(),
   parent: z.string().optional(),
   locked: z.literal(true).optional(),
+  hidden: z.literal(true).optional(),
   kind: ShapeKindSchema,
   y: z.number(),
   height: z.number().min(MIN_HEIGHT),
@@ -374,6 +381,7 @@ const LineSchema = z.object({
   name: z.string().optional(),
   parent: z.string().optional(),
   locked: z.literal(true).optional(),
+  hidden: z.literal(true).optional(),
   color: ShapeColorSchema,
   points: z.array(LinePointSchema).min(MIN_LINE_POINTS).max(MAX_POINTS),
   thickness: z.number().min(MIN_THICKNESS).max(MAX_THICKNESS),
@@ -389,6 +397,7 @@ const RampSchema = z.object({
   name: z.string().optional(),
   parent: z.string().optional(),
   locked: z.literal(true).optional(),
+  hidden: z.literal(true).optional(),
   // 07 let a ramp be a hole: those load as volumes.
   kind: z.enum(["volume", "hole"]).transform((): "volume" => "volume"),
   points: z.array(RampPointSchema).min(MIN_LINE_POINTS).max(MAX_POINTS),
@@ -405,6 +414,7 @@ const GroupSchema = z.object({
   name: z.string().optional(),
   parent: z.string().optional(),
   locked: z.literal(true).optional(),
+  hidden: z.literal(true).optional(),
   createdBy: ActorSchema,
 });
 
@@ -603,6 +613,10 @@ export const NodeUpdateSchema = z.strictObject({
     .boolean()
     .optional()
     .describe("Any node: true locks it (the human can't pick it or what's in it in the view), false unlocks it"),
+  hidden: z
+    .boolean()
+    .optional()
+    .describe("Any node: true hides it and what's in it in the editor (not drawn; a hidden hole cuts nothing), false shows it"),
 });
 export type NodeUpdate = z.input<typeof NodeUpdateSchema>;
 

@@ -4,6 +4,8 @@ import {
   ChevronRight,
   ChevronsDownUp,
   Circle,
+  Eye,
+  EyeOff,
   CircleDashed,
   Focus,
   Folder,
@@ -19,7 +21,7 @@ import {
 import { isHole } from "../shared/holes";
 import { Stairs } from "./icons";
 import type { SceneNode } from "../shared/scene.types";
-import { ancestry, childrenOf, isGroup, lockedIds, subtreeIds } from "../shared/tree";
+import { ancestry, childrenOf, hiddenIds, isGroup, lockedIds, subtreeIds } from "../shared/tree";
 
 // A hole uses its shape's solid icon, drawn dotted (the `hole` class).
 const SHAPE_ICONS = {
@@ -52,9 +54,9 @@ function rowsOf(nodes: SceneNode[], collapsed: Set<string>): Row[] {
  * The outliner: the node tree as a collapsible panel on the left. Click selects (Shift or Cmd/Ctrl toggles),
  * double-click renames, dragging a row drops it before, after or into another (groups only), hovering a row
  * highlights its boxes in the view. Selecting something inside a collapsed group expands its ancestors. Each row
- * has a lock (a locked node and what's in it can't be picked in the view; the outliner still selects them) and an
- * isolate button (only that node and what's in it show), shown on hover or while on; rows outside the isolated
- * node are dimmed.
+ * has an eye (a hidden node and what's in it aren't drawn), a lock (a locked node and what's in it can't be picked
+ * in the view; the outliner still selects them) and an isolate button (only that node and what's in it show),
+ * shown on hover or while on; rows that don't show in the view are dimmed.
  */
 export function Outliner({
   nodes,
@@ -67,6 +69,7 @@ export function Outliner({
   visible,
   onIsolate,
   onLock,
+  onHide,
 }: {
   nodes: SceneNode[];
   selection: string[];
@@ -81,8 +84,10 @@ export function Outliner({
   visible: Set<string> | null;
   onIsolate: (id: string | null) => void;
   onLock: (id: string, locked: boolean) => void;
+  onHide: (id: string, hidden: boolean) => void;
 }) {
   const locked = lockedIds(nodes);
+  const hidden = hiddenIds(nodes);
 
   const [open, setOpen] = useState(true);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
@@ -253,6 +258,20 @@ export function Outliner({
                       </span>
                     )}
                     <span className="row-actions">
+                      <button
+                        type="button"
+                        className={node.hidden ? "row-action on" : hidden.has(node.id) ? "row-action inherited" : "row-action"}
+                        title={
+                          node.hidden ? "Show: draw it again" : hidden.has(node.id) ? "Hidden by a group it's in" : "Hide: don't draw it (a hidden hole cuts nothing)"
+                        }
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onHide(node.id, !node.hidden);
+                        }}
+                        onDoubleClick={(e) => e.stopPropagation()}
+                      >
+                        {hidden.has(node.id) ? <EyeOff size={12} /> : <Eye size={12} />}
+                      </button>
                       <button
                         type="button"
                         className={node.locked ? "row-action on" : locked.has(node.id) ? "row-action inherited" : "row-action"}

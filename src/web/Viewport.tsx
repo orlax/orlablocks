@@ -40,7 +40,7 @@ import {
   type Point,
   type Point3,
 } from "../shared/geometry";
-import { shapesUnder, isGroup, isShape, lockedIds, selectableAt } from "../shared/tree";
+import { shapesUnder, isGroup, isShape, hiddenIds, lockedIds, selectableAt } from "../shared/tree";
 import { cutters, isHole } from "../shared/holes";
 import { ShapeMesh } from "./ShapeMesh";
 import {
@@ -274,7 +274,10 @@ type Props = {
   showHoles: boolean;
   /** Whether the grid shows (the view bar). */
   showGrid: boolean;
-  /** While a node is isolated, the nodes that show (null = everything): the rest can't be seen, picked or snapped to. */
+  /**
+   * The nodes that show (null = everything): not the hidden ones, and while a node is isolated only it (and what's
+   * new since). The rest can't be seen, picked or snapped to.
+   */
   visible: Set<string> | null;
   /** Values held in the inspector (a slider being dragged), shown on their shapes before they're sent. */
   preview: Record<string, ShapePatch> | null;
@@ -394,7 +397,7 @@ export function Viewport({
   const ghosts = override?.copy ? override.origin.map((b) => ({ ...moved(b), id: `${b.id}:copy` }) as Shape) : [];
   // Hidden holes (Show holes off) can't be clicked or marquee-selected, unless they're selected.
   const selectedIds = new Set(shapesUnder(nodes, selection).map((b) => b.id));
-  // Isolation hides what's outside it (holes outside it still cut what shows: the cut follows the data).
+  // Hidden nodes and what's outside the isolation don't show.
   const onView = visible ? shown.filter((b) => visible.has(b.id)) : shown;
   const onViewRef = useRef(onView);
   onViewRef.current = onView;
@@ -404,7 +407,9 @@ export function Viewport({
   const locked = lockedIds(nodes);
   const selectable = pickable.filter((b) => !locked.has(b.id) || selectedIds.has(b.id));
   // Which holes cut which shapes, as shown (so a drag cuts live).
-  const cuts = cutters([...nodes.filter(isGroup), ...shown, ...ghosts]);
+  // A hidden hole cuts nothing; holes outside the isolation still cut what shows (the cut follows the data).
+  const hidden = hiddenIds(nodes);
+  const cuts = cutters([...nodes.filter(isGroup), ...shown.filter((b) => !(isHole(b) && hidden.has(b.id))), ...ghosts]);
   // The free-form or line in point editing, as shown. A free-form's points sit on its top face (`editTop`); a
   // line's carry their own y, and its path is open.
   const editShape =

@@ -90,9 +90,15 @@ export function copyNodes(
   });
 }
 
-/** The nodes that are locked, by their own `locked` or an ancestor's: none of them can be picked in the view. */
-export function lockedIds(nodes: SceneNode[]): Set<string> {
-  const locked = new Set(nodes.filter((n) => n.locked).map((n) => n.id));
-  if (locked.size === 0) return locked;
-  return new Set(nodes.filter((n) => ancestry(nodes, n.id).some((id) => locked.has(id))).map((n) => n.id));
+/** The nodes with `flag` set on themselves or on a group they're in. */
+function flaggedIds(nodes: SceneNode[], flag: "locked" | "hidden"): Set<string> {
+  const set = new Set(nodes.filter((n) => n[flag]).map((n) => n.id));
+  if (set.size === 0) return set;
+  return new Set(nodes.filter((n) => ancestry(nodes, n.id).some((id) => set.has(id))).map((n) => n.id));
 }
+
+/** The nodes that are locked, by their own `locked` or an ancestor's: none of them can be picked in the view. */
+export const lockedIds = (nodes: SceneNode[]) => flaggedIds(nodes, "locked");
+
+/** The nodes that are hidden, by their own `hidden` or an ancestor's: none of them are drawn in the view. */
+export const hiddenIds = (nodes: SceneNode[]) => flaggedIds(nodes, "hidden");
