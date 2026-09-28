@@ -45,12 +45,13 @@ import { reportError } from "./errors";
 import { Inspector, type InspectorProps } from "./Inspector";
 import { highlightedText, typingInField } from "./keys";
 import { Outliner } from "./Outliner";
-import { ProjectPicker } from "./ProjectPicker";
+import { ProjectPicker, Welcome } from "./ProjectPicker";
 import { ContextualBar, EDIT_ARRAY_HINT, EDIT_POINTS_HINT, HINTS, TOOLS, ToolBar, ViewBar, WalkBar } from "./ToolBar";
 import { useScene, type RenderHandler } from "./useScene";
 import { Viewport, type KindFields, type LineStyle, type RampStyle, type Tool, type ViewportApi } from "./Viewport";
 import { blobToBase64 } from "./capture";
 import { ShotsPanel, ShutterFlash } from "./ShotsPanel";
+import { Wordmark } from "../ui/Wordmark";
 
 /** Fixed-width number (e.g. "  12.50", " -3.00") so the info-label never jitters. */
 const coord = (n?: number) => (n === undefined ? "–".padStart(7) : n.toFixed(2).padStart(7));
@@ -444,7 +445,7 @@ export function App() {
 
   // The tab's title follows the open scene.
   useEffect(() => {
-    document.title = open ? `${open.scene.name} — ${open.project.name}` : "orlablocks";
+    document.title = open ? `${open.scene.name} — ${open.project.name} · OrlaBlocks` : "OrlaBlocks";
   }, [open]);
 
   // Tell the server what's visible so the agent's get_scene knows where to draw, and where the camera is, so the
@@ -1063,6 +1064,9 @@ export function App() {
 
       {open && (
         <div className="top-left">
+          <div className="brand">
+            <Wordmark size="small" />
+          </div>
           <button
             type="button"
             className="project-bar"
@@ -1179,6 +1183,7 @@ export function App() {
         <ErrorPanel />
       </div>
 
+      {!connected && open === null && <Welcome />}
       {connected && (open === null || pickerOpen) && (
         <ProjectPicker
           projects={projects}

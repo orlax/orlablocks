@@ -1,0 +1,186 @@
+# 12 — UI Styles
+
+> **For the agent reading this:** Read `plans/11-distribution` first (the Control Panel, `src/control-panel/`, and the packaged app), then look at `src/control-panel/styles.css` and the hero in `src/control-panel/App.tsx`: that's the look this phase brings to the editor. The editor (`src/web/styles.css`, about 1300 lines) is today a dark, translucent, system-font UI over a warm off-white 3D view, with its colors written out by hand (5 variables, 40-odd more hex and rgba values in the TSX files). This phase adds:
+> - **one theme for both apps:** the Control Panel's tokens (paper and ink, the six block pastels with their dark shades, Fredoka / Nunito / JetBrains Mono) in a shared module both apps import, with the fonts bundled (the Control Panel loads them from Google Fonts today, which a downloaded, local-first app shouldn't);
+> - **the editor in the block style:** chunky frames (ink edges, hard block shadows, pressable block buttons) around calm, compact rows;
+> - **light and dark:** the editor follows the system, like the Control Panel, with a toggle to override it;
+> - **the wordmark** (**orla BLOCKS**): small at the editor's top left, large and animated on the project picker and the welcome screen;
+> - **the app icon** (`src/assets/orla_blocks_icon.png`, Orlando's): the Tauri app's icons and both apps' favicons.
+>
+> The 3D view is **not** restyled: the canvas background, the grid, the shape palette and what `render_view` and shots capture stay exactly as they are (the agent's eyes and the palette's keys are a contract). Only what the editor draws over the level (the selection, drafts, the Pen, point and array handles, the marquee) moves to the theme's accent colors. The work is split into small increments (§9). Each one ends with the editor fully working and a browser checklist for Orlando. Add this phase's terms to `GLOSSARY.md` (marked "from 12") as they land. Log progress in §11 at the end of this file.
+
+---
+
+## 1. Goal
+
+One demo, end to end:
+
+1. Orlando opens the Control Panel (its icon in the Dock is the blocks on the grid) and clicks **Open Editor in Browser**. The tab is titled **OrlaBlocks**, with the same icon. With no project open, the editor shows the **welcome**: the large **orla BLOCKS** wordmark, its blocks rising in one after another as in the Control Panel, the tagline, and the project picker below it, all on the same minty paper with its faint grid.
+2. He opens a scene. At the top left there's a small, still **orla BLOCKS** next to the project bar (`Castle ▸ Keep`). The tool-bar, contextual bar, view bar, inspector, outliner, Entities, Shots and Library panels are white paper cards with ink edges and a hard shadow under them, like the Control Panel's panels. The active tool is a raised mint block that presses down when clicked; the inspector's and the modals' buttons are blocks too.
+3. The inspector's rows and the outliner's rows are as compact as before: thin dividers, no per-row borders or shadows. The numbers in the status bar and the inspector are JetBrains Mono.
+4. His Mac switches to dark mode. The UI turns to the dark ink variant (the same colors as the Control Panel's dark mode); the 3D view stays light. With the **theme toggle** in the view bar he picks Light and the editor stays light whatever the system says, in this browser, after a reload too.
+5. He asks the agent for a render. `render_view` looks exactly as it did before this phase.
+
+---
+
+## 2. Scope
+
+### In
+
+- **A shared theme (12.1):** `src/ui/` (a new folder, used by both Vite apps; `src/shared/` stays server + editor code): `theme.css` (the tokens, light and dark, the base font stacks), `fonts.css` (the three families, bundled with `@fontsource`, only the weights used), `Wordmark.tsx` (the title as a component, sizes `small` and `large`, `animated`). The Control Panel moves onto them with no visible change, and stops loading Google Fonts.
+- **Editor tokens and the theme toggle (12.2):** every color in `src/web/styles.css` (and the inline ones in the TSX that are UI, not the view) becomes a token; the fonts change; `data-theme` on `<html>` from a stored choice (system, light, dark).
+- **The block style (12.3):** frames, buttons, fields, modals and the status bar in the block style; rows stay calm (§5).
+- **The wordmark (12.4):** at the top left, on the project picker and on the welcome.
+- **The view's overlays and the remaining screens (12.5):** overlay colors from the theme, the Walk HUD and pause menu, the error panel and the crashed screen, the compass's rim.
+- **The app icon:** `src/assets/orla_blocks_icon.png` (1024², with transparency) is the source; `npx tauri icon` makes `src-tauri/icons/` from it (desktop sizes only), and `src/ui/favicon.png` (64²) and `apple-touch-icon.png` (180²) are the tabs' icons.
+
+### Out (deliberately deferred or dropped)
+
+- **The 3D view itself:** the canvas background (`BACKGROUND` in `Viewport.tsx`), the grid, the lighting, the shape palette's hex values (`PALETTE`), the hover yellow, the gizmo's and origin's axis colors, and every capture (`capture.tsx`, `renderView.ts`'s labels and fonts). A tinted canvas or a retuned palette can be its own decision later, and would change what the agent sees.
+- **Android and iOS icons:** `tauri icon` makes them too; they're deleted, since the app ships for desktop only.
+- **The wordmark in the Walk pause menu:** not wanted for now.
+- **A theme toggle in the Control Panel:** it keeps following the system only.
+- **Layout changes:** no panel moves, grows or changes what it holds; this phase is a skin. Where the chunkier frames need space (borders, shadows), the panels' outer size may grow by a few pixels, never their content.
+
+---
+
+## 3. Naming and data
+
+### Terms
+
+| Term | Meaning |
+|---|---|
+| **wordmark** | The title **orla BLOCKS**: "Orla" in Fredoka, then six letter blocks (mint, peach, coral, lilac, sky, leaf), each with a darker bottom edge. `Wordmark.tsx`, used by the Control Panel and the editor. Large ones can rise in on load (not with reduced motion). |
+| **theme** | The UI's colors and fonts: **light** (paper and ink) or **dark** (the ink variant). The 3D view isn't part of it. |
+| **theme toggle** | The view bar's button that picks the editor's theme: **System** (the default), **Light** or **Dark**. Remembered per browser. |
+| **block style** | The look shared with the Control Panel: ink edges, hard block shadows (`0 Npx 0` in the edge color, no blur), pressable block buttons (they sink onto their shadow when pressed), pastel fills for what's active or primary. |
+| **welcome** | What the editor shows with no scene open: the large wordmark, the tagline and the project picker. |
+
+### Names
+
+The product is **OrlaBlocks** in prose, titles and the tab (the Control Panel's `aria-label` already is); the wordmark is its visual form. The npm package, the MCP server name and the skill stay `orlablocks` (they're identifiers). The editor's `<title>` becomes `OrlaBlocks`, and `Keep — Castle · OrlaBlocks` with a scene open (the scene first, as before, so a narrow tab still says which one).
+
+### Data
+
+Only the theme toggle's choice, in `localStorage` (`orlablocks.theme`: `system` | `light` | `dark`), read and written in `try`/`catch` (a private window starts at System). Nothing reaches the server, the data folder or any history.
+
+---
+
+## 4. The shared theme (12.1)
+
+### Tokens
+
+The Control Panel's variables become the theme, split in two layers:
+
+- **Base tokens** (as now): `--paper`, `--grid`, `--surface`, `--ink`, `--ink-soft`, `--edge`, `--field`, the pastels and their dark shades (`--mint` / `--mint-d`, ... `--leaf` / `--leaf-d`), `--btn-ink`, `--display`, `--body`, `--mono`. Light in `:root`, dark in `@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) }` and again in `:root[data-theme="dark"]`, exactly as the Control Panel does it.
+- **Role tokens** the editor uses, defined from the base ones: `--accent` (selection, focus, the active tool: `--sky-d`), `--accent-fill` (`--sky`), `--primary` (`--mint`), `--danger` (`--coral-d`) with `--danger-fill` (`--coral`), `--warn` (`--peach-d`), `--ok` (`--leaf-d`), `--skill` and `--tag` (the library's sigils: `--lilac-d` and `--mint-d`), `--divider` (rows), `--shadow-sm` / `--shadow-md` (the block shadows at the editor's two sizes). The editor's CSS uses roles, not pastels, so a later retune touches one place.
+
+The axis colors (x red, z blue, as on the mirror buttons and the gizmo) aren't theme colors: they stay the conventional ones.
+
+### Fonts
+
+`@fontsource/fredoka` (600, 700), `@fontsource/nunito` (600, 700, 800) and `@fontsource/jetbrains-mono` (500), Latin subsets only, imported by `fonts.css`. Vite bundles the woff2 files into both builds (`dist/web`, `dist/control-panel`), so the packaged app works offline and never calls Google. `font-display: swap` (fontsource's default) keeps the first paint on the fallback stack.
+
+### The wordmark
+
+`Wordmark.tsx` moves the Control Panel's markup into a component: `size` (`small` | `large`) and `animated` (default: on for `large`). It sets `aria-label="OrlaBlocks"` and hides the letters from screen readers, as now, and is never selectable or draggable. Its CSS (the `.orla`, `.blocks` and `.blk` rules and the `rise` keyframes) moves into `theme.css` (or a `wordmark.css` next to it). The Control Panel's hero uses it with no visible change.
+
+### Checks
+
+- The Control Panel looks exactly as before, in light and dark (compare against screenshots taken before the change).
+- With the network off, the Control Panel still shows Fredoka and Nunito.
+- `npm run build` still builds all three targets; the fonts are in `dist/web/assets` and `dist/control-panel/assets`.
+
+---
+
+## 5. The editor in the block style (12.2, 12.3)
+
+### The rule: chunky frame, calm rows
+
+What floats over the view (a bar, a panel, a modal, a toast) is a **frame**: `--surface`, a `2px` ink edge, a hard shadow (`--shadow-md`: `0 4px 0 var(--edge)`), a radius of 12–14px, no blur, no translucency. What's inside a frame is a **row**: no edge or shadow of its own, separated by `1px var(--divider)` lines, hover and selection as a `--field` or `--accent-fill` background. Sizes are scaled to the editor's 13px base (the Control Panel's are for 16px): edges `2px` (not 2.5), shadows 4px for frames and 3px for buttons.
+
+### Surface by surface
+
+| Surface | Today | In the block style |
+|---|---|---|
+| tool-bar, contextual bar | dark glass, blurred | frames; tool buttons are small blocks (`--shadow-sm`, press down on click), the active tool a `--primary` block; the shortcut letter in `--mono`, `--ink-soft` |
+| kind toggle (room, volume, hole) | segmented, dark | the Control Panel's segmented tabs: a `--field` track, the active one a raised `--surface` block |
+| color swatches | round swatches | the palette's own colors (the view's, not the theme's), each with an ink edge; the active one lifted with a shadow |
+| view bar (top right) | dark pills | a frame; toggles as blocks, an off toggle flat and `--ink-soft`; the theme toggle joins it |
+| project bar, library toggle | dark pills | the project bar a frame at the wordmark's height, the library toggle a block button (`--accent-fill` when open) |
+| outliner, Entities, Shots, Library panels | dark panels | frames; headers in `--display`; rows calm (selection `--accent-fill`, drop targets `--accent` lines); search fields as `--field` wells |
+| inspector | dark floating panel | a frame; section labels in `--display`, `--ink-soft`; fields as `--field` wells with a `1.5px` edge that turns `--accent` on focus; steppers and choice buttons small blocks; numbers in `--mono` |
+| modals (project picker, confirmations) | dark modal | a large frame (`--shadow-md` doubled) on a backdrop of `--paper` at 70% with its grid; primary buttons `--primary` blocks, danger `--danger-fill` |
+| status bar (info-label) | dark strip | a `--surface` strip with an ink top edge; numbers `--mono`; the connection dot the Control Panel's pulsing `--ok` dot (`--danger` offline) |
+| draft label, marquee | dark label, blue box | a small `--surface` tag with an ink edge; the marquee in `--accent` |
+| error panel, crashed screen | dark | frames with a `--danger` edge; the crashed screen on `--paper` |
+| compass rose | dark rim | a `--surface` rim with an ink edge; the needle keeps red for north |
+| Walk HUD, pause menu | dark overlays | the pause menu a frame on the paper backdrop; the HUD's status and flash as small tags (the crosshair stays white with a dark outline, for any scene) |
+| tooltips (`title`) | the browser's | unchanged |
+
+Focus rings are the Control Panel's: `3px solid var(--accent)`, offset 2–3px, on `:focus-visible` only. `prefers-reduced-motion` turns off the wordmark's rise, the dot's pulse and the buttons' press transitions.
+
+### The theme toggle (12.2)
+
+One button at the end of the view bar (lucide's `SunMoon`, `Sun` or `Moon`) cycles **System → Light → Dark**, with its state in the tooltip (`Theme: System (dark now). Click for light`). `main.tsx` applies the stored choice to `<html data-theme>` before React renders, so there's no flash; System removes the attribute. It's per browser, in localStorage like the Library's and the stats readout's open state (`src/web/theme.ts`).
+
+### The view's overlays (12.5)
+
+What the editor draws over the level in the 3D view is one blue family today (the selection's tint and edges, a box's draft, the Pen, point handles, a selected note's outline), plus a red for a crossing outline and an orange for array handles. They move together to `src/ui/viewColors.ts`: `VIEW_ACCENT` (`--sky-d`), `VIEW_DANGER` (`--coral-d`), `VIEW_HANDLE` (`--peach-d`). Since the view stays light in both themes, these are the **light** theme's values in both, as constants (no need to read CSS at runtime), so they're always legible on the canvas. Captures never draw them. `ITEM_COLOR` (an array item's dot) is the palette's yellow and stays, as do the hover yellow and the axis colors.
+
+### Where the editor's CSS goes
+
+`src/web/styles.css` keeps its structure and comments; each rule's colors and fonts are replaced with tokens, and the frames, block buttons and wells are styled in the existing selectors (no new class names in the TSX, so no component changes). No prettier: format by hand, matching the file's current density.
+
+---
+
+## 6. The wordmark in the editor (12.4)
+
+- **Top left:** the `small` wordmark, still (not animated), on a frame of its own (`.brand`) before the project bar in `.top-left`, at the bar's height (30px) so the panels below (`top: 52px`) don't move. The frame keeps it legible over the light view in the dark theme too. It's decoration, not a button (the project bar opens the picker). While editing an entity it stays, as does the project bar's path.
+- **Welcome:** with no scene open (`open === null`) the picker's backdrop is the paper and its grid (opaque, down to the status bar, which stays in view), with the `large` animated wordmark and the tagline (`TAGLINE` in `Wordmark.tsx`, shared with the Control Panel) above the picker's card. It rises once each time the welcome appears.
+- **Project picker:** opened over a scene, the `large` wordmark sits above the card, not animated and without the tagline (it opens often; the rise is for arrival), over the view dimmed with paper.
+- **Before the server connects:** the welcome's paper and wordmark with "Connecting to the server…", and the status bar's offline dot, so a slow start looks like the app and not like a blank page.
+
+---
+
+## 7. Risks and checks
+
+- **Contrast on the light canvas:** white frames over the off-white view (`#f7f6f2`) are told apart by their ink edges and shadows, not by their fill; check every frame with a busy scene behind it.
+- **Dark UI over a light view:** intentional (the view is the level, not chrome), but check it doesn't glare; if it does, that's the case for a tinted canvas later, not in this phase.
+- **Space:** the chunkier frames must not cover more of the view. Compare the tool-bar's and inspector's outer sizes before and after (a few pixels at most).
+- **Performance:** no `backdrop-filter` any more (it was costly over a WebGL canvas); no box-shadows on rows (the outliner can hold hundreds).
+- **Fonts in the capture:** captures and `render_view` draw their labels with `system-ui` on their own canvases; nothing in this phase may change that.
+
+---
+
+## 8. Documentation
+
+- `CLAUDE.md`: the phase list (12 next, then done), `src/ui/` in the code layout, the theme and wordmark in a line.
+- `GLOSSARY.md`: the terms of §3, marked "from 12", sorted into "Editor UI".
+- No MCP or guide changes: the agent's tools, results and renders don't change.
+
+---
+
+## 9. Increments
+
+Each increment ends with `npm test` and `npm run typecheck` passing, the editor fully usable, and a browser checklist for Orlando.
+
+- **12.1 The shared theme.** `src/ui/theme.css`, `fonts.css`, `Wordmark.tsx`; `@fontsource` packages; the Control Panel moved onto them, Google Fonts removed; the app icon and favicons. The editor unchanged except its `<title>` (`OrlaBlocks`). Checklist: the Control Panel looks identical in light and dark, and offline.
+- **12.2 Editor tokens and the theme toggle.** The editor imports the theme; every UI color in `styles.css` and the UI TSX becomes a role token, the fonts switch to Nunito / Fredoka / JetBrains Mono; `data-theme` from the stored choice, the toggle in the view bar. The editor still looks like today's layout, but in the new colors and fonts. Checklist: every panel in light, dark and System, and switching live.
+- **12.3 The block style.** Frames, block buttons, wells, segmented toggles, modals, the status bar and its dot, per §5's table. Checklist: each surface of the table, in both themes, over a busy scene; the outliner with a few hundred rows scrolls smoothly.
+- **12.4 The wordmark.** Top left, the welcome (and before the server connects), the picker's header. Checklist: a fresh data folder shows the welcome and the rise; opening a scene shows the small wordmark and nothing below it moved; reduced motion stops the rise.
+- **12.5 The view's overlays and the remaining screens.** Overlay colors from the theme (light values), the Walk HUD and pause menu, the error panel, the crashed screen, the compass. Checklist: drawing with the Pen (and a bad, crossing point), point editing, an array's edit mode, a walk and its pause menu, an error, in both themes; a `render_view` sheet and a shot compared with one from before the phase: identical.
+
+---
+
+## 10. Browser acceptance
+
+The demo of §1, start to end, on the packaged app (`npm run package`) as well as `npm run dev`, in Chrome and Safari, in light and dark.
+
+---
+
+## 11. Progress
+
+- **2026-09-28:** Plan created. Decisions with Orlando: chunky frames with calm rows (not tokens only, not chunky everywhere); follow the system with a toggle; the wordmark at the top left and on the welcome and project picker (not the Walk pause menu, and the app icon and favicon left for later); the 3D view unchanged, only its overlays themed.
+- **2026-09-28:** Orlando added the app icon (`src/assets/orla_blocks_icon.png`), so it's in scope: `src-tauri/icons/` regenerated from it with `npx tauri icon` (desktop sizes; the Android and iOS ones deleted), and `src/ui/favicon.png` / `apple-touch-icon.png` for the tabs, set from the entry scripts by `src/ui/favicon.ts` (an HTML link outside a Vite app's root works built but not in dev).
+- **2026-09-28:** **12.1–12.5 built, not yet checked in the browser.** `src/ui/` (theme, bundled fonts, `Wordmark`, `TAGLINE`, `viewColors.ts`, favicons); the Control Panel moved onto it with Google Fonts removed; the editor's stylesheet on role tokens and the block style (frames with ink edges and hard shadows, the active tool a mint block, block buttons in the inspector, the Library, modals and the Walk menu, wells for fields, calm rows); the theme toggle at the end of the view bar (`src/web/theme.ts`, with tests); the small wordmark at the top left, the welcome (and before the server connects) and the wordmark over the picker; the view's overlay blues, the Pen's red and the array handles' orange from `viewColors.ts`. Tool buttons stay flat until active (a row of seven raised blocks was too loud); the tab title keeps the scene first (`Keep — Castle · OrlaBlocks`). `npm test`, `npm run typecheck` and `npm run build` pass; both builds carry the woff2 files and the favicon, and neither calls Google. Next: Orlando's browser checklist (§9, §10).

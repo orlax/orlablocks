@@ -1,6 +1,7 @@
 import { Copy, FolderPlus, Pencil, Plus, TriangleAlert, X } from "lucide-react";
 import { useEffect, useState, type KeyboardEvent } from "react";
 import { DEFAULT_SCENE_NAME, type ClientMessage, type OpenScene, type ProjectSummary } from "../shared/scene.types";
+import { TAGLINE, Wordmark } from "../ui/Wordmark";
 
 type Props = {
   projects: ProjectSummary[];
@@ -18,7 +19,8 @@ type Renaming = { kind: "project" | "scene"; id: string; value: string };
  * The project picker (plan 04 §5): projects on the left, the selected project's description and scenes on the
  * right. Clicking a scene opens it (the App closes the picker once the server has opened it). Projects rename on
  * double-click, scenes with their pencil button (a click already opens them). With no projects at all it's only
- * the create project form.
+ * the create project form. The wordmark sits above it; with nothing open it's the **welcome** (plan 12 §6): the
+ * paper instead of the view, and the wordmark rises in.
  */
 export function ProjectPicker({ projects, open, error, onClose, send }: Props) {
   const [selected, setSelected] = useState<string | null>(open?.project.id ?? projects[0]?.id ?? null);
@@ -86,7 +88,8 @@ export function ProjectPicker({ projects, open, error, onClose, send }: Props) {
   const isOpen = (projectId: string, sceneId: string) => open?.project.id === projectId && open.scene.id === sceneId;
 
   return (
-    <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose?.()}>
+    <div className={onClose ? "modal-backdrop" : "modal-backdrop welcome"} onMouseDown={(e) => e.target === e.currentTarget && onClose?.()}>
+      <Hero animated={!onClose} />
       <div className={creating ? "modal" : "modal project-picker"}>
         <div className="modal-header">
           <h2>{creating ? <><FolderPlus size={18} /> Create a project</> : "Projects"}</h2>
@@ -237,6 +240,25 @@ export function ProjectPicker({ projects, open, error, onClose, send }: Props) {
 }
 
 /** Name, description and first scene. Enter or Create submits. */
+function Hero({ animated }: { animated: boolean }) {
+  return (
+    <header className="hero">
+      <Wordmark animated={animated} />
+      {animated && <p className="tagline">{TAGLINE}</p>}
+    </header>
+  );
+}
+
+/** The welcome before the server connects: the paper and the wordmark, not a blank page. */
+export function Welcome() {
+  return (
+    <div className="modal-backdrop welcome">
+      <Hero animated />
+      <p className="muted">Connecting to the server…</p>
+    </div>
+  );
+}
+
 function CreateProjectForm({
   onCreate,
   onCancel,

@@ -6,6 +6,7 @@ import { cutsFloor } from "../shared/holes";
 import { shapeMesh, type Mesh } from "../shared/mesh";
 import { PALETTE, type ClosedShape, type ShapeColor, type Solid } from "../shared/scene.types";
 import { holeInFrameOf, subtract, useManifold } from "./csg";
+import { VIEW_ACCENT } from "../ui/viewColors";
 
 type Props = {
   shape: Solid;
@@ -42,7 +43,7 @@ function tileTexture() {
   return texture;
 }
 
-export const SELECT_COLOR = "#3d7be0";
+export const SELECT_COLOR = VIEW_ACCENT;
 /** Hover (what a click would select): a yellow tint, the same kind of overlay as the selection's blue. */
 export const HOVER_COLOR = "#f5c518";
 
@@ -54,8 +55,8 @@ function createShared() {
     edge: new THREE.LineBasicMaterial({ color: "#8a857b", transparent: true, opacity: 0.3 }),
     edgeHover: new THREE.LineBasicMaterial({ color: HOVER_COLOR }),
     edgeSelected: new THREE.LineBasicMaterial({ color: SELECT_COLOR }),
-    draft: new THREE.MeshLambertMaterial({ color: "#3d7be0", transparent: true, opacity: 0.35, depthWrite: false }),
-    draftEdge: new THREE.LineBasicMaterial({ color: "#3d7be0" }),
+    draft: new THREE.MeshLambertMaterial({ color: VIEW_ACCENT, transparent: true, opacity: 0.35, depthWrite: false }),
+    draftEdge: new THREE.LineBasicMaterial({ color: VIEW_ACCENT }),
     // A hole's dashed outline, and its highlights.
     holeEdge: new THREE.LineDashedMaterial({ color: "#5d5c5a", dashSize: 0.18, gapSize: 0.12, transparent: true, opacity: 0.8 }),
     holeEdgeHover: new THREE.LineDashedMaterial({ color: HOVER_COLOR, dashSize: 0.18, gapSize: 0.12 }),

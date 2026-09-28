@@ -3,6 +3,7 @@ import { useThree } from "@react-three/fiber";
 import { CanvasTexture, LinearFilter, PerspectiveCamera, SRGBColorSpace, Sprite, SpriteMaterial } from "three";
 import { PALETTE, type Note } from "../shared/scene.types";
 import { NOTE_PX } from "./pick";
+import { VIEW_ACCENT } from "../ui/viewColors";
 
 /**
  * A note in the view (from 08): a pin standing on its point, painted into a canvas and shown as a sprite, so it
@@ -11,7 +12,7 @@ import { NOTE_PX } from "./pick";
  * and faint. Selected, it's outlined blue; hovered, yellow. `pick.ts`'s `noteRect` is where clicks land.
  */
 
-const SELECT_STROKE = "#3d7be0";
+const SELECT_STROKE = VIEW_ACCENT;
 const HOVER_STROKE = "#e0a800";
 const INK = "#34332f";
 const DONE_FILL = "#c9c8c4";

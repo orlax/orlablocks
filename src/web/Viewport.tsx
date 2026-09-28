@@ -144,6 +144,7 @@ import {
 } from "./walk";
 import { Avatar, avatarShapes, loadWalkOptions, newLive, walkKey, WalkHud, WalkMenu, type CameraPose, type WalkLive, type WalkSession } from "./WalkScreens";
 import { manifoldReady } from "./csg";
+import { VIEW_ACCENT, VIEW_DANGER, VIEW_HANDLE } from "../ui/viewColors";
 
 const BACKGROUND = "#f7f6f2";
 const VIEW_REPORT_MS = 100;
@@ -2212,8 +2213,8 @@ function HoleWarning({ hole }: { hole: ClosedShape }) {
 }
 
 /** The Pen's outline in progress: blue, or red once it crosses itself. */
-const PEN_COLOR = "#3d7be0";
-const PEN_BAD_COLOR = "#d0473d";
+const PEN_COLOR = VIEW_ACCENT;
+const PEN_BAD_COLOR = VIEW_DANGER;
 /** Just above the ground, so the preview isn't hidden in it. */
 const PEN_Y = 0.02;
 
@@ -2356,7 +2357,7 @@ function PenPreview({ pen, kind, fields, line, ramp }: { pen: Pen; kind: ShapeKi
 }
 
 /** Point editing's overlay: blue, or red while the edit would cross itself. */
-const POINT_COLOR = "#3d7be0";
+const POINT_COLOR = VIEW_ACCENT;
 const POINT_FILL = "#ffffff";
 
 /**
@@ -2523,7 +2524,7 @@ function StatsProbe({ onStats }: { onStats: (s: Stats) => void }) {
 }
 /** An array's item dots and handles in edit mode. */
 const ITEM_COLOR = "#f3e3a3";
-const ARRAY_HANDLE_COLOR = "#f4a261";
+const ARRAY_HANDLE_COLOR = VIEW_HANDLE;
 
 /**
  * Turns the compass rose (a DOM element over the view) every frame so its N points where north (-z) is on screen,

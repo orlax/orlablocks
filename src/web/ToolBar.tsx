@@ -6,6 +6,7 @@ import {
   EyeOff,
   Camera,
   Focus,
+  Moon,
   Images,
   Grid3x3,
   Hand,
@@ -19,14 +20,18 @@ import {
   SquareDashed,
   SquareDot,
   StickyNote,
+  Sun,
+  SunMoon,
   Trash2,
   Undo2,
   Waypoints,
   X,
   type LucideIcon,
 } from "lucide-react";
+import { useEffect, useState } from "react";
 import { PALETTE, SHAPE_COLORS, type HistorySummary, type ShapeColor, type ShapeKind, type WalkPreset } from "../shared/scene.types";
 import { Stairs } from "./icons";
+import { applyTheme, nextTheme, readTheme, systemIsDark } from "./theme";
 import { WALK_DRAG, type Tool } from "./Viewport";
 
 export const MOD = /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl+";
@@ -276,7 +281,40 @@ export function ViewBar({
       >
         <Images size={13} /> {shots.count}
       </button>
+      <span className="sep" />
+      <ThemeToggle />
     </div>
+  );
+}
+
+const THEME_ICONS = { system: SunMoon, light: Sun, dark: Moon };
+
+/** The theme toggle (plan 12): System → Light → Dark, remembered in this browser. */
+function ThemeToggle() {
+  const [choice, setChoice] = useState(readTheme);
+  // System's tooltip says what it shows now, so follow the OS while it's open.
+  const [dark, setDark] = useState(systemIsDark);
+  useEffect(() => {
+    if (typeof matchMedia !== "function") return;
+    const query = matchMedia("(prefers-color-scheme: dark)");
+    const onChange = () => setDark(query.matches);
+    query.addEventListener("change", onChange);
+    return () => query.removeEventListener("change", onChange);
+  }, []);
+  const Icon = THEME_ICONS[choice];
+  const now = choice === "system" ? `System (${dark ? "dark" : "light"} now)` : choice === "light" ? "Light" : "Dark";
+  return (
+    <button
+      type="button"
+      title={`Theme: ${now}. Click for ${nextTheme(choice)}`}
+      onClick={() => {
+        const next = nextTheme(choice);
+        applyTheme(next);
+        setChoice(next);
+      }}
+    >
+      <Icon size={13} />
+    </button>
   );
 }
 

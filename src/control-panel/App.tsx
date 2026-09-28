@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { TAGLINE, Wordmark } from "../ui/Wordmark";
 
 // Check if running inside Tauri webview
 const isTauri = typeof window !== "undefined" && Boolean((window as any).__TAURI_INTERNALS__);
@@ -234,18 +235,8 @@ export function App() {
 
       {/* Hero Header */}
       <header className="hero">
-        <h1 aria-label="OrlaBlocks">
-          <span className="orla" aria-hidden="true">Orla</span>
-          <span className="blocks" aria-hidden="true">
-            <span className="blk" style={{ "--c": "var(--mint)", "--cd": "var(--mint-d)", "--d": ".05s" } as any}>B</span>
-            <span className="blk" style={{ "--c": "var(--peach)", "--cd": "var(--peach-d)", "--d": ".12s" } as any}>L</span>
-            <span className="blk" style={{ "--c": "var(--coral)", "--cd": "var(--coral-d)", "--d": ".19s" } as any}>O</span>
-            <span className="blk" style={{ "--c": "var(--lilac)", "--cd": "var(--lilac-d)", "--d": ".26s" } as any}>C</span>
-            <span className="blk" style={{ "--c": "var(--sky)", "--cd": "var(--sky-d)", "--d": ".33s" } as any}>K</span>
-            <span className="blk" style={{ "--c": "var(--leaf)", "--cd": "var(--leaf-d)", "--d": ".40s" } as any}>S</span>
-          </span>
-        </h1>
-        <p className="tag">Block out your levels. Let your agents build with you.</p>
+        <Wordmark />
+        <p className="tag">{TAGLINE}</p>
       </header>
 
       {/* Launch Button */}
