@@ -1,0 +1,418 @@
+# 10 — Array Tools
+
+> **For the agent reading this:** Read `plans/08-semantics-and-entities` §7 first (entities, instances, how an instance is a group for holes, and `expandInstance`), then `plans/thinking-05-performance` (why many small shapes are slow: draw calls). Arrays were deferred on purpose in `05` §11 ("live arrays share their machinery with prefabs") and listed in `thinking-01-entities` (circle, grid, row, stacking, noise). This phase adds the **array**: one node that repeats entities along a layout, live. It adds:
+> - **the array node** (`array_N`): made from an instance with the inspector's **Array** button, it places **items** (instances of one or more entities) on a **layout**: a path, a circle, a grid or a scatter;
+> - **following an outline:** a path layout can follow another node (a room's wall top, a volume's top, a ramp, a line), so battlements stay on the keep when the keep is resized;
+> - **noise and variety:** seeded position and turn jitter, and several entities with weights (a forest of three trees);
+> - **instanced drawing:** each array is drawn with `InstancedMesh`es, a few draw calls for hundreds of items, plus a small stats readout to measure it.
+>
+> Export to engines and the evals of `thinking-04` come later; the rest of editor performance (merging static shapes) is its own phase (`thinking-05`). The work is split into small increments (§10). Each one ends with the human ↔ agent loop still working and a browser checklist for Orlando. Add this phase's terms to `GLOSSARY.md` (marked "from 10") as they land. Log progress in a §13 at the end of this file, as 09 did.
+
+---
+
+## 1. Goal
+
+One demo, end to end:
+
+1. Orlando draws a 10-sided cylinder room, 20 × 20 m, 8 m tall: the tower, in a group `tower`, then a box hole for a window (1.2 wide, 0.6 deep, 2 tall, at y 3) and presses **Make entity** (`window`). Its instance is in the tower group.
+2. With the window instance selected, Orlando presses **Array** in the inspector. The instance becomes `array_1`: a row of windows along a short line starting where the window was. In the array's section Orlando picks **Circle**, drags the circle's center onto the tower's center (it snaps to shape centers), sets the radius to 9.4 and the count to 10, and **Facing: tangent**. Ten windows, one in the middle of each face, cut all ten walls.
+3. Orlando asks the agent: *"Add battlements to the keep."* The agent draws a merlon (a 0.6 × 0.4 × 0.8 volume), makes it an entity, and calls `draw_shapes { type: "array", entity: "merlon", layout: { type: "path", along: { id: "box_5" }, spacing: 1.2 } }`. Merlons stand on the keep's wall top, on the wall's centerline, all the way round. It calls `render_view` and sees them. The outline shows one line: `array_2 · 38 × merlon · along box_5 (top), every 1.2 m`.
+4. Orlando makes the keep 4 m longer. The battlements follow: more merlons, still evenly spaced, still on the wall. Orlando double-clicks the array, clicks the two merlons over the gate and presses `Delete`: they're **skipped** (hollow dots show where they were).
+5. Orlando asks the agent for a forest around the tower. The agent calls `draw_shapes { type: "array", entities: [{ entity: "tree-small", weight: 5 }, { entity: "tree-big", weight: 3 }, { entity: "tree-tall", weight: 1 }], layout: { type: "scatter", area: [...], count: 60, minDistance: 3 }, facing: "random" }`. Orlando reshapes the forest's area with Edit points, doesn't like the clumps, and presses **Reroll** in the inspector: the same 60 trees, spread differently.
+6. Orlando turns on the view bar's **stats** readout: the forest and the battlements add a handful of draw calls, not hundreds.
+7. Orlando selects the forest and presses **Detach**: it becomes a group `forest` of 60 plain instances, and one tree can now be moved by hand.
+
+---
+
+## 2. Scope
+
+### In
+
+- **The array node (10.1):**
+  - `array_N`, stored in the scene like any node, with its entities, layout, facing, turn, noise, seed and skipped items;
+  - the layouts **path** (its own points, a line you edit with Edit points), **circle** and **grid**;
+  - **Array** in an instance's inspector (the instance becomes an array, one step), and the array's inspector section;
+  - items drawn, picked (a hit selects the array), cut and cutting like instances;
+  - **Detach**: an array becomes a group of plain instances;
+  - move, rotate, mirror, copy, paste, group, hide, lock and isolate on arrays;
+  - MCP: `draw_shapes` type `array`, `update_nodes` for arrays, `detach_instances` taking arrays, the outline, `find_nodes`, counts, and a `get_guide arrays` topic.
+- **Scatter, noise and mixed entities (10.2):**
+  - the **scatter** layout, in a circle or in an area outline (reshaped with Edit points), with a minimum distance;
+  - `jitter` (meters) and `turnJitter` (degrees), from a `seed`, with **Reroll**;
+  - several entities per array, with weights, added and weighted in the inspector.
+- **Following an outline (10.3):**
+  - a path layout that follows a closed shape's outline (top or bottom, inset), a ramp's surface or a line's path, live;
+  - **corners** and **midpoints** placement (a pillar on every corner, a window on every face);
+  - what happens when the followed node is removed, converted, copied or moved;
+  - **Follow** (click a shape) and **Unlink** in the inspector;
+  - the design guide's and review topic's "battlements as one band" becomes "battlements as an array".
+- **Editing in the view (10.4):**
+  - handles: a circle's center and radius, a scatter circle's radius, a grid's spacing;
+  - item dots in the array's edit mode, and **skipping** items with `Delete` (and restoring them).
+- **Instanced drawing (10.5):**
+  - each array drawn as one `InstancedMesh` per entity part (bodies, floors, edges), in the view and in captures;
+  - a stats readout (frame time, draw calls, triangles, shapes), off by default.
+
+### Out (deliberately deferred or dropped)
+
+- **Arrays of anything but instances.** Arrays repeat entities only (§11). To array a plain shape, make it an entity first.
+- **Arrays of arrays, and arrays inside entity definitions.** 08 already rules out nesting.
+- **Per-item changes:** no per-item scale, color, entity choice or position. An item is where the layout puts it, or skipped; anything more is Detach.
+- **Scale noise:** instances don't scale (08 §12).
+- **Items settling on the ground below** (a forest on a hill: each tree dropped onto the surface under it). Scatter has one `y`. A later phase can add a `settle` option using floor-follow's raycast.
+- **Following anything but a closed shape, a ramp or a line** (no following a group's bounds, an instance's outline or another array).
+- **Merging static shapes** (thinking-05 item 2): the performance phase. 10 only instances arrays.
+
+---
+
+## 3. Naming and data
+
+### Terms
+
+| Term | Meaning |
+|---|---|
+| **array** (`array_N`) | a node that repeats one or more entities on a layout, live: change the layout and the items follow. Made from an instance (the inspector's **Array**), or by the agent. |
+| **item** | one placed copy in an array: an instance with a place and a turn given by the layout. Virtual (`array_3/7`, its shapes `array_3/7/box_2`): drawn, picked and cut, never edited alone. Numbered from 0 in layout order. |
+| **layout** | where an array's items go: `path`, `circle`, `grid` or `scatter`. |
+| **follow** (`along`) | a path layout that takes its path from another node, the **target**: a closed shape's outline, a ramp's surface or a line. |
+| **unlink** | turn a following path into the array's own points, a copy of the target's path as it is now. |
+| **facing** | how each item is turned: `fixed`, `along` (a path's direction), `tangent` / `out` / `in` (on a circle), or `random`. |
+| **turn** | the array's `rotation`: added to every item's facing. |
+| **jitter** | seeded noise: `jitter` moves each item up to that many meters on the ground, `turnJitter` turns it up to ± that many degrees. |
+| **seed** / **Reroll** | the integer the noise, the scatter and the entity choice come from, so an array looks the same on every load. Reroll picks a new one. |
+| **weight** | how often an entity is chosen among an array's entities (5 : 3 : 1). |
+| **skip** | the items left out (`skip: [4, 5]`), shown as hollow dots in the array's edit mode. |
+
+### The node
+
+```ts
+type ArrayEntity = { entity: string; weight?: number }; // weight > 0, default 1
+
+type PathLayout = {
+  type: "path";
+  points?: LinePoint[];           // the path, absolute world x/y/z with 3D handles, as a line's (2..MAX_POINTS)
+  closed?: boolean;               // the last point joins the first; default false
+  along?: Follow;                 // instead of points: follow a node (10.3)
+  place?: "spacing" | "count" | "corners" | "midpoints"; // default: spacing
+  spacing?: number;               // meters, the target distance between items (default: the entity's width × 1.5)
+  count?: number;                 // with place: count, items evenly along the path, both ends included when open
+};
+type Follow = {
+  id: string;                     // a box, cylinder, free-form, ramp or line
+  at?: "top" | "bottom";          // closed shapes: the top outline (the top ring for a tapered volume) or the bottom; default top
+  offset?: number;                // closed shapes: meters inward (default: half a room's wall, so on the wall's centerline; 0 for a volume)
+                                  // ramps and lines: meters to the right of travel (default 0)
+};
+type CircleLayout = { type: "circle"; x: number; y: number; z: number; radius: number; count: number;
+                      start?: number;   // degrees, from 0 = east, counterclockwise seen from above (as a spiral's)
+                      sweep?: number }; // degrees, default 360; less than 360 puts items at both ends of the arc
+type GridLayout = { type: "grid"; x: number; y: number; z: number; rotation?: number; // the grid's center and turn
+                    columns: number; rows: number; layers?: number;                  // along its local x, z and y
+                    spacing: { x: number; z: number; y?: number };
+                    stagger?: boolean };                                             // every other row offset by half (brick)
+type ScatterLayout = { type: "scatter"; y: number;
+                       x?: number; z?: number; radius?: number;  // a circle, or
+                       area?: FootPoint[];                        // an outline, as a free-form's (10.2)
+                       count: number; minDistance?: number };
+
+type ArrayNode = {
+  id: string;                     // "array_1", ...
+  type: "array";
+  name?: string; parent?: string; locked?: true; hidden?: true;
+  entities: ArrayEntity[];        // 1..MAX_ARRAY_ENTITIES (8)
+  layout: PathLayout | CircleLayout | GridLayout | ScatterLayout;
+  facing?: "fixed" | "along" | "tangent" | "out" | "in" | "random"; // default: along on a path, tangent on a circle, fixed otherwise
+  rotation?: number;              // the turn, degrees, added to every item's facing; default 0
+  jitter?: number; turnJitter?: number; seed?: number; // default 0, 0, 1
+  skip?: number[];                // item indices left out
+  createdBy: Actor;
+};
+```
+
+- **Why these field names:** the layout's fields are the ones the same things already have elsewhere: a path's `points` are a line's, a scatter `area` is a free-form's `points`, a circle's `start` counts like a spiral's `from`, and a grid's center and `rotation` are a box's.
+- **Facing conventions:** an item at facing 0 shows its entity as drawn. `along` and `tangent` turn its local **+x** along the path (the direction of travel) or the circle (counterclockwise), so a window drawn with its width along x lies along the wall. `out` turns its local +x away from the circle's center (like a cylinder's flat edge faces its +x), `in` toward it. Then `rotation` is added, then `turnJitter`.
+- **Closed outlines run counterclockwise** seen from above, whatever order the shape's points are in, so `along` and `offset` mean the same thing on every shape.
+- **Spacing fits the path:** the items land evenly, and the real spacing is the path's length divided by the nearest whole number of gaps (`every 1.2 m` on a 45.5 m wall is 38 gaps of 1.197 m). An open path has an item at each end; a closed one doesn't repeat its first item.
+- **Limits:** `MAX_ARRAY_ITEMS` 500 items per array (a result says how many were dropped past it), `MAX_ARRAY_ENTITIES` 8, and spacing ≥ 0.1 m.
+- **ID counters:** `nextId` gains `array`, which defaults to 1.
+- **Counts:** `2 arrays (98 items)`, in the info-label and `get_scene`. Instances stay counted separately.
+
+### The data folder
+
+Nothing new: arrays are nodes in `scene.json`. Old scenes open unchanged.
+
+---
+
+## 4. The array (10.1)
+
+### Items: one pure function
+
+- **`arrayItems(array, lookup)`** in `src/shared/arrays.ts` returns the items: `{ index, entity, x, y, z, rotation }[]`, skipped ones left out, rounded to 2 decimals. `lookup` finds a followed node (10.3). It's pure, cached per array object (and the target object), and unit-tested per layout:
+  - **path:** samples the path (`polyline`'s sampling, curves included), measures it, and places items by `place`. An item's `y` is the path's height there.
+  - **circle:** `count` items from `start` over `sweep`, at `y`.
+  - **grid:** `columns × rows × layers` around the center, turned by `rotation`, with `stagger`.
+  - **scatter (10.2).**
+- **Random numbers per item:** each item's noise and entity choice come from a hash of `(seed, index, channel)`, not from one running sequence, so adding items to a path doesn't reshuffle the ones already there. Scatter (10.2) is the exception: its positions come from one seeded stream, and a larger count keeps the earlier items and adds more.
+- **The entity of an item** is chosen by weight from the hash. With one entity there's nothing to choose.
+
+### Expanding: items are instances, the array is transparent
+
+- **`expandArray(array, lookup)`** in `src/shared/entities.ts` turns each item into what `expandInstance` returns for an instance with that entity, place and turn: a virtual group `array_3/7` holding the entity's shapes (`array_3/7/box_2`). `ownerOf` already maps anything with a slash to what's before the first one, so a hit on any part selects the array, and `isVirtual` needs no change.
+- **The array adds no level of its own.** Each item's virtual group has the **array's** `parent`, as if the items were instances placed directly where the array is. That matters for holes: an item's hole cuts what's directly in the array's group and the groups beside it, exactly as an instance's does. With the array as a level in between, the window items in the tower group would cut nothing in the tower (by the rule in `holes.ts`, a hole in G with parent P reaches what's directly in P and the groups beside it, not what's directly in P's parent).
+- **`expandNodes` and `expandShapes`** expand arrays too. They take the scene's nodes, so a following array can find its target. Everything that already goes through them (drawing, picking, the marquee, holes, bounds, surface and elevation snapping, floor-follow, captures) gets arrays for free.
+- **Missing entities:** an item of a missing entity is the same small red block as an instance's.
+
+### Geometry
+
+- **Bounds** of an array are its items' bounds. An array with no items (every one skipped) has its layout's bounds: the path, the circle, the grid's corners or the area.
+- **Move** moves the layout: a path's points, a circle's or grid's center, a scatter's circle or area. **Rotate** turns the layout around the pivot and adds to `rotation` for circles and scatters (their items' facing turns with them); a path's points and a grid's center and `rotation` turn as shapes do. **Mirror** mirrors the layout and mirrors `rotation` as an instance's (08), and doesn't flip the entities.
+- Each of these is one case in `moveShape`, `rotateShape` and `mirrorShape` (`geometry.ts`), like every shape type's. An array is a `Shape` in the types, as instances and notes are.
+- An array has no scale handles. Its size comes from its layout's fields.
+
+### The Array button
+
+- **In an instance's inspector,** next to Edit entity and Detach: **Array**. It replaces the instance with an array, as one step (`Array instance_3`):
+  - its one entity is the instance's, its `name` and `parent` are the instance's, and it becomes the selection;
+  - the layout is a **path** from the instance's point along its local +x, 4 items at 1.5 × the entity's width, `facing: along`, so item 0 is exactly where the instance was and turned the same way.
+- **The agent** draws arrays directly with `draw_shapes` (§8), and removes the instance itself if it wants to.
+- **Refused:** Make entity with an array in the selection (like instances); Array in Edit entity mode (a definition can't hold instances).
+
+### The array's inspector section
+
+- **Entities:** the entity (a picker, like an instance's swap). With several (10.2), a list.
+- **Layout:** Path · Circle · Grid · Scatter. Switching keeps the array's place: the new layout starts around item 0's spot, with sizes from the entity (its width).
+  - **Path:** Spacing / Count / Corners / Midpoints, the value for spacing or count, Closed, and **Edit points** (the path's points, as a line's).
+  - **Circle:** radius, count, start, sweep.
+  - **Grid:** columns, rows, layers, spacing x / z / y, stagger.
+- **Facing** (the choices that make sense for the layout), and **Turn** (`rotation`).
+- **`38 items · 2 skipped`**, read-only.
+- **Actions:** **Edit entity** (the entity's definition, as for an instance), **Detach**.
+
+### Editing its path
+
+- Double-click a path array (or **Edit points**) and its path shows as a thin dashed line with the usual point squares and handles (`points.ts`, open or closed): drag, add, delete, corner ↔ smooth, each edit one step. The items move live during the drag, as a free-form's outline does.
+- A selected array always shows its layout faintly: the path, the circle, the grid's outline, the area.
+
+### Detach
+
+- **Detach** (inspector; `detach_instances { ids }` with array IDs) replaces an array with a group of plain instances where its items were, with new IDs, named after the array (else `array of merlon`), in the array's place in the tree. One step. Skipped items aren't made.
+- Detaching an instance still gives a group of shapes, so an array is two Detaches from plain shapes.
+
+### The rest of the editor
+
+- **The outliner:** a repeat icon, the array's name or else `array of merlon`, and its item count. No children.
+- **Selection info:** `battlements (array_2) · 38 × merlon · 45 × 30 × 0.8`.
+- **Picking:** any part of any item selects the array. Hover and selection light up every item.
+- **The gizmo:** move and the yaw ring, as for an instance.
+- **Alt-drag, copy, paste and Alt+J** copy the array as a node (§6 for following arrays).
+- **Hidden, locked, isolated:** as any node; a hidden array's holes cut nothing.
+
+---
+
+## 5. Scatter, noise and mixed entities (10.2)
+
+### Scatter
+
+- **In a circle** (`x, z, radius`) or **in an area** (`area`: a closed outline of `FootPoint`s, a free-form's). The inspector's Scatter has **Circle** and **Area**, the two ways of scattering Orlando asked for: Area starts as a rectangle around the circle's bounds, and **Edit points** reshapes it exactly like a free-form (curves included).
+- **Placement:** dart throwing from the seeded stream: candidates are drawn in the circle or the area's bounds, kept when inside the area and at least `minDistance` from every kept item, until there are `count` items or the attempts run out (30 × count). A result, and the inspector, say `52 of 60 fit: lower minDistance or grow the area`. Inside means inside the outline's samples (`pointInPolygon`), so a curved area works.
+- **`minDistance`** defaults to the largest entity's width, so trees don't touch.
+- **`y`** is the scatter's height. There's no settling on terrain (§2 Out).
+
+### Noise
+
+- **`jitter`** (meters): each item moves by a random offset inside a disc of that radius, on the ground. On a scatter it's allowed but rarely needed.
+- **`turnJitter`** (degrees): each item turns by a random amount in ± that range, after its facing and `rotation`. `facing: random` is the same as a full 360° turn jitter.
+- **Reroll** in the inspector (a dice button next to the seed) sets a new seed: one step (`Reroll array_4`). The seed is also a number field, so a look can be kept or shared.
+
+### Mixed entities
+
+- **The inspector's Entities list:** one row per entity, each with its entity picker, a weight (a number, shown also as a share: `5 · 56%`) and a remove button; **+ Entity** adds a row with the first entity's. At least one row stays.
+- **Choosing:** each item's entity comes from its hash and the weights. Changing a weight changes some items' entities, and the rest stay (the same hash, the same thresholds on either side).
+- **Edit entity** with several entities: a pencil on each row.
+- **Holes in mixed arrays** work as in one-entity arrays: each item is its own entity's instance.
+
+---
+
+## 6. Following an outline (10.3)
+
+### What can be followed
+
+- **A closed shape** (box, cylinder, free-form, room or volume): its outline, at its **top** (`y + height`; a tapered volume's top ring) or its **bottom** (`y`), moved **inward** by `offset`. A room's default offset is half its wall, so items stand on the wall's centerline; a volume's is 0 (on its edge). Tilted shapes can't be followed (refused, with a hint to use points).
+- **A ramp:** its centerline at the surface's height, `offset` meters to the right of travel (a post every 2 m along both edges is two arrays, `offset` ± width / 2). A stair's steps don't matter: items stand at the ramp's height there.
+- **A line:** its path, with each point's own y (a route of torches, drawn with the Line tool and edited as a line).
+- A following path array has no `points` of its own. Its layout is `{ type: "path", along: { id, at?, offset? }, place, spacing | count }`; a closed shape's outline is a closed path.
+
+### Corners and midpoints
+
+- `place: "corners"` puts an item on every point of the path: a pillar on every corner of a room, a post at every bend of a line. On a closed shape these are its outline's corners (a box's 4, a cylinder's `sides`, a free-form's points; a smooth cylinder has none, and a result says so).
+- `place: "midpoints"` puts one at the middle of every edge: a window on every face of the tower, facing `along` the wall.
+
+### Live, and what can break it
+
+- **Items follow the target on every change,** because they're derived from it: resizing the keep, reshaping a free-form, raising a ramp. Nothing is stored in the array when the target changes, and the target's step is the only step.
+- **The target is removed** (`remove_nodes`, cut, Make entity with it in the selection): the same step **unlinks** the array (its path becomes points, a copy of the target's path as it was), and the result says so. Undo brings both back.
+- **The target is converted** to a free-form (`update_nodes { type: "freeform" }`, a new ID): the same step points the array at the new ID.
+- **Copying:** when the target is copied with the array (a group of the keep and its battlements), the copy follows the copied target (IDs remapped like `parent`s in `copyNodes`). An array copied **without** its target is unlinked in the copy, so an Alt-dragged copy moves with the cursor. Paste in another scene: the same, since the target isn't there.
+- **Moving:** a following array has no place of its own. Moving, rotating or mirroring it alone is refused (`array_2 follows box_5: move box_5, or unlink it first`); in a group move or turn, it just follows its target when the target moves too, and is left as is when it doesn't (the result says so). The gizmo on a following array has no move or yaw ring, only a **follows box_5** badge.
+- **In Edit entity mode**, nothing: arrays aren't in definitions.
+- **A target that can't be followed any more** (it became tilted, or a scene was edited by hand): the array draws nothing and `get_scene` warns, as for an instance of a missing entity.
+
+### The editor
+
+- **Follow** in a path array's section: press it, then click a shape (a room's wall top picks `top`, its floor `bottom`). The shape lights up while hovered. `Esc` cancels.
+- While following, the section shows `along box_5 · top · offset 0.1` with **At** (top / bottom), **Offset** and **Unlink**.
+- Selecting the target shows which arrays follow it (a small line in its inspector: `followed by array_2`).
+
+---
+
+## 7. Editing in the view (10.4)
+
+### Handles
+
+The array's edit mode (double-click, or **Edit** in its section; `Esc` leaves) shows its layout's handles, in the style of 07B's wall, taper and bevel handles:
+- **Circle:** the center (drag on the ground; snaps to shape centers and to the grid) and a radius handle on the circle at `start` (drag to change the radius, `Shift` to change `start` instead).
+- **Scatter circle:** its center and radius, the same way. **Scatter area:** its points (Edit points).
+- **Grid:** the center, and one handle at the far corner item whose drag changes spacing x and z together (`Shift` keeps them equal).
+- **Path:** its points (§4). A following path has no handles: its target's are the ones to use.
+- Each drag is one step, with a live label (`r 9.4 m`, `spacing 3 × 3 m`).
+
+### Items and skipping
+
+- In edit mode each item shows a dot at its pivot; skipped ones a hollow dot. Click or marquee dots to select them.
+- **`Delete`** skips the selected items (one step, `Skip 2 items in array_2`); on hollow dots it restores them. The inspector has **Restore all** while any are skipped.
+- **Indices are the layout's order.** Changing the count or the path's length can make a skip land on a different item: the inspector says `2 skipped` and the dots show where, so it can be checked. The guide says the same to the agent: skip last.
+
+---
+
+## 8. Instanced drawing (10.5)
+
+### How arrays are drawn
+
+- **Every item of one entity has the same geometry,** placed differently. For each array, each of its entities, and each part of that entity's definition, the view builds that part's meshes once in the entity's frame (the body, a room's floor, the edges), **cut by the definition's own holes**, and draws them as one `InstancedMesh` with a matrix per item. Edges are one `LineSegments` per array and edge material, merged in world space (line segments can't be instanced cheaply), rebuilt when the array changes.
+- **Items cut by holes outside their entity** (a door in the scene through a row of merlons, a window array through an arcade array) differ from the rest. Those items are drawn one by one, the way instances are today, and the others stay instanced. `cutters` already says which shapes are cut by what.
+- **Holes in items still cut the scene's shapes** (the windows cut the tower): that's the walls' own meshes, unchanged.
+- **Hover and selection** swap the material of the whole `InstancedMesh`, as an array lights up as one.
+- **Shadows:** an `InstancedMesh` casts and receives them as one draw each.
+- **Captures** (`capture.tsx`, shots and `render_view`) draw arrays with the same component.
+- **Picking** stays on the data (`pick.ts`) against each item's hit meshes, bounds first. Measured with a 500-item array; if the first pick after an edit is slow, hit meshes are built lazily per item on a bounds hit.
+
+### The stats readout
+
+- A view bar toggle (off by default, remembered per viewer): **frame time** (a rolling average), **draw calls** and **triangles** (`gl.info.render`), and **shapes** (after expansion). Thinking-05's step 1, needed here to check step 3, and the performance phase's starting tool.
+- **The target:** an array of 400 single-box items adds at most 4 draw calls plus its shadows (body, edges, and the shadow pass), against about 1,600 as separate shapes. Before and after numbers are recorded in §13.
+
+---
+
+## 9. MCP surface
+
+| Tool | Change |
+|---|---|
+| `draw_shapes` | type `array`: `entity` (one) or `entities` (`[{ entity, weight? }]`), `layout` (`{ type: "path" \| "circle" \| "grid" \| "scatter", ... }` as in §3), `facing?`, `rotation?`, `jitter?`, `turnJitter?`, `seed?`, `skip?`, `name?`, `parent?`. Refused for an unknown entity, a following target that can't be followed, and in Edit entity mode. The result gives the ID, the item count and any dropped or unfit items. |
+| `update_nodes` | for arrays: `entities`, `layout` (fields merge into the layout of the same `type`; a different `type` replaces it), `facing`, `rotation`, `jitter`, `turnJitter`, `seed`, `skip`, `name`, `parent`, `locked`, `hidden`. `layout: { along: null }` unlinks. |
+| `detach_instances` | takes array IDs too (an array becomes a group of instances). Its description says so. |
+| `move_nodes`, `rotate_nodes`, `mirror_nodes`, `remove_nodes`, `group_nodes`, `ungroup` | handle arrays (§4, §6). `move_nodes` with `copy` copies an array as a node. |
+| `get_scene` | an array is one line in the outline, in full (its layout, and a path's points), with `items` (the count) and `bounds`; counts gain `arrays (N items)`; warnings for arrays that draw nothing. The glossary lists the entities an array uses. |
+| `find_nodes` | `entity` also finds arrays that use it; `type: "array"`. |
+| `render_view` | an array is one label, like an instance. |
+| `get_guide` | a new topic `arrays` (§9.1); `entities` mentions arrays; `review` changes its battlements advice. |
+
+### 9.1 What the agent is told
+
+- **The core instructions** gain one line: *"To repeat an entity (battlements, windows round a tower, pillars in a hall, a forest), use one array (draw_shapes type: array; get_guide arrays), not copies: it stays one node, follows the shape it's on, and draws cheaply."*
+- **The `arrays` topic** covers: the four layouts and their fields; facing and the +x convention; spacing that fits; following (top, bottom, offset, corners, midpoints) and what unlinks it; the seed; skip last; Detach when one item must differ; and a worked example (battlements on a keep, windows on a 10-sided tower).
+- **The default design guide's** detail rule becomes: *"Decoration is one shape or one array: battlements as an array of a merlon entity along the wall top, a roof as one cone. A detail repeated many times is an entity, placed by an array."* Projects created before keep their own guide (it's their file): Orlando can update that project's guide by hand.
+- **The `review` topic's** blockout advice matches.
+- **The server version goes up one patch per increment,** from 0.0.20. **Restart the server and reconnect with `/mcp`** after each.
+
+### Editor ↔ server protocol
+
+```
+client → server  { type: "add_shapes", shapes: [ShapeInput] }      // gains array
+client → server  { type: "make_array", id }                         // the Array button: an instance becomes an array
+client → server  { type: "detach_instances", ids }                  // takes arrays too
+client → server  { type: "update_nodes", updates: [NodeUpdate] }    // gains the array fields (reroll, skip, follow, unlink)
+```
+
+- **CLAUDE.md:** "Working with the scene" gains arrays (what they are, following, Detach, the `arrays` topic, and `draw_shapes` type `array` in the tool list). "Code layout" gains `src/shared/arrays.ts` and the instanced array component. The paragraph about the next phase points at 10.
+
+---
+
+## 10. Increments
+
+Each increment is checked before the next one starts: typecheck, tests, a scripted check on a spare port with a scratch `DATA_DIR` where it can be scripted, and Orlando's browser checklist.
+
+### 10.1 — The array: path, circle and grid
+
+- `ArrayNode`, its schemas, `nextId.array`, counts; `src/shared/arrays.ts` (`arrayItems` for path with its own points, circle and grid; the per-item hash); `expandArray` and arrays in `expandNodes` / `expandShapes`, transparent for holes; bounds, move, rotate, mirror; copy and paste.
+- The store: add, update, remove, Array (`make_array`), Detach. MCP: `draw_shapes`, `update_nodes`, `detach_instances`, the outline, `find_nodes`, counts, the `arrays` topic and the core line.
+- The editor: drawing and picking through expansion, the outliner row, the selection info, the gizmo, the Array button, the array's inspector section, and Edit points on a path.
+- **Checks:** unit tests for each layout (item positions and facing, spacing that fits, both ends on an open path, none repeated on a closed one, the 500 cap), for holes (an item's hole in the tower group cuts the tower's walls; a scene hole cuts an item), for move / rotate / mirror, and for Detach. Scripted: an agent draws a circle of windows in a tower group and `get_scene` shows one line.
+- **Browser:** the tower demo (§1 steps 1–2, with the center set in the inspector: the handle is 10.4).
+
+### 10.2 — Scatter, noise and mixed entities
+
+- Scatter (circle and area), dart throwing with `minDistance`, `jitter`, `turnJitter`, Reroll, several entities with weights, and the inspector's Entities list.
+- **Checks:** the same seed gives the same items; a larger count keeps the earlier scatter items; a larger path keeps its items' noise; weights over 1,000 items land near their shares; an area too small reports how many fit.
+- **Browser:** the forest (§1 step 5).
+
+### 10.3 — Following an outline
+
+- `along` for closed shapes (top, bottom, offset), ramps and lines; corners and midpoints; unlink on remove, retarget on convert, remapping on copy, unlink on a copy without the target; refusing to move a following array alone; Follow, At, Offset and Unlink in the inspector; `followed by` on the target.
+- The guide and design guide changes (§9.1).
+- **Checks:** battlements on a box room, a 10-sided cylinder room, a curved free-form and a tapered volume land on the wall's centerline or the top ring; resizing the target changes the items with no step of the array's own; remove → unlinked, undo → following again; a copied keep's battlements follow the copy. Scripted: the agent's battlements call from §1 step 3.
+- **Browser:** §1 steps 3–4 (without skipping), and Follow by clicking a wall top.
+
+### 10.4 — Editing in the view
+
+- The edit mode, the circle / scatter / grid handles, snapping the center to shape centers, item dots, skipping and restoring.
+- **Browser:** the tower's circle set by dragging its center onto the tower, and the gate's merlons skipped (§1 steps 2 and 4 in full).
+
+### 10.5 — Instanced drawing and the stats readout
+
+- The instanced array component (bodies, floors, merged edges), the fallback for items cut from outside, hover and selection, shadows, captures; the stats readout.
+- **Checks:** the view and a capture of the same scene show the same items; numbers before and after in §13: the 09 castle with its ~190 battlement boxes replaced by one array, and a 400-tree forest.
+- **Browser:** §1 step 6; a door hole through one merlon still shows the cut.
+
+---
+
+## 11. Acceptance test (end of phase)
+
+1. **The goal's demo (§1),** end to end, in the browser, with a fresh agent session.
+2. **The castle from 09,** asked of the agent: *"Replace the battlement blocks with one array."* It makes a merlon entity, removes the blocks, and draws one following array per wall. Recorded in §13: the outline's size before and after, and the draw calls before and after.
+3. **Holes through arrays both ways:** a window array cuts its tower, and a door in the scene cuts the one merlon over it.
+4. **Old projects open unchanged,** with no arrays.
+
+---
+
+## 12. Decisions
+
+Decided with Orlando:
+
+1. **An array is a new node** (`array_N`), not a field on an instance.
+2. **It's made from an instance,** with the **Array** button in the instance's inspector: that's the natural way to start one when editing. (The agent draws arrays directly.)
+3. **Arrays repeat instances only.** To array a plain shape, make it an entity first.
+4. **Following an outline is in this phase:** a path layout can follow a closed shape, a ramp or a line, live.
+5. **Several entities per array, with weights,** set in the inspector's Entities list. Borderline complicated, allowed.
+6. **Arrays are drawn with `InstancedMesh`** in this phase, not left to the performance phase.
+7. **The layouts are path, circle, grid and scatter;** scatter is in a circle or in an area outline, which is edited with the free-form tools, as the path is with the line tools.
+8. **Noise is a position jitter and a turn jitter.**
+
+Adopted as recommended (say if any should change):
+
+9. **Stacking is a vertical path, or a grid's layers,** not a layout of its own.
+10. **The array adds no level for holes:** its items behave as instances placed where the array is.
+11. **Randomness is seeded and per item,** so an array looks the same on every load, and adding items doesn't reshuffle the others. Reroll picks a new seed.
+12. **Spacing fits the path** (evenly, both ends on an open path), and `count` is there when the number matters more.
+13. **Items are skipped by index, never edited one by one.** Anything more is Detach.
+14. **Detach turns an array into a group of instances** (`detach_instances` takes arrays), and removing a followed shape unlinks its arrays in the same step.
+15. **A following array has no place of its own:** moving it alone is refused; it goes where its target goes.
+16. **Facing turns the entity's local +x** along a path or circle (`along`, `tangent`), or away from or toward a circle's center (`out`, `in`).
+17. **500 items per array, 8 entities per array.**
+18. **No settling on terrain, no scale noise, no nesting** in this phase.
+19. **A stats readout comes with 10.5,** to measure instancing, and stays for the performance phase.
+
+---
+
+## 13. Progress
+
+Nothing built yet.
