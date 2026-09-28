@@ -1,0 +1,26 @@
+the whole Idea of this tool is to have semantics around the
+geometry we have on each scenes. what I mean by semantics is: 
+
+- I built a series of spikes group then together and call then 
+"poison" on the description for the entity I write "poisonous goo
+that hurts the player if they walk through it, can be clean up with the @fish ability" and now when we show this to the LLM it is not 
+the individual geometric information of the blocks I made into the spikes that represent the poison, the agent gets an entity named "poison" at position x,y it knows the size and the description because it has access to the entities directory. 
+- I create a series of trees, a small one, a bigger one and a tall tree. trees might be scalable by the player and all of this is described on then. I then ask the agent to build me a forest surrounding the tower, and one tall tree should allow me to climb and enter the window at the top (the window is called "entry_window") 
+
+
+this idea expands into how we show the hierarchy of a scene, again, while the geometry information is important for the specifics, when we look at a scene with the full castle of my game, I care about the main areas, the "lobby", "east wing" internal garden. I think just showing raw shapes information every time is wastefull we can show the top level of the hierarchy and allow an agent to look up specifics. and/or have the option for then to pull the full hiearchy if thats what they need. 
+
+what else can the agent know about? 
+
+skills, the things the player can do as descriptions, on my case the player can do telekinesis to move objects around, throw a fireball or cook certain things on a magic circle, being able to describe those skills and maybe give then tags? so the spaces designed take into account what the player can do. 
+
+at a technical tool what does this mean? 
+
+- we need to create project wide skills. with names, descriptions and tags (tags are also project wide and can be on entities to)
+- we need to be able to create entities (like unity prefabs)
+- we need to pass the project context and current scene context to the agent. 
+- we need to explain rules to the agent, for example that they can draw lines to explain a critical path or other ideas, that there is no need to calculate geometry for windows, they can just cut holes 
+- we need a new tool for "notes" post-it like notes that can live on the actual space so when an agent can get all notes from a scene and if one says (in this area we need to slow down the player) then the agent can act on it. 
+- on the descriptions for notes or entities we should be able to reference tags or skills, so we can show an agent that they are related. (a note says, "in this area we need a @telekinesis challenge)
+
+and all of this should be done in a way that saves tokens. 

@@ -1,0 +1,546 @@
+# 08 — Semantics and Entities
+
+> **For the agent reading this:** Read `plans/07-geometry-tools` and `plans/07B-geometry-refinements` first (the mesh, holes and their scope rule, ramps, the inspector, isolate, lock and hide). The idea came from `plans/thinking-03-semantics-and-entities`, with older notes in `plans/thinking-01-entities`. This phase gives the geometry meaning, and it makes the agent read less to understand more. It adds:
+> - **an outline** as `get_scene`'s default: the top level of the tree with names, descriptions and counts, so the agent zooms in where it needs to, plus `find_nodes` and a short on-demand guide instead of one long set of instructions;
+> - **the project library:** project-wide **tags** (`#climbable`) and **skills** (`@telekinesis`), both with descriptions, and the project's **design guide**: a markdown file of goals, rules, common failures and the game's facts, which every project gets a default of. Descriptions and notes can reference tags and skills;
+> - **notes:** post-its pinned to a point in the scene, with an open / done status, that the agent can read and act on;
+> - **entities:** real prefabs. A definition is a small scene with its own undo history, an **instance** in a scene has only a position, a rotation and a name, and editing a definition changes every instance in every scene. An instance behaves like a group for holes.
+>
+> The review loop (the agent rendering the scene to check its own work) is phase 09, and the array tool is phase 10. The work is split into small increments (§10). Each one ends with the human ↔ agent loop still working and a browser checklist for Orlando. Add this phase's terms to `GLOSSARY.md` (marked "from 08") as they land. Log progress in a §13 at the end of this file, as 07 did.
+
+---
+
+## 1. Goal
+
+One demo, end to end:
+
+1. Orlando opens the **Library** and adds the tags `#climbable` ("the player can climb it") and `#light` ("small enough to lift"). He adds the skills `@telekinesis` ("moves objects tagged #light") and `@fish` ("a water-spirit fish that eats goo"). In the **design guide**, which starts from the default, he fills in his game's facts ("Player: 1.8 m tall, jumps 1.2 m up and 3 m across") and adds a rule: "Draw the critical path as a red dashed line."
+2. He builds spikes from a few tapered boxes, selects them, and presses **Make entity**. He names it `poison`, with the description "poisonous goo that hurts the player if they walk through it; @fish can clean it up". The spikes become one instance of `poison`, and he Alt-drags two more.
+3. He makes three tree entities: `tree small`, `tree big`, and `tree tall` (tagged `#climbable`). He double-clicks a tall tree to **edit the entity**, makes the trunk taller and leaves. Every tall tree in every scene is taller. `⌘Z` inside the entity undid only the entity's steps.
+4. He places a `window` entity (a lying cylinder hole) into the tower's group and names it `entry_window`. It cuts the tower's wall like any hole in a group.
+5. He clicks with the **Note** tool in the courtyard, sets the label `TK`, and writes "we need a @telekinesis challenge here". A small flag with "TK" stands there.
+6. He asks the agent: *"Build a forest around the tower. One tall tree should let me climb in through entry_window."* The agent reads the outline (the tower group, the instances, the open note, and a glossary of just the skills, tags and entities it mentions). It finds `entry_window` with `find_nodes` and places tree instances. It puts a tall tree whose top reaches the window, then draws the critical path as a red dashed line, following the design guide.
+7. He asks: *"Act on the open notes."* The agent builds a crate puzzle in the courtyard from `#light` crates, then marks the note done.
+8. On his full castle, `get_scene` returns `lobby`, `east wing` and `internal garden`, with their descriptions, bounds and counts, in a fraction of what the full scene takes.
+
+---
+
+## 2. Scope
+
+### In
+
+- **The outline (08.1):**
+  - `get_scene` returns one level of the tree by default, with groups summarized, and takes `root`, `depth` and `full`;
+  - `find_nodes`;
+  - compact JSON;
+  - a `description` on groups;
+  - the MCP instructions cut to a core, with `get_guide(topic)` for the details.
+- **The library (08.2):**
+  - tags and skills, with names, descriptions and (for skills) tags;
+  - the design guide, in `rules/design-guide.md`, with a default for every project;
+  - `tags` on groups and shapes;
+  - `@skill` and `#tag` references in any description or note, with autocomplete and highlighting in the editor;
+  - aliases on rename;
+  - its own undo history;
+  - the Library panel;
+  - `get_library` and `update_library`.
+- **Notes (08.3):**
+  - a new node type (`note_N`): a point, text, an optional short label (a flag), a color, and a status of open or done;
+  - the Note tool (`N`);
+  - open notes in every outline.
+- **Entities (08.4 and 08.5):**
+  - entity definitions stored like scenes, with their own history;
+  - instances (`instance_N`);
+  - Make entity, placing instances, swapping an instance's entity, and Detach;
+  - holes through instances;
+  - Edit entity mode;
+  - a default `human` entity in every project;
+  - `make_entity` and `detach_instances`.
+
+### Out (deliberately deferred or dropped)
+
+- **The review loop** (`render_view`: the agent looks at renders of its own work): phase 09. See §14.
+- **The array tool** (circle, grid, stack, noise): phase 10.
+- **Validators** (reachability, softlocks, from plan 00): later. The walk render in 09 gives a visual check first.
+- **Per-instance changes** beyond position, rotation and name: no scale, color or description on an instance. A different size means a different entity.
+- **Nested prefabs:** a definition can't contain instances.
+- **Mirrored instances:** mirroring moves an instance and mirrors its rotation, but doesn't flip the entity (§7).
+- **Notes with an area:** a note is a point, and a radius goes in its text.
+- **Notes inside entity definitions.**
+- **A library shared across projects.**
+- **A text reference to an entity** (a third sigil). An entity's name in plain text is enough for now.
+- **The agent opening documents.** The human still opens scenes and entities. The agent makes entities from shapes it draws (`make_entity`) and edits a definition only while the human has it open.
+
+---
+
+## 3. Naming and data
+
+| type | ID | fields |
+|---|---|---|
+| `group` | `group_N` | new: `description?`, `tags?` |
+| `box`, `cylinder`, `freeform`, `ramp` | unchanged | new: `tags?` |
+| `line` | `line_N` | unchanged (a line is an annotation, and it has no tags) |
+| `note` | `note_N` | new: `x`, `y`, `z`, `text`, `label?`, `color`, `status`, `name?`, `parent?`, `locked?`, `hidden?`, `createdBy` |
+| `instance` | `instance_N` | new: `entity`, `x`, `y`, `z`, `rotation`, `name?`, `parent?`, `locked?`, `hidden?`, `createdBy` |
+
+- **Every new field is optional,** or has a default where it's required. Old scenes load unchanged.
+- **ID counters:** `nextId` gains `note` and `instance`, which default to 1.
+- **Counts:** `3 rooms · 2 volumes · 2 holes · 1 ramp · 4 instances · 1 note · 1 group`, in the info-label and in `get_scene`. A done note isn't counted.
+- **Tags** are library names (`"climbable"`, stored without the `#`). They're kept in the order given, without duplicates.
+
+### The data folder
+
+```
+projects/<project>/
+  project.json               name, description, createdAt           (unchanged)
+  library.json               seq, tags, skills, seeded               (new, 08.2)
+  library-history.jsonl      the library's history log               (new, 08.2)
+  rules/design-guide.md      the design guide                        (new, 08.2)
+  entities/<entity>/         a definition, laid out like a scene      (08.4)
+    entity.json              name, description, tags, createdAt, seq, nextId, nodes
+    history.jsonl            its own history log
+    editor.json              its camera and selection
+  scenes/<scene>/...         unchanged
+```
+
+- **`entities/` and `rules/` are folders that already exist** empty in every project (plan 04 reserved `rules/` for the design guide). `abilities/` is no longer created, because skills live in `library.json`. Existing empty `abilities/` folders are left alone. Remove it from `SEMANTIC_FOLDERS`.
+- **A definition's ID** is a slug of its name at creation (`tree-tall`), like a scene's. Renaming changes only its `name`, so instances never break.
+- **A project with no `library.json`** reads as an empty library.
+
+---
+
+## 4. The outline, find and the guide (08.1)
+
+This increment builds the agent's reading side. It's the token groundwork, like 07.1 was the mesh groundwork, and it has almost no visible change in the editor.
+
+### Compact JSON
+
+- Every tool result becomes compact JSON (today `json()` indents by 2). That alone cuts a large scene's output by roughly a third. Measure it (§11).
+
+### `get_scene` returns an outline
+
+- **The input:** `get_scene({ root?, depth?, full? })`.
+  - `root` is a group or instance ID, and defaults to the top level.
+  - `depth` is how many levels of groups to open, and defaults to 1.
+  - `full: true` returns every node in full, as today.
+- **What it returns:**
+  - **The header:**
+    - the project (id, name, description and, from 08.2, `guide`: the design guide's size and when it last changed, as a reminder to read it with `get_guide design`, not its text);
+    - the scene;
+    - the compass, the view and the selection;
+    - `counts`, as one string;
+    - `editing` (from 08.5: which entity is open, when one is).
+  - **`nodes`:** the children of `root`, down to `depth`:
+    - a **group** at the edge of the depth is a summary: `id`, `name`, `description`, `tags`, `bounds` and `contains` (counts of what's under it, such as `"4 rooms · 6 holes · 2 groups"`);
+    - a group within the depth is listed with its children;
+    - **every other node is in full.** Shapes are the detail the agent asked for, and instances and notes are small.
+  - **`selected`:** the selected nodes, always in full, wherever they are in the tree ("this" must never need a second call).
+  - **`notes`:** every open note in the scene, wherever it is (from 08.3). Notes are work items, so they're never hidden by the depth.
+  - **`glossary`:** only the tags, skills and entities that appear in what was returned, each with its description. An entity also has its `size` (from 08.2 and 08.4).
+- **A small scene comes back in full:** with 40 nodes or fewer, `get_scene` returns everything, because zooming would cost more than it saves. The threshold is a constant, to tune.
+- **`view.isolated`** doesn't change the default root. The instructions say to pass it as `root` when the human is working inside it.
+
+Example output from a large castle (shortened):
+
+```json
+{"project":{"id":"castle","name":"Castle","description":"…","guide":"design guide, 4.2 kB, changed 2026-10-02: get_guide design"},
+ "scene":{"id":"keep","name":"Keep"},"compass":"north is -z, east is +x","view":{…},"selection":["instance_4"],
+ "counts":"38 rooms · 12 volumes · 20 holes · 3 ramps · 9 lines · 41 instances · 2 notes · 14 groups",
+ "nodes":[
+  {"id":"group_1","type":"group","name":"lobby","description":"entry hall, safe zone","tags":["safe"],"bounds":{…},"contains":"4 rooms · 6 holes · 2 groups"},
+  {"id":"group_7","type":"group","name":"east wing","bounds":{…},"contains":"11 rooms · 9 holes · 17 instances · 5 groups"},
+  {"id":"instance_4","type":"instance","entity":"poison","name":"goo pit","x":4,"y":0,"z":-3,"rotation":0,"bounds":{…}}],
+ "selected":[…],
+ "notes":[{"id":"note_2","label":"TK","text":"we need a @telekinesis challenge here","x":12,"y":0,"z":-20,"parent":"group_9","status":"open"}],
+ "glossary":{"skills":{"telekinesis":"moves objects tagged #light"},"tags":{"safe":"no enemies","light":"small enough to lift"},
+  "entities":{"poison":{"description":"poisonous goo … @fish can clean it up","tags":[],"size":[2,0.5,2]}}}}
+```
+
+### `find_nodes`
+
+- **The input:** `find_nodes({ name?, tag?, entity?, type?, kind?, status?, under?, near? })`. The filters combine with AND.
+  - `name` is a case-insensitive substring.
+  - `tag` also matches instances whose entity has the tag.
+  - `under` is a group ID.
+  - `near` is `{ x, z, radius }`.
+- **It returns** one compact line per match: `id`, `type`, `name`, `path` (for example `"castle › east wing"`) and `bounds`. At most 100 matches are returned, with a count of any more.
+- **It's the way to resolve a name to an ID** (`entry_window`), instead of reading the whole scene.
+
+### Group descriptions
+
+- `description` on groups, as free text.
+  - The **inspector** shows a text area for a single selected group.
+  - The **outliner** shows the description as a tooltip.
+  - The **agent** sets it with `update_nodes { id, description }` (null removes it).
+- In 08.2 it gains reference highlighting and autocomplete.
+
+### The guide: shorter instructions
+
+- **The MCP instructions are over 9 kB, and each phase adds more.** They're cut to a core of about 4 kB:
+  - the world, the units and the compass;
+  - IDs, groups, the selection, the view, and isolate, lock and hide;
+  - the outline, and that `find_nodes` is the way to look things up;
+  - the **ways of working:**
+    - copy with `move_nodes` and mirror rather than redraw;
+    - cut holes for doors and windows, and don't compute geometry around them;
+    - draw lines for paths, routes and ideas;
+    - **read the design guide (`get_guide design`) once per session, before designing or reviewing,** and follow it;
+    - read the notes;
+  - the list of guide topics.
+- **`get_guide({ topic })`** returns one topic's detail, as it's written today:
+  - `shapes`: boxes, cylinders and free-forms;
+  - `rooms`: walls;
+  - `volumes`: taper, bevel and tilt;
+  - `holes`;
+  - `ramps`;
+  - `lines`;
+  - `groups`;
+  - `notes` (08.3);
+  - `library` (08.2);
+  - `entities` (08.4);
+  - `design`: the project's design guide (08.2, §5B). It's the only topic that differs per project.
+- **Errors and warnings point to a topic** where it helps, for example "`box_7` is a hole outside any group: it cuts nothing (see `get_guide holes`)". That way an agent that skipped the guide gets there when it matters.
+- Each tool's description keeps its own field notes, as today.
+
+---
+
+## 5. The library (08.2)
+
+### Tags and skills
+
+- **A tag** is `{ name, description? }`.
+- **A skill** is `{ name, description, tags? }`. A skill's tags link it to what it acts on: `@telekinesis` tagged `#light` tells the agent which objects matter.
+- **Names** are lowercase letters, digits, `_` and `-`, unique within their kind. A tag and a skill can share a name, because the sigil tells them apart.
+- **The design guide** is covered in its own section (§5B).
+
+### References
+
+- **In any description** (a group's, a tag's, a skill's or an entity's) **and in a note's text**, `@name` refers to a skill and `#name` to a tag.
+  - The editor **highlights** known references.
+  - An unknown one shows as a warning (dotted underline, "No skill @fsh").
+  - Typing `@` or `#` **autocompletes** from the library.
+- **The server resolves references** for the glossary. An unknown reference in text the agent writes comes back as a warning, not an error, because text is the human's scratch space too.
+- **Tags on nodes must exist in the library.**
+  - The editor's tag picker offers "Create #name". That makes a library step and then a scene step.
+  - The agent gets an error naming the missing tags, and creates them with `update_library` first.
+
+### Renaming: aliases
+
+- **Renaming a tag or skill keeps its old name as an alias.** `#climb` still resolves to `#climbable`, in text and in tag lists, in every scene. The editor shows a node's tags by their current names.
+- **Nothing in any scene or entity is rewritten.** That would edit documents that aren't open, outside their own histories, and undoing an old step there would bring the old name back anyway.
+- A new tag or skill can't take a name that's an alias of another one. Deleting it frees its aliases.
+- **Deleting a tag or skill** leaves its references unresolved, shown as warnings. Tags on nodes that point to it are dropped from outlines and the glossary, but stay stored, so undoing the delete restores them.
+
+### The library's history
+
+- **The library has its own undo history,** like a scene's but separate: `library.json` holds the state and `seq`, and `library-history.jsonl` holds the log. Its ops are `upsert`, `remove` and `rename` on tags and skills, and `set` on the design guide's text. `commands.ts`'s history is reused.
+- **Undo applies to the document you're in.**
+  - The Library panel has its own Undo and Redo buttons (with the step's label), and `⌘Z` / `⇧⌘Z` while focus is in the panel.
+  - Everywhere else, `⌘Z` is the scene's (or the entity's, in 08.5).
+
+### The Library panel
+
+- **A panel toggled from the project bar** (a book icon), docked to the right of the view, with tabs: **Entities** (08.4), **Skills**, **Tags** and **Guide**.
+- Each row shows the name, the first line of the description and a use count ("used by 12 nodes in 3 scenes", from a scan of the project's scenes, which is cheap at these sizes). Clicking a row edits it in place.
+- **The inspector** gains a **tags** field for groups and shapes: chips with an autocomplete, and "Create #name".
+
+### The agent
+
+- **`get_library({ entity? })`** returns the tags and skills, and the entity list (name, description, tags and size). With `entity`, it returns that definition's nodes, in the entity's own frame.
+- **`update_library`** takes `{ upsert?, remove?, rename?, guide? }` (`guide` replaces the whole design guide's text) and applies it as one library step. For example, `upsert` takes items like `{ kind: "skill", name, description, tags }`.
+- **`draw_shapes` and `update_nodes`** take `tags` (a full list; null removes them) and a group's `description`.
+
+### 5B. The design guide
+
+The MCP instructions and `get_guide`'s other topics say how the tools work. The design guide says what a good level is, for this game. It's modeled on `ANIMATION_GUIDE.md` in `JohnHeibel/ClaudeAnimationBase`, the inspiration in plan 00: goals, rules that serve them, the failures to check against, and a worked example.
+
+- **A markdown file,** `rules/design-guide.md`, one per project. It's edited in the Library panel's **Guide** tab (a plain text area with a preview). The agent reads it with `get_guide design`, and changes it with `update_library { guide }` only when asked.
+- **In the library's history:** editing saves after typing stops for a second, as one step (`Edit design guide`), and each step's op holds the text before and after. That's fine at a guide's size.
+- **Every project gets a default guide,** seeded like the human entity (the same `seeded` flag, so a deleted guide stays deleted). Orlando rewrites it for his game. The default is written with Orlando in 08.2, and it has these sections:
+  - **The goals** that every rule serves, for example: readable, paced, uses the player's kit, one piece.
+  - **Precedence:** the human decides what to build, and the guide decides how. If they ask for something it forbids, do what they ask. Nothing here is final: the default entities and the guide itself are a starting point.
+  - **The game's facts:** player height, jump height and distance, and ability ranges, left as blanks to fill in, never invented. Also a **size table**: the human is 1.8 m, a door is about 1 × 2.2 m, plus corridor widths and stair steps.
+  - **Principles:**
+    - model the player, the way the kit models the viewer: for each beat, what must the player notice, from where, and what leads their eye there (light, a landmark, a line of sight);
+    - telegraph before you gate;
+    - loops back to the start;
+    - restraint: one well-used ability beats three.
+  - **Workflow:** for a big request, write a short brief first (the beats in order, what the player needs at each, the skills used, the notes it addresses), and show it to the human before drawing. It can be sketched as notes and lines. Offer structurally distinct options, not three versions of one idea.
+  - **Common failures:**
+    - overstuffed rooms, and every room the same size;
+    - jumps beyond the player's reach;
+    - gates with no hint;
+    - dead ends with no payoff;
+    - walls with no doors;
+    - generic symmetry.
+  - **A worked example:** plan 00's three-room scenario, and why the garden's cutscene trigger goes at its only entrance.
+  - **House rules,** for example: "Draw the critical path as a red dashed line."
+- **The outline carries a pointer, not the text** (§4). The core instructions say to read the guide once per session before designing or reviewing.
+
+---
+
+## 6. Notes (08.3)
+
+### Data
+
+- **`Note`:** `{ id, type: "note", x, y, z, text, label?, color, status, name?, parent?, locked?, hidden?, createdBy }`.
+  - `x, y, z` is the point it's pinned to (y is the surface it stands on).
+  - `label` is up to 3 characters, shown on the flag (`TK`). Without one, the note shows as a plain pin.
+  - `color` is a palette key, and defaults to yellow.
+  - `status` is `open` (the default) or `done`.
+- **A note can be in a group,** so it moves with its room. Moving, rotating and mirroring change its point, as for a line's points.
+
+### Editor
+
+- **The Note tool (`N`):** a click lands on the surface under the cursor (07B.4's rule), then the inspector opens with the text field focused.
+- **Rendering:**
+  - a short pole with a flag facing the camera (always readable, whatever the yaw), in the note's color, with the label;
+  - a done note is gray and half transparent;
+  - **Show notes** in the view bar hides them all.
+  - The first line of the text shows on hover.
+- **The inspector:** the text (with reference highlighting), the label, the color, and a **Done** checkbox.
+- **The outliner:** a note icon, and the note's name or the start of its text.
+- **Selection info:** `note (note_2) · TK · open · by agent`.
+
+### The agent
+
+- **`draw_shapes`** takes `type: "note"` (`x`, `z`, `text` required; `y` defaults to 0). **`update_nodes`** sets `text`, `label`, `color` and `status`.
+- **Open notes are in every outline** (§4). `find_nodes { type: "note", status: "done" }` finds the rest.
+- **The agent can leave notes for the human** too (for example, "I assumed a 3 m jump here"). The guide suggests this for assumptions and questions, and says to mark a note done when it's handled rather than removing it.
+
+---
+
+## 7. Entities: definitions and instances (08.4)
+
+### A definition is a small scene
+
+- **A definition is stored like a scene** (§3): its nodes, ID counters and history log, plus `name`, `description` and `tags`. `restoreScene`, the store and the history log are reused as they are.
+- **Its frame:** the definition's nodes are around a **pivot** at the origin. The origin is the bottom center, and y = 0 is where the instance stands.
+- **What it can hold:**
+  - every shape type and groups;
+  - it can't hold instances (no nesting) or notes.
+- **The description and tags belong to the entity.** An instance has none of its own.
+
+### An instance
+
+- **`Instance`:** `{ id, type: "instance", entity, x, y, z, rotation, name?, parent?, locked?, hidden?, createdBy }`.
+  - It shows its definition's nodes turned by `rotation` (degrees, counterclockwise seen from above) around the pivot, then moved to `x, y, z`.
+- **A pure `expandInstance(instance, definition)`** in `src/shared/` returns the definition's shapes in world coordinates:
+  - they're wrapped in a virtual group with the instance's ID, placed where the instance is in the tree;
+  - their IDs are namespaced (`instance_4/box_2`) and never editable.
+  - Rendering, bounds, picking, the marquee and holes all run on the expanded nodes.
+- **Holes:** `holes.ts` sees an instance as a group. So:
+  - a hole in a definition cuts that entity's own shapes, what's directly in the instance's parent, and the groups beside it. `entry_window`, placed in the tower's group, cuts the tower's walls;
+  - a hole in the scene cuts an instance's shapes like a sibling group's.
+  - A hole at a definition's top level isn't warned about ("cuts nothing"), because every instance puts it in a group.
+- **The editor gets the definitions** with the scene: the server sends every definition in the project when a scene opens, and each change after that. They're small.
+
+### Making and placing
+
+- **Make entity** (inspector, Actions; the agent's `make_entity { ids, name, description?, tags? }`):
+  - the selected nodes (whole subtrees) are copied into a new definition, moved so the pivot is the bottom center of their bounds, keeping their rotations;
+  - they're replaced in the scene by one instance at that point, with rotation 0.
+  - A single group's name, description and tags become the entity's.
+  - **The scene step** is `Make entity poison`. Undoing it puts the nodes back, and the definition stays in the library.
+  - Refused for a selection with instances or notes in it.
+- **Placing:**
+  - drag an entity from the Library panel's **Entities** tab onto the view. It lands on the surface under the cursor and goes into the entered group;
+  - or press **Place** on a row, then click.
+  - Alt-drag, copy and paste work on instances as on any node.
+  - The agent uses `draw_shapes { type: "instance", entity, x, z, y?, rotation?, name? }`.
+- **Swapping:** `update_nodes { id, entity }` (and an entity picker in the inspector) changes which entity an instance shows, keeping its place. A small tree becomes a tall one.
+- **Detach** (inspector; `detach_instances { ids }`) replaces an instance with a plain group holding world copies of its definition's nodes, with new IDs. The group is named after the instance's name, or else the entity's. It's one scene step.
+- **Deleting a definition** (in the Library panel) is refused while any scene uses it, and the error names those scenes.
+
+### Editing an instance
+
+- **Selected:** the body drag, the x / y / z arrows and the yaw ring. It has no scale or height handles and no tilt rings. The inspector has position, rotation, name, the entity picker and Detach, plus the entity's description and tags, read-only, with **Edit entity**.
+- **Picking** any part selects the instance. Its parts can't be selected on their own.
+- **Mirroring** moves the instance to its mirrored point and mirrors its rotation. It doesn't flip the entity: a left-handed door stays left-handed. The result says so.
+- **The outliner:** a prefab icon, the instance's name or else the entity's name, and no children.
+- **Selection info:** `tree tall (instance_12) · 1.2 × 1.2 × 9 · #climbable`.
+
+---
+
+## 8. Edit entity and default entities (08.5)
+
+### Edit entity mode
+
+- **Opening:** double-click an instance, press **Edit entity** in the inspector, or double-click a row in the Library panel.
+  - The server opens the definition as the open document, the way it opens a scene, and remembers the scene to go back to.
+  - The editor shows a banner: `Editing entity: tree tall — used 14 times in 2 scenes · ← Back to Castle / Keep`.
+- **Inside:**
+  - every drawing and editing tool works, except placing instances and the Note tool;
+  - the pivot is shown as a small cross at the origin, and the grid is centered on it.
+  - **`⌘Z` undoes this entity's steps only.** The history is the entity's own and survives restarts.
+- **Leaving** (the banner's back button or `Esc` with nothing selected) reopens the scene. Every instance of the entity, in every scene, draws from the new definition. No scene's history changes.
+- **The agent in entity mode:**
+  - `get_scene` reports `editing: { entity: "tree-tall", name, description, tags }`, and the tools edit the definition;
+  - the core instructions say what that means: coordinates are around the pivot, and the changes reach every instance.
+  - `update_nodes` on the root isn't how the entity's own description changes: in entity mode, `update_library { upsert: [{ kind: "entity", … }] }` sets its name, description and tags.
+
+### Default entities
+
+- **Every new project gets a `human`:**
+  - 1.8 m tall, built from shapes: two leg cylinders, a torso box, two arm cylinders, and a head (a cylinder with bevel 1);
+  - in `stone`;
+  - with the description "a person for scale: 1.8 m tall; edit it to match your player".
+- **Existing projects get it the first time they open in 08:** `library.json`'s `seeded` flag records this, so a human the project deleted doesn't come back.
+- It's an ordinary entity: editable, renamable and deletable.
+
+---
+
+## 9. MCP surface
+
+| Tool | Change |
+|---|---|
+| `get_scene` | the outline by default (§4): `root`, `depth`, `full`, `selected`, `notes`, `glossary`, `guide`, `counts`, `editing`. Compact JSON. |
+| `find_nodes` | new (§4). |
+| `get_guide` | new (§4). |
+| `get_library` | new (§5). |
+| `update_library` | new (§5); in 08.5 it also sets an entity's name, description and tags. |
+| `draw_shapes` | the `note` and `instance` types; `tags`; a group's `description` isn't here (groups come from `group_nodes`). |
+| `update_nodes` | `description` (groups), `tags`, the note's fields, and an instance's `entity`. |
+| `group_nodes` | takes `name`, `description` and `tags` for the new group. |
+| `make_entity` | new (§7). |
+| `detach_instances` | new (§7). |
+| `move_nodes`, `rotate_nodes`, `mirror_nodes`, `remove_nodes`, `ungroup` | handle notes and instances (§6, §7). |
+
+- **The server version goes up one patch per increment,** from 0.0.12. **Restart the server and reconnect with `/mcp`** after each.
+- **CLAUDE.md:** "Working with the scene" gains the outline, the library, notes and entities. "Code layout" gains the new files. The paragraph about the next phase points at 09 (the review loop).
+
+### Editor ↔ server protocol
+
+```
+client → server  { type: "add_shapes", shapes: [ShapeInput] }         // gains note and instance
+client → server  { type: "update_nodes", changes: [...] }              // gains description, tags, note fields, entity
+client → server  { type: "library", ops: [...] } / "library_undo" / "library_redo"   // 08.2
+client → server  { type: "make_entity", ids, name } / "detach", ids                 // 08.4
+client → server  { type: "open_entity", entity } / "close_entity"                   // 08.5
+server → client  { type: "library", library, history }                 // 08.2
+server → client  { type: "entities", entities: { [id]: Definition } }  // 08.4, every change
+server → client  "opened" gains `entity` when an entity is open          // 08.5
+```
+
+---
+
+## 10. Increments
+
+Each increment is checked before the next one starts: typecheck, tests, a scripted check on a spare port with a scratch `DATA_DIR`, and Orlando's browser checklist.
+
+### 08.1 — The outline, find and the guide
+
+- Compact JSON, the outline with `root`, `depth` and `full`, `selected`, the small-scene rule, `find_nodes`, group descriptions (inspector and outliner), the core instructions, and `get_guide`.
+- **Check:**
+  - on a large scratch castle (about 300 nodes, 12 top-level groups), the default `get_scene` is under a fifth of the full size (§11);
+  - `root` and `depth` zoom in;
+  - the selection is always in full;
+  - `find_nodes` finds `entry_window` by name and the rooms near a point;
+  - a fresh agent session builds the 07 tower with doors and a spiral stair, reading `get_guide` where it needs to.
+
+### 08.2 — The library
+
+- `library.json` with its history, tags and skills, the design guide and its default, aliases, `tags` on nodes, references (highlighting, autocomplete and warnings), the Library panel (Skills, Tags and Guide), the tags field, the glossary in the outline, `get_library` and `update_library`.
+- **Check:**
+  - create `#light` and `@telekinesis` (tagged `#light`);
+  - tag a crate;
+  - a group description with `@telekinesis` is highlighted, and the glossary lists just that skill;
+  - rename `#light` to `#liftable`: the crate shows `#liftable`, and old text still resolves;
+  - undo the rename in the panel (the scene's history is untouched);
+  - a new project has the default design guide, and `get_guide design` returns it;
+  - edit the guide, then undo the edit in the panel;
+  - a fresh agent session reads the guide before a design task and follows a house rule from it;
+  - the agent adds a skill and tags a node, and is refused a tag that doesn't exist.
+
+### 08.3 — Notes
+
+- The type, the Note tool, the flag and pin, Show notes, the inspector, the outliner, done notes, open notes in the outline, and MCP.
+- **Check:**
+  - drop a `TK` note with a `@telekinesis` reference in a group;
+  - move the group, and the note follows;
+  - the agent reads it in the outline, acts on it and marks it done: it grays out and leaves the outline;
+  - the agent leaves a note of its own.
+
+### 08.4 — Entities: definitions and instances
+
+- Definitions as documents, `expandInstance`, rendering, picking, the marquee, bounds, holes through instances, Make entity, the Entities tab with drag-to-place, swapping, Detach, the deletion rule, mirroring, and MCP.
+- **Check:**
+  - make `poison` from spikes and place three;
+  - a `window` entity (a hole) in the tower's group cuts its wall;
+  - a door hole in the scene cuts a room entity beside it;
+  - swap a small tree for a tall one;
+  - Detach one and edit its shapes;
+  - undo Make entity, and the spikes come back;
+  - deleting a used entity is refused, naming the scene;
+  - the agent makes a tree entity from shapes it drew and places a row of them.
+
+### 08.5 — Edit entity and default entities
+
+- Opening and closing entity mode, the banner, the pivot, the entity's own history, instances updating everywhere, the agent in entity mode, `update_library` for entities, and the default human with the `seeded` flag.
+- **Check:**
+  - double-click a tall tree, raise its trunk, and leave: every tall tree (in two scenes) is taller;
+  - `⌘Z` in entity mode undoes only the entity's steps, and after a server restart too;
+  - the agent, with the entity open, adds a branch;
+  - a new project has a human;
+  - an existing project gets one once, and deleting it is permanent.
+
+---
+
+## 11. Acceptance test (end of phase)
+
+1. **The goal's demo (§1),** end to end, in the browser, with a fresh agent session.
+2. **Tokens, measured:** `get_scene` on the scratch castle (§10, 08.1), full JSON before 08 against the default outline after it. The target is under 20% of the full size, and each size is recorded in §13. The same castle with 40 tree instances: an instance is one line, whatever its entity holds.
+3. **Old scenes and projects** from 07 open unchanged, and get an empty library and the human.
+4. **Every history is separate and survives restarts:** each scene's, each entity's and the library's.
+
+---
+
+## 12. Decisions
+
+Decided with Orlando:
+
+1. **True prefabs.** An edit to a definition changes every instance in every scene. **Detach** turns an instance back into a plain group.
+2. **An instance has only a position, a rotation and a name.** The description and tags belong to the entity. A different size is a different entity.
+3. **Each entity has its own history,** as in Unity's Prefab Mode: a definition is a small scene, edited in Edit entity mode, with its own undo. The library has its own history too, and a scene's history never includes entity or library edits.
+4. **`@` refers to skills and `#` to tags.**
+5. **A note is a point.** An area is described in its text.
+6. **Every project gets default entities,** starting with a 1.8 m human.
+7. **An instance behaves like a group for holes,** so holes in and around it follow the 07B rule unchanged.
+8. **The review loop is phase 09, and the array tool is phase 10.**
+9. **The design guide is a markdown file in `rules/`,** in the spirit of `ClaudeAnimationBase`'s `ANIMATION_GUIDE.md` (taste, not just tool conventions). Every project gets a default, which Orlando rewrites for his game.
+
+Adopted as recommended (say if any should change):
+
+10. **Renaming a tag or skill keeps the old name as an alias,** and nothing in other scenes is rewritten. This changes the earlier suggestion to rewrite references: rewriting would edit documents that aren't open, outside their own histories.
+11. **Deleting an entity that's in use is refused,** and the error names the scenes that use it.
+12. **No nested prefabs,** and no notes in entities.
+13. **Notes have an open / done status** and an optional label of up to 3 characters (the flags of `thinking-01`).
+14. **Tags on nodes must exist in the library.** The editor offers to create them, and the agent creates them first.
+15. **Mirroring moves and turns an instance, but doesn't flip it.**
+16. **Swapping an instance's entity is allowed.** It isn't a per-instance change, because the instance still shows an entity exactly as that entity is.
+17. **`get_scene` returns one level by default, with the selection and the open notes always included,** and it returns the full scene for scenes of 40 nodes or fewer.
+18. **The instructions become a core plus `get_guide(topic)`,** and errors point to the topic.
+19. **The human opens documents** (scenes and entities). The agent makes entities with `make_entity` and edits a definition only while it's open.
+20. **The outline comes first (08.1),** before any new data, because it pays off on today's scenes, and every later increment adds to it and to the guide.
+
+---
+
+## 13. Progress
+
+Not started.
+
+---
+
+## 14. Notes for phase 09: the review loop
+
+This is the third pillar of plan 00's inspiration: the agent renders its work and looks at it. The kit's guide says *"You can't see motion by reading code. Render and look at every shot."* Plan 01 deferred `render_map`, and it was never built. A starting sketch for 09's plan:
+
+- **`render_view`** returns an MCP image, rendered by the open editor offscreen with three.js (there's no headless browser and no second renderer). With no editor connected, it fails with a clear message.
+- **Three zoom levels,** matching the kit's contact sheet, strip and crop:
+  - a **plan sheet:** a top-down plan plus a few angles in one image, with node IDs and names labeled;
+  - a **walk:** frames at eye height (the player's height from the design guide) along a line, such as the critical path: can the player see the window from here, and does the jump read?
+  - a **close-up:** one node or room, framed on its bounds.
+- **Images can cost fewer tokens than JSON:** about 1.3k tokens for 1000 × 1000 px, less than a large scene's full JSON.
+- **A review budget in the guide,** as the kit has: render after every build, and walk the critical path after changing a route.
+- **Model sheets:** an image of every entity in the library, so the agent knows what `tree tall` looks like.
+- **Plan 00's validators** (reachability, softlocks) can follow later. The walk gives a visual check first.
