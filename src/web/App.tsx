@@ -46,7 +46,7 @@ import { Inspector, type InspectorProps } from "./Inspector";
 import { highlightedText, typingInField } from "./keys";
 import { Outliner } from "./Outliner";
 import { ProjectPicker } from "./ProjectPicker";
-import { ContextualBar, EDIT_POINTS_HINT, HINTS, TOOLS, ToolBar, ViewBar, WalkBar } from "./ToolBar";
+import { ContextualBar, EDIT_ARRAY_HINT, EDIT_POINTS_HINT, HINTS, TOOLS, ToolBar, ViewBar, WalkBar } from "./ToolBar";
 import { useScene, type RenderHandler } from "./useScene";
 import { Viewport, type KindFields, type LineStyle, type RampStyle, type Tool, type ViewportApi } from "./Viewport";
 import { blobToBase64 } from "./capture";
@@ -665,11 +665,8 @@ export function App() {
     send({ type: "convert_nodes", ids });
   };
   const editable =
-    singleShape?.type === "freeform" ||
-    singleShape?.type === "line" ||
-    (singleShape?.type === "array" && (singleShape.layout.type === "path" || (singleShape.layout.type === "scatter" && !!singleShape.layout.area)))
-      ? singleShape
-      : null;
+    // Every array has an edit mode (10.4): its item dots and handles, and a path's or an area's points.
+    singleShape?.type === "freeform" || singleShape?.type === "line" || singleShape?.type === "array" ? singleShape : null;
   // Kind is for closed shapes: hidden when only lines are selected, disabled unless a single closed shape is.
   const singleClosed = singleShape && isClosed(singleShape) ? singleShape : null;
   const selectedLines = selectedShapes.filter((s): s is Line => s.type === "line");
@@ -794,7 +791,7 @@ export function App() {
           : selecting
           ? {
               title: contextNode ? `${contextNode.name ?? contextNode.id} › ${selectionTitle}` : selectionTitle,
-              info: editing && editable ? `editing points · ${selectionInfo}` : selectionInfo,
+              info: editing && editable ? `editing ${editable.type === "array" ? "items" : "points"} · ${selectionInfo}` : selectionInfo,
               library,
               instance:
                 single?.type === "instance" && library
@@ -838,6 +835,7 @@ export function App() {
                         onLayout: (patch: Record<string, unknown>) => update({ layout: patch }),
                         onChange: (patch: Record<string, unknown>) => update(patch),
                         onEdit: (entity: string) => send({ type: "open_entity", entity }),
+                        onRestoreAll: () => update({ skip: [] }),
                         onDetach: () => {
                           pendingSelect.current = { before: new Set(nodes.map((n) => n.id)), pick: (added) => added.filter((n) => n.type === "group" && n.parent === single.parent).map((n) => n.id).slice(0, 1) };
                           send({ type: "detach_instances", ids: [single.id] });
@@ -893,7 +891,9 @@ export function App() {
               ramp: rampControls,
               onMirror: (axis) => send({ type: "mirror_nodes", ids: selection, axis }),
               onConvert: convertible.length > 0 ? convert : undefined,
-              editPoints: editable ? { active: editing === editable.id, onToggle: () => setEditing(editing ? null : editable.id) } : undefined,
+              editPoints: editable
+                ? { active: editing === editable.id, onToggle: () => setEditing(editing ? null : editable.id), ...(editable.type === "array" ? { label: "Edit items" } : {}) }
+                : undefined,
             }
           : null;
 
@@ -1122,7 +1122,7 @@ export function App() {
             : "—"}
         </span>
         <span className="sep" />
-        <span className={notice ? "hint notice" : "hint"}>{notice ?? (editing && activeTool === "select" ? EDIT_POINTS_HINT : HINTS[activeTool])}</span>
+        <span className={notice ? "hint notice" : "hint"}>{notice ?? (editing && activeTool === "select" ? (nodes.find((n) => n.id === editing)?.type === "array" ? EDIT_ARRAY_HINT : EDIT_POINTS_HINT) : HINTS[activeTool])}</span>
       </div>
 
       <div className="dock">

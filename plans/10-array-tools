@@ -486,3 +486,23 @@ Adopted as recommended (say if any should change):
 8. Copy the group: the copy's merlons follow the copied room. Alt-drag the array alone: the copy is unlinked.
 9. **Unlink** keeps the path as points (Edit points works again); the room's info says `followed by array_…` while it's followed.
 10. Ask the agent for battlements on a keep: one `draw_shapes` call, and they follow when you resize the keep.
+
+### 10.4 — Editing in the view (done; checked in the browser by Orlando)
+
+- **Edit mode:** every array has one (double-click it, or **Edit items** in the inspector's actions; Esc or a click outside leaves), not only path arrays. It hides the gizmo and shows the array's item dots and its layout's handles; a path's own points and a scatter's area keep point editing on top of it (the dots under a point give way to the point).
+- **Pure parts (`src/web/arrayEdit.ts`, tested):** `itemDots` (every item, the skipped ones included, flagged); `arrayHandles` (a circle: its center and a radius handle at `start`; a scatter circle: its center and one at its east; a grid: its center and its far-corner item); `dragArrayHandle` (a center snaps to the nearest closed shape's center within 0.75 m, else the 0.5 m grid; a radius in 0.25 m steps, 0.05 with ⌘; Shift turns a circle's radius handle into its start, in 5° steps; a grid's corner sets spacing x and z from where the corner item is dragged, Shift keeps them equal, staggered rows counted); `toggleSkips`.
+- **The view:** a handle drag previews live (the items follow) with a label (`r 9.4 m`, `center 0, 0 · on a shape's center`, `spacing 3 × 3 m`) and sends one `update_nodes` layout patch on release; a click on a dot selects it (Shift adds or removes); ⌫ toggles the selected items' skips in one step (`Skip items of array_2`); drawn as points over everything: yellow dots, hollow when skipped, blue when selected, orange handles with a line from the center.
+- **The inspector:** **restore all** on the info line while any item is skipped; the status bar's hint for the array's edit mode.
+- **Not done:** marquee-selecting dots (click and Shift-click only); the handles for a following path (its target's are the ones to use, as planned).
+- **Checks:** typecheck; 438 tests (4 new); the editor bundles. The handles and dots are browser work.
+
+**Browser checklist for Orlando (10.4):**
+1. Double-click a circle array (or **Edit items**): dots on every item, orange handles on its center and on the circle at its start.
+2. Drag the center onto the tower's center: it snaps there (the label says so); ⌘ drags it freely.
+3. Drag the radius handle: the circle grows in 0.25 m steps; with Shift it turns the start instead.
+4. A grid: drag the center, and the far-corner handle to set the spacing (Shift: equal).
+5. A scatter circle: center and radius; a scatter area: its points, as a free-form's.
+6. Click a dot, Shift-click another, press ⌫: they're skipped (hollow dots), one undo step; select a hollow dot and ⌫ brings it back; **restore all** brings every one back.
+7. A following array (battlements): no handles, but its dots: skip the merlons over the gate.
+8. A path array: its points still drag, add and delete as before, and its dots select where there's no point.
+9. Esc (or a click outside) leaves edit mode; the gizmo comes back.

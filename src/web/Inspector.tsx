@@ -132,7 +132,7 @@ export type InspectorProps = {
   /** Convert to free-form (the selection has boxes or cylinders). */
   onConvert?: () => void;
   /** Edit points (a single free-form, line or ramp): whether it's in point editing, and a toggle. */
-  editPoints?: { active: boolean; onToggle: () => void };
+  editPoints?: { active: boolean; onToggle: () => void; label?: string };
 };
 
 /** What the inspector's array section shows and changes (see `ArraySection`). */
@@ -169,6 +169,8 @@ export type ArrayControls = {
   onChange: (patch: { facing?: ArrayFacing; rotation?: number; jitter?: number; turnJitter?: number; seed?: number }) => void;
   onEdit: (entity: string) => void;
   onDetach: () => void;
+  /** Bring every skipped item back (10.4). */
+  onRestoreAll: () => void;
 };
 
 export function Inspector({ title, info, library = null, note, instance, array, makeEntity, description, tags, sides, wall, profile, tilt, line, ramp, onMirror, onConvert, editPoints }: InspectorProps) {
@@ -265,7 +267,7 @@ export function Inspector({ title, info, library = null, note, instance, array, 
                     title={editPoints.active ? "Finish editing points (Esc)" : "Edit points (or double-click the shape)"}
                     onClick={editPoints.onToggle}
                   >
-                    <Spline size={16} /> {editPoints.active ? "Done" : "Edit points"}
+                    <Spline size={16} /> {editPoints.active ? "Done" : (editPoints.label ?? "Edit points")}
                   </button>
                 )}
                 {makeEntity && <MakeEntity {...makeEntity} />}
@@ -578,7 +580,7 @@ function CountField({ title, value, onChange }: { title: string; value: number; 
  * layout's fields, how its items face and turn, and Edit entity and Detach. Each field sends one step.
  */
 function ArraySection(props: ArrayControls & { lib: Library }) {
-  const { entities, library, lib, layout, facing, rotation, jitter, turnJitter, seed, items, skipped, shortfall, follow, onEntities, onLayoutType, onLayout, onChange, onEdit, onDetach } = props;
+  const { entities, library, lib, layout, facing, rotation, jitter, turnJitter, seed, items, skipped, shortfall, follow, onEntities, onLayoutType, onLayout, onChange, onEdit, onDetach, onRestoreAll } = props;
   const along = follow?.along ?? null;
   const facings = FACINGS[layout.type];
   return (
@@ -826,6 +828,11 @@ function ArraySection(props: ArrayControls & { lib: Library }) {
         {items} item{items === 1 ? "" : "s"}
         {skipped > 0 ? ` · ${skipped} skipped` : ""}
         {shortfall ? ` · ${shortfall}` : ""}
+        {skipped > 0 && (
+          <button className="link" title="Bring every skipped item back" onClick={onRestoreAll}>
+            restore all
+          </button>
+        )}
       </div>
       <div className="inspector-actions">
         {entities.map(({ entity }) =>

@@ -28,6 +28,7 @@ import {
   type ShotView,
   type View,
   type WalkPreset,
+  type ArrayNode,
 } from "../shared/scene.types";
 import { reportError } from "./errors";
 import { renderJob } from "./renderView";
@@ -47,6 +48,7 @@ import {
   splitEdge,
   type Point,
   type Point3,
+  handleFrame,
 } from "../shared/geometry";
 import { shapesUnder, isGroup, isShape, hiddenIds, lockedIds, selectableAt } from "../shared/tree";
 import { cutters, isHole } from "../shared/holes";
@@ -100,7 +102,8 @@ import { typingInField } from "./keys";
 import { Lighting } from "./Lighting";
 import { marqueeHits, rectFrom, type ScreenPoint } from "./marquee";
 import { LineMesh } from "./LineMesh";
-import { isFollowing, layoutGuide, withFollowed } from "../shared/arrays";
+import { isFollowing, layoutAnchor, layoutGuide, withFollowed } from "../shared/arrays";
+import { arrayHandles, dragArrayHandle, hitArrayHandle, hitItemDot, itemDots, toggleSkips, type ArrayHandle, type ArrayPart, type ItemDot } from "./arrayEdit";
 import { pickHit, pickLine, pickNote, surfaceUnder, type Surface } from "./pick";
 import { NoteMesh } from "./NoteMesh";
 import { expandNodes, expandShapes, ownerOf } from "../shared/entities";
@@ -934,6 +937,11 @@ export function Viewport({
   const [pointDrag, setPointDrag] = useState<PointDrag | null>(null);
   const [hotPoint, setHotPoint] = useState<PointPart | null>(null);
   const [hotY, setHotY] = useState(false);
+  // An array's edit mode (10.4): the selected item dots (indices), and a handle drag in progress with its layout
+  // patch so far.
+  const [itemSel, setItemSel] = useState<number[]>([]);
+  const [arrayDrag, setArrayDrag] = useState<{ pointerId: number; part: ArrayPart; y: number; patch: Record<string, unknown>; label: string; sx: number; sy: number } | null>(null);
+  useEffect(() => setItemSel([]), [editing]);
 
   const boxes = nodes.filter(isShape);
   const boxesRef = useRef(boxes);
@@ -946,7 +954,11 @@ export function Viewport({
   const pointPreview = pointDrag && (pointDrag.active || pointDrag.inserted) ? pointDrag : null;
   const previewed = preview ? boxes.map((b) => (preview[b.id] ? ({ ...b, ...preview[b.id] } as Shape) : b)) : boxes;
   const unfollowed = (override && !override.copy ? previewed.map(moved) : previewed).map((b) =>
-    pointPreview && !pointPreview.problem && b.id === editing ? withEditedPoints(b, roundPoints(pointPreview.points)) : b,
+    pointPreview && !pointPreview.problem && b.id === editing
+      ? withEditedPoints(b, roundPoints(pointPreview.points))
+      : arrayDrag && b.id === editing && b.type === "array"
+        ? ({ ...b, layout: { ...b.layout, ...arrayDrag.patch } } as Shape)
+        : b,
   );
   // A following array takes its path from what it follows as shown, so it follows a drag live (10.3).
   const unfollowedById = new Map(unfollowed.map((b) => [b.id, b]));
@@ -1005,7 +1017,11 @@ export function Viewport({
   // The transform gizmo: on the selection, in the Select tool only (and not in point editing). Height and scale
   // are for a single box (not a group); move and rotate work on any selection.
   // While copying, the copies carry the selection (they become it on release).
-  const selectedAll = tool !== "select" || editShape ? [] : ghosts.length > 0 ? ghosts : shownUnder(selection);
+  // The array in edit mode (10.4), as shown: its item dots and its layout's handles.
+  const editArray = editing !== null && tool === "select" ? (shown.find((b) => b.id === editing && b.type === "array") as ArrayNode | undefined) : undefined;
+  const dots = editArray ? itemDots(editArray) : [];
+  const handles = editArray ? arrayHandles(editArray) : [];
+  const selectedAll = tool !== "select" || editShape || editArray ? [] : ghosts.length > 0 ? ghosts : shownUnder(selection);
   // A following array goes where what it follows goes: the gizmo leaves it out (so one on its own has none).
   const selectedBoxes = selectedAll.filter((b) => !isFollowing(b));
   const single =
@@ -1409,6 +1425,29 @@ export function Viewport({
     if (e.button === 0 && tool === "select") {
       // In point editing, a press grabs a point, a handle or an edge. Pressing the free-form elsewhere deselects
       // the points; pressing anything else leaves point editing (empty ground does only that).
+      // An array's edit mode: a press on a handle drags it; on an item's dot selects it (Shift adds or removes).
+      if (editArray) {
+        const part = hitArrayHandle(cam.current, size, sx, sy, handles);
+        if (part) {
+          e.currentTarget.setPointerCapture(e.pointerId);
+          setArrayDrag({ pointerId: e.pointerId, part, y: layoutAnchor(editArray.layout).y, patch: {}, label: "", sx, sy });
+          return;
+        }
+        const dot = editShape && pointAt(sx, sy, size) ? null : hitItemDot(cam.current, size, sx, sy, dots);
+        if (dot !== null) {
+          setItemSel(e.shiftKey ? (itemSel.includes(dot) ? itemSel.filter((i) => i !== dot) : [...itemSel, dot]) : [dot]);
+          return;
+        }
+        if (!editShape) {
+          const hit = hitAt(sx, sy, size);
+          if (hit?.id === editArray.id) {
+            setItemSel([]);
+            return;
+          }
+          onEditing(null);
+          if (!hit) return;
+        }
+      }
       if (editShape) {
         if (yArrowAt(sx, sy, size)) {
           yArrowDown(e, sx, sy, size);
@@ -1501,6 +1540,19 @@ export function Viewport({
       pointMove(pointDrag, e, sx, sy, size);
       return;
     }
+    if (arrayDrag?.pointerId === e.pointerId) {
+      const original = boxesRef.current.find((b) => b.id === editing);
+      if (original?.type !== "array") return;
+      const g = screenToPlane(cam.current, size, sx, sy, arrayDrag.y);
+      // A center snaps to the shapes' own centers (a tower's), as the view shows them.
+      const centers = onViewRef.current.filter((b) => isClosed(b)).map((b) => {
+        const f = handleFrame(b);
+        return { x: f.x, z: f.z };
+      });
+      const next = dragArrayHandle(original, arrayDrag.part, g, { alt: e.shiftKey, free: noSnap(e), centers });
+      if (next) setArrayDrag({ ...arrayDrag, patch: next.patch, label: next.label, sx, sy });
+      return;
+    }
     if (marquee?.pointerId === e.pointerId) {
       const end = { sx, sy };
       const active = marquee.active || Math.hypot(sx - marquee.start.sx, sy - marquee.start.sy) >= CLICK_PX;
@@ -1535,6 +1587,12 @@ export function Viewport({
     if (DRAWS[tool]) showLanding(sx, sy, size);
     // Just hovering: in point editing, what a press would grab (for the cursor); otherwise highlight the gizmo
     // handle, or in the Select tool the box that a press would grab.
+    if (editArray && !editShape) {
+      setHotPoint(hitArrayHandle(cam.current, size, sx, sy, handles) || hitItemDot(cam.current, size, sx, sy, dots) !== null ? { type: "point", index: 0 } : null);
+      setHotPart(null);
+      setHoveredId(null);
+      return;
+    }
     if (editShape && tool === "select") {
       const onY = yArrowAt(sx, sy, size);
       setHotY(onY);
@@ -1552,6 +1610,19 @@ export function Viewport({
 
   const onPointerUp = (e: PointerEvent) => {
     if (walkRef.current) return;
+    if (arrayDrag?.pointerId === e.pointerId) {
+      const d = arrayDrag;
+      setArrayDrag(null);
+      const original = boxesRef.current.find((b) => b.id === editing);
+      if (original?.type === "array" && Object.keys(d.patch).length > 0) {
+        const layout = { ...original.layout, ...d.patch } as ArrayNode["layout"];
+        if (!sameValue(layout, original.layout)) {
+          onUpdate([{ id: original.id, layout: d.patch }]);
+          setPending({ origin: [original], patches: { [original.id]: { layout } }, copy: false });
+        }
+      }
+      return;
+    }
     if (pointDrag?.pointerId === e.pointerId) {
       const d = pointDrag;
       setPointDrag(null);
@@ -1650,7 +1721,7 @@ export function Viewport({
         onOpenEntity(hitNode.entity);
         return;
       }
-      if (hitNode && editablePoints(hitNode) !== null) {
+      if (hitNode && (editablePoints(hitNode) !== null || hitNode.type === "array")) {
         onSelect([id]);
         onEditing(id);
       }
@@ -1662,8 +1733,16 @@ export function Viewport({
 
   // In point editing: Esc cancels a point drag, or else leaves point editing; Delete / Backspace removes the
   // selected points (never fewer than 3). Neither reaches the app, which would deselect or delete the free-form.
-  const editKeys = useRef({ editing, pointSel, pointDrag, editPoints, editClosed, commitPoints, onEditing, onNotice });
-  editKeys.current = { editing, pointSel, pointDrag, editPoints, editClosed, commitPoints, onEditing, onNotice };
+  // An array's selected items: Delete skips the ones that show and brings back the skipped ones (one step).
+  const skipItems = () => {
+    const original = boxesRef.current.find((b) => b.id === editing);
+    if (original?.type !== "array" || itemSel.length === 0) return false;
+    onUpdate([{ id: original.id, skip: toggleSkips(original, itemSel) }]);
+    setItemSel([]);
+    return true;
+  };
+  const editKeys = useRef({ editing, pointSel, pointDrag, editPoints, editClosed, commitPoints, onEditing, onNotice, skipItems, arrayDrag });
+  editKeys.current = { editing, pointSel, pointDrag, editPoints, editClosed, commitPoints, onEditing, onNotice, skipItems, arrayDrag };
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       const k = editKeys.current;
@@ -1673,9 +1752,11 @@ export function Viewport({
       e.stopImmediatePropagation();
       if (e.key === "Escape") {
         if (k.pointDrag) setPointDrag(null);
+        else if (k.arrayDrag) setArrayDrag(null);
         else k.onEditing(null);
         return;
       }
+      if (k.skipItems()) return;
       if (k.pointSel.length === 0 || !k.editPoints || k.pointDrag) return;
       const left = removePoints(k.editPoints, k.pointSel, k.editClosed ? MIN_POINTS : MIN_LINE_POINTS);
       if (!left) {
@@ -1792,6 +1873,8 @@ export function Viewport({
   const size = wrap.current ? { width: wrap.current.clientWidth, height: wrap.current.clientHeight } : null;
   const cursorClass = (() => {
     if (pointDrag?.active) return pointDrag.mode === "y" ? "resizing" : "moving";
+    if (arrayDrag) return "moving";
+    if (editArray && !editShape && hotPoint) return "moving";
     if (editShape && tool === "select" && hotY) return "resizing";
     if (editShape && tool === "select" && hotPoint) return hotPoint.type === "edge" ? "adding" : "moving";
     if (activePart && isScalePart(activePart)) {
@@ -1886,6 +1969,7 @@ export function Viewport({
                 ]
               : [],
           )}
+        {editArray && !walk && <ArrayEditOverlay dots={dots} handles={handles} selected={itemSel} />}
         {editPoints && !walk && (
           <PointOverlay points={editPoints} y={editTop} closed={editClosed} selected={pointSel} bad={!!pointPreview?.problem} />
         )}
@@ -1967,6 +2051,11 @@ export function Viewport({
       {drag?.active && (
         <div className="draft-label" style={{ left: drag.sx + 14, top: drag.sy + 14 }}>
           {drag.copy ? `${drag.label} · copy` : drag.label}
+        </div>
+      )}
+      {arrayDrag?.label && (
+        <div className="draft-label" style={{ left: arrayDrag.sx + 14, top: arrayDrag.sy + 14 }}>
+          {arrayDrag.label}
         </div>
       )}
       {pointDrag?.active && (
@@ -2313,6 +2402,60 @@ function PointOverlay({
     </>
   );
 }
+
+/**
+ * An array's edit mode (10.4): a dot on every item's pivot (filled, or hollow for a skipped one; selected ones in the
+ * point color), and its layout's handles as bigger squares, with a line from a center to its radius or spacing
+ * handle. Drawn over everything.
+ */
+function ArrayEditOverlay({ dots, handles, selected }: { dots: ItemDot[]; handles: ArrayHandle[]; selected: number[] }) {
+  const key = JSON.stringify([dots, handles, selected]);
+  const { shown, skipped, picked, grips, lines } = useMemo(() => {
+    const geometry = (values: number[]) => new THREE.BufferGeometry().setAttribute("position", new THREE.Float32BufferAttribute(values, 3));
+    const at = (d: Point3) => [d.x, d.y + 0.05, d.z];
+    const center = handles.find((h) => h.part === "center");
+    return {
+      shown: geometry(dots.filter((d) => !d.skipped).flatMap(at)),
+      skipped: geometry(dots.filter((d) => d.skipped).flatMap(at)),
+      picked: geometry(dots.filter((d) => selected.includes(d.index)).flatMap(at)),
+      grips: geometry(handles.flatMap(at)),
+      lines: geometry(center ? handles.filter((h) => h !== center).flatMap((h) => [...at(center), ...at(h)]) : []),
+    };
+  }, [key]);
+  useEffect(
+    () => () => {
+      [shown, skipped, picked, grips, lines].forEach((g) => g.dispose());
+      invalidate();
+    },
+    [shown, skipped, picked, grips, lines],
+  );
+  useEffect(() => invalidate(), [key]);
+  return (
+    <>
+      <lineSegments geometry={lines} renderOrder={20}>
+        <lineBasicMaterial color={ARRAY_HANDLE_COLOR} depthTest={false} transparent />
+      </lineSegments>
+      <points geometry={shown} renderOrder={21}>
+        <pointsMaterial color={ITEM_COLOR} size={8} sizeAttenuation={false} depthTest={false} transparent />
+      </points>
+      <points geometry={skipped} renderOrder={21}>
+        <pointsMaterial color={ITEM_COLOR} size={8} sizeAttenuation={false} depthTest={false} transparent />
+      </points>
+      <points geometry={skipped} renderOrder={22}>
+        <pointsMaterial color={POINT_FILL} size={4} sizeAttenuation={false} depthTest={false} transparent />
+      </points>
+      <points geometry={picked} renderOrder={23}>
+        <pointsMaterial color={POINT_COLOR} size={10} sizeAttenuation={false} depthTest={false} transparent />
+      </points>
+      <points geometry={grips} renderOrder={24}>
+        <pointsMaterial color={ARRAY_HANDLE_COLOR} size={12} sizeAttenuation={false} depthTest={false} transparent />
+      </points>
+    </>
+  );
+}
+/** An array's item dots and handles in edit mode. */
+const ITEM_COLOR = "#f3e3a3";
+const ARRAY_HANDLE_COLOR = "#f4a261";
 
 /**
  * Turns the compass rose (a DOM element over the view) every frame so its N points where north (-z) is on screen,

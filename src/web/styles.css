@@ -1289,3 +1289,5 @@ body {
 .entity-option.active { background: rgba(255, 255, 255, 0.1); }
 .entity-option.current .name { font-weight: 600; }
 .inspector .array-follows { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+/* An array's "restore all" (from 10.4): a link-like button at the end of its info line. */
+.inspector .inspector-info button.link { margin-left: 8px; padding: 0 4px; height: auto; color: #8fb4f2; text-decoration: underline; font: inherit; }

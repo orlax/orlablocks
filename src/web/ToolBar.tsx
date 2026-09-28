@@ -55,6 +55,11 @@ export const HINTS: Record<Tool, string> = {
   walk: "click on a floor to drop in · then the mouse looks, WASD walks, E/Q float, F lands, Shift is fast, the wheel sets the speed, a click takes a shot · Esc pauses, Esc again exits",
 };
 
+/** The hint in an array's edit mode (10.4: double-click it, or Edit items). */
+export const EDIT_ARRAY_HINT =
+  `click an item's dot (Shift-click adds) · ⌫ skips the selected items, or brings skipped ones back · drag the orange handles: a center (it snaps to shapes' centers), ` +
+  `a radius (Shift: a circle's start), a grid's spacing (Shift: equal) · a path's or an area's points drag as a line's · ${MOD} no snap · Esc or click outside to finish`;
+
 /** The hint while editing a free-form's points (the Select tool, after double-clicking it). */
 export const EDIT_POINTS_HINT =
   `drag a point or handle (Alt breaks a smooth point; a line's point: its green arrow raises it) · Shift-click adds points · click an edge to add a point · ` +
