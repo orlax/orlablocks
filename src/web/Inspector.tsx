@@ -28,6 +28,8 @@ import {
   MAX_DESCRIPTION,
   type LineArrow,
 } from "../shared/scene.types";
+import type { Library } from "../shared/library";
+import { RefTextArea, TagsField } from "./RefText";
 import type { LineStyle, RampStyle } from "./Viewport";
 
 /**
@@ -45,8 +47,12 @@ export type InspectorProps = {
   title: string;
   /** The read-only numbers (`6 × 4 × 3 m · wall 0.2 · y 0 · 0°`). */
   info?: string;
+  /** The project library, for the description's references and the tags field. */
+  library?: Library | null;
   /** A single group's description: what that part of the level is, for people and the agent. */
   description?: { value: string; onChange: (text: string) => void };
+  /** A single group's or shape's tags (not a line's), and adding a new tag to the library and to it. */
+  tags?: { value: string[]; onChange: (tags: string[]) => void; onCreate: (name: string) => void };
   /** A cylinder's sides: the side count, undefined = smooth. */
   sides?: { value: number | undefined; onChange: (sides: number | undefined) => void };
   /** Rooms: the wall thickness in meters, undefined when the selected rooms differ. */
@@ -72,7 +78,7 @@ export type InspectorProps = {
   editPoints?: { active: boolean; onToggle: () => void };
 };
 
-export function Inspector({ title, info, description, sides, wall, profile, tilt, line, ramp, onMirror, onConvert, editPoints }: InspectorProps) {
+export function Inspector({ title, info, library = null, description, tags, sides, wall, profile, tilt, line, ramp, onMirror, onConvert, editPoints }: InspectorProps) {
   const { ref, header, style, collapsed, toggle } = useFloating();
   const actions = onMirror || onConvert || editPoints;
   return (
@@ -89,7 +95,12 @@ export function Inspector({ title, info, description, sides, wall, profile, tilt
           {info && <div className="inspector-info">{info}</div>}
           {description && (
             <Section label="Description">
-              <DescriptionField {...description} />
+              <DescriptionField {...description} library={library} />
+            </Section>
+          )}
+          {tags && (
+            <Section label="Tags">
+              <TagsField library={library} tags={tags.value} onChange={tags.onChange} onCreate={tags.onCreate} />
             </Section>
           )}
           {sides && (
@@ -334,7 +345,7 @@ function NumberField({
  * A group's description: free text, sent when the field is left (or on ⌘Enter / Ctrl+Enter); Esc cancels. Enter
  * alone starts a new line.
  */
-function DescriptionField({ value, onChange }: { value: string; onChange: (text: string) => void }) {
+function DescriptionField({ value, onChange, library }: { value: string; onChange: (text: string) => void; library: Library | null }) {
   const [text, setText] = useState<string | null>(null);
   const cancelled = useRef(false);
   const commit = () => {
@@ -343,15 +354,16 @@ function DescriptionField({ value, onChange }: { value: string; onChange: (text:
     setText(null);
   };
   return (
-    <textarea
+    <RefTextArea
+      library={library}
       className="description"
       rows={3}
       maxLength={MAX_DESCRIPTION}
-      title="What this part of the level is, for you and the agent (it shows in the agent's outline). ⌘Enter to set, Esc to cancel"
-      placeholder="What this part of the level is: entry hall, safe zone…"
+      title="What this part of the level is, for you and the agent (it shows in the agent's outline). @skill and #tag refer to the library. ⌘Enter to set, Esc to cancel"
+      placeholder="What this part of the level is: entry hall, safe zone, a @telekinesis puzzle…"
       value={text ?? value}
       onFocus={() => setText(value)}
-      onChange={(e) => setText(e.target.value)}
+      onValue={setText}
       onBlur={commit}
       onKeyDown={(e) => {
         if (e.key === "Escape") cancelled.current = true;

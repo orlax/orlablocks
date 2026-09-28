@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { Library, Uses } from "../shared/library";
 import type { ClientMessage, EditorRestore, HistorySummary, OpenScene, ProjectSummary, Scene, ServerMessage } from "../shared/scene.types";
 
 const NO_HISTORY: HistorySummary = { canUndo: false, canRedo: false };
@@ -12,6 +13,12 @@ export function useScene() {
   const [open, setOpen] = useState<OpenScene | null | undefined>(undefined);
   // The camera and selection to restore: a new object each time a scene opens (or this tab connects).
   const [restore, setRestore] = useState<EditorRestore | null>(null);
+  // The open project's library, its own undo state, and where its tags and skills are used.
+  const [library, setLibrary] = useState<{ library: Library | null; history: HistorySummary; uses: Uses }>({
+    library: null,
+    history: NO_HISTORY,
+    uses: { tags: {}, skills: {} },
+  });
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -40,6 +47,8 @@ export function useScene() {
           setOpen(msg.open);
           if (msg.restore) setRestore({ ...msg.restore });
           setError(null);
+        } else if (msg.type === "library") {
+          setLibrary({ library: msg.library, history: msg.history, uses: msg.uses });
         } else if (msg.type === "error") {
           setError(msg.message);
         }
@@ -61,5 +70,5 @@ export function useScene() {
     if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
   }, []);
 
-  return { scene, history, projects, open, restore, connected, error, clearError, send };
+  return { scene, history, projects, open, restore, library, connected, error, clearError, send };
 }

@@ -19,17 +19,19 @@ import { FULL_SCENE_MAX } from "./outline";
  * topic, which `get_guide` returns on demand, so a session only pays for the topics it uses.
  */
 
-export const GUIDE_TOPICS = ["shapes", "volumes", "holes", "ramps", "lines", "groups"] as const;
+export const GUIDE_TOPICS = ["design", "shapes", "volumes", "holes", "ramps", "lines", "groups", "library"] as const;
 export type GuideTopic = (typeof GUIDE_TOPICS)[number];
 
 /** One line per topic, for the core and for get_guide's description. */
 const TOPIC_SUMMARIES: Record<GuideTopic, string> = {
+  design: "THIS PROJECT's design guide: what a good level is for this game, its facts (player size, jumps) and house rules",
   shapes: "boxes, cylinders and free-forms in detail: rooms and their walls, volumes, colors, converting to a free-form",
   volumes: "taper, bevel and tilt (pyramids, cones, hills, a cylinder lying on its side)",
   holes: "which shapes a hole cuts; doors, windows, arches and holes in floors",
   ramps: "ramps, stairs, landings, walkways and spiral stairs",
   lines: "lines: routes, patrols, jump arcs and pointers",
   groups: "groups, copying, mirroring and turning things as a unit",
+  library: "the project's tags (#name) and skills (@name): what they mean, tagging nodes, referring to them",
 };
 
 export const INSTRUCTIONS =
@@ -62,11 +64,29 @@ export const INSTRUCTIONS =
   "things, copy them with move_nodes and copy: true (count for a row) instead of redrawing; for symmetry, copy then " +
   "mirror_nodes. A door or window is a hole shape in the room's group: cut it, don't build walls around the opening. " +
   "Draw lines for paths, routes, jumps and ideas. " +
+  "THE PROJECT: its library has tags (#climbable) and skills (@telekinesis: what the player can do), and nodes carry " +
+  "tags; the outline's `glossary` explains the ones it shows, and get_library lists them all. Build around the " +
+  "player's skills. The project's DESIGN GUIDE (get_guide design; get_scene's `guide` says when it changed) holds the " +
+  "human's taste, the game's facts and house rules: read it once per session before designing or reviewing, and " +
+  "follow it. Change the library or the guide only when asked. " +
   "THE GUIDE: before using a shape type or a field for the first time in a session, read its topic with get_guide: " +
   GUIDE_TOPICS.map((t) => `${t} (${TOPIC_SUMMARIES[t]})`).join("; ") +
   ". Errors and warnings name the topic to read when one helps.";
 
-const GUIDE: Record<GuideTopic, string> = {
+const GUIDE: Record<Exclude<GuideTopic, "design">, string> = {
+  library:
+    "The project library holds TAGS and SKILLS, shared by every scene of the project. A tag (#climbable, #light) is a " +
+    "property of things, with an optional description. A skill (@telekinesis, @fireball) is something the player can " +
+    "do, with a description and optionally the tags it acts on (telekinesis tagged light: it moves things tagged " +
+    "#light). Names are lowercase letters, digits, _ and -, starting with a letter, written without the sigil in " +
+    "fields and with it in text. Groups and closed shapes and ramps carry `tags` (draw_shapes, update_nodes and " +
+    "group_nodes take the whole list; null removes them). A tag must exist in the library first: add it with " +
+    "update_library. Any description (a group's, a tag's, a skill's) can refer to skills as @name and tags as #name; " +
+    "the outline's `glossary` explains every tag and skill a result shows or names, so you rarely need get_library. " +
+    "find_nodes { tag } finds what carries a tag. Renaming keeps the old name as an alias: old references still " +
+    "resolve, and results show current names. Deleting a tag or skill leaves what refers to it unresolved. Library " +
+    "edits have their own undo history (the human's Library panel), separate from the scene's. Design with the " +
+    "player's skills: a space that asks for @telekinesis needs something #light to move.",
   shapes:
     `A box's footprint is CENTERED at (x, z), with \`width\` along the box's local x and \`depth\` along its local z. It ` +
     "rises from its elevation `y` (its bottom: 0 = on the ground, negative = below ground) to y + height, so to stack " +
@@ -161,5 +181,7 @@ const GUIDE: Record<GuideTopic, string> = {
     "something back exactly.",
 };
 
-export const guideTopic = (topic: GuideTopic) => GUIDE[topic];
+/** A topic's text; `design` is the open project's own guide. */
+export const guideTopic = (topic: GuideTopic, designGuide: string) =>
+  topic === "design" ? designGuide.trim() || "This project has no design guide yet. The human can write one in the editor's Library panel (Guide)." : GUIDE[topic];
 export const topicList = () => GUIDE_TOPICS.map((t) => `${t}: ${TOPIC_SUMMARIES[t]}`).join("\n");

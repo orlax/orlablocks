@@ -12,13 +12,13 @@ export type Op =
   | { op: "update"; changes: { id: string; patch: NodePatch }[] } // a key set to undefined removes that field (e.g. name)
   | { op: "order"; ids: string[] }; // every node's ID, in the new list order
 
-/** One user-level action and one undo step. */
-export type HistoryEntry = {
+/** One user-level action and one undo step. `O` is the op type: the scene's `Op` by default, the library's `LibraryOp`. */
+export type HistoryEntry<O = Op> = {
   label: string;
   actor: Actor;
   at: number;
-  ops: Op[];
-  inverse: Op[]; // already in undo order
+  ops: O[];
+  inverse: O[]; // already in undo order
 };
 
 export const HISTORY_LIMIT = 200;
@@ -102,14 +102,18 @@ export function runOps(nodes: SceneNode[], ops: Op[]): { nodes: SceneNode[]; inv
   return { nodes: current, inverse };
 }
 
-export type History = ReturnType<typeof createHistory>;
+export type History<S = SceneNode[], O = Op> = ReturnType<typeof createHistory<S, O>>;
 
-export function createHistory(limit = HISTORY_LIMIT) {
-  const undoStack: HistoryEntry[] = [];
-  const redoStack: HistoryEntry[] = [];
+/**
+ * A linear undo history over a state `S` changed by ops `O`: the scene's nodes by default, or anything with an
+ * `apply` (the library's).
+ */
+export function createHistory<S = SceneNode[], O = Op>(limit = HISTORY_LIMIT, apply: (state: S, op: O) => S = applyOp as unknown as (state: S, op: O) => S) {
+  const undoStack: HistoryEntry<O>[] = [];
+  const redoStack: HistoryEntry<O>[] = [];
 
   /** Records a new entry. Any new edit clears the redo stack. */
-  const push = (entry: HistoryEntry): void => {
+  const push = (entry: HistoryEntry<O>): void => {
     undoStack.push(entry);
     if (undoStack.length > limit) undoStack.shift();
     redoStack.length = 0;
@@ -119,18 +123,18 @@ export function createHistory(limit = HISTORY_LIMIT) {
     push,
 
     /** Reverts the latest entry, whoever made it. */
-    undo(nodes: SceneNode[]): { nodes: SceneNode[]; entry: HistoryEntry } | null {
+    undo(nodes: S): { nodes: S; entry: HistoryEntry<O> } | null {
       const entry = undoStack.pop();
       if (!entry) return null;
       redoStack.push(entry);
-      return { nodes: entry.inverse.reduce(applyOp, nodes), entry };
+      return { nodes: entry.inverse.reduce(apply, nodes), entry };
     },
 
-    redo(nodes: SceneNode[]): { nodes: SceneNode[]; entry: HistoryEntry } | null {
+    redo(nodes: S): { nodes: S; entry: HistoryEntry<O> } | null {
       const entry = redoStack.pop();
       if (!entry) return null;
       undoStack.push(entry);
-      return { nodes: entry.ops.reduce(applyOp, nodes), entry };
+      return { nodes: entry.ops.reduce(apply, nodes), entry };
     },
 
     /**
@@ -138,7 +142,7 @@ export function createHistory(limit = HISTORY_LIMIT) {
      * without touching any nodes. Returns the entry the step pushed or moved. Throws if an undo or redo has nothing
      * to move (a log that doesn't match itself).
      */
-    replay(step: { type: "commit"; entry: HistoryEntry } | { type: "undo" } | { type: "redo" }): HistoryEntry {
+    replay(step: { type: "commit"; entry: HistoryEntry<O> } | { type: "undo" } | { type: "redo" }): HistoryEntry<O> {
       if (step.type === "commit") {
         push(step.entry);
         return step.entry;

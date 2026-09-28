@@ -583,6 +583,96 @@ The instructions went from 10,342 to 3,642 characters. The topics range from 0.7
 5. In a fresh Claude Code session on a large scene, ask *"what's in this level?"*. The agent should answer from the outline (the groups and their descriptions) without asking for `full`. Ask about something by name (*"where's the entry window?"*), and it should use `find_nodes`.
 6. Ask the agent for a round tower with a spiral stair and a door. It should read `get_guide` (holes, ramps) before drawing, and the result should be as good as in 07.
 
+### 08.2 — The library (done; checked in the browser by Orlando)
+
+**Built:**
+- **`src/shared/library.ts`** (pure):
+  - the types: `Tag`, `Skill` and `Library`;
+  - `LibraryOp`: set or remove a tag or skill by name, or set the guide's text. Every op is absolute, so replaying one is harmless;
+  - `applyLibraryOp` and `invertLibraryOp`;
+  - `resolveRef`, which finds a record by its name or an alias, in any case;
+  - `findRefs` for `@skill` / `#tag` references. A sigil counts at the start or after a non-word character, and the name must start with a letter, so emails, `room #2` and markdown headings aren't references;
+  - `unknownRefs`, `currentTags` and `LibraryEditSchema`.
+- **`src/server/library.ts`:** the library's store, with its own history. `commands.ts`'s `createHistory` is now generic over the state and the op type, and the scene keeps the defaults.
+  - An `edit` applies renames, then upserts, then removals, then the guide, each seeing the ones before it, all-or-nothing.
+  - An upsert changes only the fields given, and an edit that changes nothing records nothing.
+  - A rename keeps the old name as an alias. A name can't take another's alias, and renaming back drops it.
+  - A skill needs a description, and its tags must exist.
+  - Labels read like `Add #light`, `Agent: rename #light to #liftable`, `Edit design guide`, or `Edit library` for a mix.
+  - It warns about references to nothing in the descriptions it set.
+- **The data folder:**
+  - `library.json` (seq, tags, skills, `seeded`), `library-history.jsonl`, and `rules/design-guide.md` (the guide is written before `library.json`);
+  - `restoreLibrary` catches up a log one step ahead, like a scene's;
+  - a project whose `library.json` doesn't load won't open, and the file is never written over;
+  - `abilities/` is no longer created.
+- **The workspace:**
+  - it loads the project's library when one of its scenes opens;
+  - it seeds the default guide once (`seeded: ["guide"]`), so a deleted guide stays deleted;
+  - it saves every library step;
+  - it counts uses across the project's scenes: the open one live, and the others read when a scene opens.
+  - The scene store takes a `resolveTag`, so tags are checked against the library and stored by their current names.
+- **Tags on nodes:**
+  - `tags` on groups, boxes, cylinders, free-forms and ramps (not lines), at most 20;
+  - they're set in `draw_shapes`, `update_nodes` (null removes them) and `group_nodes`;
+  - converting to a free-form keeps them;
+  - the undo label is `Tag box_3`.
+- **The outline:**
+  - tags show by their current names, and deleted ones are left out;
+  - a `glossary` covers the tags and skills a result shows or names, one level deeper (a skill's tags, and what their descriptions name);
+  - a `guide` line gives the size and when the guide last changed (the file's time, in UTC);
+  - `find_nodes` takes `tag`, resolving aliases.
+- **MCP** (server version 0.0.13):
+  - `get_library` lists tags and skills with aliases and uses, plus the guide line;
+  - `update_library` takes `upsert`, `remove`, `rename` and `guide`;
+  - `get_guide` has the topics `design` (the project's guide) and `library`;
+  - `update_nodes` and `group_nodes` warn about references to nothing in a description;
+  - the core instructions gain a paragraph on the project and the design guide (4.4 kB now).
+- **WebSocket:**
+  - `update_library`, `library_undo` and `library_redo` from the editor;
+  - a `library` message with the library, its history and the uses, sent on connect, when a scene opens, when the library changes, and when a scene edit changes the uses (checked 300 ms after edits stop).
+- **The editor:**
+  - the **Library panel** (`Library.tsx`), toggled by a book button next to the project bar, with Skills, Tags and Guide tabs:
+    - rows show the name, the description's first line and the uses, and edit in place (rename, description, a skill's tags, Delete);
+    - there's a New form;
+    - the Guide tab saves a second after typing stops, and when the field is left;
+    - the panel has its own Undo / Redo, with `⌘Z` / `⇧⌘Z` while focus is in it (outside a text field).
+  - `RefText.tsx`:
+    - `RefTextArea` tints known references (skills amber, tags green), underlines unknown ones and lists them under the field, and completes `@` / `#` names as they're typed (↑↓, `Enter` / `Tab`, `Esc`);
+    - `TagsField` shows chips and completes from the library, with **Create #name**.
+  - The inspector's description uses `RefTextArea`, and a single group or shape (not a line) gets a **Tags** section.
+  - With the panel open, the inspector's default place moves left of it.
+- **The default design guide** (`defaultGuide.ts`, 3.8 kB) has these sections: goals, precedence, the game's facts (blank) with a size table, principles (model the player, telegraph before you gate, loop back, restraint, contrast), workflow (a brief first, distinct options, named groups, the critical path), common failures, the three-room worked example, and house rules.
+- There are 18 new tests (`library.test.ts`), 322 in all. Typecheck is clean, and the editor builds.
+
+**Scripted check** (port 5171, scratch `DATA_DIR`, 21 checks, all passed):
+- the editor gets the default guide, and `get_guide design` returns it;
+- `get_scene` carries the guide line;
+- the agent adds tags and skills, with a warning for `@water`;
+- an unknown tag is refused;
+- a group description with `@fsh` is warned about;
+- the glossary explains exactly what's shown;
+- after a rename, nodes show the new name, and `find_nodes` by the old name still works;
+- `get_library` counts uses;
+- `library_undo` from the editor undoes the agent's rename and leaves the scene untouched;
+- the human adds a tag;
+- tagging a node resends the library with new counts;
+- 13 tools.
+
+**Changed from the plan:**
+- **The Guide tab is a plain text area,** with reference highlighting and completion but no markdown preview. A preview needs a markdown library, and the text reads fine as it is.
+- **The tags field is for a single node.** Tagging a multi-selection can come later.
+- **When the guide changed** comes from the file's time, not the history.
+- **I drafted the default guide.** Orlando should review it (checklist item 8).
+
+**Browser checklist for Orlando** (restart the server, then reconnect with `/mcp`):
+1. Open a project: the book button next to the project bar opens the **Library** on the right. The inspector moves left of it, and the panel stays open after a reload.
+2. **Skills → New skill:** `telekinesis`, "moves objects tagged #light". In "acts on", type `light` and pick **Create #light**. Add it: the row shows "unused". Open the Tags tab: `#light` is there.
+3. Select a box: the inspector has a **Tags** section. Add `#light` (it completes), and remove it with × or Backspace. Put it back. Group the box, and give the group the description "a @tele…": completion offers `@telekinesis`, and `Enter` picks it. The reference is tinted amber. Type `@fsh`: it's underlined, with "Not in the library: @fsh" below.
+4. The Library rows now say "1 node" for both `@telekinesis` and `#light`.
+5. Rename `#light` to `#liftable` (open the row, change the name, press `Enter`). The box's chip says `#liftable`, and the row says "also #light". In the Library, press `⌘Z` (with focus on a button, not in a field) and the Undo button: only the library changes back, and the scene's undo in the tool bar is untouched.
+6. **Guide tab:** the default guide is there. Edit a line, stop typing for a second, and the library's Undo says "Edit design guide". Undo it.
+7. Ask the agent: *"what can the player do in this project, and what's in this scene?"* It should answer from the outline's glossary, and read `get_guide design` before any design task.
+8. **Read the default guide** and tell me what to change: this is the version every new project gets.
 ---
 
 ## 14. Notes for phase 09: the review loop

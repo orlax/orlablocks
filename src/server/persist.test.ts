@@ -31,9 +31,11 @@ describe("data folder", () => {
     const data = openDataDir(root);
     const id = data.createProject("Castle", "A test");
     expect(id).toBe("castle");
-    for (const folder of ["scenes", "abilities", "entities", "rules"]) {
+    for (const folder of ["scenes", "entities", "rules"]) {
       expect(fs.statSync(path.join(root, "projects", "castle", folder)).isDirectory()).toBe(true);
     }
+    // Skills live in library.json (08.2), so there's no abilities folder.
+    expect(fs.existsSync(path.join(root, "projects", "castle", "abilities"))).toBe(false);
     expect(data.readProject("castle")).toMatchObject({ name: "Castle", description: "A test" });
     data.release();
   });

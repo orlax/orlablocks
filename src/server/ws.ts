@@ -21,12 +21,41 @@ export function attachWebSocket(httpServer: Server, workspace: Workspace) {
   const send = (ws: WebSocket, msg: ServerMessage) => ws.send(JSON.stringify(msg));
 
   const sceneMessage = (): ServerMessage => ({ type: "scene", scene: store.getScene(), history: store.getHistory() });
+  const libraryMessage = (): ServerMessage =>
+    workspace.getOpen()
+      ? { type: "library", library: workspace.library.get(), history: workspace.library.getHistory(), uses: workspace.uses() }
+      : { type: "library", library: null, history: { canUndo: false, canRedo: false }, uses: { tags: {}, skills: {} } };
 
   const broadcast = (msg: ServerMessage) => {
     for (const client of wss.clients) send(client, msg);
   };
-  store.onChange(() => broadcast(sceneMessage()));
-  workspace.onOpened((open, restore) => broadcast({ type: "opened", open, ...(restore ? { restore } : {}) }));
+
+  // The library goes out when it changes and when a scene opens; a scene edit only resends it when the use counts
+  // changed (checked a moment after the edits stop, so a drag doesn't recount every frame).
+  let lastUses = "";
+  const broadcastLibrary = () => {
+    const msg = libraryMessage();
+    if (msg.type === "library") lastUses = JSON.stringify(msg.uses);
+    broadcast(msg);
+  };
+  let usesTimer: ReturnType<typeof setTimeout> | null = null;
+  const usesChanged = () => {
+    if (usesTimer) clearTimeout(usesTimer);
+    usesTimer = setTimeout(() => {
+      usesTimer = null;
+      if (workspace.getOpen() && JSON.stringify(workspace.uses()) !== lastUses) broadcastLibrary();
+    }, 300);
+    usesTimer.unref?.();
+  };
+  store.onChange(() => {
+    broadcast(sceneMessage());
+    usesChanged();
+  });
+  workspace.library.onChange(() => broadcastLibrary());
+  workspace.onOpened((open, restore) => {
+    broadcast({ type: "opened", open, ...(restore ? { restore } : {}) });
+    broadcastLibrary();
+  });
   workspace.onProjectsChanged((projects) => broadcast({ type: "projects", projects }));
 
   wss.on("connection", (ws) => {
@@ -35,6 +64,7 @@ export function attachWebSocket(httpServer: Server, workspace: Workspace) {
     send(ws, sceneMessage());
     const restore = workspace.getRestore();
     send(ws, { type: "opened", open: workspace.getOpen(), ...(restore ? { restore } : {}) });
+    send(ws, libraryMessage());
 
     ws.on("message", (raw) => {
       let data: unknown;
@@ -57,6 +87,9 @@ export function attachWebSocket(httpServer: Server, workspace: Workspace) {
         if (msg.type === "rename_scene") return workspace.renameScene(withoutType(msg));
         if (msg.type === "duplicate_scene") return void workspace.duplicateScene(withoutType(msg));
         if (msg.type === "open_scene") return workspace.openScene(withoutType(msg));
+        if (msg.type === "update_library") return void workspace.editLibrary(withoutType(msg), "human");
+        if (msg.type === "library_undo") return void workspace.requireLibrary().undo();
+        if (msg.type === "library_redo") return void workspace.requireLibrary().redo();
         const scene = workspace.requireScene();
         if (msg.type === "add_shapes") scene.drawShapes(msg.shapes, "human");
         else if (msg.type === "update_nodes") scene.updateNodes(msg.changes, "human");

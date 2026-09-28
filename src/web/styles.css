@@ -227,12 +227,18 @@ body {
 
 /* The project bar: the open project and scene, top left above the outliner, opening the picker. It grows with the
    names (never narrower than the outliner), and only very long names get an ellipsis. */
-.project-bar {
+.top-left {
   position: fixed;
   top: 12px;
   left: 12px;
+  z-index: 20;
+  display: flex;
+  gap: 6px;
+  max-width: calc(100vw - 24px);
+}
+.project-bar {
   min-width: 240px;
-  max-width: min(640px, calc(100vw - 24px));
+  max-width: min(640px, calc(100vw - 60px));
   height: 30px;
   display: flex;
   align-items: center;
@@ -249,6 +255,20 @@ body {
 .project-bar:hover { background: rgba(44, 47, 56, 0.95); }
 .project-bar .icon { flex: none; color: var(--muted); }
 .project-bar .where { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.library-toggle {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 8px;
+  background: var(--bar-bg);
+  color: var(--muted);
+  cursor: pointer;
+}
+.library-toggle:hover { color: var(--bar-text); background: rgba(44, 47, 56, 0.95); }
+.library-toggle.active { color: #8fb4f2; }
 
 /* Status bar docked along the bottom edge, full width: connection, cursor, yaw, counts and the current tool's
    hint. The numbers are monospace with fixed widths so they never jitter. */
@@ -643,23 +663,6 @@ body {
 }
 .inspector .stepper input.count::placeholder { color: rgba(255, 255, 255, 0.45); }
 .inspector .stepper input.count:focus { outline: 1px solid #8fb4f2; }
-.inspector textarea.description {
-  display: block;
-  box-sizing: border-box;
-  width: 100%;
-  min-height: 52px;
-  resize: vertical;
-  margin: 0 0 4px;
-  padding: 5px 7px;
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  border-radius: 6px;
-  background: rgba(255, 255, 255, 0.06);
-  color: var(--bar-text);
-  font: 12px/1.4 system-ui, sans-serif;
-  user-select: text;
-}
-.inspector textarea.description::placeholder { color: rgba(255, 255, 255, 0.45); }
-.inspector textarea.description:focus { outline: 1px solid #8fb4f2; }
 .inspector .slider { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; }
 .inspector .slider input { flex: 1; min-width: 0; accent-color: #8fb4f2; }
 .inspector .slider .value { min-width: 36px; text-align: right; font-variant-numeric: tabular-nums; color: #8fb4f2; }
@@ -670,3 +673,199 @@ body {
 .inspector button.mirror.x .axis { color: #f07a70; }
 .inspector button.mirror.z .axis { color: #6f9df5; }
 .inspector button.mirror.z svg { transform: rotate(90deg); }
+
+/* With the Library panel open, the inspector's default place is left of it (a dragged inspector stays put). */
+.app.library-open .inspector { right: calc(12px + var(--library-w) + 8px); }
+
+/* The Library panel (from 08): docked on the right, below the view bar, above the status bar. */
+:root { --library-w: 340px; }
+.library-panel {
+  position: fixed;
+  top: 52px;
+  right: 12px;
+  bottom: calc(var(--status-h) + 12px);
+  z-index: 6;
+  width: var(--library-w);
+  max-width: calc(100vw - 24px);
+  display: flex;
+  flex-direction: column;
+  border-radius: 10px;
+  background: var(--bar-bg);
+  color: var(--bar-text);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.25);
+  backdrop-filter: blur(6px);
+  font: 12px/1.4 system-ui, sans-serif;
+}
+.library-panel header { display: flex; align-items: center; gap: 2px; padding: 6px 6px 6px 10px; border-bottom: 1px solid rgba(255, 255, 255, 0.08); }
+.library-panel header .icon { color: var(--muted); margin-right: 4px; flex: none; }
+.library-panel header nav { display: flex; gap: 2px; flex: 1; min-width: 0; }
+.library-panel button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-width: 26px;
+  height: 26px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.library-panel button:hover:not(:disabled) { background: rgba(255, 255, 255, 0.08); }
+.library-panel button:disabled { opacity: 0.35; cursor: default; }
+.library-panel button.tab { color: var(--muted); font-weight: 600; }
+.library-panel button.tab.active { color: var(--bar-text); background: rgba(255, 255, 255, 0.1); }
+.library-panel button.labeled { border: 1px solid rgba(255, 255, 255, 0.14); }
+.library-panel button.primary { background: rgba(143, 180, 242, 0.25); border-color: rgba(143, 180, 242, 0.5); }
+.library-panel button.danger:hover { background: rgba(200, 70, 70, 0.3); }
+.library-panel button.add { margin: 0 0 8px; }
+.library-body { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 10px 10px; display: flex; flex-direction: column; }
+.library-intro { margin: 0 0 8px; color: var(--muted); }
+.records { list-style: none; margin: 0; padding: 0; }
+.record { border-top: 1px solid rgba(255, 255, 255, 0.06); }
+.record button.record-head {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: baseline;
+  gap: 0 4px;
+  width: 100%;
+  height: auto;
+  padding: 6px 4px;
+  text-align: left;
+  justify-content: stretch;
+}
+.record-head .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.record-head .used { color: var(--muted); font-size: 11px; white-space: nowrap; }
+.record-head .line { grid-column: 2 / 4; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.records .empty { color: var(--muted); padding: 8px 4px; }
+.sigil { font-weight: 700; }
+.sigil.skill { color: #e0b36a; }
+.sigil.tag { color: #7fc8a9; }
+.record-editor { display: flex; flex-direction: column; gap: 6px; padding: 2px 4px 10px; }
+.record-editor label { display: flex; align-items: center; gap: 6px; }
+.record-editor label.stacked { align-items: flex-start; }
+.record-editor label > span { width: 44px; flex: none; color: var(--muted); }
+.record-editor label.stacked > span { padding-top: 6px; }
+.record-editor input {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  padding: 0 7px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--bar-text);
+  font: 12px/1 ui-monospace, monospace;
+}
+.record-editor input:focus { outline: 1px solid #8fb4f2; }
+.record-editor input.invalid { outline: 1px solid #d86a6a; }
+.record-actions { display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
+.record-actions .aliases { flex: 1; color: var(--muted); font-size: 11px; }
+.guide-editor { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.guide-editor .ref-text { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.guide-editor .ref-field { flex: 1; min-height: 200px; }
+.guide-editor .ref-field textarea, .guide-editor .ref-backdrop { font: 12px/1.5 ui-monospace, monospace; }
+.guide-editor .ref-field textarea { height: 100%; resize: none; }
+
+/* Text that refers to the library: a transparent text area over a backdrop that tints known references and
+   underlines unknown ones. Both share every metric, so the tints sit exactly under the text. */
+.ref-text { position: relative; width: 100%; }
+.ref-field {
+  position: relative;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+}
+.ref-field textarea, .ref-backdrop {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 5px 7px;
+  border: 1px solid transparent;
+  font: 12px/1.4 system-ui, sans-serif;
+  letter-spacing: normal;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  scrollbar-gutter: stable;
+}
+.ref-field textarea {
+  position: relative;
+  z-index: 1;
+  display: block;
+  width: 100%;
+  min-height: 52px;
+  resize: vertical;
+  border-color: rgba(255, 255, 255, 0.18);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--bar-text);
+  user-select: text;
+  overflow-y: auto;
+}
+.ref-field textarea::placeholder { color: rgba(255, 255, 255, 0.45); }
+.ref-field textarea:focus { outline: 1px solid #8fb4f2; }
+.ref-backdrop { position: absolute; inset: 0; overflow: hidden; color: transparent; pointer-events: none; }
+.ref-backdrop mark { color: transparent; border-radius: 3px; }
+.ref-backdrop mark.skill { background: rgba(224, 179, 106, 0.28); }
+.ref-backdrop mark.tag { background: rgba(127, 200, 169, 0.26); }
+.ref-backdrop mark.unknown { background: none; text-decoration: underline dotted #e07070 2px; text-underline-offset: 3px; }
+.ref-unknown { color: #e79a9a; font-size: 11px; padding: 2px 2px 0; }
+.ref-suggest {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 100%;
+  z-index: 30;
+  list-style: none;
+  margin: 2px 0 0;
+  padding: 3px;
+  border-radius: 7px;
+  background: #23252c;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  font: 12px/1.3 system-ui, sans-serif;
+  color: var(--bar-text);
+}
+.ref-suggest li { display: flex; gap: 2px; align-items: baseline; padding: 4px 6px; border-radius: 5px; cursor: pointer; white-space: nowrap; overflow: hidden; }
+.ref-suggest li.active { background: rgba(143, 180, 242, 0.22); }
+.ref-suggest .hint { margin-left: 8px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+.inspector .ref-text { margin: 0 0 4px; }
+
+/* Tag chips, with a field that adds one. */
+.tags-field { position: relative; flex: 1; min-width: 0; margin: 0 0 4px; }
+.tags-field .chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  min-height: 28px;
+  padding: 3px 4px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+}
+.tags-field .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 20px;
+  padding: 0 2px 0 6px;
+  border-radius: 10px;
+  background: rgba(127, 200, 169, 0.22);
+  color: #bfe6d4;
+  font: 600 11px/1 system-ui, sans-serif;
+}
+.tags-field .chip button { width: 16px; min-width: 16px; height: 16px; padding: 0; border: 0; border-radius: 8px; background: none; color: inherit; cursor: pointer; display: grid; place-items: center; }
+.tags-field .chip button:hover { background: rgba(255, 255, 255, 0.15); }
+.tags-field input {
+  flex: 1;
+  min-width: 70px;
+  height: 20px;
+  border: 0;
+  outline: none;
+  background: none;
+  color: var(--bar-text);
+  font: 12px/1 system-ui, sans-serif;
+  user-select: text;
+}
+.tags-field input::placeholder { color: rgba(255, 255, 255, 0.45); }

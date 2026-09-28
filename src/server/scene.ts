@@ -73,6 +73,9 @@ export class SceneError extends Error {}
 /** A change to the nodes that the history records: a new step, or moving through the existing ones. */
 export type Step = { type: "commit"; entry: HistoryEntry } | { type: "undo"; entry: HistoryEntry } | { type: "redo"; entry: HistoryEntry };
 
+/** `{ tags }` when there are any, for spreading into a node. */
+const withTags = (tags: string[] | undefined) => (tags && tags.length > 0 ? { tags } : {});
+
 /** Degrees in 0..360, 2 decimals. */
 const normalizeRotation = (deg: number) => round2(normalizeDeg(deg)) % 360;
 
@@ -92,11 +95,12 @@ function describeIds(nodes: SceneNode[], ids: string[]): string {
 }
 
 /** What a group's update can change: it has no shape fields. */
-const GROUP_FIELDS: readonly string[] = ["name", "description", "parent", "locked", "hidden"];
+const GROUP_FIELDS: readonly string[] = ["name", "description", "tags", "parent", "locked", "hidden"];
 
 const FIELD_VERBS: Record<keyof NodePatch, string> = {
   name: "rename",
   description: "describe",
+  tags: "tag",
   parent: "regroup",
   kind: "change kind of",
   x: "move",
@@ -153,7 +157,11 @@ function parse<T extends z.ZodType>(schema: T, input: unknown, failure: string):
   return result.data;
 }
 
-export function createSceneStore() {
+/**
+ * `resolveTag` finds a tag in the project library by its name or an alias and returns its current name, or
+ * undefined for no such tag (the default: no library, so no tags).
+ */
+export function createSceneStore({ resolveTag = () => undefined }: { resolveTag?: (name: string) => string | undefined } = {}) {
   const scene: Scene = { view: { ...DEFAULT_VIEW }, selection: [], nodes: [] };
   const listeners = new Set<(scene: Scene) => void>();
   const stepListeners = new Set<(step: Step) => void>();
@@ -169,6 +177,17 @@ export function createSceneStore() {
   const step = (s: Step) => stepListeners.forEach((l) => l(s));
 
   const byId = () => new Map(scene.nodes.map((n) => [n.id, n]));
+
+  /** Tags as stored: each resolved to its current name, in order, each once; none = undefined. Unknown ones are errors. */
+  const tagList = (prefix: string, tags: string[] | null | undefined, errors: string[]): string[] | undefined => {
+    if (!tags) return undefined;
+    const missing = tags.filter((t) => !resolveTag(t));
+    if (missing.length > 0) {
+      errors.push(`${prefix}.tags: no tag ${missing.map((t) => `#${t.replace(/^#/, "")}`).join(", ")} in the project library (add it with update_library first)`);
+    }
+    const names = [...new Set(tags.flatMap((t) => resolveTag(t) ?? []))];
+    return names.length > 0 ? names : undefined;
+  };
 
   /** After every change to the nodes: drop selected IDs that no longer exist, then broadcast. */
   const emit = () => {
@@ -283,6 +302,7 @@ export function createSceneStore() {
         id: newId("freeform"),
         type: "freeform",
         ...(n.name !== undefined ? { name: n.name } : {}),
+        ...withTags(n.tags),
         ...(n.parent !== undefined ? { parent: n.parent } : {}),
         kind: n.kind,
         y: n.y,
@@ -412,6 +432,7 @@ export function createSceneStore() {
           return {
             type: "ramp" as const,
             ...(name ? { name } : {}),
+            ...withTags(tagList(prefix, d.tags, errors)),
             ...(d.parent !== undefined ? { parent: d.parent } : {}),
             kind: "volume" as const,
             ...checkRamp(prefix, { points, width: d.width ?? DEFAULT_RAMP_WIDTH, step: d.step, base: d.base ?? "solid" }, errors),
@@ -430,6 +451,7 @@ export function createSceneStore() {
         const bevel = fraction(d.bevel);
         const common = {
           ...(name ? { name } : {}),
+          ...withTags(tagList(prefix, d.tags, errors)),
           ...(d.parent !== undefined ? { parent: d.parent } : {}),
           kind: d.kind,
           y: round2(d.y ?? 0),
@@ -514,6 +536,7 @@ export function createSceneStore() {
           }
         } else if (node) {
           if (fields.description !== undefined) errors.push(`changes[${i}].description: only a group has a description ("${id}" is a ${node.type})`);
+          if (fields.tags !== undefined && node.type === "line") errors.push(`changes[${i}].tags: a line has no tags (it's an annotation)`);
           if (fields.sides !== undefined && node.type !== "cylinder") {
             errors.push(`changes[${i}].sides: only a cylinder has sides ("${id}" is a ${node.type})`);
           }
@@ -637,6 +660,7 @@ export function createSceneStore() {
         if (fields.arrow !== undefined) patch.arrow = fields.arrow;
         if (fields.name !== undefined) patch.name = fields.name.trim() || undefined;
         if (fields.description !== undefined) patch.description = fields.description?.trim() || undefined;
+        if (fields.tags !== undefined) patch.tags = tagList(`changes[${i}]`, fields.tags, errors);
         if (fields.parent !== undefined) patch.parent = parent;
         if (fields.locked !== undefined) patch.locked = fields.locked || undefined;
         if (fields.hidden !== undefined) patch.hidden = fields.hidden || undefined;
@@ -847,9 +871,10 @@ export function createSceneStore() {
      * deepest group that held them all. A node whose ancestor is also listed stays where it is (inside it).
      */
     groupNodes(input: z.input<typeof GroupNodesSchema>, actor: Actor): Group {
-      const { ids, name, description } = parse(GroupNodesSchema, input, "Nothing was grouped.");
+      const { ids, name, description, tags } = parse(GroupNodesSchema, input, "Nothing was grouped.");
       const errors: string[] = [];
       checkIds("ids", ids, errors);
+      const groupTags = tagList("group", tags, errors);
       failIf(errors, "Nothing was grouped.");
       const members = topmost(scene.nodes, ids);
       const parent = commonParent(scene.nodes, members);
@@ -860,6 +885,7 @@ export function createSceneStore() {
         type: "group",
         ...(trimmed ? { name: trimmed } : {}),
         ...(described ? { description: described } : {}),
+        ...withTags(groupTags),
         ...(parent !== undefined ? { parent } : {}),
         createdBy: actor,
       };

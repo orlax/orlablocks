@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { SkillSchema, TagSchema } from "./library";
 import { CameraSchema, NodeSchema } from "./scene.types";
 
 /**
@@ -23,6 +24,19 @@ export const ProjectFileSchema = z.object({
   createdAt: z.string(),
 });
 export type ProjectFile = z.infer<typeof ProjectFileSchema>;
+
+/**
+ * `library.json`: the project's tags and skills (plan 08 §5), written in full after every library step. The design
+ * guide's text is in `rules/design-guide.md`. `seeded` lists the defaults the project was given ("guide"), so a
+ * default it deleted doesn't come back.
+ */
+export const LibraryFileSchema = z.object({
+  seq: z.number().int().min(0),
+  tags: z.array(TagSchema).default([]),
+  skills: z.array(SkillSchema).default([]),
+  seeded: z.array(z.string()).default([]),
+});
+export type LibraryFile = z.infer<typeof LibraryFileSchema>;
 
 /** `scenes/<id>/scene.json`: written in full after every change to the nodes. */
 export const SceneFileSchema = z.object({

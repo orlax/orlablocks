@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { LibraryEditSchema, type Library, type Uses } from "./library";
 
 export type Actor = "human" | "agent";
 
@@ -37,6 +38,7 @@ export const DEFAULT_COLOR: ShapeColor = "almost-white";
 type Footprinted = {
   id: string; // server-assigned, "box_1", "cylinder_1", ... never reused
   name?: string; // for people and the agent ("lobby"); not unique
+  tags?: string[]; // library tag names ("climbable"), from 08
   parent?: string; // the group it's in; none = top level
   locked?: true; // can't be picked in the view (a human's editing aid; the outliner and the agent still reach it)
   hidden?: true; // not drawn in the view (a human's aid, like locked; a hidden hole cuts nothing there)
@@ -84,6 +86,7 @@ export type Freeform = {
   id: string; // "freeform_1", ...
   type: "freeform";
   name?: string;
+  tags?: string[];
   parent?: string;
   locked?: true;
   hidden?: true;
@@ -146,6 +149,7 @@ export type Ramp = {
   id: string; // "ramp_1", ...
   type: "ramp";
   name?: string;
+  tags?: string[];
   parent?: string;
   locked?: true;
   hidden?: true;
@@ -176,6 +180,7 @@ export type Group = {
   type: "group";
   name?: string;
   description?: string; // what this part of the level is, for people and the agent ("entry hall, safe zone")
+  tags?: string[];
   parent?: string;
   locked?: true;
   hidden?: true;
@@ -201,7 +206,7 @@ export type ShapePatch = Partial<Pick<Footprinted, "name" | "kind" | "x" | "z" |
   arrow?: LineArrow;
 };
 /** What an update op can change on any node: shape fields (shapes only), `description` (groups only), `name` and `parent`. */
-export type NodePatch = ShapePatch & { parent?: string; description?: string; locked?: true; hidden?: true };
+export type NodePatch = ShapePatch & { parent?: string; description?: string; tags?: string[]; locked?: true; hidden?: true };
 
 /**
  * What the editor currently shows. The camera looks down at the ground (x/z plane, y up) at a fixed pitch,
@@ -237,6 +242,8 @@ export const DEFAULT_VIEW: View = {
 export const COMPASS = { north: "-z", east: "+x", south: "+z", west: "-x" } as const;
 /** The longest description a group can have, in characters. */
 export const MAX_DESCRIPTION = 2000;
+/** The most tags a node can have. */
+export const MAX_TAGS = 20;
 /** Ground snap for footprints. */
 export const SNAP = 0.5;
 /** Vertical snap for heights, and the smallest height a box can have. */
@@ -308,6 +315,10 @@ const field = {
   rotation: z.number().describe("Degrees around the vertical axis through the center, counterclockwise seen from above"),
   color: ShapeColorSchema.describe(`Palette key: ${SHAPE_COLORS.join(", ")}`),
   name: z.string().describe('A label for people, e.g. "lobby". Not unique'),
+  tags: z
+    .array(z.string())
+    .max(MAX_TAGS)
+    .describe('Library tag names, without the #, e.g. ["climbable"]. Each must exist in the project library (update_library adds tags)'),
   parent: z.string().describe("ID of the group to put it in, e.g. group_1"),
   sides: z
     .number()
@@ -331,9 +342,12 @@ const field = {
 
 const ActorSchema = z.enum(["human", "agent"]);
 
+const TagsSchema = z.array(z.string());
+
 const footprinted = {
   id: z.string(),
   name: z.string().optional(),
+  tags: TagsSchema.optional(),
   parent: z.string().optional(),
   locked: z.literal(true).optional(),
   hidden: z.literal(true).optional(),
@@ -364,6 +378,7 @@ const FreeformSchema = z.object({
   id: z.string(),
   type: z.literal("freeform"),
   name: z.string().optional(),
+  tags: TagsSchema.optional(),
   parent: z.string().optional(),
   locked: z.literal(true).optional(),
   hidden: z.literal(true).optional(),
@@ -398,6 +413,7 @@ const RampSchema = z.object({
   id: z.string(),
   type: z.literal("ramp"),
   name: z.string().optional(),
+  tags: TagsSchema.optional(),
   parent: z.string().optional(),
   locked: z.literal(true).optional(),
   hidden: z.literal(true).optional(),
@@ -416,6 +432,7 @@ const GroupSchema = z.object({
   type: z.literal("group"),
   name: z.string().optional(),
   description: z.string().optional(),
+  tags: TagsSchema.optional(),
   parent: z.string().optional(),
   locked: z.literal(true).optional(),
   hidden: z.literal(true).optional(),
@@ -443,6 +460,7 @@ export const BoxInputSchema = z.strictObject({
   pitch: field.pitch.optional(),
   roll: field.roll.optional(),
   name: field.name.optional(),
+  tags: field.tags.optional(),
   parent: field.parent.optional().describe("ID of the group to put it in, e.g. group_1. Omit for the top level"),
 });
 export type BoxInput = z.input<typeof BoxInputSchema>;
@@ -471,6 +489,7 @@ export const FreeformInputSchema = z.strictObject({
   taper: BoxInputSchema.shape.taper,
   bevel: BoxInputSchema.shape.bevel,
   name: field.name.optional(),
+  tags: field.tags.optional(),
   parent: BoxInputSchema.shape.parent,
 });
 
@@ -546,6 +565,7 @@ export const RampInputSchema = z.strictObject({
   base: rampField.base.optional(),
   color: field.color.optional().describe(`Palette key: ${SHAPE_COLORS.join(", ")}. Defaults to ${DEFAULT_COLOR}`),
   name: field.name.optional(),
+  tags: field.tags.optional(),
   parent: field.parent.optional().describe("ID of the group to put it in, e.g. group_1. Omit for the top level"),
 });
 
@@ -609,6 +629,10 @@ export const NodeUpdateSchema = z.strictObject({
   dashed: lineField.dashed.optional().describe("Lines only: dashed or solid"),
   arrow: lineField.arrow.optional().describe("Lines only: none, end or both"),
   name: field.name.optional().describe('A label for people, e.g. "lobby". Not unique. An empty string removes it'),
+  tags: field.tags
+    .nullable()
+    .optional()
+    .describe("Groups and closed shapes and ramps: the whole list of library tag names (without #), or null / [] to remove them"),
   description: z
     .string()
     .max(MAX_DESCRIPTION)
@@ -672,6 +696,7 @@ export const GroupNodesSchema = z.strictObject({
   ids: IdsSchema.describe("IDs of the boxes and/or groups to put in a new group"),
   name: field.name.optional(),
   description: z.string().max(MAX_DESCRIPTION).optional().describe('What the group is, e.g. "entry hall, safe zone"'),
+  tags: field.tags.optional(),
 });
 export const UngroupSchema = z.strictObject({ ids: IdsSchema.describe("IDs of groups to dissolve; their contents stay") });
 /** The outliner's drag and drop: put nodes in `parent` (null = top level), just before sibling `before` (null = last). */
@@ -763,6 +788,9 @@ export const ClientMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("undo") }),
   z.object({ type: z.literal("redo") }),
   z.object({ type: z.literal("set_view"), view: ViewSchema, camera: CameraSchema }),
+  LibraryEditSchema.extend({ type: z.literal("update_library") }),
+  z.object({ type: z.literal("library_undo") }),
+  z.object({ type: z.literal("library_redo") }),
 ]);
 export type ClientMessage = z.input<typeof ClientMessageSchema>;
 
@@ -771,4 +799,6 @@ export type ServerMessage =
   | { type: "projects"; projects: ProjectSummary[] }
   // `restore` only when a scene opens and on connect; a rename re-sends `opened` without it.
   | { type: "opened"; open: OpenScene | null; restore?: EditorRestore }
-  | { type: "error"; message: string };
+  | { type: "error"; message: string }
+  // The open project's library (null with nothing open), its own undo state, and where its tags and skills are used.
+  | { type: "library"; library: Library | null; history: HistorySummary; uses: Uses };

@@ -19,6 +19,7 @@ import {
   ShapeInputSchema,
   UngroupSchema,
 } from "../shared/scene.types";
+import { EMPTY_LIBRARY, LibraryEditSchema, unknownRefs, type Library } from "../shared/library";
 import { isGroup, isShape } from "../shared/tree";
 import { GUIDE_TOPICS, guideTopic, INSTRUCTIONS, topicList } from "./guide";
 import { describeScene, findNodes, FULL_SCENE_MAX, MAX_MATCHES } from "./outline";
@@ -48,12 +49,26 @@ function guided<T>(run: () => T): T {
 function buildServer(workspace: Workspace) {
   /** A result with the scene's hole warnings added (holes that cut nothing), when there are any. */
   const warned = <T extends object>(result: T) => {
-    const warnings = holeWarnings(store().getScene().nodes).map(withTopic);
+    const own = (result as { warnings?: string[] }).warnings ?? [];
+    const warnings = [...own, ...holeWarnings(store().getScene().nodes).map(withTopic)];
     return warnings.length > 0 ? { ...result, warnings } : result;
   };
-  const server = new McpServer({ name: "dungeon-designer", version: "0.0.12" }, { instructions: INSTRUCTIONS });
+  const server = new McpServer({ name: "dungeon-designer", version: "0.0.13" }, { instructions: INSTRUCTIONS });
   // Every tool reads or edits the open scene, and fails with a clear message while nothing is open.
   const store = () => workspace.requireScene();
+  const library = (): Library => (workspace.getOpen() ? workspace.library.get() : EMPTY_LIBRARY);
+  /** The outline's line about the design guide: its size and when it last changed, as a reminder to read it. */
+  const guideLine = () => {
+    const text = library().guide.trim();
+    if (!text) return "no design guide yet";
+    const at = workspace.guideChangedAt();
+    return `design guide, ${(text.length / 1000).toFixed(1)} kB${at ? `, changed ${at.toISOString().slice(0, 16).replace("T", " ")} UTC` : ""}: read it with get_guide design`;
+  };
+  /** Warnings for references to nothing in the descriptions an edit set. */
+  const refWarnings = (described: { id: string; description?: string | null }[]) =>
+    described.flatMap(({ id, description }) =>
+      description ? unknownRefs(library(), description).map((r) => `${id}'s description: ${r} names nothing in the library (get_guide library)`) : [],
+    );
 
   server.registerTool(
     "get_scene",
@@ -71,7 +86,10 @@ function buildServer(workspace: Workspace) {
         full: z.boolean().optional().describe("List every node under the root, with no depth limit"),
       },
     },
-    async (query) => json(warned(describeScene(workspace.getOpen()!, store().getScene(), query))),
+    async (query) => {
+      const scene = store().getScene();
+      return json(warned(describeScene(workspace.getOpen()!, scene, query, { library: library(), guide: guideLine() })));
+    },
   );
 
   server.registerTool(
@@ -84,6 +102,7 @@ function buildServer(workspace: Workspace) {
         `ID ("entry_window"), or to find what's in or near an area.`,
       inputSchema: {
         name: z.string().optional().describe("Part of the name, any case"),
+        tag: z.string().optional().describe("A library tag (without #): only nodes carrying it"),
         type: z.enum(["box", "cylinder", "freeform", "line", "ramp", "group"]).optional(),
         kind: z.enum(["room", "volume", "hole"]).optional().describe("Closed shapes and ramps only"),
         under: z.string().optional().describe("ID of a group: only nodes inside it, at any depth"),
@@ -93,7 +112,7 @@ function buildServer(workspace: Workspace) {
           .describe("Only nodes whose bounds come within radius meters of the point x, z (on the ground)"),
       },
     },
-    async (query) => json(findNodes(store().getScene().nodes, query)),
+    async (query) => json(findNodes(store().getScene().nodes, query, library())),
   );
 
   server.registerTool(
@@ -103,7 +122,45 @@ function buildServer(workspace: Workspace) {
       description: `Return one topic of the detailed guide. Read a topic before using its types or fields for the first time in a session. Topics:\n${topicList()}`,
       inputSchema: { topic: z.enum(GUIDE_TOPICS) },
     },
-    async ({ topic }) => ({ content: [{ type: "text" as const, text: guideTopic(topic) }] }),
+    async ({ topic }) => {
+      if (topic === "design") store();
+      return { content: [{ type: "text" as const, text: guideTopic(topic, library().guide) }] };
+    },
+  );
+
+  server.registerTool(
+    "get_library",
+    {
+      title: "Get library",
+      description:
+        "Return the open project's library: every tag and skill with its description (a skill with its tags), their " +
+        "aliases (old names), how many nodes use each and in how many scenes, and the design guide's line (read the " +
+        "guide itself with get_guide design). The outline's glossary already explains the tags and skills it shows.",
+    },
+    async () => {
+      store();
+      const lib = library();
+      const uses = workspace.uses();
+      return json({
+        tags: lib.tags.map((t) => ({ ...t, ...(uses.tags[t.name] ? { used: uses.tags[t.name] } : {}) })),
+        skills: lib.skills.map((k) => ({ ...k, ...(uses.skills[k.name] ? { used: uses.skills[k.name] } : {}) })),
+        guide: guideLine(),
+      });
+    },
+  );
+
+  server.registerTool(
+    "update_library",
+    {
+      title: "Update library",
+      description:
+        "Change the open project's library, as one step in the library's own undo history (not the scene's): add or " +
+        "change tags and skills (`upsert`: only the fields given change), `rename` them (the old name stays as an alias), " +
+        "`remove` them, or replace the design guide's text (`guide`, only when the human asks). All-or-nothing. " +
+        "Returns what changed, and warnings for references in the descriptions to nothing in the library.",
+      inputSchema: LibraryEditSchema.shape,
+    },
+    async (edit) => json(workspace.editLibrary(edit, "agent")),
   );
 
   server.registerTool(
@@ -158,7 +215,8 @@ function buildServer(workspace: Workspace) {
     },
     async ({ changes }) => {
       const updated = guided(() => store().updateNodes(changes, "agent"));
-      if (!changes.some((c) => c.type !== undefined)) return json(warned({ updated }));
+      const refs = refWarnings(changes);
+      if (!changes.some((c) => c.type !== undefined)) return json(warned({ updated, ...(refs.length > 0 ? { warnings: refs } : {}) }));
       return json(warned({ converted: changes.map((c, i) => ({ from: c.id, to: updated[i].id })), updated }));
     },
   );
@@ -240,7 +298,11 @@ function buildServer(workspace: Workspace) {
         `held them all. Returns the new group (use its ID with move_nodes, rotate_nodes, or as a parent in draw_shapes).`,
       inputSchema: GroupNodesSchema.shape,
     },
-    async (input) => json(warned({ group: store().groupNodes(input, "agent") })),
+    async (input) => {
+      const group = store().groupNodes(input, "agent");
+      const refs = refWarnings([{ id: group.id, description: group.description }]);
+      return json(warned({ group, ...(refs.length > 0 ? { warnings: refs } : {}) }));
+    },
   );
 
   server.registerTool(

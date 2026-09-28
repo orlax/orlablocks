@@ -5,14 +5,17 @@ import {
   AppFileSchema,
   EditorFileSchema,
   firstIds,
+  LibraryFileSchema,
   ProjectFileSchema,
   SceneFileSchema,
   type AppFile,
   type EditorFile,
+  type LibraryFile,
   type ProjectFile,
   type SceneFile,
 } from "../shared/project.types";
 import { NodeSchema, type Actor, type NodePatch, type ProjectSummary } from "../shared/scene.types";
+import { LibraryOpSchema, type LibraryOp } from "../shared/library";
 import type { Op } from "./commands";
 
 /**
@@ -20,8 +23,8 @@ import type { Op } from "./commands";
  * atomic (a temp file, then a rename), so a crash never leaves half a file.
  */
 
-/** The folders a project holds for the semantic layer. Created empty for now. */
-export const SEMANTIC_FOLDERS = ["abilities", "entities", "rules"] as const;
+/** The folders a project holds for the semantic layer: entity definitions (08.4) and the design guide. */
+export const SEMANTIC_FOLDERS = ["entities", "rules"] as const;
 
 export class LockedError extends Error {}
 
@@ -34,6 +37,48 @@ export type HistoryLine = { seq: number; at: number } & (
   | { type: "undo" }
   | { type: "redo" }
 );
+
+/** One line of `library-history.jsonl`: like a scene's, with library ops. */
+export type LibraryHistoryLine = { seq: number; at: number } & (
+  | { type: "commit"; label: string; actor: Actor; ops: LibraryOp[]; inverse: LibraryOp[] }
+  | { type: "undo" }
+  | { type: "redo" }
+);
+
+const LibraryHistoryLineSchema = z.discriminatedUnion("type", [
+  z.object({
+    seq: z.number().int().min(1),
+    at: z.number(),
+    type: z.literal("commit"),
+    label: z.string(),
+    actor: z.enum(["human", "agent"]),
+    ops: z.array(LibraryOpSchema),
+    inverse: z.array(LibraryOpSchema),
+  }),
+  z.object({ seq: z.number().int().min(1), at: z.number(), type: z.literal("undo") }),
+  z.object({ seq: z.number().int().min(1), at: z.number(), type: z.literal("redo") }),
+]);
+
+/** Reads a JSON-lines log, checking each line with `schema`. Null if the file doesn't exist. */
+function readLines<T extends z.ZodType>(file: string, schema: T): z.output<T>[] | null {
+  if (!fs.existsSync(file)) return null;
+  const lines = fs.readFileSync(file, "utf8").split("\n");
+  if (lines.at(-1) === "") lines.pop();
+  return lines.map((text, i) => {
+    let data: unknown;
+    try {
+      data = JSON.parse(text);
+    } catch (err) {
+      throw new Error(`${file} line ${i + 1}: ${(err as Error).message}`);
+    }
+    const result = schema.safeParse(data);
+    if (!result.success) {
+      const issue = result.error.issues[0];
+      throw new Error(`${file} line ${i + 1}: ${issue.path.map(String).join(".") || "(line)"}: ${issue.message}`);
+    }
+    return result.data;
+  });
+}
 
 /**
  * In an update patch, a key set to undefined removes that field (e.g. undoing a first rename removes the name).
@@ -152,6 +197,9 @@ export function openDataDir(root: string) {
   const sceneFile = (project: string, scene: string) => path.join(scenesDir(project), scene, "scene.json");
   const historyFile = (project: string, scene: string) => path.join(scenesDir(project), scene, "history.jsonl");
   const editorFile = (project: string, scene: string) => path.join(scenesDir(project), scene, "editor.json");
+  const libraryFile = (project: string) => path.join(projectDir(project), "library.json");
+  const libraryHistoryFile = (project: string) => path.join(projectDir(project), "library-history.jsonl");
+  const guideFile = (project: string) => path.join(projectDir(project), "rules", "design-guide.md");
   const appFile = path.join(root, "app.json");
 
   return {
@@ -283,24 +331,43 @@ export function openDataDir(root: string) {
      * an Error naming the first line that doesn't load.
      */
     readHistory(project: string, scene: string): HistoryLine[] | null {
-      const file = historyFile(project, scene);
-      if (!fs.existsSync(file)) return null;
-      const lines = fs.readFileSync(file, "utf8").split("\n");
-      if (lines.at(-1) === "") lines.pop();
-      return lines.map((text, i) => {
-        let data: unknown;
-        try {
-          data = JSON.parse(text);
-        } catch (err) {
-          throw new Error(`${file} line ${i + 1}: ${(err as Error).message}`);
-        }
-        const result = HistoryLineSchema.safeParse(data);
-        if (!result.success) {
-          const issue = result.error.issues[0];
-          throw new Error(`${file} line ${i + 1}: ${issue.path.map(String).join(".") || "(line)"}: ${issue.message}`);
-        }
-        return result.data as HistoryLine;
-      });
+      return readLines(historyFile(project, scene), HistoryLineSchema) as HistoryLine[] | null;
+    },
+
+    /**
+     * The project's library: `library.json` (null if it has none yet) and the design guide's text (null if
+     * `rules/design-guide.md` doesn't exist). Throws if `library.json` exists but doesn't load.
+     */
+    readLibrary(project: string): { file: LibraryFile | null; guide: string | null } {
+      const file = fs.existsSync(libraryFile(project)) ? readJson(libraryFile(project), LibraryFileSchema) : null;
+      const guide = fs.existsSync(guideFile(project)) ? fs.readFileSync(guideFile(project), "utf8") : null;
+      return { file, guide };
+    },
+
+    /** Writes `library.json`, and the design guide when `guide` is given (the guide first: the file's seq says the step is saved). */
+    writeLibrary(project: string, file: LibraryFile, guide?: string): void {
+      if (guide !== undefined) {
+        fs.mkdirSync(path.dirname(guideFile(project)), { recursive: true });
+        const tmp = `${guideFile(project)}.tmp`;
+        fs.writeFileSync(tmp, guide);
+        fs.renameSync(tmp, guideFile(project));
+      }
+      writeJson(libraryFile(project), file);
+    },
+
+    /** When the design guide last changed on disk, or null if the project has none. */
+    guideChangedAt(project: string): Date | null {
+      return fs.existsSync(guideFile(project)) ? fs.statSync(guideFile(project)).mtime : null;
+    },
+
+    /** Adds one line to the library's history log. */
+    appendLibraryHistory(project: string, line: LibraryHistoryLine): void {
+      fs.appendFileSync(libraryHistoryFile(project), `${JSON.stringify(line)}\n`);
+    },
+
+    /** The library's history log, or null if it has none. Throws an Error naming the first line that doesn't load. */
+    readLibraryHistory(project: string): LibraryHistoryLine[] | null {
+      return readLines(libraryHistoryFile(project), LibraryHistoryLineSchema) as LibraryHistoryLine[] | null;
     },
   };
 }

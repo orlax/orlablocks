@@ -14,9 +14,14 @@ import {
   type View,
 } from "../shared/scene.types";
 import { round2 } from "../shared/geometry";
-import type { NextId, SceneFile } from "../shared/project.types";
+import { applyLibraryOp, findRefs, resolveRef, type Library, type LibraryEdit, type Uses } from "../shared/library";
+import type { LibraryFile, NextId, SceneFile } from "../shared/project.types";
+import { isGroup } from "../shared/tree";
+import type { SceneNode } from "../shared/scene.types";
 import { applyOp, createHistory, type HistoryEntry } from "./commands";
-import type { DataDir, HistoryLine } from "./persist";
+import { DEFAULT_GUIDE } from "./defaultGuide";
+import { createLibraryStore, newLibraryHistory, type LibraryEntry, type LibraryStep, type LibraryStore } from "./library";
+import type { DataDir, HistoryLine, LibraryHistoryLine } from "./persist";
 import { createSceneStore, SceneError, type SceneStore, type Step } from "./scene";
 
 /** Parses with a zod schema or throws a SceneError starting with `failure`. */
@@ -103,11 +108,72 @@ export function restoreScene(file: SceneFile, lines: HistoryLine[] | null) {
 }
 
 /**
+ * Rebuilds the library's history from its log and checks it against `library.json`, as `restoreScene` does for a
+ * scene: a log one step ahead (a crash between the two writes) has that step applied here.
+ */
+export function restoreLibrary(file: LibraryFile | null, guide: string | null, lines: LibraryHistoryLine[] | null) {
+  const history = newLibraryHistory();
+  let library: Library = { tags: file?.tags ?? [], skills: file?.skills ?? [], guide: guide ?? "" };
+  let seq = file?.seq ?? 0;
+  const start = seq;
+  if (!lines || lines.length === 0) return { library, seq, history, caughtUp: false };
+  lines.forEach((line, i) => {
+    if (i > 0 && line.seq !== lines[i - 1].seq + 1) throw new Error(`library-history.jsonl: step ${line.seq} follows step ${lines[i - 1].seq}`);
+  });
+  const last = lines.at(-1)!.seq;
+  if (last !== start && last !== start + 1) throw new Error(`library-history.jsonl ends at step ${last}, but library.json is at step ${start}`);
+  for (const line of lines) {
+    let entry: LibraryEntry;
+    try {
+      entry = history.replay(
+        line.type === "commit"
+          ? { type: "commit", entry: { label: line.label, actor: line.actor, at: line.at, ops: line.ops, inverse: line.inverse } }
+          : { type: line.type },
+      );
+    } catch (err) {
+      throw new Error(`library-history.jsonl step ${line.seq}: ${(err as Error).message}`);
+    }
+    if (line.seq > start) {
+      library = (line.type === "undo" ? entry.inverse : entry.ops).reduce(applyLibraryOp, library);
+      seq = line.seq;
+    }
+  }
+  return { library, seq, history, caughtUp: seq !== start };
+}
+
+/** How many nodes in `nodes` use each tag and skill: carrying the tag, or naming it in a group's description. */
+export function countUses(library: Library, nodes: SceneNode[]): { tags: Map<string, number>; skills: Map<string, number> } {
+  const tags = new Map<string, number>();
+  const skills = new Map<string, number>();
+  for (const n of nodes) {
+    const used = { tag: new Set<string>(), skill: new Set<string>() };
+    for (const t of ("tags" in n ? n.tags : undefined) ?? []) {
+      const tag = resolveRef(library, "tag", t);
+      if (tag) used.tag.add(tag.name);
+    }
+    if (isGroup(n) && n.description) {
+      for (const r of findRefs(n.description)) {
+        const found = resolveRef(library, r.kind, r.name);
+        if (found) used[r.kind].add(found.name);
+      }
+    }
+    used.tag.forEach((t) => tags.set(t, (tags.get(t) ?? 0) + 1));
+    used.skill.forEach((k) => skills.set(k, (skills.get(k) ?? 0) + 1));
+  }
+  return { tags, skills };
+}
+
+/**
  * The open scene (plan 04 §4): one per server, shared by every tab and the agent, or none. Loads a scene's files
  * into the store when it opens, and writes `scene.json` after every step.
  */
 export function createWorkspace(data: DataDir) {
-  const store = createSceneStore();
+  const library: LibraryStore = createLibraryStore();
+  const store = createSceneStore({ resolveTag: (name) => resolveRef(library.get(), "tag", name)?.name });
+  // The library open with the scene: its project, the step it's saved at, and the defaults it was given.
+  let openLibrary: { project: string; seq: number; seeded: string[] } | null = null;
+  // Each other scene's nodes in the open project, for counting uses (read when the library loads or changes).
+  let otherScenes: SceneNode[][] = [];
   let open: (OpenScene & { createdAt: string; seq: number; camera: Camera | null }) | null = null;
   const openedListeners = new Set<(open: OpenScene | null, restore?: EditorRestore) => void>();
   const projectsListeners = new Set<(projects: ProjectSummary[]) => void>();
@@ -137,6 +203,61 @@ export function createWorkspace(data: DataDir) {
       throw new SceneError(`The change was made but not saved: ${(err as Error).message}`);
     }
   });
+
+  const libraryFile = (): LibraryFile => ({ seq: openLibrary!.seq, tags: library.get().tags, skills: library.get().skills, seeded: openLibrary!.seeded });
+
+  const readOtherScenes = () => {
+    if (!open) return void (otherScenes = []);
+    const project = data.listProjects().find((p) => p.id === open!.project.id);
+    otherScenes = (project?.scenes ?? [])
+      .filter((sc) => sc.id !== open!.scene.id && !sc.error)
+      .flatMap((sc) => {
+        try {
+          return [data.readScene(open!.project.id, sc.id).nodes];
+        } catch {
+          return [];
+        }
+      });
+  };
+
+  // The log first, then the state (the guide before library.json), as for a scene.
+  library.onStep((step: LibraryStep) => {
+    if (!openLibrary) return;
+    openLibrary.seq += 1;
+    const line: LibraryHistoryLine = step.type === "commit" ? { seq: openLibrary.seq, type: "commit", ...step.entry } : { seq: openLibrary.seq, type: step.type, at: Date.now() };
+    const touchesGuide = step.entry.ops.some((op) => op.op === "guide");
+    try {
+      data.appendLibraryHistory(openLibrary.project, line);
+      data.writeLibrary(openLibrary.project, libraryFile(), touchesGuide ? library.get().guide : undefined);
+    } catch (err) {
+      console.error("Saving the library failed", err);
+      throw new SceneError(`The change was made but not saved: ${(err as Error).message}`);
+    }
+  });
+
+  /** Loads a project's library into its store (when a scene of another project opens), seeding the default guide once. */
+  const loadLibrary = (project: string) => {
+    if (openLibrary?.project === project) return;
+    let restored;
+    let file: LibraryFile | null;
+    try {
+      const read = data.readLibrary(project);
+      file = read.file;
+      restored = restoreLibrary(read.file, read.guide, data.readLibraryHistory(project));
+    } catch (err) {
+      throw new SceneError(`The project's library didn't load, so the scene wasn't opened:\n${(err as Error).message}`);
+    }
+    const seeded = [...(file?.seeded ?? [])];
+    let { library: loaded } = restored;
+    const seed = !seeded.includes("guide");
+    if (seed) {
+      if (!loaded.guide) loaded = { ...loaded, guide: DEFAULT_GUIDE };
+      seeded.push("guide");
+    }
+    openLibrary = { project, seq: restored.seq, seeded };
+    library.load({ library: loaded, history: restored.history });
+    if (seed || restored.caughtUp || !file) data.writeLibrary(project, libraryFile(), seed || restored.caughtUp ? loaded.guide : undefined);
+  };
 
   const projectsChanged = () => {
     const projects = data.listProjects();
@@ -196,6 +317,7 @@ export function createWorkspace(data: DataDir) {
     } catch (err) {
       console.warn(`Ignoring the editor state: ${(err as Error).message}`);
     }
+    loadLibrary(project);
     open = {
       project: { id: project, name: loaded.project.name, description: loaded.project.description },
       scene: { id: scene, name: loaded.file.name },
@@ -210,12 +332,50 @@ export function createWorkspace(data: DataDir) {
       writeScene();
     }
     data.writeApp({ lastOpen: { project, scene } });
+    readOtherScenes();
     openedChanged(restoreOf());
   };
 
   return {
     /** The store behind the open scene. Always exists (view and selection reports go to it even with nothing open). */
     store,
+
+    /** The store behind the open project's library (empty until a scene opens). */
+    library,
+
+    /** The library, for reading or editing. Throws a SceneError while nothing is open. */
+    requireLibrary(): LibraryStore {
+      if (!open) throw new SceneError(NO_SCENE_OPEN);
+      return library;
+    },
+
+    /** Edits the open project's library as one step (see the library store's `edit`). */
+    editLibrary(input: LibraryEdit, actor: "human" | "agent") {
+      if (!open) throw new SceneError(NO_SCENE_OPEN);
+      return library.edit(input, actor);
+    },
+
+    /** When the open project's design guide last changed, or null if it has none. */
+    guideChangedAt(): Date | null {
+      return open ? data.guideChangedAt(open.project.id) : null;
+    },
+
+    /** How many nodes use each tag and skill, and in how many of the project's scenes (the open one live). */
+    uses(): Uses {
+      const lib = library.get();
+      const result: Uses = { tags: {}, skills: {} };
+      for (const nodes of [store.getScene().nodes, ...otherScenes]) {
+        const counts = countUses(lib, nodes);
+        for (const kind of ["tags", "skills"] as const) {
+          for (const [name, n] of counts[kind]) {
+            const u = (result[kind][name] ??= { nodes: 0, scenes: 0 });
+            u.nodes += n;
+            u.scenes += 1;
+          }
+        }
+      }
+      return result;
+    },
 
     getOpen: publicOpen,
 

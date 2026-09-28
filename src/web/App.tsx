@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps } from "react";
-import { ChevronDown, Map as MapIcon } from "lucide-react";
+import { BookOpen, ChevronDown, Map as MapIcon } from "lucide-react";
 import {
   DEFAULT_COLOR,
   DEFAULT_LINE_COLOR,
@@ -25,6 +25,8 @@ import { shapesUnder, childrenOf, countsText, isShape, isGroup, hiddenIds, locke
 import type { CameraState, GroundPoint } from "./camera";
 import { clipboardText, readClipboard } from "./clipboard";
 import { ErrorPanel } from "./ErrorPanel";
+import { LibraryPanel } from "./Library";
+import { currentTags } from "../shared/library";
 import { reportError } from "./errors";
 import { Inspector, type InspectorProps } from "./Inspector";
 import { highlightedText, typingInField } from "./keys";
@@ -91,8 +93,28 @@ const details = (s: Shape) => {
   return `${s.width} × ${s.depth} × ${s.height} m${sides}${wall}${tilt} · y ${s.y} · ${s.rotation}°`;
 };
 
+/** localStorage key: whether the Library panel is open. */
+const LIBRARY_OPEN_KEY = "dd.library.open";
+
 export function App() {
-  const { scene, history, projects, open, restore, connected, error, clearError, send } = useScene();
+  const { scene, history, projects, open, restore, library: libraryState, connected, error, clearError, send } = useScene();
+  const library = libraryState.library;
+  // The Library panel, open or not, remembered per viewer.
+  const [libraryOpen, setLibraryOpenState] = useState(() => {
+    try {
+      return localStorage.getItem(LIBRARY_OPEN_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  const setLibraryOpen = (on: boolean) => {
+    setLibraryOpenState(on);
+    try {
+      localStorage.setItem(LIBRARY_OPEN_KEY, on ? "1" : "0");
+    } catch {
+      // A convenience only.
+    }
+  };
   const [pickerOpen, setPickerOpen] = useState(false);
   const [view, setView] = useState<View>(DEFAULT_VIEW);
   const [camera, setCamera] = useState<CameraState | null>(null);
@@ -260,6 +282,8 @@ export function App() {
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (typingInField(e)) return;
+      // The Library panel has its own undo, and keys there are its own.
+      if (e.target instanceof HTMLElement && e.target.closest(".library-panel")) return;
       const key = e.key.toLowerCase();
       const { nodes, selection, context, open, pickerOpen, visible, isolated } = state.current;
       // Nothing to edit while the picker is up (and while nothing is open, it always is).
@@ -546,9 +570,21 @@ export function App() {
           ? {
               title: contextNode ? `${contextNode.name ?? contextNode.id} › ${selectionTitle}` : selectionTitle,
               info: editing && editable ? `editing points · ${selectionInfo}` : selectionInfo,
+              library,
               description:
                 single && isGroup(single)
                   ? { value: single.description ?? "", onChange: (text) => send({ type: "update_nodes", changes: [{ id: single.id, description: text || null }] }) }
+                  : undefined,
+              tags:
+                single && single.type !== "line" && library
+                  ? {
+                      value: currentTags(library, single.tags),
+                      onChange: (tags) => send({ type: "update_nodes", changes: [{ id: single.id, tags }] }),
+                      onCreate: (name) => {
+                        send({ type: "update_library", upsert: [{ kind: "tag", name }] });
+                        send({ type: "update_nodes", changes: [{ id: single.id, tags: [...currentTags(library, single.tags), name] }] });
+                      },
+                    }
                   : undefined,
               sides:
                 singleShape?.type === "cylinder"
@@ -566,7 +602,7 @@ export function App() {
           : null;
 
   return (
-    <div className="app">
+    <div className={libraryOpen && open && library ? "app library-open" : "app"}>
       <Viewport
         tool={activeTool}
         nodes={nodes}
@@ -632,21 +668,35 @@ export function App() {
       />
 
       {open && (
-        <button
-          type="button"
-          className="project-bar"
-          title="Projects and scenes"
-          onClick={() => {
-            clearError();
-            setPickerOpen(true);
-          }}
-        >
-          <MapIcon size={14} className="icon" />
-          <span className="where">
-            {open.project.name} ▸ {open.scene.name}
-          </span>
-          <ChevronDown size={14} className="icon" />
-        </button>
+        <div className="top-left">
+          <button
+            type="button"
+            className="project-bar"
+            title="Projects and scenes"
+            onClick={() => {
+              clearError();
+              setPickerOpen(true);
+            }}
+          >
+            <MapIcon size={14} className="icon" />
+            <span className="where">
+              {open.project.name} ▸ {open.scene.name}
+            </span>
+            <ChevronDown size={14} className="icon" />
+          </button>
+          <button
+            type="button"
+            className={libraryOpen ? "library-toggle active" : "library-toggle"}
+            title={libraryOpen ? "Close the library" : "The project's library: skills, tags and the design guide"}
+            onClick={() => setLibraryOpen(!libraryOpen)}
+          >
+            <BookOpen size={14} />
+          </button>
+        </div>
+      )}
+
+      {open && library && libraryOpen && (
+        <LibraryPanel library={library} history={libraryState.history} uses={libraryState.uses} send={send} onClose={() => setLibraryOpen(false)} />
       )}
 
       <div className="info-label">
