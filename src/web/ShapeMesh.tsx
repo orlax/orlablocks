@@ -75,14 +75,14 @@ function ghostMaterial(color: ShapeColor, highlight: "hover" | "selected" | unde
   }
   return m;
 }
-const getShared = () => (shared ??= createShared());
+export const getShared = () => (shared ??= createShared());
 
 type ColorMaterials = Record<
   "body" | "floor" | "bodySelected" | "floorSelected" | "bodyHover" | "floorHover",
   THREE.MeshLambertMaterial
 >;
 const byColor = new Map<ShapeColor, ColorMaterials>();
-function colorMaterials(color: ShapeColor): ColorMaterials {
+export function colorMaterials(color: ShapeColor): ColorMaterials {
   let m = byColor.get(color);
   if (m) return m;
   const map = getShared().tiles;
@@ -165,42 +165,8 @@ function uvOffset(shape: Solid): [number, number] {
  */
 export function ShapeMesh({ shape, draft = false, highlight, cuts, walkable = true }: Props) {
   const { kind, color } = shape;
-  // A ramp's mesh is in world coordinates (its frame is the world's, at height 0).
-  const { y, height } = shape.type === "ramp" ? { y: 0, height: 0 } : shape;
-  const frame = shape.type === "ramp" ? { x: 0, z: 0, rotation: 0 } : shapeFrame(shape);
-  const [ox, oz] = uvOffset(shape);
-  const ready = useManifold();
-  // Geometry is rebuilt only when what it's made from changes (the shape is a new object every render), and cut
-  // again when a hole that cuts it changes (its position, the target's tilt and turn included).
-  const key =
-    shape.type === "ramp"
-      ? JSON.stringify([kind, shape.points, shape.width, shape.step, shape.base])
-      : JSON.stringify([kind, localFootprint(shape), height, ox, y, oz, kind === "room" ? wallOf(shape) : 0, shape.taper, shape.bevel]);
-  const tilt = shape.type === "ramp" ? [0, 0] : [shape.pitch ?? 0, shape.roll ?? 0];
-  const cutKey = cuts && cuts.length > 0 && ready ? JSON.stringify([cuts, frame, tilt]) : "";
-
-  // An outline with no area (a stored shape is never one, but a preview can be) has no meshes: nothing to draw.
-  // Rooms too narrow to have an inside come out as solid blocks (walls with no inner ring).
-  const parts = useMemo(() => {
-    const p = shapeMesh(shape);
-    if (!cutKey || !cuts) return p;
-    const holes = cuts.map((h) => ({ hole: h, mesh: holeInFrameOf(shape, h) })).filter((h): h is { hole: ClosedShape; mesh: Mesh } => h.mesh !== null);
-    const floorHoles = shape.type === "ramp" ? [] : holes.filter((h) => cutsFloor(h.hole, shape)).map((h) => h.mesh);
-    return {
-      body: p.body && subtract(p.body, holes.map((h) => h.mesh)),
-      floor: p.floor && (floorHoles.length > 0 ? subtract(p.floor, floorHoles) : p.floor),
-    };
-  }, [key, cutKey]);
-  // UVs pick their plane from the flat normals, so they come first.
-  const solid = useMemo(() => (parts.body ? toCreasedNormals(applyBoxUVs(toGeometry(parts.body), ox, y, oz), CREASE) : null), [parts]);
-  const floor = useMemo(() => (parts.floor ? applyBoxUVs(toGeometry(parts.floor), ox, y, oz) : null), [parts]);
-
-  const edges = useMemo(() => (solid ? new THREE.EdgesGeometry(solid, 15) : null), [solid]);
+  const { solid, floor, edges, frame, y, height, tilt } = useShapeGeometry(shape, cuts);
   const hole = kind === "hole" && !draft;
-
-  useEffect(() => () => solid?.dispose(), [solid]);
-  useEffect(() => () => floor?.dispose(), [floor]);
-  useEffect(() => () => edges?.dispose(), [edges]);
 
   const s = getShared();
   const c = colorMaterials(color);
@@ -252,4 +218,64 @@ export function ShapeMesh({ shape, draft = false, highlight, cuts, walkable = tr
       </group>
     </group>
   );
+}
+
+/**
+ * Where a shape's geometry sits (`useShapeGeometry` builds it in the shape's own frame, from its bottom): turned
+ * around the vertical, tilted around its center, as ShapeMesh places it. The instanced arrays (10.5) multiply it by
+ * each item's place.
+ */
+export function shapeMatrix(shape: Solid): THREE.Matrix4 {
+  const { y, height } = shape.type === "ramp" ? { y: 0, height: 0 } : shape;
+  const frame = shape.type === "ramp" ? { x: 0, z: 0, rotation: 0 } : shapeFrame(shape);
+  const tilt = shape.type === "ramp" ? [0, 0] : [shape.pitch ?? 0, shape.roll ?? 0];
+  const deg = Math.PI / 180;
+  const turn = new THREE.Quaternion().setFromEuler(new THREE.Euler(tilt[0] * deg, frame.rotation * deg, tilt[1] * deg, "YXZ"));
+  const outer = new THREE.Matrix4().compose(new THREE.Vector3(frame.x, y + height / 2, frame.z), turn, new THREE.Vector3(1, 1, 1));
+  return outer.multiply(new THREE.Matrix4().makeTranslation(0, -height / 2, 0));
+}
+
+/**
+ * A shape's three.js geometry (its body, a room's floor, the body's edges), in its own frame from its bottom, minus
+ * the holes that cut it: rebuilt only when what it's made from changes, and cut again when a hole that cuts it
+ * changes. Disposed when replaced. ShapeMesh draws it; the instanced arrays (10.5) draw one per entity part.
+ */
+export function useShapeGeometry(shape: Solid, cuts?: ClosedShape[]) {
+  const { kind } = shape;
+  // A ramp's mesh is in world coordinates (its frame is the world's, at height 0).
+  const { y, height } = shape.type === "ramp" ? { y: 0, height: 0 } : shape;
+  const frame = shape.type === "ramp" ? { x: 0, z: 0, rotation: 0 } : shapeFrame(shape);
+  const [ox, oz] = uvOffset(shape);
+  const ready = useManifold();
+  // Geometry is rebuilt only when what it's made from changes (the shape is a new object every render), and cut
+  // again when a hole that cuts it changes (its position, the target's tilt and turn included).
+  const key =
+    shape.type === "ramp"
+      ? JSON.stringify([kind, shape.points, shape.width, shape.step, shape.base])
+      : JSON.stringify([kind, localFootprint(shape), height, ox, y, oz, kind === "room" ? wallOf(shape) : 0, shape.taper, shape.bevel]);
+  const tilt = shape.type === "ramp" ? [0, 0] : [shape.pitch ?? 0, shape.roll ?? 0];
+  const cutKey = cuts && cuts.length > 0 && ready ? JSON.stringify([cuts, frame, tilt]) : "";
+
+  // An outline with no area (a stored shape is never one, but a preview can be) has no meshes: nothing to draw.
+  // Rooms too narrow to have an inside come out as solid blocks (walls with no inner ring).
+  const parts = useMemo(() => {
+    const p = shapeMesh(shape);
+    if (!cutKey || !cuts) return p;
+    const holes = cuts.map((h) => ({ hole: h, mesh: holeInFrameOf(shape, h) })).filter((h): h is { hole: ClosedShape; mesh: Mesh } => h.mesh !== null);
+    const floorHoles = shape.type === "ramp" ? [] : holes.filter((h) => cutsFloor(h.hole, shape)).map((h) => h.mesh);
+    return {
+      body: p.body && subtract(p.body, holes.map((h) => h.mesh)),
+      floor: p.floor && (floorHoles.length > 0 ? subtract(p.floor, floorHoles) : p.floor),
+    };
+  }, [key, cutKey]);
+  // UVs pick their plane from the flat normals, so they come first.
+  const solid = useMemo(() => (parts.body ? toCreasedNormals(applyBoxUVs(toGeometry(parts.body), ox, y, oz), CREASE) : null), [parts]);
+  const floor = useMemo(() => (parts.floor ? applyBoxUVs(toGeometry(parts.floor), ox, y, oz) : null), [parts]);
+
+  const edges = useMemo(() => (solid ? new THREE.EdgesGeometry(solid, 15) : null), [solid]);
+
+  useEffect(() => () => solid?.dispose(), [solid]);
+  useEffect(() => () => floor?.dispose(), [floor]);
+  useEffect(() => () => edges?.dispose(), [edges]);
+  return { solid, floor, edges, frame, y, height, tilt };
 }

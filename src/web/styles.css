@@ -1291,3 +1291,19 @@ body {
 .inspector .array-follows { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
 /* An array's "restore all" (from 10.4): a link-like button at the end of its info line. */
 .inspector .inspector-info button.link { margin-left: 8px; padding: 0 4px; height: auto; color: #8fb4f2; text-decoration: underline; font: inherit; }
+/* The stats readout (from 10.5): top center of the view, over it but not in the way of a press. */
+.stats-readout {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: var(--bar-bg);
+  color: #8fb4f2;
+  font: 11px/1.4 ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 3;
+}

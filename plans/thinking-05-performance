@@ -35,3 +35,7 @@ Not yet measured in the browser: the frame time and draw calls themselves, React
 ## The agent's side
 
 A blockout should be cheap to draw because it's simple, not only because the renderer is clever. Phase 09.4's review topic and the default design guide tell the agent to keep detail proportional to gameplay: battlements as one band volume, not 150 blocks, and repeated details as an entity. That rule is about level design first; the performance is a bonus.
+
+## Since then
+
+Phase 10.5 draws each array's items instanced (one `InstancedMesh` per entity part, one merged edge set), and the view bar has a **stats** readout (frame time, draw calls, triangles, shapes): step 1 above, and the array half of step 3. Merging static shapes (step 2) and instancing plain instances are still to do.

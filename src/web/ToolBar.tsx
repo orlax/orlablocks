@@ -1,4 +1,5 @@
 import {
+  Activity,
   Box as BoxIcon,
   Cylinder,
   Eye,
@@ -217,12 +218,14 @@ export function ViewBar({
   holes,
   grid,
   notes,
+  stats,
   isolated,
   shots,
 }: {
   holes: { on: boolean; onToggle: () => void };
   grid: { on: boolean; onToggle: () => void };
   notes: { on: boolean; onToggle: () => void };
+  stats: { on: boolean; onToggle: () => void };
   isolated: { label: string; onEnd: () => void } | null;
   shots: { count: number; panelOpen: boolean; onShutter: () => void; onTogglePanel: () => void };
 }) {
@@ -252,6 +255,14 @@ export function ViewBar({
       </button>
       <button type="button" className={notes.on ? "toggle" : "toggle off"} title={notes.on ? "Hide the notes" : "Show the notes"} onClick={notes.onToggle}>
         <StickyNote size={13} /> notes
+      </button>
+      <button
+        type="button"
+        className={stats.on ? "toggle" : "toggle off"}
+        title={stats.on ? "Hide the stats (render time, draw calls, triangles, shapes)" : "Show the stats: render time, draw calls, triangles and shapes"}
+        onClick={stats.onToggle}
+      >
+        <Activity size={13} /> stats
       </button>
       <span className="sep" />
       <button type="button" title="Take a shot of the view (K)" onClick={shots.onShutter}>

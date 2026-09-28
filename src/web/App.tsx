@@ -164,6 +164,8 @@ const details = (s: Shape, library: Library | null) => {
 const LIBRARY_OPEN_KEY = "dd.library.open";
 /** localStorage key: whether the Shots panel is open (09.1). */
 const SHOTS_OPEN_KEY = "dd.shots.open";
+/** localStorage key: whether the stats readout shows (10.5). */
+const STATS_KEY = "dd.stats";
 /** localStorage key: the Walk tool's preset (09.2). */
 const WALK_PRESET_KEY = "dd.walk.preset";
 /** The player camera is saved this long after the pause menu's last change (a slider sends many). */
@@ -228,6 +230,22 @@ export function App() {
   // The view bar: whether holes show as ghosts (off: only what they cut away shows), and the grid.
   const [showHoles, setShowHoles] = useState(true);
   const [showNotes, setShowNotes] = useState(true);
+  // The stats readout (10.5), remembered per viewer.
+  const [showStats, setShowStatsState] = useState(() => {
+    try {
+      return localStorage.getItem(STATS_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  const setShowStats = (on: boolean) => {
+    setShowStatsState(on);
+    try {
+      localStorage.setItem(STATS_KEY, on ? "1" : "0");
+    } catch {
+      // A convenience only.
+    }
+  };
   // An entity being placed from the Library: the next click in the view puts an instance there.
   const [placing, setPlacing] = useState<string | null>(null);
   // The array whose target the next click in the view picks (10.3: Follow), or null.
@@ -919,6 +937,7 @@ export function App() {
         preview={preview}
         onSelect={setSelection}
         showNotes={showNotes}
+        showStats={showStats}
         entityMode={!!editingEntity}
         onOpenEntity={(entity) => send({ type: "open_entity", entity })}
         onPickTarget={
@@ -1148,6 +1167,7 @@ export function App() {
             holes={{ on: showHoles, onToggle: () => setShowHoles(!showHoles) }}
             grid={{ on: showGrid, onToggle: () => setShowGrid(!showGrid) }}
             notes={{ on: showNotes, onToggle: () => setShowNotes(!showNotes) }}
+            stats={{ on: showStats, onToggle: () => setShowStats(!showStats) }}
             isolated={
               isolated
                 ? { label: isolatedNode ? title(isolatedNode) : isolated, onEnd: () => isolate(null) }

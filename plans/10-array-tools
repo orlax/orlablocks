@@ -506,3 +506,35 @@ Adopted as recommended (say if any should change):
 7. A following array (battlements): no handles, but its dots: skip the merlons over the gate.
 8. A path array: its points still drag, add and delete as before, and its dots select where there's no point.
 9. Esc (or a click outside) leaves edit mode; the gizmo comes back.
+
+### 10.5 — Instanced drawing and the stats readout (done; checked in the browser by Orlando)
+
+- **Which items (`src/web/instancing.ts`, `splitInstanced`, tested):** of the arrays drawn, every item whose entity exists, whose solid parts are all drawn, and whose cuts all come from its own entity's holes is drawn instanced, and its shapes leave the one-by-one list. An item cut by a hole from outside (a door through one merlon), the entities' holes (the ghosts, shown with Show holes or a highlight) and a missing entity's red blocks stay one by one. Grouped per array and entity.
+- **How (`src/web/InstancedArrays.tsx`):** per group, the entity's solid parts at the origin, each cut by the entity's own holes (`cutters` over the entity expanded at the origin, as in every instance), built with ShapeMesh's geometry (pulled out into `useShapeGeometry`, with `shapeMatrix` for a part's own turn and tilt; ShapeMesh draws the same as before); each part is one `InstancedMesh` for its body and one for a room's floor (a matrix per item: its pivot and turn times the part's own), casting and receiving shadows, walkable for floor-follow, with bounds for culling; the edges of every item are one merged `LineSegments`. Hover and selection swap the materials of the whole array. Captures (shots, `render_view`) go through the same `Boxes`, so they're instanced too.
+- **One difference:** an instanced item's tiles follow its entity's own frame (the texture moves with the item), where a shape drawn alone lines its tiles up with the world grid when unturned.
+- **The stats readout:** the view bar's `stats` toggle (remembered per viewer): `2.1 ms · 38 draws · 12k tris · 430 shapes` at the top of the view: the CPU time of a frame (the renderer's `render` wrapped while it's on, a rolling average over 30 frames), its draw calls and triangles (`gl.info`, shadows included) and the shapes drawn.
+- **Expected numbers (to measure in the browser, §11 step 2):** an array of 400 single-box items was about 1,200 draw calls a frame (a body, edges and a shadow each); instanced it's 3 (one body, one edge set, one shadow), whatever the count.
+- **Checks:** typecheck; 441 tests (3 new); the editor bundles. The drawing itself is browser work.
+- **Fixed after Orlando's first look (columns drawn as wireframes):** the instanced meshes took their geometry and material as constructor `args`, so a highlight (hover, or the selection restored on reload) made react-three-fiber build new meshes, whose instances all sat at the origin (inside the spire), leaving only the merged edges where the columns were. Now only the count is an argument, geometry and material are props, and every mesh is placed again after any render in which it's new or its matrices or geometry changed (its bounds too). Captures were never affected (a fresh mesh per capture).
+
+**Browser checklist for Orlando (10.5):**
+1. Turn on **stats** in the view bar. Note the draws with a big array (a 20 × 20 grid of a one-box entity, or the forest), then Detach it (400 plain instances): the draws jump by hundreds; undo: they drop back.
+2. Arrays look exactly as before: colors, the tile texture, edges, shadows cast and received; a room entity's floor too.
+3. Hover and select an array: every item lights up together; the marquee and a click still pick it.
+4. A door in its own group beside a row of merlons: the merlon it cuts shows the cut (it's drawn alone), the others stay whole.
+5. A window array round a tower still cuts every wall; with Show holes on, the window ghosts show.
+6. Walk (W) over an array of platforms: floor-follow stands on them.
+7. Take a shot and `render_view` a sheet: the arrays are in them.
+8. Edit an entity that's in an array, go back: every item shows the change.
+
+### Phase 10 done (2026-09-28)
+
+Every increment was checked in the browser by Orlando, and he marked the phase complete. The agent already builds with arrays on a real level (the `temple_test` scene: two column rings, flame-ring slabs, and slab spirals that follow spine lines). The acceptance's measurements (§11 step 2: the 09 castle's outline size and draw calls before and after one following array per wall) weren't recorded; the stats readout is there to take them.
+
+**Notes for the next session:**
+- **Where things stand:** phase 10 is on main, one commit per increment. Editor performance with many shapes is its own phase (`thinking-05-performance`: merging static shapes, instancing plain instances); export to engines and the evals are in `thinking-04-evals`; `thinking-06-agent-ergonomics` is Orlando's.
+- **A following array stores its target's path** (`points` next to `along`); the store's `refollow` in `commit` keeps it up to date, and the view's `withFollowed` makes it follow a drag live. Anything new that changes a shape goes through `commit`, so it's covered.
+- **Array items are virtual instances** (`array_3/7`, shapes `array_3/7/box_2`) in the array's own place in the tree; `ownerOf` maps them to the array. Anything that walks shapes must expand arrays (`expandNodes`, `expandShapes`), as for instances.
+- **Instanced meshes take only their count as `args`** (`InstancedArrays.tsx`): geometry and material in `args` rebuilt the mesh on every highlight and lost its matrices.
+- **Don't run a formatter** on this repo (no config; it reflows whole files).
+- **Loose ends:** marquee-selecting an array's item dots; instancing items cut by an outside hole (they're drawn one by one); an instanced item's tiles follow its entity, not the world grid; a scatter mirrored is scattered afresh.

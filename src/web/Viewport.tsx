@@ -53,6 +53,8 @@ import {
 import { shapesUnder, isGroup, isShape, hiddenIds, lockedIds, selectableAt } from "../shared/tree";
 import { cutters, isHole } from "../shared/holes";
 import { ShapeMesh } from "./ShapeMesh";
+import { InstancedEntity } from "./InstancedArrays";
+import { splitInstanced } from "./instancing";
 import {
   cameraPosition,
   DEFAULT_CAMERA,
@@ -361,6 +363,8 @@ type Props = {
   showGrid: boolean;
   /** Whether notes show (the view bar); off, they can't be clicked either, unless selected. */
   showNotes: boolean;
+  /** The stats readout (10.5): render time, draw calls, triangles and shapes, over the view's corner. */
+  showStats?: boolean;
   /** A note was placed with the Note tool (at this point, on the surface under the click). */
   onPlaceNote: (at: { x: number; y: number; z: number }) => void;
   /** Edit entity mode (08.5): the nodes are an entity's definition, whose top level is a group in every instance. */
@@ -453,6 +457,7 @@ export function Viewport({
   showHoles,
   showGrid,
   showNotes,
+  showStats = false,
   onPlaceNote,
   entityMode,
   onOpenEntity,
@@ -533,7 +538,16 @@ export function Viewport({
       content: (light) => (
         <>
           <Lighting cam={light} />
-          <Boxes boxes={shapes} entityMode={entityNow} cuts={cutsNow} showHoles={false} draft={null} selected={NO_IDS} hovered={NO_IDS} />
+          <Boxes
+            boxes={shapes}
+            arrays={from.filter((b): b is ArrayNode => b.type === "array" && !hiddenNow.has(b.id))}
+            entityMode={entityNow}
+            cuts={cutsNow}
+            showHoles={false}
+            draft={null}
+            selected={NO_IDS}
+            hovered={NO_IDS}
+          />
         </>
       ),
     });
@@ -940,6 +954,8 @@ export function Viewport({
   // An array's edit mode (10.4): the selected item dots (indices), and a handle drag in progress with its layout
   // patch so far.
   const [itemSel, setItemSel] = useState<number[]>([]);
+  // The stats readout's numbers (10.5), from the last frames drawn.
+  const [stats, setStats] = useState<Stats | null>(null);
   const [arrayDrag, setArrayDrag] = useState<{ pointerId: number; part: ArrayPart; y: number; patch: Record<string, unknown>; label: string; sx: number; sy: number } | null>(null);
   useEffect(() => setItemSel([]), [editing]);
 
@@ -972,6 +988,7 @@ export function Viewport({
   onViewRef.current = onView;
   // What's drawn: each instance as its entity's shapes (IDs like `instance_4/box_2`; `ownerOf` maps a hit back).
   const drawn = expandShapes(onView);
+  const drawnArrays = useMemo(() => onView.filter((b): b is ArrayNode => b.type === "array"), [onView]);
   const pickable = showHoles ? drawn : drawn.filter((b) => !isHole(b) || selectedIds.has(b.id) || selectedIds.has(ownerOf(b.id)));
   // Locked nodes (and what's in them) can't be clicked, hovered or marquee-selected, unless selected from the
   // outliner; they still count as surfaces to draw on and snap to.
@@ -1943,12 +1960,14 @@ export function Viewport({
         <color attach="background" args={[BACKGROUND]} />
         <CameraRig cam={cam} yawKeys={yawKeys} flight={flight} walker={walker} onViewChange={onViewChange} />
         <CompassSync cam={cam} rose={rose} />
+        {showStats && <StatsProbe onStats={setStats} />}
         <Lighting cam={cam} />
         {/* Walking, the view is the player's: no grid, axes, gizmo, highlights or hole ghosts (09.2). */}
         {showGrid && !walk && <Grid cam={cam} />}
         {!walk && <OriginAxes />}
         <Boxes
           boxes={[...drawn, ...expandShapes(ghosts)]}
+          arrays={drawnArrays}
           entityMode={entityMode}
           cuts={cuts}
           showHoles={showHoles && !walk}
@@ -2053,6 +2072,11 @@ export function Viewport({
           {drag.copy ? `${drag.label} · copy` : drag.label}
         </div>
       )}
+      {showStats && stats && (
+        <div className="stats-readout" title="The view's last frames: CPU time to draw one (rolling average), draw calls (shadows included), triangles, and shapes drawn (instances and arrays expanded)">
+          {stats.ms.toFixed(1)} ms · {stats.calls} draws · {stats.triangles >= 10000 ? `${Math.round(stats.triangles / 1000)}k` : stats.triangles} tris · {drawn.length} shapes
+        </div>
+      )}
       {arrayDrag?.label && (
         <div className="draft-label" style={{ left: arrayDrag.sx + 14, top: arrayDrag.sy + 14 }}>
           {arrayDrag.label}
@@ -2099,7 +2123,8 @@ export function Viewport({
  * but not when they're removed (Clear, a cancelled draft), so request a frame after every change.
  */
 function Boxes({
-  boxes,
+  boxes: all,
+  arrays = NO_ARRAYS,
   entityMode,
   cuts,
   showHoles,
@@ -2108,6 +2133,8 @@ function Boxes({
   hovered,
 }: {
   boxes: Shape[];
+  /** The arrays among what's drawn, as shown: their items (in `boxes`) are drawn instanced where they can be (10.5). */
+  arrays?: ArrayNode[];
   /** Editing an entity: a top-level hole is fine there (no warning). */
   entityMode: boolean;
   /** The holes that cut each shape, by its ID. */
@@ -2121,9 +2148,13 @@ function Boxes({
 }) {
   const selectedKey = [...selected].join(",");
   const hoveredKey = [...hovered].join(",");
-  useEffect(() => invalidate(), [boxes, draft, selectedKey, hoveredKey]);
+  const { boxes, groups } = useMemo(() => splitInstanced(all, arrays, cuts), [all, arrays, cuts]);
+  useEffect(() => invalidate(), [all, draft, selectedKey, hoveredKey]);
   return (
     <>
+      {groups.map((g) => (
+        <InstancedEntity key={g.key} group={g} highlight={selected.has(g.array) ? "selected" : hovered.has(g.array) ? "hover" : undefined} />
+      ))}
       {boxes.map((b) => {
         // A part of an instance lights up with it.
         const owner = ownerOf(b.id);
@@ -2452,6 +2483,43 @@ function ArrayEditOverlay({ dots, handles, selected }: { dots: ItemDot[]; handle
       </points>
     </>
   );
+}
+const NO_ARRAYS: ArrayNode[] = [];
+
+/** What the stats readout shows (10.5). */
+type Stats = { ms: number; calls: number; triangles: number };
+/** How often the readout updates (ms), and how many frames its time averages. */
+const STATS_EVERY = 250;
+const STATS_FRAMES = 30;
+
+/**
+ * Measures the view's frames for the stats readout (10.5): the CPU time of each render (the renderer's `render`
+ * wrapped while it's on), and its draw calls and triangles (`gl.info`, reset every render, shadow passes included).
+ * The view draws on demand, so numbers change while something moves.
+ */
+function StatsProbe({ onStats }: { onStats: (s: Stats) => void }) {
+  const gl = useThree((s) => s.gl);
+  useEffect(() => {
+    const render = gl.render;
+    const times: number[] = [];
+    let last = 0;
+    gl.render = function (scene, camera) {
+      const t0 = performance.now();
+      render.call(gl, scene, camera);
+      times.push(performance.now() - t0);
+      if (times.length > STATS_FRAMES) times.shift();
+      const now = performance.now();
+      if (now - last > STATS_EVERY) {
+        last = now;
+        onStats({ ms: times.reduce((a, b) => a + b, 0) / times.length, calls: gl.info.render.calls, triangles: gl.info.render.triangles });
+      }
+    };
+    invalidate();
+    return () => {
+      gl.render = render;
+    };
+  }, [gl, onStats]);
+  return null;
 }
 /** An array's item dots and handles in edit mode. */
 const ITEM_COLOR = "#f3e3a3";

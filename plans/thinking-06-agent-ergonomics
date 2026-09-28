@@ -1,0 +1,96 @@
+# Thinking 06 — Agent ergonomics
+
+Written 2026-09-28, during phase 10 (10.4 built, 10.5 next), right after the agent built an "old temple" room in the `mariobros` project's `temple_test` scene as a test of the array tools. It asks what, in the tools the agent has, would have made that task cheaper in tokens, better in quality and faster. The session is also a first, informal data point for `thinking-04-evals`.
+
+## The task
+
+The human asked for one room of an old temple, as a 3D Mario level would have it: a clear focus point in the middle, a hard platforming challenge to reach it while gaining height, the existing entities (from the world 1-1 scene) or at most 4 new ones, the array tools to place things, and lines to show how the player jumps.
+
+## What happened
+
+The scene was empty. The agent read the scene, the design guide, the library and the `arrays` and `entities` guide topics (5 calls), and took the jump metrics from the library's `@jump` skill (about 4 m up, 5–6 m across running), since the design guide's game facts are still blank.
+
+It planned the room in its head: a 16-sided hall 48 m across over a lava pit, a tapered spire in the middle with the relic at 18 m, and six beats going counterclockwise and up: the entrance ledge (0 m), a wall spiral of floating slabs (0.5 → 8.5 m), a north landing to rest on (9 m, a walker and an item block), a broken colonnade to hop across (11 m), a flame ring of slabs round the spire with timed flame jets (12.5 m), and a tight spiral round the spire (14 → 17.5 m) to the top.
+
+Then it built it, in about 27 tool calls:
+
+1. The structure (hall, lava, door, corridor, two ledges, plinth, spire) in one `draw_shapes`, then `group_nodes` to put them in a group so the door would cut the walls: the door hole had to be in the group, and the group couldn't exist before the shapes.
+2. Four entities (`ruin-slab`, `temple-column`, `flame-jet`, `sun-relic`): their shapes drawn off to the side at x = 60–80 in one call, four `make_entity` calls, then `remove_nodes` for the three instances they left behind (the relic's was built in place and kept). A new `#timed` tag for the flame jets.
+3. **A script.** Lines and path arrays take only points, so the agent wrote a Node script to sample the two spiral spines (a 17 m arc over 120° rising 8 m, and a 5.5 m arc over 180° rising 3.5 m) every 10°, and to compute where each array's items would land, so it could draw the critical path's jump arcs between them: 57 points, an apex with bezier handles between every two platforms.
+4. The two spine lines and the four circle arrays (colonnade, wall columns, flame-ring slabs, flame jets) in one call; then the two spiral arrays following the spines, the critical path, the item block, the walker and the hero in another, since the arrays needed the lines' IDs.
+5. Tidying: the relic into the chamber's group, the route lines into a `route` group.
+6. Checking, with 5 renders: the sheet (the 36 m walls hid everything from outside), a third-person eye view from the entrance (a colonnade column stood right in front of the relic: skipped it), a node close-up (the walls again), another eye view (the spire itself hid the relic from below: added a yellow "sun shaft" over it as a landmark), and a saved first-person shot.
+7. Six notes, one per beat.
+
+What worked: following a line (`along`) did exactly what it should, and means the human can reshape a spiral and keep its slabs; `skip` expressed fallen columns and a forced direction in one field; two circle arrays on the same circle put flames on chosen slabs; the eye renders caught two real readability problems; `save: true` left the human a shot to look at.
+
+What didn't: most of the tokens went into coordinates the tools were supposed to spare the agent (the spines, and the item positions for the jump arcs), and into those coordinates coming back in results. Every gap and rise in the brief ("3.1 m edge to edge, +1.1 m") was the agent's mental arithmetic, never checked by anything.
+
+## Ideas, most useful first
+
+### 1. Arrays should say where their items are, and lines should go through nodes
+
+To draw a jump arc from slab to slab, the agent needs the slabs' tops. The array's result lists its layout, not its items, so the agent recomputed the arrays' placement itself, in a script: the same trigonometry the arrays exist to take away, and a copy of it that goes stale when a spine is reshaped.
+
+Two parts:
+
+- **Item positions in results**, compact: `array_5/3 → x, y, z, top, rotation`, in `draw_shapes` and `update_nodes` results (or on request, `find_nodes { under: "array_5" }` or `get_scene { root: "array_5" }`).
+- **A line through nodes**: `{ type: "line", through: ["box_3", "array_5/*", "box_4", "array_1/4..8", …], style: "jumps", apex: 1.3 }`. Each stop is a node's top (its walking surface: a volume's top, a room's floor, an instance's highest face), `array_5/*` is every item in order, a range picks some, and `style: "jumps"` draws an arc between each two stops (an apex above the higher one, handles along the hop). Like `along`, it could stay live: a critical path that follows its platforms when they move.
+
+This is the biggest single saving: the critical path went from 57 hand-computed points (about 3k tokens to send, 3k more echoed back) to one line of IDs, and it can't be wrong about where the platforms are.
+
+### 2. Arcs and spirals as layouts
+
+Ramps already take `spiral`, and the server turns it into points. Lines and path arrays don't, so a curved route means sampling a circle by hand. Two ways, both small:
+
+- `spiral` (or `arc`) on lines and path layouts, the ramp's fields: `{ x, z, radius, from, turn, y, rise }`.
+- A circle layout that rises: `{ type: "circle", …, sweep: 120, rise: 8 }`, items stepping up as they go round. Most spirals are arrays, so this one alone would have covered both spines.
+
+Either replaces the script and the 13- and 19-point lists that then went through the conversation three times each (sent, echoed in the line's result, echoed again in the following array's layout).
+
+### 3. Compact results
+
+`draw_shapes` and `update_nodes` return every created or changed node in full. That's useful for a box, and wasteful for anything with points: the critical path came back whole, and a following array returns a copy of its target's points in its layout. A compact result by default (IDs, type, name, bounds, item count, warnings) with `verbose: true` (or a follow-up `get_scene { root }`) for the rest would roughly halve the tokens a drawing session spends. At the least, a following array shouldn't echo the points it follows: `along` says where they are.
+
+### 4. Checking jumps
+
+The whole brief rests on metrics: gaps between 2.5 and 3.5 m, rises under 2 m, so that the room is hard but possible. Nothing checked them. A `check_route` tool (or a `measure` mode of `render_view`, or a `route` topic in the outline): given a critical path (a line, or a list of nodes as in idea 1), report each hop's edge-to-edge gap, rise and drop, and flag the ones beyond the game's facts: jump up, jump across standing and running, safe drop. Two things follow:
+
+- The design guide's **game facts** (still blank in this project) become data the tool reads, not prose: `jump: { up: 4, across: 5, running: 6 }, safeDrop: 3, height: 1`. The library's `@jump` description had the numbers, as text.
+- "Hard but fair" becomes something the agent verifies and reports ("hop 14: 3.4 m, needs a running jump from a 2 m slab, the hardest on the route"), instead of asserting it.
+
+### 5. Line of sight
+
+The relic being hidden from the entrance was the most important thing the review found, and it took two renders (about 1.5k tokens each, and an image to interpret) to find it and to find the second blocker after fixing the first. A text query would have caught both at once: `visible { from: { x, y, z } or "human", to: "instance_4" }` → visible, or blocked by `array_1/12` and then `cylinder_4`, with how much of the target shows. It's the same ray casting picking already does, on the data. The `review` guide topic could suggest it for every landmark from every beat's standing point.
+
+### 6. Hiding things in a render
+
+The hall's 36 m walls filled every outside view of the sheet and the node close-up: two renders spent to see the outside of a wall. The agent can't set `hidden`, because it's the human's. `render_view { hide: ["cylinder_1"] }` (for that render only) or `cutaway: true` (rooms' walls cut at a height, as in a section, or walls facing the camera dropped) would give a readable sheet of an enclosed room in one call.
+
+### 7. References inside a batch
+
+Two batches were split only because a later shape needed an earlier one's ID: the arrays following the spines, and the door hole that needed a group to cut in. Batch-local names would make them one call each: `{ ref: "spine", type: "line", … }` and then `along: { id: "$spine" }`, and a `group` entry in `draw_shapes` (`{ type: "group", ref: "chamber", name, description }`, then `parent: "$chamber"`), so a group and what's in it arrive together, holes cutting from the start.
+
+### 8. Defining an entity directly
+
+Every new entity took three steps: draw its shapes somewhere out of the way, `make_entity`, remove the instance it leaves. A `define_entity { name, description, tags, shapes }` with the shapes given around the pivot (the bottom center at the origin, as a definition already is) would be one call, with no stray shapes and no instances to clean up, and no need to find an empty spot in the scene. Or, smaller: `make_entity { …, keep: false }` to not leave the instance.
+
+### 9. Standing on things
+
+A pivot is always its entity's bottom center, which is right for placing things on a floor. But the flame jets had to stand on the slabs, so they're a second circle array at the slabs' y + 0.5, the same center, radius, count and start: two arrays that must be kept in step by hand (change the ring's radius and the flames float). An option to stand items on something: `{ type: "array", entity: "flame-jet", on: "array_3", skip: [...] }` (one item on top of each of those items), or a `y: "surface"` that drops each item onto whatever is below it. The same would help instances (`draw_shapes` instance with `on: "box_4"` instead of computing its top).
+
+### 10. Knowing which item is which
+
+`skip` takes indices, so the agent worked out which index sits where (start 0, one every 22.5°: 12 is south). It got them right, but by arithmetic. With item positions in results (idea 1) this mostly goes away; `find_nodes { near }` returning array items (`array_1/12`) would do the rest: "skip the column nearest the door" becomes a lookup.
+
+## Smaller things
+
+- **The design guide's facts.** Fill them in for each project (or read them from the library's skills), since idea 4 depends on them and every brief uses them.
+- **Light.** The sun shaft is a yellow solid cylinder named "(light, not solid)". A non-solid kind (or a `#light` / `#decor` tag the tools know means "not a surface") would let the agent add landmarks and scenery without making platforms by accident, and let `check_route` and `visible` ignore them where they should.
+- **Guide reading** cost about 5 calls up front and was worth it: each topic was read once. No change needed, except that the entities topic could mention that `make_entity`'s pivot is the bottom center of the bounds, so build the definition standing on y = 0.
+
+## What it would add up to
+
+A rough reckoning of this session: about 27 tool calls, 6 of them renders, one script, and on the order of 20k tokens of coordinates sent and echoed (the spines three times each, the critical path twice). With ideas 1–3 alone, the script goes, the critical path is one line of IDs, the spines are two short spirals, and results stop echoing points: roughly half the tokens and a few calls fewer. Ideas 4 and 5 don't save much; they make the output better, because the claims in the agent's summary ("the relic is framed from the door", "every jump is within reach") become things a tool checked. Ideas 6–9 save calls and remove small traps (a stale copy of a layout, a hole outside its group).
+
+For `thinking-04-evals`, the same run could be measured again after these land: the same prompt, from an empty scene, counting calls, tokens and the metric violations `check_route` finds.
