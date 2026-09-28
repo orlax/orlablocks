@@ -1,0 +1,17 @@
+{
+  "bundle": {
+    "targets": [
+      "nsis"
+    ],
+    "resources": {
+      "../dist/server": "dist/server",
+      "../dist/web": "dist/web",
+      "binaries/node.exe": "node.exe"
+    },
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      }
+    }
+  }
+}

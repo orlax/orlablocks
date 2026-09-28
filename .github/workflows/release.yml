@@ -1,0 +1,149 @@
+# Builds the desktop apps (plan 11B): the Mac app for Apple Silicon and Intel, and Windows as a single portable .exe
+# and an NSIS installer. Each build is started and asked for /api/health before it's kept.
+#
+# - Run it by hand (Actions → Release → Run workflow) for test builds: the files are the run's artifacts.
+# - Push a tag v<version> (it must match package.json) for a release: the files go to a draft release, published by
+#   hand after testing.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: npm ci
+
+      # The installer first: the portable build writes the same orlablocks.exe, with the payload in it.
+      - name: Build the installer
+        run: npx tauri build --bundles nsis
+      - name: Collect the installer
+        shell: pwsh
+        run: |
+          $v = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          New-Item -ItemType Directory -Force out | Out-Null
+          Copy-Item (Get-Item src-tauri/target/release/bundle/nsis/*-setup.exe) "out/Orlablocks_${v}_x64-setup.exe"
+      - name: Build the portable .exe
+        run: npx tauri build --no-bundle --features portable
+      - name: Collect the portable .exe
+        shell: pwsh
+        run: |
+          $v = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          Copy-Item src-tauri/target/release/orlablocks.exe "out/Orlablocks_${v}_x64_portable.exe"
+          Get-ChildItem out | Format-Table Name, Length
+
+      # Start the portable .exe as a user would: it unpacks itself, starts Node and serves the editor.
+      - name: Smoke test the portable .exe
+        shell: pwsh
+        run: |
+          $exe = (Get-Item out/*_portable.exe).FullName
+          $app = Start-Process $exe -PassThru
+          $health = $null
+          for ($i = 0; $i -lt 90 -and -not $health; $i++) {
+            Start-Sleep -Seconds 2
+            try { $health = Invoke-RestMethod http://127.0.0.1:5170/api/health } catch {}
+          }
+          if (-not $health) {
+            Get-Content "$env:USERPROFILE/.orlablocks/server.log" -ErrorAction SilentlyContinue
+            throw "The server never answered /api/health"
+          }
+          $health | ConvertTo-Json
+          $page = Invoke-WebRequest http://127.0.0.1:5170/ -UseBasicParsing
+          if ($page.Content -notmatch "OrlaBlocks") { throw "The editor's page didn't come back" }
+          $runtime = Get-ChildItem "$env:LOCALAPPDATA/Orlablocks/runtime"
+          $runtime | Format-Table Name
+          Stop-Process -Id $app.Id -Force
+          Get-Process node -ErrorAction SilentlyContinue | Stop-Process -Force
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows
+          path: out/*
+          if-no-files-found: error
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: npm ci
+      - name: Build the Universal app
+        run: npx tauri build --target universal-apple-darwin
+        env:
+          ORLA_UNIVERSAL_NODE: "1"
+      - name: Collect the .dmg
+        run: |
+          v=$(node -p "require('./package.json').version")
+          mkdir -p out
+          cp src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg "out/Orlablocks_${v}_universal.dmg"
+          ls -lh out
+
+      # Open the .dmg as a user would and run the server bundled in the app, with the bundled Node.
+      - name: Smoke test the .dmg
+        run: |
+          hdiutil attach -nobrowse -readonly -mountpoint "$RUNNER_TEMP/dmg" out/*.dmg
+          app="$RUNNER_TEMP/dmg/Orlablocks.app"
+          codesign --verify --deep --strict "$app"
+          res="$app/Contents/Resources"
+          lipo -archs "$res/node" | tee /dev/stderr | grep -q x86_64
+          lipo -archs "$res/node" | grep -q arm64
+          arch -x86_64 "$res/node" --version || echo "No Rosetta on this runner: the x86_64 slice wasn't run"
+          NODE_ENV=production "$res/node" "$res/dist/server/main.js" --port 5199 --data "$RUNNER_TEMP/data" &
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:5199/api/health && break; sleep 1; done
+          curl -sf http://127.0.0.1:5199/api/health
+          curl -sf http://127.0.0.1:5199/ | grep -q OrlaBlocks
+          kill %1
+          hdiutil detach "$RUNNER_TEMP/dmg"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: macos
+          path: out/*
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: The tag matches package.json
+        run: |
+          v=$(node -p "require('./package.json').version")
+          test "${GITHUB_REF_NAME}" = "v${v}" || { echo "Tag ${GITHUB_REF_NAME} but package.json says ${v}"; exit 1; }
+      - uses: actions/download-artifact@v8
+        with:
+          path: out
+          merge-multiple: true
+      - name: Attach to a draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -lh out
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || \
+            gh release create "$GITHUB_REF_NAME" --draft --title "OrlaBlocks ${GITHUB_REF_NAME#v}" --notes "Release notes to come."
+          gh release upload "$GITHUB_REF_NAME" out/* --clobber

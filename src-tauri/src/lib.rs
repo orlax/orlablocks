@@ -76,18 +76,54 @@ fn save_config(cfg: &AppConfig) {
     }
 }
 
-fn find_node_binary() -> Option<PathBuf> {
-    // 1. Check embedded node in app Resources
+/// Node's file name in the bundle.
+const NODE: &str = if cfg!(windows) { "node.exe" } else { "node" };
+
+/// Where the bundled server and Node are (plans 11 and 11B): a macOS app's `Contents/Resources`, the folder of the
+/// Windows `.exe` (where the installer puts them), and, for the portable `.exe`, what it unpacked from itself.
+fn bundle_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
-        if let Some(contents) = exe.parent().and_then(|p| p.parent()) {
-            let embedded = contents.join("Resources/node");
-            if embedded.exists() {
-                return Some(embedded);
+        if let Some(dir) = exe.parent() {
+            #[cfg(target_os = "macos")]
+            if let Some(contents) = dir.parent() {
+                dirs.push(contents.join("Resources"));
             }
+            #[cfg(not(target_os = "macos"))]
+            dirs.push(dir.to_path_buf());
         }
     }
+    #[cfg(feature = "portable")]
+    if let Some(dir) = portable::runtime_dir() {
+        dirs.push(dir.clone());
+    }
+    dirs
+}
 
-    // 2. Check user login shell: zsh -l -c "which node" (inherits nvm, volta, fnm, brew)
+fn find_node_binary() -> Option<PathBuf> {
+    // 1. The Node in the bundle.
+    for dir in bundle_dirs() {
+        let embedded = dir.join(NODE);
+        if embedded.exists() {
+            return Some(embedded);
+        }
+    }
+    // 2. One on this machine (development, or a bundle without one).
+    system_node()
+}
+
+#[cfg(windows)]
+fn system_node() -> Option<PathBuf> {
+    use std::os::windows::process::CommandExt;
+    let output = Command::new("where").arg("node").creation_flags(CREATE_NO_WINDOW).output().ok()?;
+    let first = String::from_utf8_lossy(&output.stdout).lines().next()?.trim().to_string();
+    let p = PathBuf::from(first);
+    p.exists().then_some(p)
+}
+
+#[cfg(not(windows))]
+fn system_node() -> Option<PathBuf> {
+    // The user's login shell: zsh -l -c "which node" (inherits nvm, volta, fnm, brew)
     if let Ok(output) = Command::new("zsh").args(["-l", "-c", "which node"]).output() {
         if output.status.success() {
             let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -100,7 +136,7 @@ fn find_node_binary() -> Option<PathBuf> {
         }
     }
 
-    // 3. Check common Homebrew / system paths
+    // Common Homebrew / system paths
     let common_paths = [
         "/opt/homebrew/bin/node",
         "/usr/local/bin/node",
@@ -113,7 +149,7 @@ fn find_node_binary() -> Option<PathBuf> {
         }
     }
 
-    // 4. Check NVM default or installed versions
+    // NVM's newest installed version
     if let Some(home) = dirs::home_dir() {
         let nvm_dir = home.join(".nvm/versions/node");
         if let Ok(entries) = fs::read_dir(nvm_dir) {
@@ -135,16 +171,7 @@ fn find_node_binary() -> Option<PathBuf> {
 }
 
 fn find_server_entry() -> Option<PathBuf> {
-    let mut candidates = Vec::new();
-
-    // In a macOS .app bundle:
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(contents) = exe.parent().and_then(|p| p.parent()) {
-            candidates.push(contents.join("Resources/dist/server/main.js"));
-            candidates.push(contents.join("Resources/server/main.js"));
-            candidates.push(contents.join("Resources/main.js"));
-        }
-    }
+    let mut candidates: Vec<PathBuf> = bundle_dirs().iter().map(|d| d.join("dist/server/main.js")).collect();
 
     // In local development / repo:
     if let Ok(cwd) = std::env::current_dir() {
@@ -158,6 +185,49 @@ fn find_server_entry() -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// Windows' flag for a child process without a console window (Node would open one next to the Control Panel).
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// The portable Windows `.exe` (plan 11B): the server, the editor and Node are a zip inside the executable
+/// (`build.rs`), unpacked once per version to `%LOCALAPPDATA%\Orlablocks\runtime\<version>`.
+#[cfg(feature = "portable")]
+mod portable {
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::OnceLock;
+
+    static PAYLOAD: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/payload.zip"));
+
+    /// The unpacked folder, unpacking it on first use (once per run).
+    pub fn runtime_dir() -> Option<&'static PathBuf> {
+        static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
+        DIR.get_or_init(unpack).as_ref()
+    }
+
+    fn unpack() -> Option<PathBuf> {
+        unpack_into(&dirs::data_local_dir()?.join("Orlablocks").join("runtime"))
+    }
+
+    pub(super) fn unpack_into(base: &std::path::Path) -> Option<PathBuf> {
+        let version = env!("CARGO_PKG_VERSION");
+        let dir = base.join(version);
+        // A folder is only used once complete: it's unpacked beside it, marked, then renamed into place.
+        if dir.join(".complete").exists() {
+            return Some(dir);
+        }
+        let partial = base.join(format!("{version}.partial-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&partial);
+        fs::create_dir_all(&partial).ok()?;
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(PAYLOAD)).ok()?;
+        archive.extract(&partial).ok()?;
+        fs::write(partial.join(".complete"), version).ok()?;
+        let _ = fs::remove_dir_all(&dir);
+        fs::rename(&partial, &dir).ok()?;
+        Some(dir)
+    }
 }
 
 fn spawn_child(data_dir: &str, port: u16) -> Option<Child> {
@@ -179,16 +249,21 @@ fn spawn_child(data_dir: &str, port: u16) -> Option<Child> {
         .ok()?;
     let log_err = log_out.try_clone().ok()?;
 
-    Command::new(node_bin)
+    let mut command = Command::new(node_bin);
+    command
         .arg(&script)
         .arg("--port")
         .arg(port.to_string())
         .arg("--data")
         .arg(data_dir)
         .stdout(log_out)
-        .stderr(log_err)
-        .spawn()
-        .ok()
+        .stderr(log_err);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    command.spawn().ok()
 }
 
 #[tauri::command]
@@ -357,7 +432,31 @@ fn export_skill_dialog() -> Option<String> {
     }
 }
 
+/// Windows needs Microsoft's WebView2 for the Control Panel's window. Windows 11 has it, and Windows 10 gets it with
+/// its updates; the installer adds it if missing, but the portable `.exe` can't, so it says so instead of failing
+/// silently (plan 11B).
+#[cfg(windows)]
+fn webview2_missing() -> bool {
+    if tauri::webview_version().is_ok() {
+        return false;
+    }
+    let download = rfd::MessageDialog::new()
+        .set_level(rfd::MessageLevel::Error)
+        .set_title("OrlaBlocks needs Microsoft WebView2")
+        .set_description("OrlaBlocks' window uses Microsoft Edge WebView2, which isn't installed on this PC. Install the WebView2 Runtime (free, from Microsoft), then open OrlaBlocks again.\n\nOpen the download page now?")
+        .set_buttons(rfd::MessageButtons::YesNo)
+        .show();
+    if download == rfd::MessageDialogResult::Yes {
+        let _ = open::that("https://developer.microsoft.com/microsoft-edge/webview2/");
+    }
+    true
+}
+
 pub fn run() {
+    #[cfg(windows)]
+    if webview2_missing() {
+        return;
+    }
     let config = load_config();
     let port = config.port;
     let initial_child = spawn_child(&config.data_dir, port);
@@ -394,4 +493,25 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(all(test, feature = "portable"))]
+mod tests {
+    use super::portable::unpack_into;
+
+    #[test]
+    fn unpacks_the_payload_once_into_a_complete_folder() {
+        let base = std::env::temp_dir().join(format!("orla-runtime-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let dir = unpack_into(&base).expect("unpacked");
+        assert!(dir.join("dist/server/main.js").exists());
+        assert!(dir.join("dist/web/index.html").exists());
+        assert!(dir.join(super::NODE).exists());
+        assert!(dir.join(".complete").exists());
+        // Unpacked already: the same folder, and no partial one left beside it.
+        assert_eq!(unpack_into(&base).expect("again"), dir);
+        let left: Vec<_> = std::fs::read_dir(&base).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(left.len(), 1, "{left:?}");
+        std::fs::remove_dir_all(&base).unwrap();
+    }
 }

@@ -1,0 +1,73 @@
+# 11B — Windows and CI builds
+
+> **For the agent reading this:** Read `plans/11-distribution` first (the Control Panel, `src-tauri/`, how the app finds Node and the server, and its §8 fixes: `bundle.resources`, ad-hoc signing). 1.0.0 shipped as a macOS `.dmg` built by hand on Apple Silicon. This refinement adds **Windows** (a single portable `.exe` with no install, and an NSIS installer) and moves release builds to **GitHub Actions**, which also makes the Mac app **Universal** (Apple Silicon and Intel). Log progress in §7.
+
+---
+
+## 1. Goal
+
+1. Orlando pushes a tag `v1.1.0`. GitHub Actions builds, on its own free runners (the repo is public), the Mac app for both architectures and the Windows builds, checks each one starts and serves the editor, and attaches them to a **draft** release.
+2. A Windows user downloads `Orlablocks_1.1.0_x64_portable.exe` into Downloads and double-clicks it. SmartScreen warns once (**More info → Run anyway**). The Control Panel opens, the server starts with no console window, and **Open Editor in Browser** works. No install, no admin rights; it can run from a USB stick.
+3. Someone who prefers an installer takes `Orlablocks_1.1.0_x64-setup.exe` instead (Start menu entry, uninstaller, installs WebView2 if it's missing).
+4. A Mac user on Intel opens the same `.dmg` as one on Apple Silicon.
+
+---
+
+## 2. Scope
+
+### In
+
+- **Finding Node and the server per platform (`lib.rs`):** macOS as now (`Contents/Resources`); Windows next to the `.exe` (the installer's layout: `node.exe`, `dist\server\main.js`), else the portable payload. The zsh, Homebrew and nvm fallbacks become macOS and Linux only; Windows falls back to `where node`. Node starts with `CREATE_NO_WINDOW`, so no console window.
+- **The portable payload (a `portable` cargo feature):** `build.rs` zips `dist/server`, `dist/web` and `src-tauri/binaries/node.exe` into the `.exe` (`include_bytes!`). At start the app unpacks it once to `%LOCALAPPDATA%\Orlablocks\runtime\<version>\` (into a temporary folder, renamed when complete, so an interrupted unpack is never used) and runs Node from there. A new version unpacks to its own folder.
+- **WebView2 missing:** before opening the window, the app checks WebView2; without it, a native message says so and opens Microsoft's download page, instead of failing silently (the portable `.exe` can't install it; the installer does).
+- **Staging Node on every platform:** `scripts/stage-node.mjs` (Node, not bash, since Tauri runs `beforeBuildCommand` through `cmd` on Windows) copies this machine's Node to `src-tauri/binaries/node` or `node.exe`; with `ORLA_UNIVERSAL_NODE=1` on macOS it downloads the official arm64 and x64 builds of the same Node version and joins them with `lipo`.
+- **Platform config:** `tauri.macos.conf.json` (targets `app` and `dmg`, `node` as a resource, ad-hoc signing) and `tauri.windows.conf.json` (target `nsis`, `node.exe` as a resource, WebView2 bootstrapper), merged by Tauri over `tauri.conf.json`.
+- **The workflow (`.github/workflows/release.yml`):** on a `v*` tag, and by hand (`workflow_dispatch`) to get test builds as artifacts. Jobs: `windows` (`windows-latest`: the installer, then the portable `.exe`, then a smoke test that starts it and asks `/api/health`), `macos` (`macos-latest`: `universal-apple-darwin`, a smoke test of the bundled server and `lipo -info` on its Node), and `release` (on a tag: a draft release with every file).
+
+### Out
+
+- **Code signing on Windows** (SmartScreen's warning) and **notarization on macOS** (Open Anyway): both need paid certificates; the README says how to get past them.
+- **Windows on ARM**, and **Linux** builds.
+- **Auto-update.**
+
+---
+
+## 3. Names
+
+| File | What it is |
+|---|---|
+| `Orlablocks_<v>_universal.dmg` | the Mac app, Apple Silicon and Intel |
+| `Orlablocks_<v>_x64_portable.exe` | Windows, a single file, no install |
+| `Orlablocks_<v>_x64-setup.exe` | Windows, the NSIS installer |
+
+---
+
+## 4. Checks
+
+Each increment ends with `npm test` and `npm run typecheck` passing and the Mac build still working here (`npm run package`). CI checks what it can: each build starts and serves `/api/health` and the editor's page. Orlando checks the rest on Windows (§6).
+
+---
+
+## 5. Increments
+
+- **11B.1 Platform code.** `lib.rs`'s per-platform lookup, `CREATE_NO_WINDOW`, the WebView2 check; `stage-node.mjs`; the platform configs. The Mac build here unchanged.
+- **11B.2 The portable payload.** The `portable` feature, `build.rs`'s zip, unpacking at start.
+- **11B.3 The workflow.** The three jobs and their smoke tests; a manual run produces the files as artifacts for Orlando to test.
+
+---
+
+## 6. Browser acceptance (Windows, by Orlando)
+
+1. The portable `.exe` from Downloads: SmartScreen once, then the Control Panel, **Running**, no console window.
+2. **Open Editor in Browser**: create a project, draw, reload; the data folder is `Documents\Orlablocks`.
+3. **Change...** the data folder, **Show in Explorer**, **Install to Claude Desktop** (`%APPDATA%\Claude\claude_desktop_config.json`), **Install Skill**.
+4. Close the Control Panel: the server stops (Task Manager has no `node.exe` left), and the next start is instant (already unpacked).
+5. The installer: installs, starts from the Start menu, uninstalls cleanly.
+6. An Intel Mac, if one is at hand: the Universal `.dmg` opens and runs.
+
+---
+
+## 7. Progress
+
+- **2026-09-28:** Plan created. Decisions with Orlando: a single portable `.exe` and the NSIS installer; the Mac app Universal and built in CI too; Orlando tests on Windows before a release.
+- **2026-09-28:** **11B.1–11B.3 written.** `lib.rs` finds Node and the server per platform (`bundle_dirs`: a Mac app's `Contents/Resources`, the `.exe`'s folder, the portable payload), starts Node with `CREATE_NO_WINDOW`, falls back to `where node` on Windows, and checks WebView2 before opening the window. The `portable` feature: `build.rs` zips `dist/server`, `dist/web` and `node.exe` (73 MB with the universal Mac Node, as tested here); `portable::unpack_into` unpacks it once per version beside its final folder and renames it into place, with a Rust test (`cargo test --features portable`). `scripts/stage-node.mjs` replaces `stage-node.sh` (`ORLA_UNIVERSAL_NODE=1`: the official arm64 and x64 builds joined with `lipo`, 214 MB), and `scripts/build-server.mjs` replaces esbuild's CLI in `package.json` (its single-quoted banner breaks under `cmd`; the output is byte-identical). `tauri.macos.conf.json` and `tauri.windows.conf.json` hold each platform's targets and resources. The Control Panel says Explorer on Windows. `.github/workflows/release.yml`: Windows (installer, portable `.exe`, a smoke test of the portable one), macOS (Universal, a smoke test of the `.dmg`), and a draft release on a `v*` tag that matches `package.json`. The Mac build here unchanged. The Windows code can't be compiled here (Homebrew's Rust has no Windows target): CI is its first compile.

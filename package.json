@@ -8,7 +8,7 @@
     "dev": "NODE_ENV=development tsx src/server/main.ts",
     "build": "npm run build:web && npm run build:server && npm run build:control-panel",
     "build:web": "vite build",
-    "build:server": "esbuild src/server/main.ts --bundle --platform=node --target=node20 --format=esm --external:vite --external:@vitejs/plugin-react '--banner:js=import { createRequire } from \"node:module\"; const require = createRequire(import.meta.url);' --outfile=dist/server/main.js",
+    "build:server": "node scripts/build-server.mjs",
     "build:control-panel": "vite build --config vite.config.control-panel.ts",
     "tauri": "tauri",
     "package": "./scripts/build-apps.sh",

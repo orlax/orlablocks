@@ -1,0 +1,16 @@
+{
+  "bundle": {
+    "targets": [
+      "app",
+      "dmg"
+    ],
+    "resources": {
+      "../dist/server": "dist/server",
+      "../dist/web": "dist/web",
+      "binaries/node": "node"
+    },
+    "macOS": {
+      "signingIdentity": "-"
+    }
+  }
+}

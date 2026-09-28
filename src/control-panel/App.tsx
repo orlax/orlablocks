@@ -1,6 +1,9 @@
 import React, { useState, useEffect } from "react";
 import { TAGLINE, Wordmark } from "../ui/Wordmark";
 
+// The system's file manager, for "Show in ..." (plan 11B).
+const FILE_MANAGER = /Windows/.test(navigator.userAgent) ? "Explorer" : "Finder";
+
 // Check if running inside Tauri webview
 const isTauri = typeof window !== "undefined" && Boolean((window as any).__TAURI_INTERNALS__);
 
@@ -131,7 +134,7 @@ export function App() {
 
   const handleOpenFinder = async () => {
     await invokeTauri("open_folder", { path: status.dataDir });
-    showToast("Opened in Finder");
+    showToast(`Opened in ${FILE_MANAGER}`);
   };
 
   const handleRestart = async () => {
@@ -272,7 +275,7 @@ export function App() {
               <circle cx="11" cy="11" r="7" />
               <path d="m20 20-4-4" />
             </svg>
-            Show in Finder
+            Show in {FILE_MANAGER}
           </button>
           <button className="btn peach" onClick={handlePickDataDir}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinejoin="round">

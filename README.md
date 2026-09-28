@@ -15,12 +15,24 @@ The human draws in a browser editor. The agent (Claude Code, or any MCP client) 
 - **Library** (per project): `#tags` (properties), `@skills` (player abilities) and a markdown **design guide** (taste, game facts, house rules).
 - **Projects → scenes**, saved to disk on every edit.
 
-## Download (macOS)
+## Download
 
-Get the `.dmg` from the [latest release](../../releases/latest), open it and drag **Orlablocks** to Applications. No Node or other tools needed.
+From the [latest release](../../releases/latest). No Node or other tools needed.
 
-- **Apple Silicon only** for now (M1 and later).
+### macOS
+
+Open the `.dmg` and drag **Orlablocks** to Applications. From 1.1 the app runs on Apple Silicon and Intel (1.0 is Apple Silicon only).
+
 - **Not notarized yet**, so the first launch says Apple can't verify it. Click **Done**, then open **System Settings → Privacy & Security**, scroll down to *"Orlablocks" was blocked* and click **Open Anyway** (once; after that it opens normally). Or, in Terminal: `xattr -dr com.apple.quarantine /Applications/Orlablocks.app`.
+
+### Windows (from 1.1)
+
+- **`Orlablocks_<version>_x64_portable.exe`**: a single file, no install. Put it anywhere (Downloads, a USB stick) and double-click it. The first start unpacks its server to `%LOCALAPPDATA%\Orlablocks\runtime\`, so it takes a few seconds; later starts are instant.
+- **`Orlablocks_<version>_x64-setup.exe`**: a normal installer, with a Start menu entry and an uninstaller.
+- **Not signed yet**, so SmartScreen says "Windows protected your PC": click **More info**, then **Run anyway**.
+- The window needs Microsoft **WebView2**, which Windows 11 has and Windows 10 gets with its updates. If it's missing, the portable `.exe` says so and links to Microsoft's download; the installer adds it.
+
+### The Control Panel
 
 The app opens the **Control Panel**: it runs the server in the background, picks your data folder (`~/Documents/Orlablocks` by default), opens the editor in your browser, and connects your agent (one click for Claude Desktop, a command to copy for Claude Code, a config snippet for Cursor, Windsurf and Antigravity). It also installs the **Orlablocks skill** ([`skills/orlablocks/SKILL.md`](skills/orlablocks/SKILL.md)), which teaches an agent how to design with it. Quitting the Control Panel stops the server.
 
@@ -84,6 +96,8 @@ Needs Rust (`rustup`) as well as Node.
 npm run build        # dist/: the editor, the server bundle and the Control Panel
 npm run package      # appbuilds/macos/: Orlablocks.app and the .dmg (bundles dist/ and this machine's Node)
 ```
+
+Releases are built by GitHub Actions ([`.github/workflows/release.yml`](.github/workflows/release.yml)): the Universal Mac app and both Windows builds, each started and checked before it's kept. Run the workflow by hand for test builds, or push a tag `v<version>` (matching `package.json`) to attach them to a draft release.
 
 ## License
 

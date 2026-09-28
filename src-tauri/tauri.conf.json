@@ -7,7 +7,7 @@
     "frontendDist": "../dist/control-panel",
     "devUrl": "http://localhost:5173",
     "beforeDevCommand": "npm run build:control-panel",
-    "beforeBuildCommand": "npm run build && ./scripts/stage-node.sh"
+    "beforeBuildCommand": "npm run build && node scripts/stage-node.mjs"
   },
   "app": {
     "windows": [
@@ -37,11 +37,7 @@
     ],
     "resources": {
       "../dist/server": "dist/server",
-      "../dist/web": "dist/web",
-      "binaries/node": "node"
-    },
-    "macOS": {
-      "signingIdentity": "-"
+      "../dist/web": "dist/web"
     }
   }
 }
