@@ -5,3 +5,5 @@ src-tauri/target/
 .DS_Store
 data/
 src-tauri/binaries/
+*.code-workspace
+.claude/settings.local.json

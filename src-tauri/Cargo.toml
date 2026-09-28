@@ -3,7 +3,7 @@ name = "orlablocks"
 version = "0.0.18"
 description = "Orlablocks Control Panel"
 authors = ["Orlando Almario"]
-license = "MIT"
+license = "AGPL-3.0-only"
 edition = "2021"
 
 [lib]
