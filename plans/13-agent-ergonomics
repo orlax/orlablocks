@@ -1,13 +1,15 @@
 # 13 — Agent Ergonomics
 
-> **For the agent reading this:** Read `plans/thinking-06-agent-ergonomics` first: it's the case for this phase (the agent building an old temple room in `mariobros`, what cost tokens and what went unchecked), and its ideas are numbered there as they're referred to here (T1–T10). Then `plans/10-array-tools` §3 and §9 (arrays, layouts, following, `arrayLayout`), `plans/09-review-loop` (`render_view`, the `review` topic) and `plans/thinking-04-evals` (measuring the tool). This phase is almost all MCP surface: it makes the agent's tools **cheaper** (fewer tokens, fewer calls) and its claims **checked** (jumps and sightlines measured by a tool, not asserted). It adds:
+> **For the agent reading this:** Read `plans/thinking-06-agent-ergonomics` first: it's the case for this phase (the agent building an old temple room in `mariobros`, what cost tokens and what went unchecked), and its ideas are numbered there as they're referred to here (T1–T10). Then `plans/10-array-tools` §3 and §9 (arrays, layouts, following, `arrayLayout`), `plans/09-review-loop` (`render_view`, the `review` topic) and `plans/thinking-04-evals` (measuring the tool). This phase is almost all MCP surface: it makes the agent's tools **cheaper** (fewer tokens, fewer calls) and lets it **check sightlines** with a tool instead of a render or an assertion. It adds:
 > - **compact results** and **where array items are:** results stop echoing points, and say where each item stands and how high its top is (T3, T1, T10);
 > - **arcs and spirals** for lines and path layouts, and a **rising circle** (T2);
 > - **one batch, one call:** references between the shapes of one `draw_shapes`, groups made in the same batch, and **defining an entity** without drawing it in the scene (T7, T8);
 > - **surfaces:** a node's walking surface as one shared function, so things can **stand on** other things and lines can go **through** nodes, as jump arcs, live (T9, T1);
-> - **checks:** the game's **facts** as data, `check_route` for jumps, and `check_sight` for landmarks (T4, T5);
+> - **`check_sight`:** what's visible from a point, and what blocks it, in text (T5);
 > - **renders that see inside:** hiding nodes and clipping above a height, for one render (T6);
 > - **the eval run again:** the temple prompt, before and after, counted (thinking-04).
+>
+> Checking jumps against the game's numbers (T4: the facts as data, `check_route`) is deliberately **not** in this phase (§2, Out).
 >
 > The work is split into small increments (§10). Each ends with the human ↔ agent loop working, `npm test` and `npm run typecheck` passing, a scripted check against a spare server (`PORT=5171 DATA_DIR=<scratch>`), and, where the editor changes, a browser checklist for Orlando. The server's MCP version goes up one patch per increment, from 0.0.23: restart the server and reconnect with `/mcp` after each. Add this phase's terms to `GLOSSARY.md` (marked "from 13") as they land. Log progress in §13 at the end of this file.
 
@@ -17,16 +19,14 @@
 
 The temple of thinking-06, asked again from an empty scene with the same prompt:
 
-1. The agent reads the design guide. The project's **facts** are filled in (player 1.8 m, jump 4 m up, 5 m across standing, 6.5 m running, safe drop 3 m), so it plans hops against numbers it can check.
-2. It draws the hall, the lava, the door, the ledges and the spire **in one `draw_shapes`**: a `group` entry first (`ref: "chamber"`), everything else with `parent: "$chamber"`, the door a hole in it from the start.
-3. It defines `ruin-slab`, `temple-column`, `flame-jet` and `sun-relic` with **`define_entity`**: four calls, no shapes drawn off to the side, no instances to clean up.
-4. The wall spiral is **one array** on a **rising circle** (`sweep: 120, rise: 8`) and the spire's spiral another; the flame jets are an array **on** the flame ring (`on: "$ring"`, `skip` for the slabs without one). No script, no sampled points.
-5. The critical path is **one line through nodes**: `through: ["box_4", "$wall_spiral/*", "box_6", "$ring/0..7", "$spire_spiral/*", "instance_1"], style: "jumps"`, an arc per hop, live.
-6. Every result is **compact**: IDs, bounds, counts, and for arrays their items (`array_3/5 → 12.1, 4.5, -8.0 · top 5.0 · 90°`). No points come back.
-7. It calls **`check_route`** on the critical path: 31 hops, 2 flagged ("hop 14: 6.2 m, beyond a standing jump; running needs 3 m of run-up and the slab is 2 m"). It widens that slab and checks again: all within reach, hop 22 the hardest.
-8. It calls **`check_sight`** from the entrance and every rest point to the relic: blocked from the entrance by `array_1/12` and then `cylinder_4`. It skips that column, adds a sun shaft tagged `#decor` (which routes and sight ignore) and checks again: visible from 5 of 6 standing points.
-9. One `render_view` sheet with **`hide: ["cylinder_1"]`** (the hall's walls) shows the whole room from outside.
-10. The eval log: about half the tokens and a third fewer calls than thinking-06's run, and the summary's claims ("every jump is within reach", "the relic is visible from the door") come from tool results.
+1. It draws the hall, the lava, the door, the ledges and the spire **in one `draw_shapes`**: a `group` entry first (`ref: "chamber"`), everything else with `parent: "$chamber"`, the door a hole in it from the start.
+2. It defines `ruin-slab`, `temple-column`, `flame-jet` and `sun-relic` with **`define_entity`**: four calls, no shapes drawn off to the side, no instances to clean up.
+3. The wall spiral is **one array** on a **rising circle** (`sweep: 120, rise: 8`) and the spire's spiral another; the flame jets are an array **on** the flame ring (`on: "$ring"`, `skip` for the slabs without one). No script, no sampled points.
+4. The critical path is **one line through nodes**: `through: ["box_4", "$wall_spiral/*", "box_6", "$ring/0..7", "$spire_spiral/*", "instance_1"], style: "jumps"`, an arc per hop, live.
+5. Every result is **compact**: IDs, bounds, counts, and for arrays their items (`array_3/5 → 12.1, 4.5, -8.0 · top 5.0 · 90°`). No points come back.
+6. It calls **`check_sight`** from the entrance and every rest point to the relic: blocked from the entrance by `array_1/12` and then `cylinder_4`. It skips that column, adds a sun shaft over the relic as a landmark and checks again, with the shaft in `ignore` (it's light, not a wall): visible from 5 of 6 standing points.
+7. One `render_view` sheet with **`hide: ["cylinder_1"]`** (the hall's walls) shows the whole room from outside.
+8. The eval log: about half the tokens and a third fewer calls than thinking-06's run, no script, and the summary's claim that the relic is visible from the door comes from a tool result.
 
 ---
 
@@ -39,17 +39,17 @@ The temple of thinking-06, asked again from an empty scene with the same prompt:
 - **Arcs and spirals (13.2, T2):** `spiral` (the ramp's fields) on lines and path layouts; `rise` on circle layouts.
 - **One batch (13.3, T7, T8):** `ref` on any `draw_shapes` entry and `$ref` wherever an ID goes in the same batch (`parent`, `along.id`, `on`, `through`); a `group` entry type; `define_entity { name, description, tags, shapes }`; `make_entity { keep: false }`.
 - **Surfaces (13.4, T9, T1):** `topOf(node)` in shared code: a node's walking surface; `on` for instances and arrays (live); lines with `through` (stops, `style: "jumps" | "straight"`, `apex`), live like `along`.
-- **Checks (13.5, 13.6, T4, T5):** `facts` in the library (structured, edited in the Library panel and by `update_library`); `check_route`; `check_sight`; a built-in `#decor` tag (not a surface, not a blocker).
-- **Renders (13.7, T6):** `render_view { hide: [...], clip: y }`, for that render only.
-- **The eval (13.8):** the temple prompt rerun and measured; a `thinking-04` log entry.
+- **`check_sight` (13.5, T5):** from a point (or a node's top, or the human) to targets, the fraction visible and the blockers, with an `ignore` list.
+- **Renders (13.6, T6):** `render_view { hide: [...], clip: y }`, for that render only.
+- **The eval (13.7):** the temple prompt rerun and measured; a `thinking-04` log entry.
 
 ### Out (deliberately deferred)
 
-- **A non-solid shape kind** for light and decor: `#decor` covers it for the checks (§8); a kind would change drawing and holes too.
-- **Physics-accurate jumps** (arcs from speed and gravity, collision with ceilings along the arc): hops are checked by gap and rise against the facts, plus a clearance check at the apex (§8).
-- **Enemies, timing and moving platforms** in `check_route`: a `#timed` or `#moving` stop is reported as such, not simulated.
+- **Checking jumps (T4):** the game's facts as structured data (jump up and across, run-up, safe drop) and a `check_route` tool that measures each hop's gap and rise against them. Not yet: a later phase, once through lines (§7) are in use. Through lines already give every hop's stops, which is what it would measure.
+- **Tags the tools treat specially,** and any tag every project starts with: each project's library is its own. What `check_sight` shouldn't count as a blocker is passed per call (`ignore`).
+- **A non-solid shape kind** for light and decor: `ignore` covers `check_sight`; a kind would change drawing and holes too.
 - **Export to engines:** its own phase (thinking-04's multiplier).
-- **Editor features beyond showing what's new:** the human gets the inspector sections needed to see and unlink `on` and `through`, and the Facts fields; no new tools for the human.
+- **Editor features beyond showing what's new:** the human gets the inspector sections needed to see and unlink `on` and `through`; no new tools for the human.
 
 ---
 
@@ -65,16 +65,12 @@ The temple of thinking-06, asked again from an empty scene with the same prompt:
 | **walking surface (top)** | where a player stands on a node: a volume's top, a room's floor, a ramp's surface, an instance's or item's highest level face; `topOf` in `src/shared/surfaces.ts` |
 | **standing on (`on`)** | an instance or array placed on another node's walking surface, live: it moves up and down (and, for arrays on arrays, item by item) with what it stands on |
 | **through line** | a line whose points are computed from **stops** (nodes' walking surfaces), live; `style: "jumps"` draws an arc per hop |
-| **hop** | from one stop of a route to the next: its **gap** (edge to edge, across), **rise** (up, or drop down) and verdict |
-| **facts** | the game's numbers, in the library: player height, jump up, jump across standing and running, run-up, safe drop |
-| **`#decor`** | a built-in tag: a thing that isn't a surface or a blocker (light, scenery); routes and sight ignore it |
+| **sight check** | `check_sight`: from an eye to targets, how much of each is visible and what blocks it, in order |
 
 ### Data
 
-- **Library** (`src/shared/library.ts`): `facts?: { playerHeight?, jumpUp?, jumpAcross?, jumpRunning?, runUp?, safeDrop? }` (meters), versioned in the library's history like the rest. The default design guide's "The game's facts" section points at them instead of holding blanks (projects' own guides are theirs, left as they are).
 - **Instances and arrays:** `on?: { id, at?: "top" }` (as `along` is `{ id, at?, offset? }`). An array `on` another array stands item on item (item `i` on item `i`, skipped ones skipped); on anything else, every item drops onto it.
 - **Lines:** `through?: { stops: string[], style: "jumps" | "straight", apex?: number }`; `points` are kept, computed from the stops on every step (the machinery `refollow` runs for `along`), so readers that only know points still work.
-- **Seeded tag:** every project's library gets `#decor` (a normal tag, so it can be described and renamed; the checks look it up by its built-in flag, not its name).
 
 ---
 
@@ -140,29 +136,17 @@ The temple of thinking-06, asked again from an empty scene with the same prompt:
 
 ---
 
-## 8. Checks (13.5, 13.6)
+## 8. `check_sight` (13.5, T5)
 
-### Facts
-
-- Library panel: a **Facts** section (six number fields with units and a one-line hint each) in the design guide's tab. `update_library { facts: { … } }`. `get_guide design` shows them at the top, and says which are missing.
-- The core instructions: *"Check routes against the project's facts with check_route; if the facts are missing, ask the human for them before designing jumps."*
-
-### `check_route` (T4)
-
-- Input: `{ line: "line_7" }` (a through line, or any line: its points' nearest walking surfaces become the stops) or `{ through: [...] }` (stops, as in §7).
-- Per hop: `gap` (the shortest horizontal distance between the two tops' outlines), `rise` (+ up, − down), and a verdict: **ok**, **running** (needs a running jump: beyond `jumpAcross`, within `jumpRunning`, with `runUp` of room on the take-off top), **too far**, **too high** (`rise` > `jumpUp`), **drop** (−`rise` > `safeDrop`), or **blocked** (something solid, not `#decor`, crosses the arc's apex within `playerHeight`).
-- The result: one line per hop that isn't plainly ok (`hop 14: slab array_3/5 → array_3/6 · gap 6.2 · rise +0.5 · too far standing, running needs 3 m run-up, has 2.0`), then the hardest hop and a count per verdict. Missing facts: the gaps and rises, with no verdicts, and a note to fill the facts.
-
-### `check_sight` (T5)
-
-- Input: `{ from: point | "human" | id | id[], to: id | id[], samples? }`: `from` a node means a player standing on its top (eye at `playerHeight`, or the human's eye height).
-- Server-side ray casting (`src/shared/ray.ts`) over the expanded solids, ignoring `#decor` and hidden nodes: rays from the eye to sample points over the target (its bounds' corners, faces' centers and center: about 15). **Holes:** the server has no cut meshes, so a hit counts as passing when the hit point is inside a hole that cuts that shape (`holes.ts` says which), which is exact for boxes and cylinders cut by holes that go through them.
+- Input: `{ from: point | "human" | id | id[], to: id | id[], ignore?: id[], samples? }`. `from` a node means someone standing on its top (§7), the eye 1.65 m above it (the Walk tool's eye height, `PlayerCameraSchema`); `"human"` is the scene's human.
+- Server-side ray casting (`src/shared/ray.ts`, §7) over the expanded solids, leaving out hidden nodes and `ignore` (with what's in them): rays from the eye to sample points over each target (its bounds' corners, faces' centers and center: about 15).
+- **Holes:** the server has no cut meshes, so a hit counts as passing when the hit point is inside a hole that cuts that shape (`holes.ts` says which). That's exact for boxes and cylinders cut by holes that go through them.
 - The result: per pair, the fraction visible and the blockers in order, as IDs (items as `array_1/12`): `entrance → instance_4: 0% · blocked by array_1/12, then cylinder_4`.
-- The `review` topic: check every landmark from every beat's standing point, and the entrance.
+- The `review` topic: check every landmark from the entrance and from each beat's standing point before rendering; render for what text can't say.
 
 ---
 
-## 9. Renders that see inside (13.7, T6)
+## 9. Renders that see inside (13.6, T6)
 
 - `render_view { hide: [ids], clip: y }`, for that render only (never the scene's `hidden`, which is the human's). `hide` takes groups, instances, arrays and items; hidden holes stop cutting. `clip` drops everything above a height (a section: the walls cut, the floors and what's on them visible).
 - The four changes the survey found: the request schema and its checks (`render.ts`), the ids with their subtrees joined to the render's hidden set, that set passed into `runCapture` (which today derives its own), and the render's cutters recomputed rather than taken from the live view. `clip` is a clipping plane on the capture's renderer.
@@ -172,7 +156,7 @@ The temple of thinking-06, asked again from an empty scene with the same prompt:
 
 ## 10. Increments
 
-Ordered by what they save (thinking-06's reckoning): 13.1–13.3 carry most of the token savings, 13.4 removes the script, 13.5–13.6 make the output checked, 13.7 saves renders.
+Ordered by what they save (thinking-06's reckoning): 13.1–13.3 carry most of the token savings, 13.4 removes the script, 13.5 replaces renders for sightlines, 13.6 saves renders.
 
 ### 13.1 — Compact results and array items
 The results formatter, `verbose`, item lines (definition-bounds tops for now), `find_nodes` items, `get_scene { root: array }`. No editor change. Check: the scripted temple (§11) returns no points in default results; item lines match `arrayLayout`.
@@ -186,41 +170,38 @@ Batch refs, group entries, `define_entity`, `make_entity { keep: false }`. Brows
 ### 13.4 — Surfaces: standing on and lines through
 `src/shared/ray.ts` (moved from `pick.ts`) and `surfaces.ts`; item tops from `topOf`; `on`; `through` with `jumps`; the inspector's On and Through rows with Unlink. Browser: flames stay on their slabs when the ring's radius changes; the critical path follows a slab dragged up.
 
-### 13.5 — Facts and `check_route`
-Library `facts` and the Facts fields, `#decor` seeded, `check_route`, the core instruction. Browser: the Facts fields, their undo.
+### 13.5 — `check_sight`
+Ray casting on the server with the hole rule; `check_sight` with `ignore`; the `review` topic. Check: sight through a door hole passes, through a wall doesn't, and an ignored shaft doesn't block.
 
-### 13.6 — `check_sight`
-Ray casting on the server with the hole rule; `check_sight`; the `review` topic. Check: sight through a door hole passes, through a wall doesn't.
-
-### 13.7 — Renders that see inside
+### 13.6 — Renders that see inside
 `hide` and `clip` in `render_view`. Check: a sheet of an enclosed room with its walls hidden; the scene's `hidden` untouched.
 
-### 13.8 — The eval, again
-The temple prompt from an empty scene in `mariobros` (a new scene, `temple_eval`), with the same facts; count calls, tokens (from the session's usage), renders and the violations `check_route` finds; compare with thinking-06's run (about 27 calls, 6 renders, one script, ~20k tokens of coordinates). Log it in `thinking-04-evals`.
+### 13.7 — The eval, again
+The temple prompt from an empty scene in `mariobros` (a new scene, `temple_eval`); count calls, tokens (from the session's usage), renders and scripts; compare with thinking-06's run (about 27 calls, 6 renders, one script, ~20k tokens of coordinates). Log it in `thinking-04-evals`.
 
 ---
 
 ## 11. Checks between increments
 
 - A scripted client (`scripts/eval-temple.mjs`, 13.1 onward) that drives the MCP endpoint of a spare server (`PORT=5171 DATA_DIR=<scratch>`) through the temple's calls, and prints each result's size in characters: a regression guard for compactness, and a quick way to see each increment's effect.
-- Unit tests: the formatter; `spiralPoints` with rise; ref resolution (unknown, forward, duplicate); `topOf` per shape type; `on` and `through` kept up to date; `check_route` verdicts on a hand-made route; `check_sight` with a wall, a door hole and a `#decor` shaft.
+- Unit tests: the formatter; `spiralPoints` with rise; ref resolution (unknown, forward, duplicate); `topOf` per shape type; `on` and `through` kept up to date; `check_sight` with a wall, a door hole and an ignored shaft.
 
 ---
 
 ## 12. Decisions
 
-Proposed, for Orlando to confirm or change:
+Decided with Orlando:
 
-1. **Compact results are the default,** with `verbose: true` for the full nodes (not the other way round): the agent rarely needs its own input back.
-2. **Facts are structured data in the library,** shown in the design guide's tab, not parsed out of the guide's markdown.
-3. **`#decor` is a seeded tag,** not a new kind: it only changes what the checks count as solid.
-4. **`on` and `through` are live,** like `along`: consistent, and it's what keeps a critical path true when the level changes.
-5. **Hops are checked by gap and rise,** plus apex clearance; no simulated physics.
-6. **`hide` in renders is per render,** and the scene's `hidden` stays the human's.
-7. **`check_sight` is text,** not an image: renders stay for what text can't say.
+1. **Compact results are the default,** with `verbose: true` for the full nodes.
+2. **Checking jumps waits:** no facts as data and no `check_route` in this phase (§2, Out).
+3. **No tags every project starts with:** each project's library is its own; `check_sight` takes `ignore` instead.
+4. **`on` and `through` are live,** like `along`: it's what keeps a critical path true when the level changes.
+5. **`hide` in renders is per render,** and the scene's `hidden` stays the human's.
+6. **`check_sight` answers in text,** point to point; the agent still renders when it needs to see.
 
 ---
 
 ## 13. Progress
 
 - **2026-09-28:** Plan written from `thinking-06-agent-ergonomics`, grounded in the current tool surfaces (results echo full nodes and a following layout's points; `arrayLayout` gives pivots, no tops; `spiralPoints` only for ramps; `pick.ts` is pure and can move to shared; facts only as blanks in the default guide; `render_view` has no hide).
+- **2026-09-28:** Decisions with Orlando (§12): the efficiency work in, checking jumps (facts, `check_route`) out for now, no seeded tags (`check_sight` takes `ignore`), `check_sight` in. Increments renumbered 13.1–13.7.
