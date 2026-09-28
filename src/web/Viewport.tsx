@@ -108,9 +108,15 @@ import {
   type PointPart,
 } from "./points";
 import { TransformGizmo } from "./TransformGizmo";
+import { CaptureStage, type CaptureJob } from "./capture";
+import { fitSize } from "./shots";
+import { manifoldReady } from "./csg";
 
 const BACKGROUND = "#f7f6f2";
 const VIEW_REPORT_MS = 100;
+const NO_IDS = new Set<string>();
+/** A capture that hasn't answered by now is given up (each waits for the ones before it). */
+const CAPTURE_GIVE_UP_MS = 30_000;
 /** How long the camera takes to fly to something framed (the outliner's icon double-click). */
 const FLIGHT_MS = 450;
 /** A pointer-up within this many px of its pointer-down is a click, not a drag. */
@@ -333,8 +339,20 @@ type Props = {
   onViewChange: (view: View, camera: CameraState) => void;
   /** A saved camera to jump to. A new object each time a scene opens; null keeps the current camera. */
   cameraRestore: { camera: CameraState | null } | null;
-  /** Something to frame: the camera flies to it (a new object each time). */
-  cameraFrame: { bounds: Box3 } | null;
+  /** Something to frame, or a camera to go to (a shot's): the camera flies there (a new object each time). */
+  cameraFrame: { bounds: Box3 } | { camera: CameraState } | null;
+  /** Filled with what the view can do on request (09.1: capture it). */
+  api?: RefObject<ViewportApi | null>;
+};
+
+/** What to show in a capture of the view, besides the shapes. */
+export type CaptureOptions = { notes: boolean; lines: boolean };
+/** A capture of the view: the PNG, its size, and the camera it was taken with. */
+export type ViewCapture = { png: Blob; width: number; height: number; camera: CameraState };
+/** What the view does on request. */
+export type ViewportApi = {
+  /** A clean capture of the view as framed, at its size on screen (in device pixels, capped). */
+  capture(options: CaptureOptions): Promise<ViewCapture>;
 };
 
 /**
@@ -374,6 +392,7 @@ export function Viewport({
   onViewChange,
   cameraRestore,
   cameraFrame,
+  api,
 }: Props) {
   const cam = useRef<CameraState>({ ...DEFAULT_CAMERA });
   // The compass rose, turned every frame to where north is on screen.
@@ -389,9 +408,43 @@ export function Viewport({
   const flight = useRef<Flight | null>(null);
   useEffect(() => {
     if (!cameraFrame) return;
-    flight.current = { bounds: cameraFrame.bounds };
+    flight.current = "camera" in cameraFrame ? { to: restoredCamera(cameraFrame.camera) } : { bounds: cameraFrame.bounds };
     invalidate();
   }, [cameraFrame]);
+
+  // Captures, one at a time: each mounts a hidden canvas of its own (capture.tsx) until it's taken.
+  const [jobs, setJobs] = useState<(CaptureJob & CaptureOptions)[]>([]);
+  const nextJob = useRef(1);
+  if (api) {
+    api.current = {
+      async capture(options) {
+        // Holes are cut once the boolean library is ready: never capture uncut walls.
+        await manifoldReady();
+        const cssWidth = wrap.current?.clientWidth || 800;
+        const cssHeight = wrap.current?.clientHeight || 600;
+        const dpr = window.devicePixelRatio || 1;
+        const { width, height } = fitSize(Math.round(cssWidth * dpr), Math.round(cssHeight * dpr));
+        // Drawn at the view's own size in CSS pixels, so what's sized in screen pixels matches the screen.
+        const pixelRatio = width / cssWidth;
+        const camera = { ...cam.current, focus: { ...cam.current.focus } };
+        const png = await new Promise<Blob>((resolve, reject) => {
+          const id = nextJob.current++;
+          // Also if the capture's canvas fails without answering (its error boundary caught it).
+          const timer = setTimeout(() => finish(() => reject(new Error("The capture didn't finish"))), CAPTURE_GIVE_UP_MS);
+          const finish = (settle: () => void) => {
+            clearTimeout(timer);
+            setJobs((js) => js.filter((j) => j.id !== id));
+            settle();
+          };
+          setJobs((js) => [
+            ...js,
+            { id, camera, width, height, pixelRatio, ...options, resolve: (b) => finish(() => resolve(b)), reject: (e) => finish(() => reject(e)) },
+          ]);
+        });
+        return { png, width, height, camera };
+      },
+    };
+  }
   const wrap = useRef<HTMLDivElement>(null);
   const yawKeys = useRef(new Set<YawKey>());
   const pan = useRef<{ pointerId: number; grabbed: GroundPoint; sx: number; sy: number } | null>(null);
@@ -1414,6 +1467,29 @@ export function Viewport({
                 : "out handle")}
         </div>
       )}
+      {jobs[0] && (
+        <ErrorBoundary scope="view">
+        <CaptureStage key={jobs[0].id} job={jobs[0]} background={BACKGROUND}>
+          {(captureCam) => (
+            <>
+              <Lighting cam={captureCam} />
+              <Boxes
+                // What the scene holds, as saved: hidden nodes left out, the isolation ignored, no hole ghosts.
+                boxes={expandShapes(
+                  boxes.filter((b) => !hidden.has(b.id) && (jobs[0].notes || b.type !== "note") && (jobs[0].lines || b.type !== "line")),
+                ).filter((b) => !isHole(b))}
+                entityMode={entityMode}
+                cuts={cuts}
+                showHoles={false}
+                draft={null}
+                selected={NO_IDS}
+                hovered={NO_IDS}
+              />
+            </>
+          )}
+        </CaptureStage>
+        </ErrorBoundary>
+      )}
     </div>
   );
 }
@@ -1762,10 +1838,10 @@ function CompassRose() {
 }
 
 /**
- * A camera flight to frame `bounds`: planned on its first frame (`from`, `to`, `start`), then eased along. `last` is
- * the camera it set, so a pan, zoom or turn in between (a new camera) ends it.
+ * A camera flight to frame `bounds` (or to a camera, `to`): planned on its first frame (`from`, `to`, `start`), then
+ * eased along. `last` is the camera it set, so a pan, zoom or turn in between (a new camera) ends it.
  */
-type Flight = { bounds: Box3; from?: CameraState; to?: CameraState; start?: number; last?: CameraState };
+type Flight = { bounds?: Box3; from?: CameraState; to?: CameraState; start?: number; last?: CameraState };
 
 const easeInOut = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
 const reducedMotion = () => typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -1799,7 +1875,7 @@ function CameraRig({
     if (f && f.last && cam.current !== f.last) flight.current = null;
     else if (f) {
       const now = performance.now();
-      if (!f.to) Object.assign(f, { from: cam.current, to: framedCamera(cam.current, size, f.bounds), start: now });
+      if (f.start === undefined) Object.assign(f, { from: cam.current, to: f.to ?? framedCamera(cam.current, size, f.bounds!), start: now });
       const t = reducedMotion() ? 1 : Math.min(1, (now - f.start!) / FLIGHT_MS);
       cam.current = t >= 1 ? f.to! : lerpCamera(f.from!, f.to!, easeInOut(t));
       f.last = cam.current;

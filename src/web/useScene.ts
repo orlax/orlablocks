@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { NO_USES, type Library, type Uses } from "../shared/library";
 import { setDefinitions } from "../shared/entities";
-import type { ClientMessage, EditorRestore, HistorySummary, OpenScene, ProjectSummary, Scene, ServerMessage } from "../shared/scene.types";
+import type { ClientMessage, EditorRestore, HistorySummary, OpenScene, ProjectSummary, Scene, ServerMessage, ShotView } from "../shared/scene.types";
 
 const NO_HISTORY: HistorySummary = { canUndo: false, canRedo: false };
 
@@ -9,6 +9,9 @@ const NO_HISTORY: HistorySummary = { canUndo: false, canRedo: false };
 export function useScene() {
   const [scene, setScene] = useState<Scene | null>(null);
   const [history, setHistory] = useState<HistorySummary>(NO_HISTORY);
+  // The open document's history step, and its shots (09.1).
+  const [seq, setSeq] = useState(0);
+  const [shots, setShots] = useState<ShotView[]>([]);
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   // undefined until the server says; null = nothing is open.
   const [open, setOpen] = useState<OpenScene | null | undefined>(undefined);
@@ -43,6 +46,7 @@ export function useScene() {
         if (msg.type === "scene") {
           setScene(msg.scene);
           setHistory(msg.history);
+          setSeq(msg.seq ?? 0);
           setError(null);
         } else if (msg.type === "projects") {
           setProjects(msg.projects);
@@ -54,6 +58,8 @@ export function useScene() {
           // Before the next render, so every instance draws from these.
           setDefinitions(msg.definitions);
           setDefinitionsVersion((v) => v + 1);
+        } else if (msg.type === "shots") {
+          setShots(msg.shots);
         } else if (msg.type === "library") {
           setLibrary({ library: msg.library, history: msg.history, uses: msg.uses });
         } else if (msg.type === "error") {
@@ -77,5 +83,5 @@ export function useScene() {
     if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
   }, []);
 
-  return { scene, history, projects, open, restore, library, definitionsVersion, connected, error, clearError, send };
+  return { scene, history, seq, shots, projects, open, restore, library, definitionsVersion, connected, error, clearError, send };
 }

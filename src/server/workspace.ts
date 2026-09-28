@@ -25,6 +25,7 @@ import { HUMAN, HUMAN_DESCRIPTION } from "./defaultEntities";
 import { createLibraryStore, newLibraryHistory, type LibraryEntry, type LibraryStep, type LibraryStore } from "./library";
 import type { DataDir, HistoryLine, LibraryHistoryLine } from "./persist";
 import { createSceneStore, SceneError, type SceneStore, type Step } from "./scene";
+import { createShotStore, type NewShot, type ShotStore } from "./shots";
 
 /** Parses with a zod schema or throws a SceneError starting with `failure`. */
 function parse<T extends z.ZodType>(schema: T, input: unknown, failure: string): z.output<T> {
@@ -185,6 +186,7 @@ export function createWorkspace(data: DataDir) {
     resolveTag: (name) => resolveRef(library.get(), "tag", name)?.name,
     entityName: (id) => entityMeta(library.get(), id)?.name,
   });
+  const shots: ShotStore = createShotStore(data);
   const entitiesListeners = new Set<(definitions: Record<string, SceneNode[]>) => void>();
   const entitiesChanged = () => entitiesListeners.forEach((l) => l(allDefinitions()));
   // The library open with the scene: its project, the step it's saved at, and the defaults it was given.
@@ -417,6 +419,7 @@ export function createWorkspace(data: DataDir) {
     };
     store.load({ nodes: loaded.nodes, nextId: loaded.nextId, history: loaded.history });
     store.setSelection(editor?.selection ?? []);
+    shots.load(project, { kind: "scene", id: scene });
     if (loaded.caughtUp) {
       console.warn(`${project}/${scene}: scene.json missed the last step in history.jsonl; applied it`);
       writeScene();
@@ -429,6 +432,25 @@ export function createWorkspace(data: DataDir) {
   return {
     /** The store behind the open scene. Always exists (view and selection reports go to it even with nothing open). */
     store,
+
+    /** The open document's shots (09.1). */
+    shots,
+
+    /** Saves a shot of the open document, at its current history step. */
+    addShot(shot: NewShot, actor: "human" | "agent") {
+      if (!open) throw new SceneError(NO_SCENE_OPEN);
+      return shots.add(shot, actor, open.entity ? open.entity.seq : open.seq);
+    },
+
+    /** The open document's history step (how far it has changed: a shot's `seq` is where it was). */
+    documentSeq(): number | null {
+      return open ? (open.entity ? open.entity.seq : open.seq) : null;
+    },
+
+    /** Where a shot's image is on disk, for the HTTP route (null if there's none). */
+    shotImageFile(project: string, kind: "scenes" | "entities", doc: string, id: string): string | null {
+      return data.shotImageFile(project, { kind: kind === "scenes" ? "scene" : "entity", id: doc }, id);
+    },
 
     /** The store behind the open project's library (empty until a scene opens). */
     library,
@@ -514,6 +536,7 @@ export function createWorkspace(data: DataDir) {
       open = { ...open, entity: { id: entity, createdAt: loaded.file.createdAt, seq: loaded.seq, camera: editor?.camera ?? ENTITY_CAMERA } };
       store.load({ nodes: loaded.nodes, nextId: loaded.nextId, history: loaded.history, document: "entity" });
       store.setSelection(editor?.selection ?? []);
+      shots.load(open.project.id, { kind: "entity", id: entity });
       if (loaded.caughtUp) writeScene();
       readOtherScenes();
       openedChanged(restoreOf());

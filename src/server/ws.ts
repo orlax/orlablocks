@@ -21,7 +21,7 @@ export function attachWebSocket(httpServer: Server, workspace: Workspace) {
 
   const send = (ws: WebSocket, msg: ServerMessage) => ws.send(JSON.stringify(msg));
 
-  const sceneMessage = (): ServerMessage => ({ type: "scene", scene: store.getScene(), history: store.getHistory() });
+  const sceneMessage = (): ServerMessage => ({ type: "scene", scene: store.getScene(), history: store.getHistory(), seq: workspace.documentSeq() ?? undefined });
   const libraryMessage = (): ServerMessage =>
     workspace.getOpen()
       ? { type: "library", library: workspace.library.get(), history: workspace.library.getHistory(), uses: workspace.uses() }
@@ -59,6 +59,7 @@ export function attachWebSocket(httpServer: Server, workspace: Workspace) {
     broadcastLibrary();
   });
   workspace.onProjectsChanged((projects) => broadcast({ type: "projects", projects }));
+  workspace.shots.onChange(() => broadcast({ type: "shots", shots: workspace.shots.list() }));
 
   wss.on("connection", (ws) => {
     // The scene before `opened`, so the selection it restores is checked against this scene's nodes.
@@ -68,6 +69,7 @@ export function attachWebSocket(httpServer: Server, workspace: Workspace) {
     send(ws, { type: "opened", open: workspace.getOpen(), ...(restore ? { restore } : {}) });
     send(ws, { type: "entities", definitions: workspace.definitions() });
     send(ws, libraryMessage());
+    send(ws, { type: "shots", shots: workspace.shots.list() });
 
     ws.on("message", (raw) => {
       let data: unknown;
@@ -96,6 +98,9 @@ export function attachWebSocket(httpServer: Server, workspace: Workspace) {
         if (msg.type === "make_entity") return void workspace.makeEntity(withoutType(msg), "human");
         if (msg.type === "open_entity") return workspace.openEntity(msg.entity);
         if (msg.type === "close_entity") return workspace.closeEntity();
+        if (msg.type === "add_shot") return void workspace.addShot({ camera: msg.camera, caption: msg.caption, image: msg.image }, "human");
+        if (msg.type === "update_shot") return workspace.shots.update(msg.id, msg.caption);
+        if (msg.type === "remove_shot") return workspace.shots.remove(msg.id);
         if (msg.type === "detach_instances") return void workspace.requireScene().detachInstances(msg.ids, "human");
         const scene = workspace.requireScene();
         if (msg.type === "add_shapes") scene.drawShapes(msg.shapes, "human");

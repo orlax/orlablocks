@@ -1045,3 +1045,119 @@ body {
   cursor: pointer;
 }
 .entity-banner button:hover { background: rgba(255, 255, 255, 0.26); }
+
+/* A capture's own canvas (09.1): off screen, at the image's size, never seen or clicked. */
+.capture-stage { position: fixed; left: -100000px; top: 0; pointer-events: none; }
+
+/* The shutter's flash: over the view, fading out by itself. */
+.shutter-flash {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  background: #fff;
+  pointer-events: none;
+  animation: shutter-flash 0.35s ease-out forwards;
+}
+@keyframes shutter-flash {
+  from { opacity: 0.55; }
+  to { opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .shutter-flash { animation-duration: 0.01s; }
+}
+
+/* The Shots panel (09.1): floating like the inspector, bottom right by default (left of the compass), with a grid
+   of thumbnails that scrolls past its max height. */
+.shots-panel {
+  position: fixed;
+  right: 88px;
+  bottom: calc(var(--status-h) + 12px);
+  width: 300px;
+  max-height: min(480px, calc(100vh - 120px - var(--status-h)));
+  display: flex;
+  flex-direction: column;
+  border-radius: 10px;
+  background: var(--bar-bg);
+  color: var(--bar-text);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.25);
+  backdrop-filter: blur(6px);
+  user-select: none;
+  z-index: 5;
+}
+.shots-panel.collapsed { width: auto; }
+.shots-header { display: flex; align-items: center; gap: 4px; padding: 5px 6px; cursor: grab; }
+.shots-header:active { cursor: grabbing; }
+.shots-header .grip { color: var(--muted); flex: none; }
+.shots-title { flex: 1; font: 600 12px/1.4 system-ui, sans-serif; }
+.shots-header .muted { color: var(--muted); font-size: 12px; padding: 0 4px; }
+.panel-action {
+  display: inline-flex;
+  padding: 3px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.panel-action:hover { background: rgba(255, 255, 255, 0.08); color: var(--bar-text); }
+.panel-action:disabled { opacity: 0.4; cursor: default; }
+.shots-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; overflow-y: auto; padding: 0 8px 8px; min-height: 24px; }
+.shots-grid .outliner-empty { grid-column: 1 / -1; }
+.shots-grid .outliner-empty b { color: var(--bar-text); }
+.shot { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.shot-image {
+  position: relative;
+  display: block;
+  aspect-ratio: 16 / 10;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.05);
+  cursor: pointer;
+}
+.shot-image:hover { border-color: #8fb4f2; }
+.shot-image img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.shot-badge {
+  position: absolute;
+  left: 4px;
+  top: 4px;
+  display: inline-flex;
+  padding: 2px;
+  border-radius: 4px;
+  background: rgba(30, 32, 38, 0.8);
+  color: #8fb4f2;
+}
+/* The level has changed since the shot: a small amber dot. */
+.shot-changed { position: absolute; right: 5px; top: 5px; width: 7px; height: 7px; border-radius: 50%; background: #f5c518; box-shadow: 0 0 0 2px rgba(30, 32, 38, 0.8); }
+.shot-caption { display: flex; gap: 5px; align-items: baseline; min-width: 0; font-size: 11px; line-height: 1.3; cursor: text; }
+.shot-caption .shot-id { flex: none; color: var(--muted); font: 10px/1 ui-monospace, monospace; }
+.shot-caption .text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.shot-caption .text.empty { color: var(--muted); font-style: italic; }
+.shot-caption-input {
+  height: 20px;
+  min-width: 0;
+  padding: 0 4px;
+  border: 1px solid #8fb4f2;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.3);
+  color: var(--bar-text);
+  font: 11px system-ui, sans-serif;
+  outline: none;
+}
+.shot-actions { display: flex; gap: 1px; }
+.shot-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 3px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font: 11px system-ui, sans-serif;
+  cursor: pointer;
+}
+.shot-actions button:hover { background: rgba(255, 255, 255, 0.08); color: var(--bar-text); }
+.shot-actions button.danger { margin-left: auto; }
+.shot-actions button.danger:hover, .shot-actions button.armed { background: rgba(200, 70, 70, 0.3); color: var(--bar-text); }

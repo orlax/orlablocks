@@ -112,7 +112,7 @@ projects/<project>/
     third: { fov: 60, distance: 3, height: 0.4, shoulder: 0.5, avatar: true } }
   ```
   It isn't undoable (it's settings, like the view). Degrees for `fov` (horizontal), meters for everything else, and `speed` in m/s. `height` is above the eye, and `shoulder` is to the right of it.
-- **The editor's aids go on their own three.js layer,** so a capture camera that only sees the scene layer is a clean capture, without hiding and re-showing anything.
+- **A capture draws on a hidden canvas of its own** (the capture stage), holding only the clean scene, so nothing in the view is hidden, re-shown or redrawn (see §4). This replaces an earlier idea of putting the editor's aids on their own three.js layer: the selection and hover highlights live in the shapes' materials, so a layer couldn't take them out.
 
 ---
 
@@ -120,19 +120,21 @@ projects/<project>/
 
 ### The capture pipeline (`src/web/capture.ts`)
 
-- **`capture(camera, size, options)`:** renders the scene into an offscreen render target of `size` (not the canvas, so the size is free and nothing flickers), reads the pixels, and draws them onto a 2D canvas. Labels and a legend go on that canvas (§6). It returns a PNG blob. The on-screen canvas never needs `preserveDrawingBuffer`.
+- **A capture mounts a hidden canvas** at the image's size (off screen, with the view's pixel ratio so lines, notes and arrowheads, which are sized in screen pixels, look as they do on screen). It holds the lighting and the shapes with no highlights, uses the capture's camera as its own, draws one frame and reads it back as a PNG, then unmounts, freeing its WebGL context. The view is never touched. Captures run one at a time.
+  - **Why not an offscreen render target of the view's renderer:** three.js draws render targets in linear color without tone mapping, so the colors wouldn't match the screen. A canvas of its own has the same settings as the view.
+  - Labels and a legend (§6) will go on a 2D canvas over the image.
 - **It waits for the holes:** if the hole cutting (`csg.ts`) is still running, the capture waits for it, so a capture never shows uncut walls.
 - **One pipeline for everything:** the editor's shutter, Walk shots, and every `render_view`.
 - **Hidden nodes stay hidden** (as Orlando set them). Isolation is ignored: a capture shows the whole document.
 
 ### The shutter
 
-- **`K`** (a free key), or the **camera button** on the view bar (with the count of shots): captures the view exactly as framed, at the canvas size × the device pixel ratio, capped at 4096 px on the long edge. It's a clean capture with notes and lines shown.
+- **`K`** (a free key), or the **camera button** on the view bar: captures the view exactly as framed, at the canvas size × the device pixel ratio, capped at 4096 px on the long edge. It's a clean capture with notes and lines shown. Next to it, the **shots button** (with the count of shots) shows or hides the Shots panel.
 - **A short white flash** over the view, and the new thumbnail slides into the Shots panel. The panel opens on the first shot of a session.
 
 ### The Shots panel (`src/web/ShotsPanel.tsx`)
 
-- **Floating like the inspector and the Entities panel** (`useFloating`): bottom right by default, collapsible, with a max height. It opens from the view bar's camera button.
+- **Floating like the inspector and the Entities panel** (`useFloating`): bottom right by default, collapsible, with a max height. It opens from the view bar's shots button, and by itself on this tab's first shot.
 - **A grid of thumbnails,** newest first, each with its ID, caption, and an agent badge for the agent's shots. Hovering shows the caption and when it was taken, and marks it "the level changed since" when it has.
 - **Click a shot to go to it:**
   - an editor shot flies the camera to its view (the 09 flight, which already exists);
@@ -396,4 +398,13 @@ Adopted as recommended (say if any should change):
 
 ## 12. Progress
 
-(Nothing yet.)
+### 09.1 — Capture and shots (done; checked in the browser by Orlando)
+
+- **Shots on the server:** `src/server/shots.ts` holds the open document's shots (loaded when a scene or an entity opens). `add` takes the image as base64, reads its size from the PNG header (refusing anything that isn't a PNG, or over 40 MB), writes the image, then the record, with a new `shot_N` and the document's `seq`. `update` sets or clears a caption (one line, trimmed, at most 300 characters). `remove` deletes the record, then the image. A `shots.json` that doesn't load reads as no shots, can't be changed, and is never written over.
+- **Files:** `persist.ts` gains `readShots`, `writeShots`, `writeShotImage`, `removeShotImage` and `shotImageFile`, which only accepts plain slugs and `shot_N` (no path from a URL can leave the data folder). Duplicating a scene copies its shots with it.
+- **Protocol:** `add_shot`, `update_shot` and `remove_shot` from the editor; `shots` (each with its `url`) on connect, on open and after every change. The `scene` message gains `seq`, so the panel can tell which shots are older than the level. `main.ts` serves the images at `/shots/<project>/<scenes|entities>/<id>/<shot>.png`, revalidated each time.
+- **Capture:** `capture.tsx` (the hidden canvas, see §4) and `Viewport`'s `api.capture(options)`, which waits for the hole library first and gives up after 30 s. `csg.ts` gains `manifoldReady()`.
+- **Editor:** `K` and the view bar's camera button take a shot with a white flash. `ShotsPanel.tsx` is the panel: go to (the camera flies to the shot's view; `cameraFrame` now takes a camera as well as bounds), caption, copy, save, delete with two clicks, and Save all (a zip with `fflate`, the PNGs stored uncompressed). Walk shots can't be opened yet (09.2).
+- **Server version 0.0.17.** The MCP tools are unchanged in 09.1.
+- **Tests:** `src/server/shots.test.ts` (the PNG check, saving, captions, deleting, IDs never reused, shots per document and after a restart, a broken `shots.json`) and `src/web/shots.test.ts` (the size cap and file names). 366 in all.
+- **Scripted check** (port 5171, a scratch `DATA_DIR`): a shot sent over the WebSocket comes back in `shots` and over HTTP byte for byte; `..` and an unknown shot give 404; a non-PNG is refused with a clear error; a deleted shot's image is gone.

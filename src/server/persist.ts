@@ -9,12 +9,14 @@ import {
   LibraryFileSchema,
   ProjectFileSchema,
   SceneFileSchema,
+  ShotsFileSchema,
   type AppFile,
   type EditorFile,
   type EntityFile,
   type LibraryFile,
   type ProjectFile,
   type SceneFile,
+  type ShotsFile,
 } from "../shared/project.types";
 import { NodeSchema, type Actor, type NodePatch, type ProjectSummary } from "../shared/scene.types";
 import { LibraryOpSchema, type LibraryOp } from "../shared/library";
@@ -116,6 +118,12 @@ const HistoryLineSchema = z.discriminatedUnion("type", [
   z.object({ seq: z.number().int().min(1), at: z.number(), type: z.literal("redo") }),
 ]);
 
+/** A document that has shots (plan 09 §3): a scene, or an entity (shots taken in Edit entity mode). */
+export type DocumentRef = { kind: "scene" | "entity"; id: string };
+
+/** A shot's ID as it may appear in a file name. */
+export const SHOT_ID = /^shot_\d+$/;
+
 /** "Castle Dungeon!" → "castle-dungeon". Accents are dropped; anything left empty becomes `fallback`. */
 export function slugify(name: string, fallback: string): string {
   const slug = name
@@ -205,6 +213,8 @@ export function openDataDir(root: string) {
   const entitiesDir = (project: string) => path.join(projectDir(project), "entities");
   const entityFile = (project: string, entity: string) => path.join(entitiesDir(project), entity, "entity.json");
   const appFile = path.join(root, "app.json");
+  const shotsDir = (project: string, doc: DocumentRef) =>
+    path.join(doc.kind === "scene" ? scenesDir(project) : entitiesDir(project), doc.id, "shots");
 
   return {
     root,
@@ -412,6 +422,42 @@ export function openDataDir(root: string) {
 
     writeEntityEditor(project: string, entity: string, file: EditorFile): void {
       writeJson(path.join(entitiesDir(project), entity, "editor.json"), file);
+    },
+
+    /** A document's `shots/shots.json`, or null if it has no shots yet. Throws if it exists but doesn't load. */
+    readShots(project: string, doc: DocumentRef): ShotsFile | null {
+      const file = path.join(shotsDir(project, doc), "shots.json");
+      return fs.existsSync(file) ? readJson(file, ShotsFileSchema) : null;
+    },
+
+    writeShots(project: string, doc: DocumentRef, file: ShotsFile): void {
+      fs.mkdirSync(shotsDir(project, doc), { recursive: true });
+      writeJson(path.join(shotsDir(project, doc), "shots.json"), file);
+    },
+
+    /** Writes a shot's image (atomically, like every file here). */
+    writeShotImage(project: string, doc: DocumentRef, id: string, png: Buffer): void {
+      if (!SHOT_ID.test(id)) throw new Error(`Not a shot ID: ${id}`);
+      fs.mkdirSync(shotsDir(project, doc), { recursive: true });
+      const file = path.join(shotsDir(project, doc), `${id}.png`);
+      fs.writeFileSync(`${file}.tmp`, png);
+      fs.renameSync(`${file}.tmp`, file);
+    },
+
+    removeShotImage(project: string, doc: DocumentRef, id: string): void {
+      if (!SHOT_ID.test(id)) return;
+      fs.rmSync(path.join(shotsDir(project, doc), `${id}.png`), { force: true });
+    },
+
+    /**
+     * Where a shot's image is on disk, or null if there's none. Every part must be a plain folder or shot name, so a
+     * path from a URL can't reach outside the data folder.
+     */
+    shotImageFile(project: string, doc: DocumentRef, id: string): string | null {
+      const plain = /^[a-z0-9][a-z0-9-]*$/;
+      if (!plain.test(project) || !plain.test(doc.id) || !SHOT_ID.test(id)) return null;
+      const file = path.join(shotsDir(project, doc), `${id}.png`);
+      return fs.existsSync(file) ? file : null;
     },
 
     /** When the design guide last changed on disk, or null if the project has none. */

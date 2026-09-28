@@ -887,6 +887,48 @@ export const CameraSchema = z.object({
 });
 export type Camera = z.infer<typeof CameraSchema>;
 
+/** A shot's caption: one line, a sentence or two. */
+export const MAX_SHOT_CAPTION = 300;
+/** The largest image a shot keeps, in pixels on its long edge. */
+export const MAX_SHOT_SIZE = 4096;
+
+/**
+ * The camera a shot was taken with (plan 09 §3): the editor's (its focus, yaw and distance), or a walk's pose (09.2:
+ * the eye, where it looks, the field of view, and for third person the boom behind the eye).
+ */
+export const ShotCameraSchema = z.discriminatedUnion("kind", [
+  CameraSchema.extend({ kind: z.literal("editor") }),
+  z.object({
+    kind: z.literal("walk"),
+    preset: z.enum(["first", "third"]),
+    eye: z.object({ x: z.number(), y: z.number(), z: z.number() }),
+    yaw: z.number(),
+    pitch: z.number().min(-90).max(90),
+    fov: z.number().min(10).max(150),
+    boom: z.object({ distance: z.number().min(0), height: z.number(), shoulder: z.number() }).optional(),
+  }),
+]);
+export type ShotCamera = z.infer<typeof ShotCameraSchema>;
+
+/**
+ * A shot (plan 09 §3): a capture of the view, kept with the camera that took it, in the document it was taken in.
+ * `seq` is the document's history step when it was taken, so what changed since can be told. The image is
+ * `<id>.png` next to the records.
+ */
+export const ShotRecordSchema = z.object({
+  id: z.string().regex(/^shot_\d+$/),
+  caption: z.string().max(MAX_SHOT_CAPTION).optional(),
+  createdBy: z.enum(["human", "agent"]),
+  createdAt: z.string(),
+  seq: z.number().int().min(0),
+  width: z.number().int().positive(),
+  height: z.number().int().positive(),
+  camera: ShotCameraSchema,
+});
+export type ShotRecord = z.infer<typeof ShotRecordSchema>;
+/** A shot as the editor gets it: its record and where its image is served. */
+export type ShotView = ShotRecord & { url: string };
+
 /** What a tab restores when a scene opens (or when it connects): the scene's saved camera (null = keep its own) and selection. */
 export type EditorRestore = { camera: Camera | null; selection: string[] };
 
@@ -928,11 +970,23 @@ export const ClientMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("detach_instances"), ids: IdsSchema }),
   z.object({ type: z.literal("open_entity"), entity: z.string() }),
   z.object({ type: z.literal("close_entity") }),
+  // A shot (09.1): the image as base64 PNG, checked and saved by the server, which gives it its ID.
+  z.object({
+    type: z.literal("add_shot"),
+    camera: ShotCameraSchema,
+    width: z.number().int().positive().max(MAX_SHOT_SIZE),
+    height: z.number().int().positive().max(MAX_SHOT_SIZE),
+    caption: z.string().max(MAX_SHOT_CAPTION).optional(),
+    image: z.string().min(1),
+  }),
+  z.object({ type: z.literal("update_shot"), id: z.string(), caption: z.string().max(MAX_SHOT_CAPTION) }),
+  z.object({ type: z.literal("remove_shot"), id: z.string() }),
 ]);
 export type ClientMessage = z.input<typeof ClientMessageSchema>;
 
 export type ServerMessage =
-  | { type: "scene"; scene: Scene; history: HistorySummary }
+  // `seq`: the open document's history step (09.1: a shot taken at an earlier one shows the level changed since).
+  | { type: "scene"; scene: Scene; history: HistorySummary; seq?: number }
   | { type: "projects"; projects: ProjectSummary[] }
   // `restore` only when a scene opens and on connect; a rename re-sends `opened` without it.
   | { type: "opened"; open: OpenScene | null; restore?: EditorRestore }
@@ -940,4 +994,6 @@ export type ServerMessage =
   // The open project's library (null with nothing open), its own undo state, and where its tags and skills are used.
   | { type: "library"; library: Library | null; history: HistorySummary; uses: Uses }
   // The open project's entity definitions, by ID (every one, as nodes around the pivot).
-  | { type: "entities"; definitions: Record<string, SceneNode[]> };
+  | { type: "entities"; definitions: Record<string, SceneNode[]> }
+  // The open document's shots (09.1), newest last: on open and after every change.
+  | { type: "shots"; shots: ShotView[] };

@@ -38,6 +38,16 @@ const app = createMcpExpressApp({ host: HOST });
 const httpServer = createHttpServer(app);
 
 mountMcp(app, workspace);
+
+// Shot images (09.1), for the editor's thumbnails and downloads. Revalidated each time (IDs are never reused, but a
+// scene can be deleted by hand and made again with the same name).
+app.get("/shots/:project/:kind/:doc/:file", (req, res) => {
+  const { project, kind, doc, file } = req.params;
+  const match = /^(shot_\d+)\.png$/.exec(file);
+  const found = match && (kind === "scenes" || kind === "entities") ? workspace.shotImageFile(project, kind, doc, match[1]) : null;
+  if (!found) return void res.status(404).send("No such shot");
+  res.sendFile(found, { headers: { "Cache-Control": "no-cache" } });
+});
 attachWebSocket(httpServer, workspace);
 
 const vite = await createViteServer({

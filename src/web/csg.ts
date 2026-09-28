@@ -28,6 +28,9 @@ function load(): Promise<void> {
   return loading;
 }
 
+/** Resolves once the boolean library is ready (or failed to load, when shapes draw uncut). */
+export const manifoldReady = (): Promise<void> => (wasm ? Promise.resolve() : load());
+
 /** Whether the boolean library is ready; loads it on first use and re-renders the caller when it is. */
 export function useManifold(): boolean {
   const [ready, setReady] = useState(wasm !== null);

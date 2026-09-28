@@ -39,7 +39,9 @@ import { Outliner } from "./Outliner";
 import { ProjectPicker } from "./ProjectPicker";
 import { ContextualBar, EDIT_POINTS_HINT, HINTS, TOOLS, ToolBar, ViewBar } from "./ToolBar";
 import { useScene } from "./useScene";
-import { Viewport, type KindFields, type LineStyle, type RampStyle, type Tool } from "./Viewport";
+import { Viewport, type KindFields, type LineStyle, type RampStyle, type Tool, type ViewportApi } from "./Viewport";
+import { blobToBase64 } from "./capture";
+import { ShotsPanel, ShutterFlash } from "./ShotsPanel";
 
 /** Fixed-width number (e.g. "  12.50", " -3.00") so the info-label never jitters. */
 const coord = (n?: number) => (n === undefined ? "–".padStart(7) : n.toFixed(2).padStart(7));
@@ -108,9 +110,11 @@ const details = (s: Shape, library: Library | null) => {
 
 /** localStorage key: whether the Library panel is open. */
 const LIBRARY_OPEN_KEY = "dd.library.open";
+/** localStorage key: whether the Shots panel is open (09.1). */
+const SHOTS_OPEN_KEY = "dd.shots.open";
 
 export function App() {
-  const { scene, history, projects, open, restore, library: libraryState, connected, error, clearError, send } = useScene();
+  const { scene, history, seq, shots, projects, open, restore, library: libraryState, connected, error, clearError, send } = useScene();
   const library = libraryState.library;
   // The Library panel, open or not, remembered per viewer.
   const [libraryOpen, setLibraryOpenState] = useState(() => {
@@ -169,7 +173,7 @@ export function App() {
   // An entity being placed from the Library: the next click in the view puts an instance there.
   const [placing, setPlacing] = useState<string | null>(null);
   // What the camera flies to frame (double-clicking an outliner row's icon): a new object each time.
-  const [cameraFrame, setCameraFrame] = useState<{ bounds: Box3 } | null>(null);
+  const [cameraFrame, setCameraFrame] = useState<{ bounds: Box3 } | { camera: CameraState } | null>(null);
   // The Note tool's next color, and the note it just placed (its text field takes the focus once it's selected).
   const [nextNoteColor, setNextNoteColor] = useState<ShapeColor>(DEFAULT_NOTE_COLOR);
   const [freshNote, setFreshNote] = useState<string | null>(null);
@@ -182,6 +186,44 @@ export function App() {
   const [preview, setPreview] = useState<Record<string, ShapePatch> | null>(null);
   // A one-off message in the info-label, in place of the tool hint.
   const [notice, setNotice] = useState<string | null>(null);
+  // Shots (09.1): what the view can capture, the Shots panel (remembered per viewer), and the shutter's flash.
+  const viewportApi = useRef<ViewportApi | null>(null);
+  const [shotsOpen, setShotsOpenState] = useState(() => {
+    try {
+      return localStorage.getItem(SHOTS_OPEN_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  const setShotsOpen = (on: boolean) => {
+    setShotsOpenState(on);
+    try {
+      localStorage.setItem(SHOTS_OPEN_KEY, on ? "1" : "0");
+    } catch {
+      // A convenience only.
+    }
+  };
+  const [flash, setFlash] = useState(0);
+  const shooting = useRef(false);
+  /** Takes a shot of the view as framed: a clean capture, saved by the server into the open document. */
+  const shutter = async () => {
+    const api = viewportApi.current;
+    if (!api || !state.current.open || shooting.current) return;
+    shooting.current = true;
+    setFlash((f) => f + 1);
+    try {
+      const shot = await api.capture({ notes: true, lines: true });
+      send({ type: "add_shot", camera: { kind: "editor", ...shot.camera }, width: shot.width, height: shot.height, image: await blobToBase64(shot.png) });
+      if (!shotsOpen) setShotsOpen(true);
+    } catch (err) {
+      setNotice("The shot wasn't taken");
+      reportError("view", err);
+    } finally {
+      shooting.current = false;
+    }
+  };
+  const shutterRef = useRef(shutter);
+  shutterRef.current = shutter;
 
   const nodes = scene?.nodes ?? [];
   const isolated = isolation?.id ?? null;
@@ -401,6 +443,10 @@ export function App() {
       if ((e.key === "Delete" || e.key === "Backspace") && selection.length > 0) {
         e.preventDefault();
         send({ type: "remove_nodes", ids: selection });
+      }
+      if (key === "k") {
+        void shutterRef.current();
+        return;
       }
       const match = TOOLS.find((t) => t.key === key);
       if (match) chooseTool(match.tool);
@@ -749,6 +795,7 @@ export function App() {
         }}
         cameraRestore={restore}
         cameraFrame={cameraFrame}
+        api={viewportApi}
       />
 
       <div className="left-dock">
@@ -777,6 +824,22 @@ export function App() {
           entityMode={!!editingEntity}
         />
       </div>
+      {flash > 0 && <ShutterFlash key={flash} />}
+      {open && shotsOpen && (
+        <ShotsPanel
+          shots={shots}
+          seq={seq}
+          sceneName={editingEntity ? editingEntity.name : open.scene.name}
+          onGoTo={(shot) => {
+            if (shot.camera.kind === "editor") setCameraFrame({ camera: { focus: shot.camera.focus, yaw: shot.camera.yaw, distance: shot.camera.distance } });
+            else setNotice("Walk shots open in Walk mode, which comes next");
+          }}
+          onCaption={(id, caption) => send({ type: "update_shot", id, caption })}
+          onRemove={(id) => send({ type: "remove_shot", id })}
+          onNotice={setNotice}
+          onClose={() => setShotsOpen(false)}
+        />
+      )}
       {open && library && (
         <EntitiesPanel
           library={library}
@@ -899,6 +962,7 @@ export function App() {
                 ? { label: isolatedNode ? title(isolatedNode) : isolated, onEnd: () => isolate(null) }
                 : null
             }
+            shots={{ count: shots.length, panelOpen: shotsOpen, onShutter: () => void shutter(), onTogglePanel: () => setShotsOpen(!shotsOpen) }}
           />
         )}
         <ErrorPanel />

@@ -3,7 +3,9 @@ import {
   Cylinder,
   Eye,
   EyeOff,
+  Camera,
   Focus,
+  Images,
   Grid3x3,
   Hand,
   MousePointer2,
@@ -173,17 +175,20 @@ export function ContextualBar({
 /**
  * The view bar, top right: what the view shows. Holes as ghosts (off: only what they cut away shows, for a clean
  * look) and the grid, both for this tab only; and while a node is isolated, which one, with ✕ to show everything.
+ * Then the shutter (a shot of the view, `K`) and the Shots panel's button, with how many there are (09.1).
  */
 export function ViewBar({
   holes,
   grid,
   notes,
   isolated,
+  shots,
 }: {
   holes: { on: boolean; onToggle: () => void };
   grid: { on: boolean; onToggle: () => void };
   notes: { on: boolean; onToggle: () => void };
   isolated: { label: string; onEnd: () => void } | null;
+  shots: { count: number; panelOpen: boolean; onShutter: () => void; onTogglePanel: () => void };
 }) {
   return (
     <div className="view-bar">
@@ -211,6 +216,18 @@ export function ViewBar({
       </button>
       <button type="button" className={notes.on ? "toggle" : "toggle off"} title={notes.on ? "Hide the notes" : "Show the notes"} onClick={notes.onToggle}>
         <StickyNote size={13} /> notes
+      </button>
+      <span className="sep" />
+      <button type="button" title="Take a shot of the view (K)" onClick={shots.onShutter}>
+        <Camera size={13} />
+      </button>
+      <button
+        type="button"
+        className={shots.panelOpen ? "toggle" : "toggle off"}
+        title={shots.panelOpen ? "Hide the Shots panel" : "Show the Shots panel"}
+        onClick={shots.onTogglePanel}
+      >
+        <Images size={13} /> {shots.count}
       </button>
     </div>
   );

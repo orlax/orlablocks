@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { EntityMetaSchema, SkillSchema, TagSchema } from "./library";
-import { CameraSchema, NodeSchema } from "./scene.types";
+import { CameraSchema, NodeSchema, ShotRecordSchema } from "./scene.types";
 
 /**
  * The files in the data folder (plan 04 §3). Every file is checked with these on load, and a file that fails is
@@ -68,6 +68,16 @@ export const EditorFileSchema = z.object({
   selection: z.array(z.string()).default([]),
 });
 export type EditorFile = z.infer<typeof EditorFileSchema>;
+
+/**
+ * `shots/shots.json`, in a scene's or an entity's folder (plan 09 §3): the next shot number and every shot's record,
+ * oldest first. The images are `shots/<id>.png`.
+ */
+export const ShotsFileSchema = z.object({
+  nextId: z.number().int().min(1),
+  shots: z.array(ShotRecordSchema),
+});
+export type ShotsFile = z.infer<typeof ShotsFileSchema>;
 
 /** `app.json`: the server-level state. */
 export const AppFileSchema = z.object({
