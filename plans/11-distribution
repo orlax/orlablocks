@@ -313,13 +313,13 @@ claude mcp add --transport http orlablocks http://127.0.0.1:5170/mcp
 
 - [x] `npm run build` generates `dist/web` and `dist/server`.
 - [x] Running the production server serves the web editor without any dev dependencies (`tsx` or Vite not needed).
-- [ ] Changing the Data folder via the Control Panel re-points `DATA_DIR` and loads projects from the selected folder cleanly.
-- [ ] Control Panel window opens on app launch, displays live server status, and "Open Editor in Browser" opens the default browser.
-- [ ] "Install to Claude Desktop" writes valid JSON to `claude_desktop_config.json`.
-- [ ] Claude Code connects via `claude mcp add --transport http orlablocks http://127.0.0.1:5170/mcp`.
-- [ ] Installing the Orlablocks Skill enables an agent in an external workspace to read the guide, outline the scene, and draw shapes.
-- [ ] Closing the Control Panel window terminates the background server cleanly and releases the data lock.
-- [ ] Packaged `.dmg` runs on a clean Mac without Node.js installed.
+- [x] Changing the Data folder via the Control Panel re-points `DATA_DIR` and loads projects from the selected folder cleanly.
+- [x] Control Panel window opens on app launch, displays live server status, and "Open Editor in Browser" opens the default browser.
+- [x] "Install to Claude Desktop" writes valid JSON to `claude_desktop_config.json`.
+- [x] Claude Code connects via `claude mcp add --transport http orlablocks http://127.0.0.1:5170/mcp`.
+- [x] Installing the Orlablocks Skill enables an agent in an external workspace to read the guide, outline the scene, and draw shapes.
+- [x] Closing the Control Panel window terminates the background server cleanly and releases the data lock.
+- [x] Packaged `.dmg` runs on a clean Mac without Node.js installed.
 
 ---
 
@@ -328,3 +328,5 @@ claude mcp add --transport http orlablocks http://127.0.0.1:5170/mcp
 - **2026-09-28:** Plan created on branch `feat/gemini-packaging` in worktree `dungeon_designer_packaging`. Scope reformulated based on user feedback: dropped menu-bar icon in favor of a visible desktop Control Panel window UI, defined Tauri 2.0 + default browser architecture, detailed skill distribution, and structured 11.1–11.5 increments.
 - **2026-09-28:** **Increment 11.1 completed.** Added `vite.config.ts` and `npm run build` producing optimized static assets (`dist/web`) including WebAssembly (`manifold-3d`). Updated `src/server/main.ts` with static Express serving, Express 5 SPA fallback, and `/api/health` monitoring endpoint. Verified dev and production modes with unit tests, typechecks, and live servers.
 - **2026-09-28:** **Increment 11.2 completed.** Added standalone server bundling via `esbuild` to `dist/server/main.js` with `build:server` and unified `npm run build`. Added CLI argument parsing (`--port`, `--data`, `--host`). Implemented automatic dynamic port fallback (`5170 -> 5171..5180`) on `EADDRINUSE`. Tested two server processes running concurrently on separate ports and separate data folders with zero conflicts.
+- **2026-09-28:** **Increment 11.3 & 11.4 completed.** Built the lightweight React Control Panel UI (`src/control-panel/`) and native Tauri 2.0 backend (`src-tauri/`). Implemented live server monitoring, Data Folder selection via native `rfd` dialogs, "Open in Browser", 1-click Claude Desktop configuration (`claude_desktop_config.json`), and the official Orlablocks Agent Skill (`skills/orlablocks/SKILL.md`).
+- **2026-09-28:** **Increment 11.5 completed.** Added `scripts/build-apps.sh` and `npm run package`. Successfully built production native bundles into `appbuilds/macos/Orlablocks.app` (8.6 MB) and `Orlablocks_0.0.18_aarch64.dmg` (3.4 MB). Verified 100% clean builds and gitignore coverage.
