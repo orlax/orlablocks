@@ -1,0 +1,25 @@
+
+
+Something I have been thinking about is if this project is actually helpful at a bigger scale than my own things, and if the MCP + Skills I am connecting to claude code in this specific tool are actually better than just connecting to Blender MCP or using the Unity CLI via agent. 
+
+the two things that I believe this project worth it are:
+
+1. A simplified 3d modeling tool specific for blocking out levels, the constraints I have chosen and the tools we have to express levels fast, this is a Tool that I have been needing my self for a while now, before this I would do my level design on vector based programs like affinity designer. 
+
+2. the semantic layer, with instances, skills, tags, rules for design. the AI Agent can reason about game design concepts and only worry about 3d coordinates or mesh data when it really needs to. I think AT LEAST an agent can do work faster and with way less tokens using this tool. 
+
+something that would for SURE make the tool super useful:
+- export to a game engine / 3d format. 
+
+if I can quickly throw a lot of rooms together and then export that in engine in 5 minutes or less that can be a real multiplier, if I can match my entities with unity prefabs and have things be auto placed. wow. 
+
+so lets talk about Evals, I could have a prompt like this:
+
+"""to the best of your recollection I want you to design the world 1-1 of the first mario bross game on this scene. Start by creating any entities you will need like the mario character, the pipes, the goombas, the flag at the end, maybe groups of blocks, what ever you need. then layout the level, because it is originally a 2d game I imagine you will layout a long strip of blocks if you have questions or want confirmatiopn, ask"""
+
+and then start from blank on the orlablocks tool and on an MCP from blender and unity and evaluate:
+- time to completition
+- tokens used 
+- quality of the results. 
+
+that would give me some definitive numbers on does this tool improve performance. But just for the blockout ability it is already worth it for me to have it.
