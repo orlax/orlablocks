@@ -21,11 +21,11 @@ From the [latest release](../../releases/latest). No Node or other tools needed.
 
 ### macOS
 
-Open the `.dmg` and drag **Orlablocks** to Applications. From 1.1 the app runs on Apple Silicon and Intel (1.0 is Apple Silicon only).
+Open the `.dmg` and drag **Orlablocks** to Applications. It runs on Apple Silicon and Intel.
 
 - **Not notarized yet**, so the first launch says Apple can't verify it. Click **Done**, then open **System Settings → Privacy & Security**, scroll down to *"Orlablocks" was blocked* and click **Open Anyway** (once; after that it opens normally). Or, in Terminal: `xattr -dr com.apple.quarantine /Applications/Orlablocks.app`.
 
-### Windows (from 1.1)
+### Windows
 
 - **`Orlablocks_<version>_x64_portable.exe`**: a single file, no install. Put it anywhere (Downloads, a USB stick) and double-click it. The first start unpacks its server to `%LOCALAPPDATA%\Orlablocks\runtime\`, so it takes a few seconds; later starts are instant.
 - **`Orlablocks_<version>_x64-setup.exe`**: a normal installer, with a Start menu entry and an uninstaller.
