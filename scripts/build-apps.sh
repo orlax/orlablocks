@@ -17,7 +17,7 @@ npm run build
 echo "[2/3] Building Native Desktop App with Tauri..."
 npx tauri build
 
-echo "[3/3] Organizing build artifacts into appbuilds/..."
+echo "[3/3] Organizing build artifacts and resources into appbuilds/..."
 mkdir -p appbuilds/macos
 mkdir -p appbuilds/windows
 
@@ -29,5 +29,22 @@ if [ -d "src-tauri/target/release/bundle/macos" ]; then
   cp -R src-tauri/target/release/bundle/macos/*.app appbuilds/macos/ 2>/dev/null || true
 fi
 
-echo "Build complete! Artifacts located in appbuilds/:"
+# Ensure server and web assets are inside the application bundle
+APP_RES="appbuilds/macos/Orlablocks.app/Contents/Resources"
+if [ -d "$APP_RES" ]; then
+  echo "Injecting dist/ assets into $APP_RES..."
+  mkdir -p "$APP_RES/dist"
+  cp -R dist/server "$APP_RES/dist/"
+  cp -R dist/web "$APP_RES/dist/"
+
+  # Embed Node.js binary into the app bundle for zero-dev-tools independence
+  NODE_BIN="$(which node 2>/dev/null || true)"
+  if [ -n "$NODE_BIN" ] && [ -f "$NODE_BIN" ]; then
+    echo "Embedding Node.js binary ($NODE_BIN) into bundle..."
+    cp "$NODE_BIN" "$APP_RES/node"
+    chmod +x "$APP_RES/node"
+  fi
+fi
+
+echo "Build complete! Artifacts located in appbuilds/macos/:"
 ls -lh appbuilds/macos/ 2>/dev/null || true

@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{Manager, State};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct AppConfig {
     pub data_dir: String,
     pub port: u16,
@@ -31,6 +32,7 @@ pub struct ServerState {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ServerStatus {
     pub status: String,
     pub port: u16,
@@ -39,6 +41,7 @@ pub struct ServerStatus {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ActionResult {
     pub success: bool,
     pub message: String,
@@ -73,11 +76,82 @@ fn save_config(cfg: &AppConfig) {
     }
 }
 
-fn find_server_entry() -> Option<PathBuf> {
-    let candidates = [
-        PathBuf::from("dist/server/main.js"),
-        PathBuf::from("../dist/server/main.js"),
+fn find_node_binary() -> Option<PathBuf> {
+    // 1. Check embedded node in app Resources
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(contents) = exe.parent().and_then(|p| p.parent()) {
+            let embedded = contents.join("Resources/node");
+            if embedded.exists() {
+                return Some(embedded);
+            }
+        }
+    }
+
+    // 2. Check user login shell: zsh -l -c "which node" (inherits nvm, volta, fnm, brew)
+    if let Ok(output) = Command::new("zsh").args(["-l", "-c", "which node"]).output() {
+        if output.status.success() {
+            let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path_str.is_empty() {
+                let p = PathBuf::from(path_str);
+                if p.exists() {
+                    return Some(p);
+                }
+            }
+        }
+    }
+
+    // 3. Check common Homebrew / system paths
+    let common_paths = [
+        "/opt/homebrew/bin/node",
+        "/usr/local/bin/node",
+        "/usr/bin/node",
     ];
+    for p in common_paths {
+        let pb = PathBuf::from(p);
+        if pb.exists() {
+            return Some(pb);
+        }
+    }
+
+    // 4. Check NVM default or installed versions
+    if let Some(home) = dirs::home_dir() {
+        let nvm_dir = home.join(".nvm/versions/node");
+        if let Ok(entries) = fs::read_dir(nvm_dir) {
+            let mut versions: Vec<PathBuf> = entries
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| p.is_dir())
+                .collect();
+            versions.sort();
+            if let Some(latest) = versions.pop() {
+                let node_bin = latest.join("bin/node");
+                if node_bin.exists() {
+                    return Some(node_bin);
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn find_server_entry() -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+
+    // In a macOS .app bundle:
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(contents) = exe.parent().and_then(|p| p.parent()) {
+            candidates.push(contents.join("Resources/dist/server/main.js"));
+            candidates.push(contents.join("Resources/server/main.js"));
+            candidates.push(contents.join("Resources/main.js"));
+        }
+    }
+
+    // In local development / repo:
+    if let Ok(cwd) = std::env::current_dir() {
+        candidates.push(cwd.join("dist/server/main.js"));
+        candidates.push(cwd.join("../dist/server/main.js"));
+    }
+
     for c in candidates {
         if c.exists() {
             return Some(fs::canonicalize(&c).unwrap_or(c));
@@ -87,14 +161,32 @@ fn find_server_entry() -> Option<PathBuf> {
 }
 
 fn spawn_child(data_dir: &str, port: u16) -> Option<Child> {
+    let node_bin = find_node_binary()?;
     let script = find_server_entry()?;
     let _ = fs::create_dir_all(data_dir);
-    Command::new("node")
+
+    let log_file = dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".orlablocks/server.log");
+    if let Some(p) = log_file.parent() {
+        let _ = fs::create_dir_all(p);
+    }
+
+    let log_out = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_file)
+        .ok()?;
+    let log_err = log_out.try_clone().ok()?;
+
+    Command::new(node_bin)
         .arg(&script)
         .arg("--port")
         .arg(port.to_string())
         .arg("--data")
         .arg(data_dir)
+        .stdout(log_out)
+        .stderr(log_err)
         .spawn()
         .ok()
 }

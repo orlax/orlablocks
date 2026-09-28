@@ -65,8 +65,32 @@ export function App() {
 
   const fetchStatus = async () => {
     try {
-      const res = await invokeTauri<ServerStatus>("get_status");
-      if (res && res.port) setStatus(res);
+      const res = await invokeTauri<any>("get_status");
+      if (res) {
+        const port = res.port ?? status.port ?? 5170;
+        let isHealthy = res.status === "ok";
+
+        try {
+          const healthRes = await fetch(`http://127.0.0.1:${port}/api/health`);
+          if (healthRes.ok) {
+            const healthData = await healthRes.json();
+            if (healthData.status === "ok") {
+              isHealthy = true;
+            }
+          }
+        } catch {
+          // If health check fails, keep res.status
+        }
+
+        const resolvedDataDir = res.dataDir ?? res.data_dir ?? status.dataDir;
+        setStatus({
+          status: isHealthy ? "ok" : "stopped",
+          port,
+          host: res.host ?? "127.0.0.1",
+          dataDir: resolvedDataDir,
+          open: res.open ?? null,
+        });
+      }
     } catch (err) {
       // server might be restarting or stopped
     }
@@ -99,7 +123,7 @@ export function App() {
       }
     } finally {
       setIsProcessing(false);
-      fetchStatus();
+      setTimeout(fetchStatus, 600);
     }
   };
 
@@ -111,11 +135,11 @@ export function App() {
     setIsProcessing(true);
     try {
       await invokeTauri("restart_server");
-      setActionMessage("Server restarted.");
+      setActionMessage("Server restarting...");
       setTimeout(() => setActionMessage(null), 2500);
     } finally {
       setIsProcessing(false);
-      fetchStatus();
+      setTimeout(fetchStatus, 800);
     }
   };
 
