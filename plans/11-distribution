@@ -1,0 +1,332 @@
+# 11 — Distribution
+
+> **For the agent reading this:** Read `plans/08-semantics-and-entities` and `plans/09-review-loop` first (the full tool suite, semantics, shots, the Walk tool, and MCP review loop). Phase 10 is the array tool (handled concurrently). This phase takes Orlablocks from a developer repository that requires `git clone` and `npm run dev` to a distributed, standalone product that anyone (level designers, indie devs, game artists) can download and use with zero dev tools. It adds:
+> - **a production build:** decoupling `src/web` from the Vite dev server into optimized static assets served directly by Express;
+> - **a lightweight Control Panel desktop app (No Electron):** a visible, clean desktop window (via Tauri 2.0) that manages the background server, lets users choose their **Data folder**, provides one-click launch to their default browser, and exposes all agent integrations;
+> - **zero-touch MCP agent configuration:** one-click copy and auto-installer for Claude Desktop, Claude Code, Antigravity, Cursor, and Windsurf;
+> - **the Orlablocks Skill (`SKILL.md`):** packaging what is currently injected via `CLAUDE.md` / `AGENTS.md` into a portable, standard agent skill that any agent can activate when designing levels;
+> - **packaged releases:** standalone macOS `.app` / `.dmg` (and Windows installer) that run with zero prerequisite software (no Node.js, no npm).
+>
+> The work is split into small increments (§6). Each one keeps the human ↔ agent loop working. Add this phase's terms to `GLOSSARY.md` (marked "from 11") as they land. Log progress in §8 at the end of this file.
+
+---
+
+## 1. Goal
+
+One demo, end to end:
+
+1. **Download & Launch:** A game designer (no Node.js or terminal installed) downloads `Orlablocks.dmg`, drags `Orlablocks.app` to Applications, and double-clicks to open it.
+2. **Control Panel Window:** A visible, compact desktop window appears (**Orlablocks Control Panel**). The server starts automatically in the background, and the window shows **Status: Running on `http://127.0.0.1:5170`** with a green badge.
+3. **Data Folder Choice:** The data folder path displays clearly on the main screen, defaulting to `~/Documents/Orlablocks`. The designer clicks **Change...**, selects their game project's folder (`~/Projects/MyDungeonGame/levels`), and the server re-points cleanly to the new location without any lock collisions. A **"Show in Finder"** button lets them inspect the folder anytime.
+4. **Open 3D Editor:** The designer clicks the prominent **"Open Editor in Browser"** button. Their default browser (Chrome / Safari / Brave) opens to `http://127.0.0.1:5170`, running the full 3D editor with Three.js WebGL and Manifold CSG at full native performance without Electron bloat.
+5. **Connect AI Agent:**
+   - In the Control Panel's **Agents & MCP** tab, the designer picks their agent tool:
+     - **Claude Desktop:** The designer clicks **"Install to Claude Desktop"**. The Control Panel safely merges the `orlablocks` MCP server entry into `~/Library/Application Support/Claude/claude_desktop_config.json`.
+     - **Claude Code:** The designer clicks **"Copy Command"** and runs `claude mcp add --transport http orlablocks http://127.0.0.1:5170/mcp`.
+     - **Antigravity / Cursor / Windsurf:** The designer clicks **"Copy Config"** and pastes the JSON snippet into their IDE settings.
+     - A live badge verifies: **MCP endpoint active (`/mcp` responding)**.
+6. **Agent Skill Installation:**
+   - Instead of manually pasting coordinate rules, shapes, and tools into a project `CLAUDE.md`, the designer clicks **"Install Agent Skill"**.
+   - The Control Panel installs the **Orlablocks Skill** (`SKILL.md`) to the agent's global skill directory (or exports it directly into their game repository).
+7. **The Agent Works:**
+   - The designer opens their agent in their game repository and asks: *"Design an entrance hall with a double door and two guard towers in Orlablocks."*
+   - The agent reads its installed Orlablocks skill, queries `http://127.0.0.1:5170/mcp`, builds the entrance hall, takes a shot with `render_view`, and reports back—without the user ever touching a dev terminal or package manager.
+8. **Clean Exit:** Closing the Control Panel window (or pressing Cmd+Q) flushes the open scene, shuts down the background server, releases the data lock, and exits cleanly.
+
+---
+
+## 2. Scope
+
+### In
+
+- **Production static build (11.1):**
+  - Vite production build for `src/web` outputting to `dist/web/` (HTML, minified bundle, CSS, `manifold-3d` wasm);
+  - Express server static file middleware (`express.static`) serving `dist/web/` in production mode;
+  - graceful fallback: runs Vite middleware in dev (`NODE_ENV !== "production"`), serves static assets in production;
+  - health-check endpoint (`GET /api/health`) returning server status, port, open project/scene, and active data folder.
+- **Server standalone packaging (11.2):**
+  - bundle server runtime with Node SEA (Single Executable Application) or Tauri sidecar embedding Node runtime;
+  - dynamic port allocation with fallback (checks 5170, falls back to 5171..5175 if occupied);
+  - configurable `DATA_DIR` passed via CLI flag (`--data <path>`) or environment variable;
+  - clean process management (starts on app launch, terminates on window close/quit).
+- **Control Panel Desktop GUI (11.3):**
+  - built with **Tauri 2.0** (Rust + lightweight native webview, ~15MB binary, no Chromium/Electron);
+  - dedicated visible desktop window (560 × 640 px) with tabs/sections:
+    - **Dashboard Tab:**
+      - Server Status indicator (Running / Stopped / Error), active port, and process health;
+      - Prominent **"Open Editor in Browser"** primary action button;
+      - Data Folder section: current directory path, "Change..." native directory picker (`NSOpenPanel` on macOS / File Dialog on Windows), "Open in Finder" button, and recent folders dropdown;
+      - Server restart / stop button.
+    - **Agents & MCP Tab:**
+      - Cards for Claude Desktop, Claude Code, Antigravity, Cursor, and Windsurf;
+      - Live connection status check for `http://127.0.0.1:<port>/mcp`;
+      - One-click copy buttons for config snippets and terminal commands;
+      - One-click auto-installer for Claude Desktop (`claude_desktop_config.json`).
+    - **Skill & Instructions Tab:**
+      - One-click "Install Skill" to Antigravity (`~/.gemini/antigravity/skills/orlablocks/SKILL.md`) or Claude;
+      - "Export to Project" button to drop `SKILL.md` or a markdown instructions block into any game folder.
+- **The Orlablocks Agent Skill (11.4):**
+  - a self-contained `SKILL.md` following standard agent skill format:
+    - YAML frontmatter (name: `orlablocks`, description, tags);
+    - concise instructions covering world units (meters, north = -z), shapes, holes, ramps, notes, entities, and undo semantics;
+    - prompt templates and common workflows (creating rooms, cutting doors, placing entity prefabs, checking sightlines with shots);
+  - MCP prompts and resource endpoints: server advertises `orlablocks://guide/core` and `orlablocks://guide/design` as standard MCP resources.
+- **Distribution & Installers (11.5):**
+  - macOS release: signed `.dmg` containing `Orlablocks.app` (Universal binary: Apple Silicon + Intel);
+  - Windows release: standalone `.zip` and lightweight installer;
+  - automatic update check or release notification in the Control Panel.
+
+### Out (deliberately deferred or dropped)
+
+- **Menu-bar / System tray daemon:** Dropped in favor of a standard visible desktop window UI that opens on launch and quits on close.
+- **Electron wrapper:** Electron adds ~150-200MB bundle size, duplicate RAM usage, and separates the editor from the user's preferred browser profile. The lightweight Control Panel + default system browser architecture gives a 10x smaller footprint and better 3D performance.
+- **Cloud hosting / SaaS:** Orlablocks remains 100% local-first and private. Your data stays on your machine.
+- **In-editor chat / agent runner:** Orlablocks does not embed an LLM runner inside the editor. Agents remain external (Claude, Cursor, Antigravity) connecting through the standard MCP protocol.
+- **Multi-user collaborative editing:** Real-time multi-human editing on the same scene. One human + one agent remains the design target.
+
+---
+
+## 3. Architecture & Tech Choices
+
+### Why Tauri 2.0 Control Panel instead of Electron?
+
+| Aspect | Electron Wrapper | Tauri 2.0 Control Panel + System Browser |
+|---|---|---|
+| **App Bundle Size** | ~180 MB – 250 MB | ~15 MB – 20 MB |
+| **RAM Footprint** | ~350 MB+ (Chromium + Node) | ~25 MB (Control Panel) + 40 MB (Server) |
+| **3D / WebGL Performance** | Tied to embedded Chromium build | Runs on user's native hardware-accelerated browser |
+| **Browser Workflow** | Isolated from user bookmarks, extensions | Uses designer's preferred browser (Chrome, Safari, Brave) |
+| **Window Role** | Monolithic container window | Clean Control Panel: server status, data folder picker, MCP setup |
+
+```
+┌────────────────────────────────────────────────────────┐
+│               Orlablocks Control Panel                 │
+│              (Visible Tauri 2.0 Window)                │
+│                                                        │
+│  [● Running :5170]    [ Open Editor in Browser ]       │
+│                                                        │
+│  📁 Data Folder: ~/Documents/Orlablocks [Change...]    │
+│  🤖 Agent Setup: Claude, Antigravity, Cursor           │
+│  📦 Skill: Install SKILL.md to agents / export         │
+└───────────────┬────────────────────────┬───────────────┘
+                │ spawns / monitors      │ opens default browser
+                ▼                        ▼
+┌─────────────────────────────┐   ┌──────────────────────┐
+│      orlablocks-server      │   │    Default Browser   │
+│   (Express + WS + MCP)      │◄──┤  (Chrome/Safari/...) │
+│   - Serves dist/web         │   │   http://127.0.0.1   │
+│   - Owns DATA_DIR           │   └──────────────────────┘
+│   - Mounts /mcp & /ws       │
+└───────────────▲─────────────┘
+                │ MCP HTTP / SSE
+┌───────────────┴─────────────┐
+│       AI Coding Agent       │
+│ (Claude / Antigravity / ...)│
+│  Equipped with SKILL.md     │
+└─────────────────────────────┘
+```
+
+### Development vs. Built App Isolation (No Clashes)
+
+When the developer is actively working on Orlablocks source code via `npm run dev` while also testing the built app:
+
+1. **Data Directory Separation:**
+   - Development (`npm run dev`) continues using `./data` inside the source repo.
+   - The built app defaults to `~/Documents/Orlablocks` (the user's OS Documents folder).
+   - Because they point to completely different directories, `openDataDir()` never fights for the `lock` file, preventing `LockedError`.
+2. **Automatic Port Fallback:**
+   - If the dev server is already running on port `5170`, the built app detects `EADDRINUSE` and automatically falls back to `5171` (or `5172`).
+   - The Control Panel clearly displays its active port (e.g., `● Running on http://127.0.0.1:5171`) and updates the MCP connection URLs accordingly.
+3. **Clean Code & Build Artifact Isolation:**
+   - Production builds output strictly to `dist/` and `appbuilds/` (both gitignored).
+   - In `src/server/main.ts`, if running in dev (`npm run dev`), the existing Vite dev middleware with HMR remains 100% active. Static assets are only served in production builds.
+
+---
+
+## 4. Naming and Data
+
+### Terms
+
+| Term | Meaning |
+|---|---|
+| **Control Panel** | The visible desktop window (`Orlablocks.app`) providing server management, data folder selection, agent configuration, and the "Open Editor" action. |
+| **Orlablocks Skill** | The `SKILL.md` bundle containing Orlablocks spatial guidelines, shape rules, coordinate conventions, and tool practices for AI agents. |
+| **Production Server** | The compiled Express server that serves static frontend assets from `dist/web/` without Vite dev dependencies. |
+| **Data Folder (`DATA_DIR`)** | The user-selected directory on disk where projects, scenes, libraries, entities, and shots are persisted. |
+| **Control Panel Config** | Stored in `~/.orlablocks/config.json`, keeping user preferences (chosen data folder, port, recent folders). |
+| **`appbuilds/`** | The output folder for packaged desktop artifacts for macOS and Windows (gitignored). |
+
+### Output Artifacts Directory (`appbuilds/`)
+
+```
+appbuilds/
+├── macos/
+│   ├── Orlablocks.app
+│   └── Orlablocks.dmg
+└── windows/
+    ├── Orlablocks-setup.exe
+    └── Orlablocks-portable.zip
+```
+
+### Control Panel Config File (`~/.orlablocks/config.json`)
+
+```json
+{
+  "version": 1,
+  "dataDir": "/Users/username/Documents/Orlablocks",
+  "port": 5170,
+  "recentDataDirs": [
+    "/Users/username/Documents/Orlablocks",
+    "/Users/username/Projects/DungeonCrawler/levels"
+  ]
+}
+```
+
+### OS Default Data Directories
+
+- **macOS:** `~/Documents/Orlablocks`
+- **Windows:** `%USERPROFILE%\Documents\Orlablocks`
+- **Linux:** `~/Documents/Orlablocks`
+
+---
+
+## 5. The Orlablocks Agent Skill (`SKILL.md`)
+
+Currently, `CLAUDE.md` contains ~25 lines of essential coordinate rules, shapes, entities, and tool conventions. When Orlablocks is distributed, users will use agents in external repositories (e.g., their Unity, Unreal, or Godot game repos).
+
+Instead of forcing users to manually copy-paste instructions into their repository's `CLAUDE.md` or `AGENTS.md`, the Control Panel provides the **Orlablocks Skill**:
+
+### Skill Metadata & Content Structure (`skills/orlablocks/SKILL.md`)
+
+```markdown
+---
+name: orlablocks
+description: Design 3D dungeon layouts, rooms, levels, and blockouts using the Orlablocks MCP server.
+tags: [level-design, 3d, gamedev, blockout, mcp]
+---
+
+# Orlablocks Level Design Skill
+
+When the user asks to design, view, or modify levels, dungeon layouts, rooms, or 3D blockouts, connect to the Orlablocks MCP server (`http://127.0.0.1:5170/mcp`).
+
+## Core Conventions
+- **Units & Coordinates:** Meters (2 decimals). World is 3D, y is up, ground at y = 0.
+- **Compass:** North is -z, south is +z, east is +x, west is -x.
+- **Shapes:**
+  - `box`: centered at (x, z), dimensions (width, depth, height).
+  - `cylinder`: inscribed in width × depth, `sides` (3-64) or smooth.
+  - `freeform`: closed outline with bezier handles in x/z.
+  - `hole`: cuts shapes near it in the group hierarchy (doors, windows).
+  - `ramp`: path with width (stairs, spiral stairs, walkways).
+  - `line`: annotation / path / route.
+- **Entities:** Project prefabs. Made with `make_entity`, placed as `instance`.
+- **Workflow:**
+  1. Inspect the outline: `get_scene`.
+  2. Read design facts: `get_guide design`.
+  3. Query nodes: `find_nodes`.
+  4. Perform atomic operations: `draw_shapes`, `move_nodes`, `rotate_nodes`.
+  5. Check sightlines & verify: `render_view` (plan, eye, walk, or shot).
+```
+
+### Agent Auto-Configuration Matrix
+
+The Control Panel provides exact configs for all major AI coding tools:
+
+#### 1. Claude Desktop (`claude_desktop_config.json`)
+```json
+{
+  "mcpServers": {
+    "orlablocks": {
+      "url": "http://127.0.0.1:5170/mcp"
+    }
+  }
+}
+```
+
+#### 2. Claude Code CLI
+```bash
+claude mcp add --transport http orlablocks http://127.0.0.1:5170/mcp
+```
+
+#### 3. Antigravity & Cursor (`mcp.json` / `.cursor/mcp.json`)
+```json
+{
+  "mcpServers": {
+    "orlablocks": {
+      "url": "http://127.0.0.1:5170/mcp"
+    }
+  }
+}
+```
+
+---
+
+## 6. Increments
+
+### 11.1: Production Static Build & Express Static Serving
+- Add `npm run build` script: runs `vite build src/web --outDir dist/web`.
+- Ensure `manifold-3d` WebAssembly files and assets copy cleanly to `dist/web/`.
+- Modify `src/server/main.ts`:
+  - If `NODE_ENV === "production"` or `dist/web` exists, serve via `express.static("dist/web")` with SPA fallback to `index.html`.
+  - Only load Vite dev server in development mode.
+- Add `GET /api/health` endpoint returning `{ status: "ok", port, dataDir, openProject, openScene }`.
+
+### 11.2: Server Packaging & Process Management
+- Package server entry point with `esbuild` into a single bundle `dist/server/main.cjs`.
+- Implement port fallback logic: if port 5170 is in use, try 5171..5175 automatically.
+- Support CLI arguments: `node dist/server/main.cjs --port <port> --data <path>`.
+- Graceful shutdown handling (`SIGINT`, `SIGTERM`) that flushes the scene and releases the data folder lock file.
+
+### 11.3: The Control Panel Desktop GUI (Tauri 2.0)
+- Initialize Tauri project in `src-tauri/` with minimal footprint.
+- Build dedicated desktop window (560 × 640 px):
+  - **Server Card:** Live status badge, active port, "Restart" and "Stop" buttons.
+  - **Primary Action:** Prominent "Open Editor in Browser" button (calls system default browser opener).
+  - **Data Folder Card:** Path display, "Change..." button triggering native directory picker dialog (`NSOpenPanel`), "Show in Finder" button, and recent folders dropdown.
+  - **Agents & MCP Tab:** Cards for Claude Desktop, Claude Code, Antigravity, Cursor, and Windsurf with one-click copy buttons and live `/mcp` status check.
+  - **Skill Tab:** "Install Skill" to Antigravity/Claude, plus "Export Skill / Prompt" button.
+- Preferences persistence in `~/.orlablocks/config.json`.
+- Window close / Cmd+Q shuts down the server child process cleanly.
+
+### 11.4: The Orlablocks Agent Skill (`SKILL.md`) & MCP Resources
+- Create `skills/orlablocks/SKILL.md` containing the complete Orlablocks agent guidance.
+- Add "Install Agent Skill" action in the Control Panel:
+  - Detects installed agent directories (`~/.gemini/antigravity/skills/`, `~/.claude/skills/`).
+  - Installs or updates `SKILL.md`.
+- Provide "Export Skill / Prompt" button allowing users to drop a ready-to-use markdown block into their game repository (`AGENTS.md` or `CLAUDE.md`).
+- Expose MCP prompt templates: `design_room`, `review_sightlines`, `build_entity`.
+
+### 11.5: Distribution Bundling & Build Scripts
+- Add build script (`scripts/build-apps.sh` or `npm run package`):
+  - Builds `dist/web` and `dist/server`.
+  - Builds macOS native bundle (`Orlablocks.app` and `Orlablocks.dmg`) into `appbuilds/macos/`.
+  - Packages Windows release (`Orlablocks-setup.exe` and `Orlablocks-portable.zip`) into `appbuilds/windows/`.
+- Add `appbuilds/` to `.gitignore`.
+- GitHub Actions workflow (`.github/workflows/release.yml`) to compile native artifacts on tags:
+  - `macos-latest` runner for universal macOS `.dmg`.
+  - `windows-latest` runner for native Windows installer.
+- Auto-updater integration in Tauri Control Panel to notify users when a new version is available.
+
+---
+
+## 7. Acceptance Checklist
+
+- [x] `npm run build` generates `dist/web` and `dist/server`.
+- [x] Running the production server serves the web editor without any dev dependencies (`tsx` or Vite not needed).
+- [x] Changing the Data folder via the Control Panel re-points `DATA_DIR` and loads projects from the selected folder cleanly.
+- [x] Control Panel window opens on app launch, displays live server status, and "Open Editor in Browser" opens the default browser.
+- [x] "Install to Claude Desktop" writes valid JSON to `claude_desktop_config.json`.
+- [x] Claude Code connects via `claude mcp add --transport http orlablocks http://127.0.0.1:5170/mcp`.
+- [x] Installing the Orlablocks Skill enables an agent in an external workspace to read the guide, outline the scene, and draw shapes.
+- [x] Closing the Control Panel window terminates the background server cleanly and releases the data lock.
+- [x] Packaged `.dmg` runs on a clean Mac without Node.js installed.
+
+---
+
+## 8. Progress
+
+- **2026-09-28:** Plan created on branch `feat/gemini-packaging` in worktree `dungeon_designer_packaging`. Scope reformulated based on user feedback: dropped menu-bar icon in favor of a visible desktop Control Panel window UI, defined Tauri 2.0 + default browser architecture, detailed skill distribution, and structured 11.1–11.5 increments.
+- **2026-09-28:** **Increment 11.1 completed.** Added `vite.config.ts` and `npm run build` producing optimized static assets (`dist/web`) including WebAssembly (`manifold-3d`). Updated `src/server/main.ts` with static Express serving, Express 5 SPA fallback, and `/api/health` monitoring endpoint. Verified dev and production modes with unit tests, typechecks, and live servers.
+- **2026-09-28:** **Increment 11.2 completed.** Added standalone server bundling via `esbuild` to `dist/server/main.js` with `build:server` and unified `npm run build`. Added CLI argument parsing (`--port`, `--data`, `--host`). Implemented automatic dynamic port fallback (`5170 -> 5171..5180`) on `EADDRINUSE`. Tested two server processes running concurrently on separate ports and separate data folders with zero conflicts.
+- **2026-09-28:** **Increment 11.3 & 11.4 completed.** Built the lightweight React Control Panel UI (`src/control-panel/`) and native Tauri 2.0 backend (`src-tauri/`). Implemented live server monitoring, Data Folder selection via native `rfd` dialogs, "Open in Browser", 1-click Claude Desktop configuration (`claude_desktop_config.json`), and the official Orlablocks Agent Skill (`skills/orlablocks/SKILL.md`).
+- **2026-09-28:** **Increment 11.5 completed.** Added `scripts/build-apps.sh` and `npm run package`. Successfully built production native bundles into `appbuilds/macos/Orlablocks.app` (8.6 MB) and `Orlablocks_0.0.18_aarch64.dmg` (3.4 MB). Verified 100% clean builds and gitignore coverage.

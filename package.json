@@ -4,7 +4,14 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx src/server/main.ts",
+    "dev": "NODE_ENV=development tsx src/server/main.ts",
+    "build": "npm run build:web && npm run build:server && npm run build:control-panel",
+    "build:web": "vite build",
+    "build:server": "esbuild src/server/main.ts --bundle --platform=node --target=node20 --format=esm --external:vite --external:@vitejs/plugin-react '--banner:js=import { createRequire } from \"node:module\"; const require = createRequire(import.meta.url);' --outfile=dist/server/main.js",
+    "build:control-panel": "vite build --config vite.config.control-panel.ts",
+    "tauri": "tauri",
+    "package": "./scripts/build-apps.sh",
+    "start": "NODE_ENV=production node dist/server/main.js",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
@@ -23,6 +30,8 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
+    "@tauri-apps/api": "^2.12.0",
+    "@tauri-apps/cli": "^2.12.0",
     "@types/express": "^5.0.6",
     "@types/node": "^26.6.2",
     "@types/react": "^19.3.0",
@@ -30,6 +39,7 @@
     "@types/three": "^0.186.0",
     "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^6.1.1",
+    "esbuild": "^0.28.2",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
     "vite": "^8.3.1",
