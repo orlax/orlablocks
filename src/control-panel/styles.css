@@ -129,6 +129,8 @@ body {
 .hero {
   text-align: center;
   padding: 10px 0 26px;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .logo {
@@ -136,6 +138,9 @@ body {
   height: 76px;
   display: block;
   margin: 0 auto 10px;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-user-drag: none;
 }
 
 h1 {
@@ -150,16 +155,23 @@ h1 {
   justify-content: center;
   gap: 0.08em;
   flex-wrap: wrap;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
 }
 
 h1 .orla {
   margin-right: 0.14em;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .blocks {
   display: inline-flex;
   gap: 0.08em;
   align-items: center;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .blk {
@@ -179,6 +191,9 @@ h1 .orla {
   transform: none;
   animation: rise 0.5s cubic-bezier(0.3, 1.6, 0.5, 1) both;
   animation-delay: var(--d);
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
 }
 
 @keyframes rise {
