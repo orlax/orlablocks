@@ -37,7 +37,7 @@ const TOPIC_SUMMARIES: Record<GuideTopic, string> = {
 };
 
 export const INSTRUCTIONS =
-  "Dungeon Designer: an ideation tool for dungeon layouts. The human edits the same scene in a local 3D editor, " +
+  "orlablocks: an ideation tool for dungeon layouts. The human edits the same scene in a local 3D editor, " +
   "and you read and edit it with these tools. The scene is one scene of a project (a project holds several scenes, " +
   "e.g. one per level); get_scene reports which, and the project's description gives the context. You only see the " +
   "open scene: the human opens and switches scenes in the editor. Every change is saved as it happens, and every " +

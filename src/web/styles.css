@@ -148,8 +148,7 @@ body {
 .contextual-bar button.swatch:hover { transform: scale(1.12); }
 .contextual-bar button.swatch.active { outline: 2px solid #8fb4f2; outline-offset: 2px; }
 
-/* The left column, below the project bar: the outliner, and the Entities panel under it (from 08.4). Each takes the
-   height it needs, and they share the column when both are long. */
+/* The left column, below the project bar: the outliner. */
 .left-dock {
   position: fixed;
   top: 52px;
@@ -178,7 +177,35 @@ body {
   user-select: none;
 }
 .outliner.closed { width: auto; align-self: flex-start; }
-.entities-panel { flex-shrink: 2; }
+/* The Entities panel (from 08.4): floating like the inspector, right of the outliner by default, dragged by its
+   header, with a search bar and a list that scrolls past its max height. */
+.entities-panel {
+  position: fixed;
+  top: 52px;
+  left: 264px;
+  width: 260px;
+  max-height: min(420px, calc(100vh - 64px - var(--status-h)));
+  display: flex;
+  flex-direction: column;
+  border-radius: 10px;
+  background: var(--bar-bg);
+  color: var(--bar-text);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.25);
+  backdrop-filter: blur(6px);
+  user-select: none;
+  z-index: 5;
+}
+.entities-panel.collapsed { width: auto; }
+.entities-header { display: flex; align-items: center; gap: 4px; padding: 5px 6px; cursor: grab; }
+.entities-header:active { cursor: grabbing; }
+.entities-header .grip { color: var(--muted); flex: none; }
+.entities-title { flex: 1; font: 600 12px/1.4 system-ui, sans-serif; }
+.entities-header .muted { color: var(--muted); font-size: 12px; padding: 0 4px; }
+.entities-search { display: flex; align-items: center; gap: 6px; margin: 0 8px 6px; padding: 0 7px; height: 26px; border: 1px solid rgba(255, 255, 255, 0.18); border-radius: 6px; background: rgba(255, 255, 255, 0.06); }
+.entities-search:focus-within { outline: 1px solid #8fb4f2; }
+.entities-search .icon { color: var(--muted); flex: none; }
+.entities-search input { flex: 1; min-width: 0; border: 0; background: none; color: var(--bar-text); font: 12px/1 system-ui, sans-serif; outline: none; }
+.entities-search input::placeholder { color: var(--muted); }
 .entities-panel .outliner-row { cursor: grab; }
 .entities-panel .outliner-row .outliner-action { margin-left: 4px; padding: 2px; }
 .entities-panel .outliner-row .outliner-action.on { color: #8fb4f2; background: rgba(143, 180, 242, 0.2); }
@@ -246,6 +273,9 @@ body {
 .outliner-row.drop-into { background: rgba(143, 180, 242, 0.3); outline: 1px solid #8fb4f2; }
 .outliner-row .chevron { display: inline-flex; width: 12px; flex: none; color: var(--muted); cursor: pointer; }
 .outliner-row .icon { flex: none; color: var(--muted); }
+/* The icon frames its node on double-click: a slightly bigger target around it. */
+.outliner-row .icon-target { display: inline-flex; flex: none; margin: -3px; padding: 3px; border-radius: 4px; cursor: zoom-in; }
+.outliner-row .icon-target:hover { background: rgba(255, 255, 255, 0.1); }
 .outliner-row .label { overflow: hidden; text-overflow: ellipsis; }
 .outliner-row .id { margin-left: auto; padding-left: 8px; color: var(--muted); font: 10px/1 ui-monospace, monospace; }
 .outliner-row input {
@@ -588,7 +618,7 @@ body {
 .outliner-row .warn { display: inline-flex; margin-left: auto; color: #f5c518; }
 /* A row's lock and isolate buttons: shown on hover, or while on (a lock from a group it's in shows dim). */
 .outliner-row .row-actions { display: inline-flex; gap: 1px; margin-left: auto; flex: none; }
-.outliner-row .id + .row-actions, .outliner-row .warn + .row-actions { margin-left: 4px; }
+.outliner-row .warn + .row-actions { margin-left: 4px; }
 .outliner-row .row-action {
   display: inline-flex;
   padding: 2px;

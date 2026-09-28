@@ -92,6 +92,7 @@ export function Outliner({
   onIsolate,
   onLock,
   onHide,
+  onFrame,
   entityNames = {},
   entityMode = false,
 }: {
@@ -109,6 +110,8 @@ export function Outliner({
   onIsolate: (id: string | null) => void;
   onLock: (id: string, locked: boolean) => void;
   onHide: (id: string, hidden: boolean) => void;
+  /** Frame a node: the camera flies to it (double-clicking its icon). */
+  onFrame: (id: string) => void;
   /** Entity names by ID, for instances' rows. */
   entityNames?: Record<string, string>;
   /** Editing an entity: a top-level hole is fine there (no warning). */
@@ -263,7 +266,16 @@ export function Outliner({
                 >
                   {hasChildren && (collapsed.has(node.id) ? <ChevronRight size={12} /> : <ChevronDown size={12} />)}
                 </span>
-                <Icon size={13} className={isHole(node) ? "icon hole" : "icon"} />
+                <span
+                  className="icon-target"
+                  title="Double-click to frame it"
+                  onDoubleClick={(e) => {
+                    e.stopPropagation();
+                    onFrame(node.id);
+                  }}
+                >
+                  <Icon size={13} className={isHole(node) ? "icon hole" : "icon"} />
+                </span>
                 {renaming?.id === node.id ? (
                   <input
                     autoFocus
@@ -281,7 +293,6 @@ export function Outliner({
                     <span className={node.type === "note" && node.status === "done" ? "label done" : "label"} title={node.type === "group" ? node.description : node.type === "note" ? node.text : undefined}>
                       {labelOf(node, entityNames)}
                     </span>
-                    {labelOf(node, entityNames) !== node.id && <span className="id">{node.id}</span>}
                     {isHole(node) && node.parent === undefined && !entityMode && (
                       <span className="warn" title="Not in a group: this hole cuts nothing">
                         <TriangleAlert size={12} />

@@ -22,7 +22,7 @@ const nodes: SceneNode[] = [box("box_1", "group_1"), { id: "group_1", type: "gro
 describe("clipboard", () => {
   it("copies the selection with whole subtrees, in list order, and reads it back", () => {
     const text = clipboardText(nodes, ["group_1"]);
-    expect(JSON.parse(text).dungeonDesigner).toBe("nodes");
+    expect(JSON.parse(text).orlablocks).toBe("nodes");
     expect(readClipboard(text)?.map((n) => n.id)).toEqual(["box_1", "group_1", "box_3"]);
     expect(readClipboard(clipboardText(nodes, ["box_3", "group_1"]))?.map((n) => n.id)).toEqual(["box_1", "group_1", "box_3"]);
   });
@@ -32,7 +32,7 @@ describe("clipboard", () => {
     expect(readClipboard("")).toBeNull();
     expect(readClipboard("just some text")).toBeNull();
     expect(readClipboard('{"nodes": []}')).toBeNull();
-    expect(readClipboard('{"dungeonDesigner": "nodes", "nodes": []}')).toBeNull();
-    expect(readClipboard(JSON.stringify({ dungeonDesigner: "nodes", nodes: [{ ...nodes[2], width: -1 }] }))).toBeNull();
+    expect(readClipboard('{"orlablocks": "nodes", "nodes": []}')).toBeNull();
+    expect(readClipboard(JSON.stringify({ orlablocks: "nodes", nodes: [{ ...nodes[2], width: -1 }] }))).toBeNull();
   });
 });

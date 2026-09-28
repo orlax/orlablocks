@@ -50,6 +50,8 @@ import {
   FOV_DEG,
   MAX_DISTANCE,
   panTo,
+  framedCamera,
+  lerpCamera,
   paramOnLine,
   rotateBy,
   screenRay,
@@ -59,6 +61,7 @@ import {
   worldToScreen,
   YAW_SPEED_DEG,
   zoomBy,
+  type Box3,
   type CameraState,
   type GroundPoint,
   type Size,
@@ -108,6 +111,8 @@ import { TransformGizmo } from "./TransformGizmo";
 
 const BACKGROUND = "#f7f6f2";
 const VIEW_REPORT_MS = 100;
+/** How long the camera takes to fly to something framed (the outliner's icon double-click). */
+const FLIGHT_MS = 450;
 /** A pointer-up within this many px of its pointer-down is a click, not a drag. */
 const CLICK_PX = 4;
 /** With the Pen, a click this close (px) to the first point closes the outline. */
@@ -328,6 +333,8 @@ type Props = {
   onViewChange: (view: View, camera: CameraState) => void;
   /** A saved camera to jump to. A new object each time a scene opens; null keeps the current camera. */
   cameraRestore: { camera: CameraState | null } | null;
+  /** Something to frame: the camera flies to it (a new object each time). */
+  cameraFrame: { bounds: Box3 } | null;
 };
 
 /**
@@ -366,6 +373,7 @@ export function Viewport({
   onCursor,
   onViewChange,
   cameraRestore,
+  cameraFrame,
 }: Props) {
   const cam = useRef<CameraState>({ ...DEFAULT_CAMERA });
   // The compass rose, turned every frame to where north is on screen.
@@ -377,6 +385,13 @@ export function Viewport({
     cam.current = restoredCamera(cameraRestore.camera);
     invalidate();
   }, [cameraRestore]);
+  // A flight to frame something: the rig plans it on its next frame (it knows the view's size) and flies it.
+  const flight = useRef<Flight | null>(null);
+  useEffect(() => {
+    if (!cameraFrame) return;
+    flight.current = { bounds: cameraFrame.bounds };
+    invalidate();
+  }, [cameraFrame]);
   const wrap = useRef<HTMLDivElement>(null);
   const yawKeys = useRef(new Set<YawKey>());
   const pan = useRef<{ pointerId: number; grabbed: GroundPoint; sx: number; sy: number } | null>(null);
@@ -1290,7 +1305,7 @@ export function Viewport({
         camera={{ position: [start.x, start.y, start.z], fov: FOV_DEG, near: 0.5, far: MAX_DISTANCE * 4 }}
       >
         <color attach="background" args={[BACKGROUND]} />
-        <CameraRig cam={cam} yawKeys={yawKeys} onViewChange={onViewChange} />
+        <CameraRig cam={cam} yawKeys={yawKeys} flight={flight} onViewChange={onViewChange} />
         <CompassSync cam={cam} rose={rose} />
         <Lighting cam={cam} />
         {showGrid && <Grid cam={cam} />}
@@ -1746,14 +1761,25 @@ function CompassRose() {
   );
 }
 
-/** Applies the camera state to the three.js camera every frame, integrates yaw and reports the view. */
+/**
+ * A camera flight to frame `bounds`: planned on its first frame (`from`, `to`, `start`), then eased along. `last` is
+ * the camera it set, so a pan, zoom or turn in between (a new camera) ends it.
+ */
+type Flight = { bounds: Box3; from?: CameraState; to?: CameraState; start?: number; last?: CameraState };
+
+const easeInOut = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+const reducedMotion = () => typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+/** Applies the camera state to the three.js camera every frame, integrates yaw, flies to what's framed and reports the view. */
 function CameraRig({
   cam,
   yawKeys,
+  flight,
   onViewChange,
 }: {
   cam: RefObject<CameraState>;
   yawKeys: RefObject<Set<YawKey>>;
+  flight: RefObject<Flight | null>;
   onViewChange: (view: View, camera: CameraState) => void;
 }) {
   const camera = useThree((s) => s.camera);
@@ -1766,6 +1792,18 @@ function CameraRig({
     if (dir !== 0) {
       // Clamp: the first frame after an idle period (frameloop="demand") reports a huge delta.
       cam.current = rotateBy(cam.current, dir * YAW_SPEED_DEG * Math.min(delta, 0.05));
+      invalidate();
+    }
+
+    const f = flight.current;
+    if (f && f.last && cam.current !== f.last) flight.current = null;
+    else if (f) {
+      const now = performance.now();
+      if (!f.to) Object.assign(f, { from: cam.current, to: framedCamera(cam.current, size, f.bounds), start: now });
+      const t = reducedMotion() ? 1 : Math.min(1, (now - f.start!) / FLIGHT_MS);
+      cam.current = t >= 1 ? f.to! : lerpCamera(f.from!, f.to!, easeInOut(t));
+      f.last = cam.current;
+      if (t >= 1) flight.current = null;
       invalidate();
     }
 

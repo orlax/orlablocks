@@ -1,28 +1,20 @@
-import { useEffect, useState } from "react";
-import { ChevronDown, ChevronRight, MousePointerClick, Package, PencilRuler } from "lucide-react";
+import { useMemo, useState } from "react";
+import { ChevronDown, ChevronRight, GripVertical, MousePointerClick, Package, PencilRuler, Search } from "lucide-react";
 import { definitionOf } from "../shared/entities";
 import { boundsOf } from "../shared/geometry";
 import type { Library, LibraryEdit, Uses } from "../shared/library";
 import { isShape } from "../shared/tree";
+import { useFloating } from "./floating";
 import { EntityEditor } from "./Library";
+import { searchEntities } from "./search";
 import { ENTITY_DRAG } from "./Viewport";
 
 /**
- * The Entities panel (from 08.4): the project's prefabs, under the outliner, collapsible like it (remembered per
- * viewer). Drag a row into the view to place one, or press its place button and click. Clicking a row opens its
- * name, description and tags (every instance carries them) and Delete. Entities are made with Make entity in the
- * inspector.
+ * The Entities panel (from 08.4): the project's prefabs, a floating panel like the inspector (dragged by its header,
+ * collapsible, remembered per viewer), with a fuzzy search by name, tag or skill. Drag a row into the view to place
+ * one, or press its place button and click. Clicking a row opens its name, description and tags (every instance
+ * carries them) and Delete. Entities are made with Make entity in the inspector.
  */
-
-const OPEN_KEY = "dd.entities.open";
-
-const loadOpen = () => {
-  try {
-    return localStorage.getItem(OPEN_KEY) !== "0";
-  } catch {
-    return true;
-  }
-};
 
 /** An entity's size, from its definition's bounds: `1.2 × 1.2 × 9 m`. */
 function sizeText(id: string) {
@@ -53,33 +45,48 @@ export function EntitiesPanel({
   /** The entity open for editing, if any. */
   editing: string | null;
 }) {
-  const [open, setOpen] = useState(loadOpen);
+  const { ref, header, style, collapsed, toggle } = useFloating("dd.entities", ".entities-header");
   const [openId, setOpenId] = useState<string | null>(null);
-  useEffect(() => {
-    try {
-      localStorage.setItem(OPEN_KEY, open ? "1" : "0");
-    } catch {
-      // A convenience only.
-    }
-  }, [open]);
+  const [query, setQuery] = useState("");
+  const shown = useMemo(() => searchEntities(library, query), [library, query]);
+  const searching = query.trim() !== "";
 
   return (
-    <div className={open ? "outliner entities-panel" : "outliner entities-panel closed"}>
-      <div className="outliner-header">
-        <button className="outliner-toggle" onClick={() => setOpen(!open)}>
-          {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-          Entities
-          <span className="muted">{library.entities.length}</span>
+    <div className={collapsed ? "entities-panel collapsed" : "entities-panel"} ref={ref} style={style}>
+      <div className="entities-header" {...header} title="Drag to move the Entities panel · double-click to put it back">
+        <GripVertical size={13} className="grip" />
+        <span className="entities-title">Entities</span>
+        <span className="muted">{searching ? `${shown.length} of ${library.entities.length}` : library.entities.length}</span>
+        <button type="button" className="outliner-action" title={collapsed ? "Show the entities" : "Collapse"} onClick={toggle}>
+          {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
         </button>
       </div>
-      {open && (
+      {!collapsed && library.entities.length > 0 && (
+        <label className="entities-search" title="Fuzzy search: a name, #tag or @skill (every word must match)">
+          <Search size={12} className="icon" />
+          <input
+            type="search"
+            value={query}
+            placeholder="Search: name, #tag, @skill"
+            spellCheck={false}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key !== "Escape") return;
+              if (query !== "") setQuery("");
+              else e.currentTarget.blur();
+            }}
+          />
+        </label>
+      )}
+      {!collapsed && (
         <div className="outliner-rows">
           {library.entities.length === 0 && (
             <div className="outliner-empty">
               None yet: select shapes and press <b>Make entity</b> in the inspector.
             </div>
           )}
-          {library.entities.map((e) => {
+          {searching && shown.length === 0 && <div className="outliner-empty">No entity matches.</div>}
+          {shown.map((e) => {
             const u = uses.entities[e.id];
             const expanded = openId === e.id;
             return (

@@ -175,3 +175,32 @@ export function viewOf(cam: CameraState, size: Size): View {
     },
   };
 }
+
+/** An axis-aligned box in world space (as `boundsOf` gives it). */
+export type Box3 = { minX: number; maxX: number; minY: number; maxY: number; minZ: number; maxZ: number };
+
+/**
+ * The camera that frames a box, keeping the yaw: the box's center at the screen center (the focus is where the line
+ * of sight through the center meets the ground) and the box's bounding sphere filling the view with a margin.
+ */
+export function framedCamera(cam: CameraState, size: Size, b: Box3): CameraState {
+  const c = { x: (b.minX + b.maxX) / 2, y: (b.minY + b.maxY) / 2, z: (b.minZ + b.maxZ) / 2 };
+  const radius = Math.max(1, Math.hypot(b.maxX - b.minX, b.maxY - b.minY, b.maxZ - b.minZ) / 2);
+  const aspect = size.height > 0 ? size.width / size.height : 1;
+  const half = Math.min(rad(FOV_DEG) / 2, Math.atan(TAN_HALF_FOV * aspect));
+  const toCenter = (radius * 1.2) / Math.sin(half);
+  const { forward } = basis(cam.yaw);
+  // From the center down the line of sight to the ground (back up it for a center below ground).
+  const t = c.y / Math.sin(rad(PITCH_DEG));
+  return { yaw: cam.yaw, focus: { x: c.x + forward.x * t, z: c.z + forward.z * t }, distance: clampDistance(toCenter + t) };
+}
+
+/** Between two cameras at `t` (0..1): the focus linearly, the distance geometrically (so zooming feels even), the yaw the short way. */
+export function lerpCamera(a: CameraState, b: CameraState, t: number): CameraState {
+  const turn = ((((b.yaw - a.yaw) % 360) + 540) % 360) - 180;
+  return {
+    focus: { x: a.focus.x + (b.focus.x - a.focus.x) * t, z: a.focus.z + (b.focus.z - a.focus.z) * t },
+    yaw: normalizeYaw(a.yaw + turn * t),
+    distance: a.distance * Math.pow(b.distance / a.distance, t),
+  };
+}

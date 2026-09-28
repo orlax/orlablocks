@@ -50,7 +50,7 @@ const vite = await createViteServer({
 app.use(vite.middlewares);
 
 httpServer.listen(PORT, HOST, () => {
-  console.log(`Dungeon Designer editor: http://${HOST}:${PORT}`);
+  console.log(`orlablocks editor: http://${HOST}:${PORT}`);
   console.log(`MCP endpoint:            http://${HOST}:${PORT}/mcp`);
   const open = workspace.getOpen();
   console.log(`Data folder:             ${DATA_DIR}`);

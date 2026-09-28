@@ -25,7 +25,8 @@ import {
 } from "../shared/scene.types";
 import { boundsOf, footprintBounds, isClosed, isTilted, polyline, rampStations, reversePoints, round2, wallOf } from "../shared/geometry";
 import { shapesUnder, childrenOf, countsText, isShape, isGroup, hiddenIds, lockedIds, subtreeIds, tagsOf } from "../shared/tree";
-import type { CameraState, GroundPoint } from "./camera";
+import { expandShapes } from "../shared/entities";
+import type { Box3, CameraState, GroundPoint } from "./camera";
 import { clipboardText, readClipboard } from "./clipboard";
 import { ErrorPanel } from "./ErrorPanel";
 import { LibraryPanel } from "./Library";
@@ -167,6 +168,8 @@ export function App() {
   const [showNotes, setShowNotes] = useState(true);
   // An entity being placed from the Library: the next click in the view puts an instance there.
   const [placing, setPlacing] = useState<string | null>(null);
+  // What the camera flies to frame (double-clicking an outliner row's icon): a new object each time.
+  const [cameraFrame, setCameraFrame] = useState<{ bounds: Box3 } | null>(null);
   // The Note tool's next color, and the note it just placed (its text field takes the focus once it's selected).
   const [nextNoteColor, setNextNoteColor] = useState<ShapeColor>(DEFAULT_NOTE_COLOR);
   const [freshNote, setFreshNote] = useState<string | null>(null);
@@ -271,7 +274,7 @@ export function App() {
 
   // The tab's title follows the open scene.
   useEffect(() => {
-    document.title = open ? `${open.scene.name} — ${open.project.name}` : "Dungeon Designer";
+    document.title = open ? `${open.scene.name} — ${open.project.name}` : "orlablocks";
   }, [open]);
 
   // Tell the server what's visible so the agent's get_scene knows where to draw, and where the camera is, so the
@@ -745,6 +748,7 @@ export function App() {
           setCamera({ focus: { ...c.focus }, yaw: c.yaw, distance: c.distance });
         }}
         cameraRestore={restore}
+        cameraFrame={cameraFrame}
       />
 
       <div className="left-dock">
@@ -764,21 +768,26 @@ export function App() {
           onIsolate={isolate}
           onLock={(id, locked) => send({ type: "update_nodes", changes: [{ id, locked }] })}
           onHide={(id, hidden) => send({ type: "update_nodes", changes: [{ id, hidden }] })}
+          onFrame={(id) => {
+            const shapes = expandShapes(shapesUnder(nodes, [id]));
+            if (shapes.length === 0) setNotice("Nothing to frame: it's empty");
+            else setCameraFrame({ bounds: boundsOf(shapes) });
+          }}
           entityNames={Object.fromEntries((library?.entities ?? []).map((e) => [e.id, e.name]))}
           entityMode={!!editingEntity}
         />
-        {open && library && (
-          <EntitiesPanel
-            library={library}
-            uses={libraryState.uses}
-            edit={(e) => send({ type: "update_library", ...e })}
-            placing={placing}
-            onPlace={(id) => (editingEntity ? setNotice("Entities can't hold instances: go back to a scene to place one") : setPlacing(placing === id ? null : id))}
-            onEdit={(id) => send({ type: "open_entity", entity: id })}
-            editing={editingEntity?.id ?? null}
-          />
-        )}
       </div>
+      {open && library && (
+        <EntitiesPanel
+          library={library}
+          uses={libraryState.uses}
+          edit={(e) => send({ type: "update_library", ...e })}
+          placing={placing}
+          onPlace={(id) => (editingEntity ? setNotice("Entities can't hold instances: go back to a scene to place one") : setPlacing(placing === id ? null : id))}
+          onEdit={(id) => send({ type: "open_entity", entity: id })}
+          editing={editingEntity?.id ?? null}
+        />
+      )}
 
       {open && (
         <div className="top-left">

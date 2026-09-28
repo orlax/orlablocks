@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   basis,
   DEFAULT_CAMERA,
+  framedCamera,
+  lerpCamera,
   MAX_DISTANCE,
   MIN_DISTANCE,
   panTo,
@@ -10,6 +12,7 @@ import {
   rotateBy,
   screenToGround,
   viewOf,
+  worldToScreen,
   zoomBy,
   type CameraState,
 } from "./camera";
@@ -116,5 +119,47 @@ describe("camera", () => {
   it("at yaw 0 the bounds are centered on the focus left to right", () => {
     const view = viewOf(cam({ focus: { x: 3, z: 0 }, yaw: 0 }), size);
     expect(view.bounds.x + view.bounds.width / 2).toBeCloseTo(3, 1);
+  });
+});
+
+describe("framing", () => {
+  const box = { minX: 10, maxX: 14, minY: 0, maxY: 6, minZ: -3, maxZ: 1 };
+  it("puts the box's center at the screen center, keeping the yaw", () => {
+    for (const yaw of [0, 45, 200]) {
+      const c = framedCamera(cam({ yaw }), size, box);
+      expect(c.yaw).toBe(yaw);
+      const s = worldToScreen(c, size, { x: 12, y: 3, z: -1 })!;
+      expect(s.sx).toBeCloseTo(size.width / 2, 3);
+      expect(s.sy).toBeCloseTo(size.height / 2, 3);
+    }
+  });
+  it("fits the box: its corners on screen, a bigger box from farther away", () => {
+    const c = framedCamera(cam(), size, box);
+    for (const x of [box.minX, box.maxX])
+      for (const y of [box.minY, box.maxY])
+        for (const z of [box.minZ, box.maxZ]) {
+          const s = worldToScreen(c, size, { x, y, z })!;
+          expect(s.sx).toBeGreaterThan(0);
+          expect(s.sx).toBeLessThan(size.width);
+          expect(s.sy).toBeGreaterThan(0);
+          expect(s.sy).toBeLessThan(size.height);
+        }
+    const big = framedCamera(cam(), size, { ...box, maxX: 40, maxZ: 30 });
+    expect(big.distance).toBeGreaterThan(c.distance);
+    // A tiny thing still keeps the closest zoom.
+    expect(framedCamera(cam(), size, { minX: 0, maxX: 0.1, minY: 0, maxY: 0.1, minZ: 0, maxZ: 0.1 }).distance).toBe(MIN_DISTANCE);
+  });
+  it("interpolates the focus, the distance geometrically and the yaw the short way", () => {
+    const a = cam({ focus: { x: 0, z: 0 }, yaw: 350, distance: 10 });
+    const b = cam({ focus: { x: 10, z: -4 }, yaw: 10, distance: 40 });
+    expect(lerpCamera(a, b, 0)).toEqual(a);
+    const mid = lerpCamera(a, b, 0.5);
+    expect(mid.focus).toEqual({ x: 5, z: -2 });
+    expect(mid.yaw).toBeCloseTo(0, 6);
+    expect(mid.distance).toBeCloseTo(20, 6);
+    const end = lerpCamera(a, b, 1);
+    expect(end.focus).toEqual(b.focus);
+    expect(end.yaw).toBeCloseTo(10, 6);
+    expect(end.distance).toBeCloseTo(40, 6);
   });
 });
