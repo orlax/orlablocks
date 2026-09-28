@@ -2,8 +2,9 @@ import { boundsOf, isTilted, round2 } from "../shared/geometry";
 import { currentTags, EMPTY_LIBRARY, entityMeta, findRefs, resolveRef, type EntityMeta, type Library, type Skill, type Tag } from "../shared/library";
 import { arrayLayout, arrayShortfall } from "../shared/arrays";
 import { definitionOf } from "../shared/entities";
-import { COMPASS, type OpenScene, type Scene, type SceneNode, type Shape } from "../shared/scene.types";
+import { COMPASS, type ArrayNode, type OpenScene, type Scene, type SceneNode, type Shape } from "../shared/scene.types";
 import { ancestry, childrenOf, countsText, isGroup, isShape, shapesUnder, subtreeIds, tagsOf } from "../shared/tree";
+import { itemLine, itemLines } from "./results";
 import { SceneError } from "./scene";
 
 /**
@@ -28,7 +29,7 @@ export type Glossary = {
 };
 export type AgentBounds = { x: number; z: number; y: number; width: number; depth: number; height: number };
 /** A node as the agent reads it: stored fields plus what the outline derives. */
-export type AgentNode = SceneNode & { bounds?: AgentBounds; contains?: string; collapsed?: true; path?: string; items?: number; placed?: string };
+export type AgentNode = SceneNode & { bounds?: AgentBounds; contains?: string; collapsed?: true; path?: string; items?: number; placed?: string; at?: string[] };
 export type SceneOutline = OpenScene & {
   compass: typeof COMPASS;
   view: Scene["view"];
@@ -201,10 +202,11 @@ export function describeScene(open: OpenScene, scene: Scene, query: SceneQuery =
   };
   const rootInfo = rootNode ? { root: { ...describeNode(nodes, rootNode), path: pathOf(nodes, rootNode.id) } } : {};
 
-  // A shape as the root: just that shape.
+  // A shape as the root: just that shape. An array with where every item is (plan 13 §4).
   if (rootNode && !isGroup(rootNode)) {
     const glossary = glossaryFor(library, [rootInfo.root!]);
-    return { ...header, ...rootInfo, detail: "one shape", nodes: [], ...(glossary ? { glossary } : {}) };
+    if (rootNode.type === "array") rootInfo.root!.at = itemLines(rootNode);
+    return { ...header, ...rootInfo, detail: rootNode.type === "array" ? "one array, with its items" : "one shape", nodes: [], ...(glossary ? { glossary } : {}) };
   }
 
   const whole = full || (root === undefined && nodes.length <= FULL_SCENE_MAX);
@@ -256,28 +258,36 @@ export type FindQuery = {
   tag?: string;
   entity?: string;
   status?: "open" | "done";
-  type?: SceneNode["type"];
+  type?: SceneNode["type"] | "item";
   kind?: "room" | "volume" | "hole";
   under?: string;
   near?: { x: number; z: number; radius: number };
 };
 
+/** One line of find_nodes' result: a node's (or, with type: "item", an array item's). */
+export type FoundLine = { id: string; type: string; kind?: string; name?: string; tags?: string[]; bounds?: AgentBounds; [field: string]: unknown };
+export type FoundNodes = { found: FoundLine[]; more?: string; hint?: string };
+
 /**
  * The nodes that match every filter given, in list order, as one compact line each: `id`, `type`, `kind`, `name`,
  * `path` and `bounds`. `name` is a case-insensitive substring, `under` any depth inside a group, and `near` a node
  * whose bounds come within `radius` of the point (on the ground). At most MAX_MATCHES, with the count of the rest.
+ *
+ * Array items (plan 13 §4) are found with `type: "item"` or `under` an array: each as `array_5/3` with its item line,
+ * nearest first when `near` is given. Without them, an array that has items near the point says so in a hint.
  */
-export function findNodes(nodes: SceneNode[], query: FindQuery, library: Library = EMPTY_LIBRARY) {
+export function findNodes(nodes: SceneNode[], query: FindQuery, library: Library = EMPTY_LIBRARY): FoundNodes {
   const { name, tag, entity, status, type, kind, under, near } = query;
   const tagsOfNode = (n: SceneNode) =>
     currentTags(library, n.type === "instance" || n.type === "array" ? [...new Set(entitiesOf(n).flatMap((e) => entityMeta(library, e)?.tags ?? []))] : tagsOf(n));
   const wanted = tag !== undefined ? resolveRef(library, "tag", tag) : undefined;
   if (tag !== undefined && !wanted) throw new SceneError(`tag: no tag #${tag.replace(/^#/, "")} in the project library. Nothing was found.`);
+  const underNode = under !== undefined ? nodes.find((n) => n.id === under) : undefined;
   if (under !== undefined) {
-    const group = nodes.find((n) => n.id === under);
-    if (!group) throw new SceneError(`under: no node "${under}". Nothing was found.`);
-    if (!isGroup(group)) throw new SceneError(`under: "${under}" is a ${group.type}, not a group. Nothing was found.`);
+    if (!underNode) throw new SceneError(`under: no node "${under}". Nothing was found.`);
+    if (!isGroup(underNode) && underNode.type !== "array") throw new SceneError(`under: "${under}" is a ${underNode.type}, not a group or an array. Nothing was found.`);
   }
+  if (underNode?.type === "array" || type === "item") return findItems(nodes, query, library, underNode?.type === "array" ? underNode : undefined);
   const inside = under !== undefined ? subtreeIds(nodes, under) : null;
   inside?.delete(under!);
   const needle = name?.trim().toLowerCase();
@@ -326,6 +336,41 @@ export function findNodes(nodes: SceneNode[], query: FindQuery, library: Library
     if (found.length < MAX_MATCHES) found.push(line(n, bounds));
     else more++;
   }
-  return { found, ...(more > 0 ? { more: `${more} more not listed: narrow the search` } : {}) };
+  // Arrays with items near the point, when items weren't asked for.
+  const withItems = near ? found.filter((f) => f.type === "array").map((f) => f.id) : [];
+  return {
+    found,
+    ...(more > 0 ? { more: `${more} more not listed: narrow the search` } : {}),
+    ...(withItems.length > 0 ? { hint: `${withItems.join(", ")} ${withItems.length === 1 ? "has" : "have"} items near there: add type: "item" to list them, nearest first` } : {}),
+  };
+}
+
+/**
+ * Array items matching a query: those of `array` (under it), or of every array (type: "item"), filtered by `near`
+ * (the item's pivot within radius of the point, plus half its entity's width), `entity` and `name` (its entity's
+ * name), nearest first when `near` is given.
+ */
+function findItems(nodes: SceneNode[], query: FindQuery, library: Library, array?: ArrayNode): FoundNodes {
+  const { name, entity, near } = query;
+  const needle = name?.trim().toLowerCase();
+  const inside = query.under !== undefined && !array ? subtreeIds(nodes, query.under) : null;
+  const arrays = array ? [array] : nodes.filter((n): n is ArrayNode => n.type === "array" && (!inside || inside.has(n.id)));
+  const found: { id: string; type: "item"; entity: string; at: string; parent: string; distance?: number }[] = [];
+  for (const a of arrays) {
+    for (const item of arrayLayout(a).items) {
+      if (entity !== undefined && item.entity !== entity) continue;
+      if (needle && !(entityMeta(library, item.entity)?.name ?? item.entity).toLowerCase().includes(needle)) continue;
+      let distance: number | undefined;
+      if (near) {
+        const [w, d] = entitySize(item.entity);
+        distance = round2(Math.max(0, Math.hypot(item.x - near.x, item.z - near.z) - Math.max(w, d) / 2));
+        if (distance > near.radius) continue;
+      }
+      found.push({ id: `${a.id}/${item.index}`, type: "item", entity: item.entity, at: itemLine(a.id, item), parent: a.id, ...(distance !== undefined ? { distance } : {}) });
+    }
+  }
+  if (near) found.sort((p, q) => p.distance! - q.distance!);
+  const more = found.length - MAX_MATCHES;
+  return { found: found.slice(0, MAX_MATCHES), ...(more > 0 ? { more: `${more} more not listed: narrow the search` } : {}) };
 }
 

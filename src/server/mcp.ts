@@ -30,10 +30,17 @@ import { GUIDE_TOPICS, guideTopic, INSTRUCTIONS, topicList } from "./guide";
 import { describeScene, entitySize, findNodes, FULL_SCENE_MAX, MAX_MATCHES } from "./outline";
 import { definitionOf } from "../shared/entities";
 import { prepareRender, type RenderBroker } from "./render";
+import { compactNodes } from "./results";
 import { SceneError } from "./scene";
 import type { Workspace } from "./workspace";
 
 const json = (value: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(value) }] });
+
+/** Every edit tool's `verbose` (plan 13 §4): its result is compact unless asked. */
+const VERBOSE = z
+  .boolean()
+  .optional()
+  .describe("Return the nodes in full (every field, points included) instead of the compact result: only to read back what you're about to edit point by point");
 
 /** Which guide topic helps with a warning, named at its end. */
 const withTopic = (warning: string) =>
@@ -107,7 +114,7 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
     const warnings = [...own, ...holes, ...missing];
     return warnings.length > 0 ? { ...result, warnings } : result;
   };
-  const server = new McpServer({ name: "orlablocks", version: "0.0.23" }, { instructions: INSTRUCTIONS });
+  const server = new McpServer({ name: "orlablocks", version: "0.0.24" }, { instructions: INSTRUCTIONS });
   // Every tool reads or edits the open scene, and fails with a clear message while nothing is open.
   const store = () => workspace.requireScene();
   const library = (): Library => (workspace.getOpen() ? workspace.library.get() : EMPTY_LIBRARY);
@@ -135,7 +142,10 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
         `\`collapsed: true\` when its contents aren't listed. \`full: true\` lists every node under the root instead; a scene of ` +
         `${FULL_SCENE_MAX} nodes or fewer comes back in full anyway. Selected nodes the outline doesn't list come in \`selected\`.`,
       inputSchema: {
-        root: z.string().optional().describe("ID of a group to list the contents of (a shape's ID returns just that shape). Default: the top level"),
+        root: z
+          .string()
+          .optional()
+          .describe("ID of a group to list the contents of (a shape's ID returns just that shape; an array's, with every item's line). Default: the top level"),
         depth: z.number().int().min(1).max(20).optional().describe("How many levels of groups to open, default 1"),
         full: z.boolean().optional().describe("List every node under the root, with no depth limit"),
       },
@@ -175,15 +185,20 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
       description:
         `Look nodes up without reading the whole scene: the nodes matching every filter given, one compact line each ` +
         `(id, type, kind, name, parent, path of group names, bounds), at most ${MAX_MATCHES}. Use it to resolve a name to an ` +
-        `ID ("entry_window"), or to find what's in or near an area.`,
+        `ID ("entry_window"), or to find what's in or near an area. Array ITEMS are found with type: "item" (with near, ` +
+        `nearest first: "the column nearest the door") or under an array's ID: each as array_5/3 with its item line ` +
+        `(where it stands, its top and its turn), the IDs skip and item references use.`,
       inputSchema: {
         name: z.string().optional().describe("Part of the name (or of a note's text, or an instance's or array's entity's name), any case"),
         tag: z.string().optional().describe("A library tag (without #): only nodes carrying it"),
-        type: z.enum(["box", "cylinder", "freeform", "line", "ramp", "note", "instance", "array", "group"]).optional(),
+        type: z
+          .enum(["box", "cylinder", "freeform", "line", "ramp", "note", "instance", "array", "group", "item"])
+          .optional()
+          .describe("item: array items (array_5/3), not nodes"),
         entity: z.string().optional().describe("An entity's ID: only its instances and the arrays that repeat it"),
         status: z.enum(["open", "done"]).optional().describe("Notes only: open (the default outline lists these anyway) or done"),
         kind: z.enum(["room", "volume", "hole"]).optional().describe("Closed shapes and ramps only"),
-        under: z.string().optional().describe("ID of a group: only nodes inside it, at any depth"),
+        under: z.string().optional().describe("ID of a group: only nodes inside it, at any depth; or of an array: its items"),
         near: z
           .strictObject({ x: z.number(), z: z.number(), radius: z.number().min(0) })
           .optional()
@@ -304,10 +319,11 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
         `height, y 0, rotation 0, color ${DEFAULT_COLOR} (${DEFAULT_LINE_COLOR} for a line), ${DEFAULT_WALL} m room walls, no taper or bevel, no name, top level, a smooth cylinder, ` +
         `and a solid ${DEFAULT_THICKNESS} px line with no arrow). ` +
         `Set \`parent\` to a group's ID to draw straight into that group. ` +
-        `The batch is all-or-nothing: if any shape is invalid, nothing is drawn and the error says which one.`,
-      inputSchema: { shapes: z.array(ShapeInputSchema).min(1) },
+        `The batch is all-or-nothing: if any shape is invalid, nothing is drawn and the error says which one. ` +
+        `The result is compact: each new node's id, type, kind, name, parent and bounds (a count instead of points; an array's layout, item count and item lines).`,
+      inputSchema: { shapes: z.array(ShapeInputSchema).min(1), verbose: VERBOSE },
     },
-    async ({ shapes }) => {
+    async ({ shapes, verbose }) => {
       const created = guided(() => store().drawShapes(shapes, "agent"));
       const refs = refWarnings(created.flatMap((c) => (c.type === "note" ? [{ id: c.id, description: c.text }] : [])));
       const all = store().getScene().nodes;
@@ -324,7 +340,9 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
         arrays: all.filter((n) => n.type === "array").length,
         groups: all.filter(isGroup).length,
       };
-      return json(warned({ created, totals, ...(refs.length > 0 ? { warnings: refs } : {}) }));
+      const warnings = refs.length > 0 ? { warnings: refs } : {};
+      if (!verbose) return json(warned({ created: compactNodes(all, created.map((c) => c.id)), ...warnings }));
+      return json(warned({ created, totals, ...warnings }));
     },
   );
 
@@ -345,14 +363,16 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
         `only converts (edit the new free-form in a second call). ` +
         `Values are absolute (x: 4 moves the center to x = 4); to shift boxes or whole groups by an offset, use move_nodes instead. ` +
         `An empty name removes the name; parent null moves a node to the top level. ` +
-        `The batch is all-or-nothing: an unknown ID or an invalid value rejects it and nothing changes.`,
-      inputSchema: { changes: z.array(NodeUpdateSchema).min(1) },
+        `The batch is all-or-nothing: an unknown ID or an invalid value rejects it and nothing changes. ` +
+        `The result is compact (as draw_shapes'), unless verbose.`,
+      inputSchema: { changes: z.array(NodeUpdateSchema).min(1), verbose: VERBOSE },
     },
-    async ({ changes }) => {
-      const updated = guided(() => store().updateNodes(changes, "agent"));
+    async ({ changes, verbose }) => {
+      const full = guided(() => store().updateNodes(changes, "agent"));
+      const updated = verbose ? full : compactNodes(store().getScene().nodes, full.map((n) => n.id));
       const refs = refWarnings(changes.map((c) => ({ id: c.id, description: c.description ?? c.text })));
       if (!changes.some((c) => c.type !== undefined)) return json(warned({ updated, ...(refs.length > 0 ? { warnings: refs } : {}) }));
-      return json(warned({ converted: changes.map((c, i) => ({ from: c.id, to: updated[i].id })), updated }));
+      return json(warned({ converted: changes.map((c, i) => ({ from: c.id, to: full[i].id })), updated }));
     },
   );
 
@@ -386,16 +406,18 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
         `This is the way to move a group: one call moves everything in it, keeping its layout. ` +
         `With copy: true the nodes stay in place and \`count\` copies are added instead (default 1), copy i offset by ` +
         `i × (dx, dy, dz), so count makes a row; a zero offset copies in place. Copies get new IDs, keep their names, ` +
-        `nesting and parent group, and are returned (their roots).`,
+        `nesting and parent group, and are returned (their roots). The result is compact, unless verbose.`,
       inputSchema: MoveNodesSchema.extend({
         copy: z.boolean().optional().describe("Leave the nodes in place and add copies at the offset"),
         count: DuplicateNodesSchema.shape.count.describe(`With copy: how many copies, 1..${MAX_COPIES}, default 1`),
+        verbose: VERBOSE,
       }).shape,
     },
-    async ({ copy, count, ...move }) => {
-      if (copy) return json({ copies: store().duplicateNodes({ ...move, count }, "agent") });
+    async ({ copy, count, verbose, ...move }) => {
+      const compact = (nodes: SceneNode[]) => (verbose ? nodes : compactNodes(store().getScene().nodes, nodes.map((n) => n.id)));
+      if (copy) return json({ copies: compact(store().duplicateNodes({ ...move, count }, "agent")) });
       if (count !== undefined) throw new SceneError("count only applies with copy: true. Nothing was moved.");
-      return json({ moved: store().moveNodes(move, "agent") });
+      return json({ moved: compact(store().moveNodes(move, "agent")) });
     },
   );
 
@@ -407,12 +429,13 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
         `Turn shapes and/or whole groups by \`degrees\` (counterclockwise seen from above) around the vertical axis through ` +
         `\`pivot\` (default: the center of their combined bounds): every box's or cylinder's center orbits that point and ` +
         `its rotation grows by the same angle; a free-form's points orbit it. The result gives the pivot used. The ` +
-        `bounds' center moves as shapes turn, so to turn something back (or in several steps), pass that same pivot.`,
-      inputSchema: RotateNodesSchema.shape,
+        `bounds' center moves as shapes turn, so to turn something back (or in several steps), pass that same pivot. ` +
+        `The result is compact, unless verbose.`,
+      inputSchema: RotateNodesSchema.extend({ verbose: VERBOSE }).shape,
     },
-    async (input) => {
+    async ({ verbose, ...input }) => {
       const { shapes, pivot } = store().rotateNodes(input, "agent");
-      return json({ rotated: shapes, pivot });
+      return json({ rotated: verbose ? shapes : compactNodes(store().getScene().nodes, shapes.map((n) => n.id)), pivot });
     },
   );
 
@@ -424,10 +447,13 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
         `Flip boxes and/or whole groups in place on a world axis, across the center of their combined bounds: ` +
         `axis x swaps east and west (every x reflects), axis z swaps north (-z) and south (+z). y never changes, and every rotation ` +
         `becomes -rotation (an odd-sided cylinder mirrored on x: 180 - rotation; a free-form's points reflect). A group mirrors as a unit. ` +
-        `Mirroring twice restores the original exactly.`,
-      inputSchema: MirrorNodesSchema.shape,
+        `Mirroring twice restores the original exactly. The result is compact, unless verbose.`,
+      inputSchema: MirrorNodesSchema.extend({ verbose: VERBOSE }).shape,
     },
-    async (input) => json({ mirrored: store().mirrorNodes(input, "agent") }),
+    async ({ verbose, ...input }) => {
+      const mirrored = store().mirrorNodes(input, "agent");
+      return json({ mirrored: verbose ? mirrored : compactNodes(store().getScene().nodes, mirrored.map((n) => n.id)) });
+    },
   );
 
   server.registerTool(
@@ -440,8 +466,9 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
       inputSchema: GroupNodesSchema.shape,
     },
     async (input) => {
-      const group = store().groupNodes(input, "agent");
-      const refs = refWarnings([{ id: group.id, description: group.description }]);
+      const made = store().groupNodes(input, "agent");
+      const [group] = compactNodes(store().getScene().nodes, [made.id]);
+      const refs = refWarnings([{ id: made.id, description: made.description }]);
       return json(warned({ group, ...(refs.length > 0 ? { warnings: refs } : {}) }));
     },
   );

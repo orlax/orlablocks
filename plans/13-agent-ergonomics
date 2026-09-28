@@ -78,15 +78,15 @@ The temple of thinking-06, asked again from an empty scene with the same prompt:
 
 ### Compact results
 
-- One formatter (`src/server/results.ts`) for every edit tool: `{ id, type, kind?, name?, parent?, bounds: [minX, minY, minZ, maxX, maxY, maxZ] }` rounded to 2 decimals, plus per type: a line's or free-form's point count, a ramp's length and rise, an array's item count and its item lines, an instance's entity, a note's text.
+- One formatter (`src/server/results.ts`) for every edit tool: `{ id, type, kind?, name?, parent?, bounds }`, with `bounds` as `find_nodes` already gives them (`x, z` at the center, `y` the bottom, `width, depth, height`), plus per type: a line's, ramp's or free-form's point count, an array's entities, layout (points as a count), skip, item count and item lines, an instance's entity and pivot, a note's text, a group's description and contents.
 - `verbose: true` on any edit tool returns what it returns today. The guide says when to use it (to read back something it's about to edit point by point).
 - `warnings` stay as they are. `totals` (the scene counts) move to `get_scene`; `draw_shapes` keeps them only in verbose.
 
 ### Item lines
 
-- `arrayLayout` gains, per item, its **top** (via `topOf` on the item's expanded shapes; 13.1 uses the entity's definition bounds' top plus the item's y, and 13.4 swaps in the real walking surface).
+- Each item's **top** is worked out by the formatter, not `arrayLayout` (which stays free of the entity registry): 13.1 uses the item's y plus its entity's definition's highest point, and 13.4 swaps in the real walking surface (`topOf`).
 - In results: up to 40 item lines per array, then `… 38 more: get_scene { root: "array_5" }`. `get_scene { root }` on an array lists all items.
-- `find_nodes`: `near` and `under: "array_5"` return items (`array_5/3`, with its item line); `type: "item"` limits to them. The outline's array line stays one line.
+- `find_nodes`: `type: "item"` and `under: "array_5"` return items (`array_5/3`, with its item line, its entity and, with `near`, its distance, nearest first). A `near` search without them lists arrays, not their hundreds of items, and says in a `hint` which arrays have items there. The outline's array line stays one line.
 
 ---
 
@@ -205,3 +205,4 @@ Decided with Orlando:
 
 - **2026-09-28:** Plan written from `thinking-06-agent-ergonomics`, grounded in the current tool surfaces (results echo full nodes and a following layout's points; `arrayLayout` gives pivots, no tops; `spiralPoints` only for ramps; `pick.ts` is pure and can move to shared; facts only as blanks in the default guide; `render_view` has no hide).
 - **2026-09-28:** Decisions with Orlando (§12): the efficiency work in, checking jumps (facts, `check_route`) out for now, no seeded tags (`check_sight` takes `ignore`), `check_sight` in. Increments renumbered 13.1–13.7.
+- **2026-09-28:** **13.1 built.** `src/server/results.ts` (compact lines, item lines, `entityTop`) used by `draw_shapes`, `update_nodes`, `move_nodes` (and its copies), `rotate_nodes`, `mirror_nodes` and `group_nodes`, each with `verbose`; `draw_shapes`' `totals` only in verbose. `get_scene { root: array }` lists every item line; `find_nodes` finds items (`type: "item"`, `under` an array, nearest first with `near`, a `hint` otherwise). The core instructions and the `arrays` topic say so; MCP version 0.0.24. Tests: `results.test.ts` (11). **Found on the way:** since 11.1 gave `vite.config.ts` the root `src/web`, `npm test` only ran the editor's 13 test files; `test.root` and `include` bring back all 29 (443 tests, all passing). `scripts/eval-temple.mjs` drives a spare server through the temple's calls: **5,129 characters in 11 results**, against **12,348 in 14** with `--verbose` (the full results, plus a `get_scene` per array to learn where its items are, which before 13.1 had no tool at all).

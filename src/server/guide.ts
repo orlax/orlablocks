@@ -61,7 +61,10 @@ export const INSTRUCTIONS =
   `(a scene of ${FULL_SCENE_MAX} nodes or fewer comes back in full). The human's selection is always included: when ` +
   'they say "this", they mean the `selection`. When `view.isolated` is set, the human is working inside that node: ' +
   "pass it as root, and put new shapes for it inside it. Use find_nodes to look nodes up by name, type, kind, group " +
-  "or place, instead of reading the whole scene. `view.focus` is the ground point at the screen center: draw near it " +
+  "or place, instead of reading the whole scene. RESULTS of the edit tools are COMPACT: each node's id, type, kind, " +
+  "name, parent and bounds (x, z at the center, y the bottom, width, depth, height), with a count instead of points, " +
+  "and for an array its item lines (`array_5/3 → x, y, z · top t · r°`: where each item stands, how high its top is " +
+  "and its turn). Pass verbose: true only to read a node back in full. `view.focus` is the ground point at the screen center: draw near it " +
   "to be on screen. `view.walking` (while the human walks through the level with the Walk tool) is their eye, where " +
   "it looks (`yaw` as the view's, `pitch` up) and the field of view: what they see from there. A node with `locked: true` (the human can't pick it) or `hidden: true` (not drawn, and a hidden " +
   "hole cuts nothing) is the human's aid: leave those alone unless asked. " +
@@ -145,7 +148,12 @@ const GUIDE: Record<Exclude<GuideTopic, "design">, string> = {
     "An ARRAY (type: array, array_1, ...) repeats entities on a LAYOUT, live: one node whose ITEMS are instances the " +
     "layout places, so change the layout and every item follows. draw_shapes { type: \"array\", entity (or entities: " +
     "[{ entity, weight? }] to mix several, chosen by weight), layout, facing?, rotation?, jitter?, turnJitter?, seed?, " +
-    "skip?, name?, parent? }. The outline shows it as one line with `items` (how many) and its bounds. LAYOUTS: " +
+    "skip?, name?, parent? }. The outline shows it as one line with `items` (how many) and its bounds. WHERE ITEMS ARE: " +
+    "draw_shapes' and update_nodes' results list an array's ITEM LINES (`array_5/3 → 12.1, 4.5, -8 · top 5 · 90°`: " +
+    "item 3 stands at x 12.1, y 4.5, z -8, its top is at y 5 and it's turned 90°), the first 40; get_scene { root: " +
+    "\"array_5\" } lists them all, and find_nodes { type: \"item\", near } finds the ones near a point, nearest first. " +
+    "Use them to aim a line from item to item, or to pick which to skip, instead of working out where the layout puts " +
+    "them. LAYOUTS: " +
     "{ type: \"path\", points (a line's: absolute world x/y/z, with 3D handles; items stand at the path's height), " +
     "closed?, place?, spacing? | count? }: place spacing (the default) puts an item every `spacing` m, FITTED so they " +
     "land evenly (every 1.2 m on a 45.5 m wall is 38 gaps of 1.197 m), with one at each end of an open path and none " +
@@ -176,7 +184,8 @@ const GUIDE: Record<Exclude<GuideTopic, "design">, string> = {
     "circle's center, in toward it; fixed keeps it as drawn (a grid's or a scatter's items turn with it); random turns each " +
     "anyhow. `rotation` is added to every item's facing. NOISE: jitter (meters on the ground) and turnJitter (± " +
     "degrees), both from `seed` (an integer: the same seed, the same look; another seed rerolls). SKIP lists item " +
-    "indices (0 = the first, in layout order) to leave out, like the merlons over a gate: skip last, since changing " +
+    "indices (0 = the first, in layout order; the number after the slash in an item's ID) to leave out, like the " +
+    "merlons over a gate (find_nodes { type: \"item\", near: the gate } says which): skip last, since changing " +
     "the count or the path's length can move which item an index is. HOLES: an array adds no level of its own, so its " +
     "items cut and are cut as instances placed where the array is: a window array in the tower's group cuts the " +
     "tower's walls. Windows round a 10-sided tower 20 m across: a circle at the tower's center, count 10, facing " +
