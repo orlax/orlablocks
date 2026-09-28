@@ -1,20 +1,4 @@
 import React, { useState, useEffect } from "react";
-import {
-  Folder,
-  FolderOpen,
-  Play,
-  Square,
-  RotateCw,
-  ExternalLink,
-  Check,
-  Copy,
-  Bot,
-  Sparkles,
-  BookOpen,
-  Terminal,
-  ShieldCheck,
-  AlertCircle
-} from "lucide-react";
 
 // Check if running inside Tauri webview
 const isTauri = typeof window !== "undefined" && Boolean((window as any).__TAURI_INTERNALS__);
@@ -43,7 +27,6 @@ async function invokeTauri<T>(cmd: string, args: Record<string, any> = {}): Prom
 
 interface ServerStatus {
   status: "ok" | "stopped" | "error";
-  mode?: "production" | "development";
   port: number;
   host: string;
   dataDir: string;
@@ -58,10 +41,29 @@ export function App() {
     dataDir: "~/Documents/Orlablocks",
     open: null,
   });
-  const [activeTab, setActiveTab] = useState<"agents" | "skill">("agents");
-  const [copiedKey, setCopiedKey] = useState<string | null>(null);
-  const [actionMessage, setActionMessage] = useState<string | null>(null);
-  const [isProcessing, setIsProcessing] = useState(false);
+  const [activeTab, setActiveTab] = useState<"agents" | "skills">("agents");
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [toastTimer, setToastTimer] = useState<any>(null);
+  const [doneButtons, setDoneButtons] = useState<Record<string, string>>({});
+  const [isRestarting, setIsRestarting] = useState(false);
+
+  const showToast = (msg: string) => {
+    setToastMessage(msg);
+    if (toastTimer) clearTimeout(toastTimer);
+    const timer = setTimeout(() => setToastMessage(null), 2200);
+    setToastTimer(timer);
+  };
+
+  const markButtonDone = (key: string, label: string) => {
+    setDoneButtons((prev) => ({ ...prev, [key]: label }));
+    setTimeout(() => {
+      setDoneButtons((prev) => {
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
+    }, 2000);
+  };
 
   const fetchStatus = async () => {
     try {
@@ -91,7 +93,7 @@ export function App() {
           open: res.open ?? null,
         });
       }
-    } catch (err) {
+    } catch {
       // server might be restarting or stopped
     }
   };
@@ -102,10 +104,12 @@ export function App() {
     return () => clearInterval(interval);
   }, []);
 
-  const copyToClipboard = (text: string, key: string) => {
-    navigator.clipboard.writeText(text);
-    setCopiedKey(key);
-    setTimeout(() => setCopiedKey(null), 2000);
+  const copyText = (text: string, toast: string, btnKey?: string, doneLabel?: string) => {
+    navigator.clipboard.writeText(text).catch(() => {});
+    showToast(toast);
+    if (btnKey && doneLabel) {
+      markButtonDone(btnKey, doneLabel);
+    }
   };
 
   const handleOpenEditor = async () => {
@@ -113,74 +117,65 @@ export function App() {
   };
 
   const handlePickDataDir = async () => {
-    setIsProcessing(true);
     try {
       const newDir = await invokeTauri<string | null>("pick_data_dir");
       if (newDir) {
         setStatus((s) => ({ ...s, dataDir: newDir }));
-        setActionMessage("Data directory updated. Server restarted.");
-        setTimeout(() => setActionMessage(null), 3000);
+        showToast("Folder updated & server restarted");
       }
     } finally {
-      setIsProcessing(false);
       setTimeout(fetchStatus, 600);
     }
   };
 
   const handleOpenFinder = async () => {
     await invokeTauri("open_folder", { path: status.dataDir });
+    showToast("Opened in Finder");
   };
 
   const handleRestart = async () => {
-    setIsProcessing(true);
+    setIsRestarting(true);
+    setStatus((s) => ({ ...s, status: "stopped" }));
     try {
       await invokeTauri("restart_server");
-      setActionMessage("Server restarting...");
-      setTimeout(() => setActionMessage(null), 2500);
+      showToast("Server restarted");
     } finally {
-      setIsProcessing(false);
-      setTimeout(fetchStatus, 800);
+      setTimeout(() => {
+        setIsRestarting(false);
+        fetchStatus();
+      }, 1000);
     }
   };
 
   const handleInstallClaudeDesktop = async () => {
-    setIsProcessing(true);
     try {
       const result = await invokeTauri<{ success: boolean; message: string }>("install_claude_desktop", { port: status.port });
-      setActionMessage(result?.message ?? "Configured in Claude Desktop!");
-      setTimeout(() => setActionMessage(null), 3500);
+      showToast(result?.message ? "Installed to Claude Desktop" : "Configuration updated");
+      markButtonDone("claude-desktop-install", "Installed");
     } catch (err: any) {
-      setActionMessage(`Failed: ${err}`);
-      setTimeout(() => setActionMessage(null), 3500);
-    } finally {
-      setIsProcessing(false);
+      showToast(`Error: ${err}`);
     }
   };
 
   const handleInstallSkill = async () => {
-    setIsProcessing(true);
     try {
       const result = await invokeTauri<{ success: boolean; message: string }>("install_skill");
-      setActionMessage(result?.message ?? "Orlablocks Skill installed to ~/.gemini/antigravity/skills/orlablocks!");
-      setTimeout(() => setActionMessage(null), 4000);
+      showToast(result?.message ? "Skill installed to agents" : "Skill installed");
+      markButtonDone("skill-install", "Installed");
     } catch (err: any) {
-      setActionMessage(`Install failed: ${err}`);
-      setTimeout(() => setActionMessage(null), 3500);
-    } finally {
-      setIsProcessing(false);
+      showToast(`Install failed: ${err}`);
     }
   };
 
   const handleExportSkill = async () => {
-    setIsProcessing(true);
     try {
-      const result = await invokeTauri<{ success: boolean; path: string }>("export_skill_dialog");
-      if (result?.path) {
-        setActionMessage(`Skill exported to ${result.path}`);
-        setTimeout(() => setActionMessage(null), 3500);
+      const result = await invokeTauri<string | null>("export_skill_dialog");
+      if (result) {
+        showToast("Skill file saved to project");
+        markButtonDone("skill-export", "Saved");
       }
-    } finally {
-      setIsProcessing(false);
+    } catch (err: any) {
+      showToast(`Export failed: ${err}`);
     }
   };
 
@@ -197,217 +192,305 @@ export function App() {
     2
   );
   const claudeCodeCommand = `claude mcp add --transport http orlablocks ${mcpUrl}`;
-  const antigravityConfig = claudeDesktopConfig;
+  const ideConfig = claudeDesktopConfig;
+
+  const isServerRunning = status.status === "ok";
 
   return (
-    <div className="container">
-      {/* Header */}
-      <header className="header">
-        <div className="brand">
-          <div className="brand-icon">
-            <span style={{ fontWeight: 800, fontSize: 16, color: "#fff" }}>O</span>
-          </div>
-          <div>
-            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <span className="brand-title">Orlablocks</span>
-              <span className="brand-badge">Control Panel</span>
-            </div>
-          </div>
-        </div>
+    <div className="wrap">
+      {/* Top Status & Restart */}
+      <div className="top">
+        <span className={`status ${!isServerRunning ? "off" : ""}`} role="status">
+          <span className="dot" />
+          <span>
+            {isRestarting
+              ? "Restarting…"
+              : isServerRunning
+              ? `Running on :${status.port}`
+              : "Server stopped"}
+          </span>
+        </span>
+        <button
+          className="btn icon neutral"
+          onClick={handleRestart}
+          aria-label="Restart server"
+          title="Restart server"
+          disabled={isRestarting}
+        >
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.4"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={isRestarting ? "spin" : ""}
+          >
+            <path d="M20 11a8 8 0 1 0-2.3 5.7" />
+            <path d="M20 4v7h-7" />
+          </svg>
+        </button>
+      </div>
 
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <div className={`server-badge ${status.status === "ok" ? "running" : "stopped"}`}>
-            <span className={`dot ${status.status === "ok" ? "pulse" : ""}`} />
-            {status.status === "ok" ? `Running on :${status.port}` : "Stopped"}
-          </div>
-
-          <button className="btn btn-sm" onClick={handleRestart} title="Restart Server" disabled={isProcessing}>
-            <RotateCw size={13} className={isProcessing ? "spin" : ""} />
-          </button>
-        </div>
+      {/* Hero Header */}
+      <header className="hero">
+        <h1 aria-label="OrlaBlocks">
+          <span className="orla" aria-hidden="true">Orla</span>
+          <span className="blocks" aria-hidden="true">
+            <span className="blk" style={{ "--c": "var(--mint)", "--cd": "var(--mint-d)", "--d": ".05s" } as any}>B</span>
+            <span className="blk" style={{ "--c": "var(--peach)", "--cd": "var(--peach-d)", "--d": ".12s" } as any}>L</span>
+            <span className="blk" style={{ "--c": "var(--coral)", "--cd": "var(--coral-d)", "--d": ".19s" } as any}>O</span>
+            <span className="blk" style={{ "--c": "var(--lilac)", "--cd": "var(--lilac-d)", "--d": ".26s" } as any}>C</span>
+            <span className="blk" style={{ "--c": "var(--sky)", "--cd": "var(--sky-d)", "--d": ".33s" } as any}>K</span>
+            <span className="blk" style={{ "--c": "var(--leaf)", "--cd": "var(--leaf-d)", "--d": ".40s" } as any}>S</span>
+          </span>
+        </h1>
+        <p className="tag">Block out your levels. Let your agents build with you.</p>
       </header>
 
-      {/* Primary Hero Action */}
-      <button className="hero-action" onClick={handleOpenEditor} disabled={status.status !== "ok"}>
-        <ExternalLink size={18} />
-        Open 3D Editor in Browser
+      {/* Launch Button */}
+      <button
+        className="btn mint launch"
+        onClick={handleOpenEditor}
+        disabled={!isServerRunning}
+      >
+        <span className="big">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinejoin="round">
+            <path d="M12 2 21 7v10l-9 5-9-5V7Z" />
+            <path d="M3 7l9 5 9-5M12 12v10" />
+          </svg>
+          Open 3D editor
+        </span>
+        <span className="small">Opens in your browser at 127.0.0.1:{status.port}</span>
       </button>
 
-      {/* Action Notification Message */}
-      {actionMessage && (
-        <div
-          style={{
-            background: "rgba(99, 102, 241, 0.2)",
-            border: "1px solid rgba(99, 102, 241, 0.4)",
-            color: "#c7d2fe",
-            padding: "8px 12px",
-            borderRadius: 6,
-            fontSize: 12,
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-          }}
-        >
-          <CheckCircle2 size={14} color="#818cf8" />
-          {actionMessage}
+      {/* Data Folder Panel */}
+      <section className="panel" aria-labelledby="folderTitle">
+        <div className="panel-head">
+          <h2 id="folderTitle">Your levels are saved in</h2>
         </div>
-      )}
+        <div className="folder-path">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinejoin="round" aria-hidden="true">
+            <path d="M3 6h6l2 2h10v11H3Z" />
+          </svg>
+          <span id="path">{status.dataDir}</span>
+        </div>
+        <div className="row">
+          <button className="btn neutral" onClick={handleOpenFinder}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="11" cy="11" r="7" />
+              <path d="m20 20-4-4" />
+            </svg>
+            Show in Finder
+          </button>
+          <button className="btn peach" onClick={handlePickDataDir}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinejoin="round">
+              <path d="M3 6h6l2 2h10v11H3Z" />
+              <path d="M12 11v5M9.5 13.5h5" strokeLinecap="round" />
+            </svg>
+            Change folder
+          </button>
+        </div>
+      </section>
 
-      {/* Data Directory Card */}
-      <div className="card">
-        <div className="card-header">
-          <span className="card-title">
-            <Folder size={14} /> Data Folder
-          </span>
-          <div style={{ display: "flex", gap: 6 }}>
-            <button className="btn btn-sm" onClick={handleOpenFinder} title="Show in Finder / Explorer">
-              Show in Finder
-            </button>
-            <button className="btn btn-sm btn-primary" onClick={handlePickDataDir} disabled={isProcessing}>
-              <FolderOpen size={12} /> Change...
-            </button>
-          </div>
-        </div>
-        <div className="path-display">
-          <span>{status.dataDir}</span>
-        </div>
-      </div>
-
-      {/* Navigation Tabs */}
-      <div className="tabs-nav">
+      {/* Segmented Block Tabs */}
+      <div className="tabs" role="tablist" aria-label="Setup">
         <button
-          className={`tab-btn ${activeTab === "agents" ? "active" : ""}`}
+          className="tab"
+          role="tab"
+          aria-selected={activeTab === "agents"}
           onClick={() => setActiveTab("agents")}
         >
-          <Bot size={14} />
-          Agents & MCP
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinejoin="round">
+            <rect x="4" y="8" width="16" height="12" rx="3" />
+            <path d="M12 4v4M9 13h.01M15 13h.01" strokeLinecap="round" />
+          </svg>
+          <span>Connect agents</span>
         </button>
         <button
-          className={`tab-btn ${activeTab === "skill" ? "active" : ""}`}
-          onClick={() => setActiveTab("skill")}
+          className="tab"
+          role="tab"
+          aria-selected={activeTab === "skills"}
+          onClick={() => setActiveTab("skills")}
         >
-          <Sparkles size={14} />
-          Skill & Rules
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinejoin="round">
+            <path d="M12 3l2.2 5.5L20 9l-4.4 3.8L17 19l-5-3.2L7 19l1.4-6.2L4 9l5.8-.5Z" />
+          </svg>
+          <span>Skill &amp; rules</span>
         </button>
       </div>
 
-      {/* Tab 1: Agents & MCP */}
+      {/* TAB 1: Connect Agents */}
       {activeTab === "agents" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <div id="p-agents" role="tabpanel">
           {/* Claude Desktop */}
-          <div className="agent-card">
-            <div className="agent-card-header">
-              <span className="agent-title">
-                <Bot size={16} color="#f97316" />
-                Claude Desktop
-              </span>
-              <button className="btn btn-sm btn-primary" onClick={handleInstallClaudeDesktop} disabled={isProcessing}>
-                <ShieldCheck size={12} />
-                Install to Claude Desktop
-              </button>
+          <section className="panel agent">
+            <div className="chip" style={{ "--c": "var(--coral)" } as any}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinejoin="round">
+                <rect x="3" y="4" width="18" height="13" rx="2.5" />
+                <path d="M8 21h8M12 17v4" strokeLinecap="round" />
+              </svg>
             </div>
-            <div style={{ position: "relative" }}>
-              <pre className="snippet-box">{claudeDesktopConfig}</pre>
+            <div className="agent-body">
+              <h2>Claude Desktop</h2>
+              <p>One click adds OrlaBlocks to Claude's config. Restart Claude Desktop afterwards.</p>
+            </div>
+            <div className="agent-actions">
               <button
-                className="snippet-copy-btn"
-                onClick={() => copyToClipboard(claudeDesktopConfig, "claude-desktop")}
+                className={`btn coral ${doneButtons["claude-desktop-install"] ? "done" : ""}`}
+                onClick={handleInstallClaudeDesktop}
               >
-                {copiedKey === "claude-desktop" ? <Check size={12} color="#10b981" /> : <Copy size={12} />}
-                {copiedKey === "claude-desktop" ? "Copied" : "Copy JSON"}
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 4v11M7 10l5 5 5-5M5 20h14" />
+                </svg>
+                <span>{doneButtons["claude-desktop-install"] ?? "Install to Claude Desktop"}</span>
               </button>
             </div>
-          </div>
+            <details>
+              <summary>Set it up by hand</summary>
+              <pre>{claudeDesktopConfig}</pre>
+              <div className="row" style={{ marginTop: 10 }}>
+                <button
+                  className="btn neutral"
+                  onClick={() => copyText(claudeDesktopConfig, "JSON copied", "copy-desktop-json", "Copied")}
+                >
+                  {doneButtons["copy-desktop-json"] ?? "Copy JSON"}
+                </button>
+              </div>
+            </details>
+          </section>
 
-          {/* Claude Code CLI */}
-          <div className="agent-card">
-            <div className="agent-card-header">
-              <span className="agent-title">
-                <Terminal size={16} color="#a855f7" />
-                Claude Code CLI
-              </span>
+          {/* Claude Code */}
+          <section className="panel agent">
+            <div className="chip" style={{ "--c": "var(--lilac)" } as any}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                <path d="m5 8 4 4-4 4M12 17h7" />
+              </svg>
             </div>
-            <div style={{ position: "relative" }}>
-              <pre className="snippet-box">{claudeCodeCommand}</pre>
+            <div className="agent-body">
+              <h2>Claude Code</h2>
+              <p>Run this once in your terminal to register the server.</p>
+            </div>
+            <pre style={{ gridColumn: "1 / -1", margin: 0 }}>{claudeCodeCommand}</pre>
+            <div className="agent-actions">
               <button
-                className="snippet-copy-btn"
-                onClick={() => copyToClipboard(claudeCodeCommand, "claude-code")}
+                className={`btn lilac ${doneButtons["copy-code-cmd"] ? "done" : ""}`}
+                onClick={() => copyText(claudeCodeCommand, "Command copied", "copy-code-cmd", "Copied")}
               >
-                {copiedKey === "claude-code" ? <Check size={12} color="#10b981" /> : <Copy size={12} />}
-                {copiedKey === "claude-code" ? "Copied" : "Copy Command"}
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinejoin="round">
+                  <rect x="8" y="8" width="12" height="12" rx="2.5" />
+                  <path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" />
+                </svg>
+                <span>{doneButtons["copy-code-cmd"] ?? "Copy command"}</span>
               </button>
             </div>
-          </div>
+          </section>
 
-          {/* Antigravity / Cursor / Windsurf */}
-          <div className="agent-card">
-            <div className="agent-card-header">
-              <span className="agent-title">
-                <Sparkles size={16} color="#3b82f6" />
-                Antigravity / Cursor / Windsurf
-              </span>
-              <span style={{ fontSize: 11, color: "var(--text-muted)" }}>mcp.json</span>
+          {/* Cursor, Windsurf & Antigravity */}
+          <section className="panel agent">
+            <div className="chip" style={{ "--c": "var(--sky)" } as any}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="m9 8-4 4 4 4M15 8l4 4-4 4" />
+              </svg>
             </div>
-            <div style={{ position: "relative" }}>
-              <pre className="snippet-box">{antigravityConfig}</pre>
+            <div className="agent-body">
+              <h2>
+                Cursor, Windsurf &amp; Antigravity <span className="badge">mcp.json</span>
+              </h2>
+              <p>Paste this into your editor's MCP config file.</p>
+            </div>
+            <div className="agent-actions">
               <button
-                className="snippet-copy-btn"
-                onClick={() => copyToClipboard(antigravityConfig, "antigravity")}
+                className={`btn sky ${doneButtons["copy-ide-cfg"] ? "done" : ""}`}
+                onClick={() => copyText(ideConfig, "Config copied", "copy-ide-cfg", "Copied")}
               >
-                {copiedKey === "antigravity" ? <Check size={12} color="#10b981" /> : <Copy size={12} />}
-                {copiedKey === "antigravity" ? "Copied" : "Copy Config"}
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinejoin="round">
+                  <rect x="8" y="8" width="12" height="12" rx="2.5" />
+                  <path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" />
+                </svg>
+                <span>{doneButtons["copy-ide-cfg"] ?? "Copy config"}</span>
               </button>
             </div>
-          </div>
+            <details>
+              <summary>Show config</summary>
+              <pre>{ideConfig}</pre>
+            </details>
+          </section>
         </div>
       )}
 
-      {/* Tab 2: Skill & Rules */}
-      {activeTab === "skill" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          <div className="card">
-            <div className="card-header">
-              <span className="card-title">
-                <Sparkles size={14} color="#818cf8" />
-                The Orlablocks Agent Skill
-              </span>
+      {/* TAB 2: Skills & Rules */}
+      {activeTab === "skills" && (
+        <div id="p-skills" role="tabpanel">
+          <section className="panel agent">
+            <div className="chip" style={{ "--c": "var(--leaf)" } as any}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinejoin="round">
+                <path d="M5 4h11l3 3v13H5Z" />
+                <path d="M9 11h6M9 15h4" strokeLinecap="round" />
+              </svg>
             </div>
-            <p style={{ fontSize: 12, color: "var(--text-secondary)" }}>
-              Install the Orlablocks Skill into your AI agent so it natively understands 3D blockout rules,
-              coordinate conventions (meters, north = -z), shapes, and entities without needing manual prompts.
-            </p>
-            <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
-              <button className="btn btn-primary" onClick={handleInstallSkill} disabled={isProcessing}>
-                <Sparkles size={13} />
-                Install Skill to Agent
+            <div className="agent-body">
+              <h2>Level design skill</h2>
+              <p>Teaches your agent how OrlaBlocks names volumes, paths and entities, so its edits match your layout.</p>
+            </div>
+            <div className="agent-actions">
+              <button
+                className={`btn leaf ${doneButtons["skill-install"] ? "done" : ""}`}
+                onClick={handleInstallSkill}
+              >
+                <span>{doneButtons["skill-install"] ?? "Install skill"}</span>
               </button>
-              <button className="btn" onClick={handleExportSkill} disabled={isProcessing}>
-                <BookOpen size={13} />
-                Export to Project Folder
+              <button
+                className={`btn neutral ${doneButtons["skill-export"] ? "done" : ""}`}
+                onClick={handleExportSkill}
+              >
+                <span>{doneButtons["skill-export"] ?? "Save as file"}</span>
               </button>
             </div>
-          </div>
+          </section>
 
-          <div className="card">
-            <span className="card-title">Core Conventions Reference</span>
-            <div style={{ fontSize: 12, color: "var(--text-secondary)", display: "flex", flexDirection: "column", gap: 6 }}>
-              <div><strong>Units:</strong> Meters (2 decimals), Y is up, ground is at Y = 0.</div>
-              <div><strong>Compass:</strong> North is -Z, South is +Z, East is +X, West is -X.</div>
-              <div><strong>Shapes:</strong> Boxes, Cylinders, Freeforms (rooms, volumes, or holes).</div>
-              <div><strong>Entities:</strong> Prefab components with shared definitions and world instances.</div>
+          <section className="panel agent">
+            <div className="chip" style={{ "--c": "var(--peach)" } as any}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M4 6h16M4 12h16M4 18h10" />
+              </svg>
             </div>
-          </div>
+            <div className="agent-body">
+              <h2>Project rules</h2>
+              <p>Grid size, scale and naming conventions for this project. Agents read these before they place anything.</p>
+            </div>
+            <div className="agent-actions">
+              <button
+                className="btn peach"
+                onClick={() => copyText("Units: Meters (Y is up, ground is at Y=0)\nCompass: North is -Z, South is +Z, East is +X, West is -X\nShapes: box, cylinder, freeform, hole, ramp, line, note\nEntities: shared definitions in project library with world instances", "Rules copied", "copy-rules", "Copied")}
+              >
+                <span>{doneButtons["copy-rules"] ?? "Copy rules"}</span>
+              </button>
+            </div>
+            <details>
+              <summary>View core conventions</summary>
+              <pre>{`Units: Meters (2 decimals), Y is up, ground at Y = 0
+Compass: North is -Z, South is +Z, East is +X, West is -X
+Shapes: box (centered x/z), cylinder, freeform, ramp, line
+Holes: kind "hole" cuts shapes near it in group hierarchy
+Entities: definitions in library, placed as instances with rotation`}</pre>
+            </details>
+          </section>
         </div>
       )}
 
       {/* Footer */}
-      <footer className="footer">
-        <span>MCP Endpoint: {mcpUrl}</span>
-        <span>Orlablocks v0.0.18</span>
+      <footer>
+        <span>
+          MCP endpoint <code>127.0.0.1:{status.port}/mcp</code>
+        </span>
+        <span>OrlaBlocks v0.0.18</span>
       </footer>
+
+      {/* Toast Notification */}
+      <div className={`toast ${toastMessage ? "show" : ""}`} role="status" aria-live="polite">
+        {toastMessage}
+      </div>
     </div>
   );
-}
-
-function CheckCircle2(props: { size: number; color?: string }) {
-  return <Check size={props.size} color={props.color ?? "currentColor"} />;
 }

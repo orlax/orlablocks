@@ -12,11 +12,11 @@
   "app": {
     "windows": [
       {
-        "title": "Orlablocks Control Panel",
-        "width": 560,
-        "height": 640,
-        "minWidth": 500,
-        "minHeight": 580,
+        "title": "OrlaBlocks Control Panel",
+        "width": 620,
+        "height": 760,
+        "minWidth": 480,
+        "minHeight": 600,
         "resizable": true,
         "fullscreen": false
       }
