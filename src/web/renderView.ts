@@ -1,0 +1,373 @@
+import * as THREE from "three";
+import { expandShapes, ownerOf } from "../shared/entities";
+import { boundsOf, polyline, rampStations } from "../shared/geometry";
+import {
+  DEFAULT_RENDER_SIZE,
+  type PlayerCamera,
+  type RenderJob,
+  type RenderResult,
+  type SceneNode,
+  type Shape,
+  type ShotCamera,
+  type WalkPreset,
+} from "../shared/scene.types";
+import { isShape } from "../shared/tree";
+import { framedCamera, FOV_DEG, type Box3, type CameraState } from "./camera";
+import { blobToBase64, editorView, makeCamera, type CaptureView } from "./capture";
+import {
+  drawnShapes,
+  labelTargets,
+  legendLine,
+  lookAt,
+  niceLength,
+  planFrame,
+  planSize,
+  SHEET_ANGLES,
+  sheetLayout,
+  stripLayout,
+  walkFrames,
+  type Cell,
+  type LabelTarget,
+} from "./renders";
+import { eyeOf, lookDir, presetOf, shotSize, verticalFov, walkCamera, type Boom, type Pose, type Vec3 } from "./walk";
+import { avatarShapes } from "./WalkScreens";
+
+/**
+ * `render_view` in the editor (plan 09 §6): each view is one or more captures (capture.tsx) drawn onto one image,
+ * with letter labels, captions, and for plans a grid, a scale bar and north. The text says what the image shows,
+ * with the labels' legend. The planning is in `renders.ts`.
+ */
+
+/** What rendering needs from the view. */
+export type RenderContext = {
+  nodes: SceneNode[];
+  /** The hidden nodes (and what's in them): left out. */
+  hidden: Set<string>;
+  /** The view's camera: its yaw is the default direction for close-ups and eye views. */
+  editor: CameraState;
+  player: PlayerCamera;
+  avatarEntity: string | null;
+  /** The height of the highest floor or top at a point (for points given without y), else 0. */
+  surfaceY: (x: number, z: number) => number;
+  /** A clean capture (no notes; lines as asked) at 1 × pixel ratio, with extra shapes (an avatar). */
+  capture: (view: CaptureView, width: number, height: number, options: { notes: boolean; lines: boolean }, extra?: Shape[]) => Promise<Blob>;
+};
+
+const round = (n: number) => Math.round(n * 100) / 100;
+const range = (a: number, b: number) => `${round(a)}..${round(b)}`;
+const boundsText = (b: Box3) => `x ${range(b.minX, b.maxX)}, y ${range(b.minY, b.maxY)}, z ${range(b.minZ, b.maxZ)}`;
+
+export async function renderJob(job: RenderJob, ctx: RenderContext): Promise<RenderResult> {
+  const size = job.size ?? DEFAULT_RENDER_SIZE;
+  const labels = job.labels ?? true;
+  const shown = (s: Shape) => !ctx.hidden.has(ownerOf(s.id)) && !ctx.hidden.has(s.id) && s.type !== "note";
+  const scope = (job.ids ? job.ids.flatMap((id) => drawnShapes(ctx.nodes, id)) : expandShapes(ctx.nodes.filter(isShape))).filter(shown);
+  const hiddenCount = ctx.nodes.filter((n) => n.hidden).length;
+  const notes: string[] = [];
+  if (hiddenCount > 0) notes.push(`${hiddenCount} hidden node${hiddenCount === 1 ? "" : "s"} left out.`);
+  const scopeText = job.ids ? job.ids.join(", ") : "everything";
+  const needShapes = () => {
+    if (scope.length === 0) throw new Error(job.ids ? `${scopeText} draw${job.ids.length === 1 ? "s" : ""} nothing to render.` : "The document is empty: nothing to render.");
+    return boundsOf(scope);
+  };
+  const targets = (): LabelTarget[] => (labels ? labelTargets(ctx.nodes, job.ids, ctx.hidden) : []);
+  const legend = (t: LabelTarget[]) => (t.length > 0 ? [`Labels: ${t.map(legendLine).join(", ")}.`] : []);
+  const lines = { notes: false, lines: true };
+
+  switch (job.view) {
+    case "plan": {
+      const b = needShapes();
+      const { width, height } = planSize(b, size);
+      const cell = { x: 0, y: 0, width, height };
+      const { view, frame } = planView(b, width / height);
+      const img = compose(width, height);
+      await img.draw(await ctx.capture(view, width, height, lines), cell);
+      const grid = img.planOverlay(frame, cell);
+      const t = targets();
+      img.labels(t, makeCamera(view, width, height), cell);
+      return img.result(
+        [`Plan of ${scopeText}, top-down, north up: ${round(frame.width)} × ${round(frame.height)} m, with a ${grid} m grid and a scale bar. Bounds: ${boundsText(b)} (m).`, ...legend(t), ...notes].join("\n"),
+      );
+    }
+    case "sheet": {
+      const b = needShapes();
+      const layout = sheetLayout(size);
+      const img = compose(layout.width, layout.height);
+      const t = targets();
+      const [planCell, ...angleCells] = layout.cells;
+      const plan = planView(b, planCell.width / planCell.height);
+      await img.draw(await ctx.capture(plan.view, planCell.width, planCell.height, lines), planCell);
+      const grid = img.planOverlay(plan.frame, planCell);
+      img.labels(t, makeCamera(plan.view, planCell.width, planCell.height), planCell);
+      img.caption("plan, north up", planCell);
+      for (const [i, angle] of SHEET_ANGLES.entries()) {
+        const cell = angleCells[i];
+        const view = editorView(framedCamera({ focus: { x: 0, z: 0 }, yaw: angle.yaw, distance: 50 }, cell, b));
+        await img.draw(await ctx.capture(view, cell.width, cell.height, lines), cell);
+        img.labels(t, makeCamera(view, cell.width, cell.height), cell);
+        img.caption(angle.name, cell);
+      }
+      img.dividers(layout.cells);
+      return img.result(
+        [
+          `Sheet of ${scopeText}. Top left: the plan, north up (${grid} m grid, scale bar); top right: from the northeast; bottom left: from the south; bottom right: from the west. Bounds: ${boundsText(b)} (m).`,
+          ...legend(t),
+          ...notes,
+        ].join("\n"),
+      );
+    }
+    case "node": {
+      const b = needShapes();
+      const width = size;
+      const height = Math.round((size * 9) / 16);
+      const cam = framedCamera({ focus: { x: 0, z: 0 }, yaw: job.yaw ?? ctx.editor.yaw, distance: 50 }, { width, height }, b);
+      const view = editorView(cam);
+      const img = compose(width, height);
+      const cell = { x: 0, y: 0, width, height };
+      await img.draw(await ctx.capture(view, width, height, lines), cell);
+      const t = targets();
+      img.labels(t, makeCamera(view, width, height), cell);
+      return img.result(
+        [`Close-up of ${scopeText}, from yaw ${round(cam.yaw)}° (0 = from the south, looking north). Bounds: ${boundsText(b)} (m).`, ...legend(t), ...notes].join("\n"),
+        { kind: "editor", ...cam },
+      );
+    }
+    case "eye": {
+      const width = size;
+      const height = Math.round((size * 9) / 16);
+      const e = eyeOfJob(job, ctx);
+      const { image, camera } = await eyeFrame(e, width, height, ctx);
+      const img = compose(width, height);
+      await img.draw(image, { x: 0, y: 0, width, height });
+      const where = job.human ? "Where the human is walking" : `From feet at ${pointText(e.pose.feet)}`;
+      return img.result(
+        [
+          `${where}: the eye at ${pointText(eyeOf(e.pose, ctx.player.eyeHeight))}, looking yaw ${round(e.pose.yaw)}°, pitch ${round(e.pose.pitch)}°, ${e.preset === "first" ? "first" : "third"} person, ${round(e.fov)}° across.`,
+          ...notes,
+        ].join("\n"),
+        camera,
+      );
+    }
+    case "walk": {
+      const path = walkPath(job, ctx);
+      const n = job.frames ?? 5;
+      const preset: WalkPreset = job.preset ?? "first";
+      const frames = walkFrames(path, n);
+      const layout = stripLayout(n, size);
+      const img = compose(layout.width, layout.height);
+      const { fov, boom } = presetOf(ctx.player, preset);
+      const where: string[] = [];
+      for (const [i, f] of frames.entries()) {
+        const cell = layout.cells[i];
+        const pose: Pose = { feet: f.feet, yaw: f.yaw, pitch: f.pitch };
+        const { image } = await eyeFrame({ pose, preset, fov, boom }, cell.width, cell.height, ctx);
+        await img.draw(image, cell);
+        img.caption(String(i + 1), cell);
+        where.push(`${i + 1}: feet ${pointText(f.feet)}, yaw ${round(f.yaw)}°`);
+      }
+      img.dividers(layout.cells);
+      const along = typeof job.path === "string" ? job.path : "the points given";
+      return img.result([`Walk along ${along}, ${n} frames at eye height (${ctx.player.eyeHeight} m, ${preset} person), numbered in order. ${where.join("; ")}.`, ...notes].join("\n"));
+    }
+    case "shot": {
+      const shot = job.shotCamera!;
+      const { width, height } = shotSize(shot, size);
+      const img = compose(width, height);
+      const c = shot.camera;
+      if (c.kind === "editor") {
+        const view = editorView({ focus: c.focus, yaw: c.yaw, distance: c.distance });
+        await img.draw(await ctx.capture(view, width, height, lines), { x: 0, y: 0, width, height });
+      } else {
+        const pose: Pose = { feet: { x: c.eye.x, y: c.eye.y - ctx.player.eyeHeight, z: c.eye.z }, yaw: c.yaw, pitch: c.pitch };
+        const boom = c.boom ?? presetOf(ctx.player, c.preset).boom;
+        const { image } = await eyeFrame({ pose, preset: c.preset, fov: c.fov, boom }, width, height, ctx);
+        await img.draw(image, { x: 0, y: 0, width, height });
+      }
+      return img.result([`${job.shot} taken again now, with its camera (${c.kind === "editor" ? "the editor's" : `a ${c.preset}-person walk`}).`, ...notes].join("\n"), c);
+    }
+  }
+}
+
+const pointText = (p: Vec3) => `(${round(p.x)}, ${round(p.y)}, ${round(p.z)})`;
+
+/** A plan's straight-down camera over bounds, for an image of `aspect`. */
+function planView(b: Box3, aspect: number): { view: CaptureView; frame: ReturnType<typeof planFrame> } {
+  const frame = planFrame(b, aspect);
+  return {
+    frame,
+    view: {
+      position: { x: frame.x, y: b.maxY + 100, z: frame.z },
+      target: { x: frame.x, y: b.minY - 1, z: frame.z },
+      vfov: FOV_DEG,
+      light: { focus: { x: frame.x, z: frame.z }, yaw: 0, distance: Math.min(600, Math.max(20, Math.max(frame.width, frame.height) * 1.5)) },
+      ortho: { width: frame.width, height: frame.height },
+    },
+  };
+}
+
+type Eye = { pose: Pose; preset: WalkPreset; fov: number; boom: Boom };
+
+/** The eye view a job asks for: from where the human walks, or from feet at a point, looking at `at` or along yaw / pitch. */
+function eyeOfJob(job: RenderJob, ctx: RenderContext): Eye {
+  const eyeHeight = ctx.player.eyeHeight;
+  if (job.human) {
+    const h = job.human;
+    return { pose: { feet: { x: h.eye.x, y: h.eye.y - eyeHeight, z: h.eye.z }, yaw: h.yaw, pitch: h.pitch }, preset: h.preset, fov: h.fov, boom: presetOf(ctx.player, h.preset).boom };
+  }
+  const from = job.from as { x: number; y?: number; z: number };
+  const feet = { x: from.x, y: from.y ?? ctx.surfaceY(from.x, from.z), z: from.z };
+  const eye = { ...feet, y: feet.y + eyeHeight };
+  let look = { yaw: job.yaw ?? ctx.editor.yaw, pitch: job.pitch ?? 0 };
+  if (job.at !== undefined) {
+    let target: Vec3;
+    if (typeof job.at === "string") {
+      const b = boundsOf(drawnShapes(ctx.nodes, job.at));
+      target = { x: (b.minX + b.maxX) / 2, y: (b.minY + b.maxY) / 2, z: (b.minZ + b.maxZ) / 2 };
+    } else target = job.at;
+    look = lookAt(eye, target);
+  }
+  const preset = job.preset ?? "first";
+  const { fov, boom } = presetOf(ctx.player, preset);
+  return { pose: { feet, ...look }, preset, fov, boom };
+}
+
+/** One frame from an eye: its capture (with the avatar in third person) and its camera. */
+async function eyeFrame(e: Eye, width: number, height: number, ctx: RenderContext): Promise<{ image: Blob; camera: ShotCamera }> {
+  const p = ctx.player;
+  const wc = walkCamera(e.pose, p.eyeHeight, e.preset, e.boom);
+  const eye = eyeOf(e.pose, p.eyeHeight);
+  const ahead = lookDir(e.pose.yaw, 0);
+  const view: CaptureView = {
+    ...wc,
+    vfov: verticalFov(e.fov, width / height),
+    light: { focus: { x: eye.x + ahead.x * 10, z: eye.z + ahead.z * 10 }, yaw: e.pose.yaw, distance: 40 },
+  };
+  const third = e.preset === "third";
+  const extra = third && p.third.avatar ? avatarShapes(ctx.avatarEntity, p.eyeHeight, { ...e.pose.feet, rotation: e.pose.yaw }) : [];
+  const image = await ctx.capture(view, width, height, { notes: false, lines: true }, extra);
+  return { image, camera: { kind: "walk", preset: e.preset, eye, yaw: e.pose.yaw, pitch: e.pose.pitch, fov: e.fov, ...(third ? { boom: e.boom } : {}) } };
+}
+
+/** A walk's feet along its path: a line's or a ramp's (their points carry their height), or points given. */
+function walkPath(job: RenderJob, ctx: RenderContext): Vec3[] {
+  if (typeof job.path === "string") {
+    const node = ctx.nodes.find((n) => n.id === job.path);
+    if (node?.type === "line") return polyline(node);
+    if (node?.type === "ramp") return rampStations(node).map((s) => ({ x: s.x, y: s.y, z: s.z }));
+    throw new Error(`path: ${job.path} isn't a line or a ramp.`);
+  }
+  return (job.path ?? []).map((p) => ({ x: p.x, y: p.y ?? ctx.surfaceY(p.x, p.z), z: p.z }));
+}
+
+/** An image being put together: captures drawn into cells, then labels, captions and plan marks on top. */
+function compose(width: number, height: number) {
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const g = canvas.getContext("2d")!;
+  const font = (px: number, weight = 600) => `${weight} ${px}px system-ui, -apple-system, sans-serif`;
+  const pill = (text: string, x: number, y: number, px: number, fill: string, color: string) => {
+    g.font = font(px);
+    const w = g.measureText(text).width + px * 0.9;
+    const h = px * 1.5;
+    g.fillStyle = fill;
+    g.beginPath();
+    g.roundRect(x, y, w, h, h / 2);
+    g.fill();
+    g.fillStyle = color;
+    g.textBaseline = "middle";
+    g.fillText(text, x + px * 0.45, y + h / 2);
+    return { w, h };
+  };
+
+  return {
+    async draw(png: Blob, cell: Cell) {
+      const bitmap = await createImageBitmap(png);
+      g.drawImage(bitmap, cell.x, cell.y, cell.width, cell.height);
+      bitmap.close();
+    },
+
+    /** Letter labels at each target's top center, as the camera sees it (nudged down when they'd overlap). */
+    labels(targets: LabelTarget[], camera: THREE.Camera, cell: Cell) {
+      const px = Math.max(11, Math.round(cell.width / 42));
+      const placed: { x: number; y: number }[] = [];
+      g.save();
+      g.beginPath();
+      g.rect(cell.x, cell.y, cell.width, cell.height);
+      g.clip();
+      for (const t of targets) {
+        const v = new THREE.Vector3(t.anchor.x, t.anchor.y, t.anchor.z).project(camera);
+        if (v.z < -1 || v.z > 1) continue;
+        let x = cell.x + ((v.x + 1) / 2) * cell.width;
+        let y = cell.y + ((1 - v.y) / 2) * cell.height;
+        if (x < cell.x || x > cell.x + cell.width || y < cell.y || y > cell.y + cell.height) continue;
+        for (let k = 0; k < 6 && placed.some((p) => Math.abs(p.x - x) < px * 1.6 && Math.abs(p.y - y) < px * 1.5); k++) y += px * 1.5;
+        placed.push({ x, y });
+        g.font = font(px, 700);
+        const w = g.measureText(t.tag).width + px * 0.8;
+        x -= w / 2;
+        pill(t.tag, x, y - px * 0.75, px, "rgba(20, 22, 28, 0.85)", "#fff");
+      }
+      g.restore();
+    },
+
+    /** A caption in a cell's top left corner. */
+    caption(text: string, cell: Cell) {
+      const px = Math.max(11, Math.round(cell.width / 40));
+      pill(text, cell.x + px * 0.6, cell.y + px * 0.6, px, "rgba(20, 22, 28, 0.72)", "#fff");
+    },
+
+    /** Lines between cells. */
+    dividers(cells: Cell[]) {
+      g.fillStyle = "#ffffff";
+      for (const c of cells) {
+        if (c.x > 0) g.fillRect(c.x - 1, c.y, 2, c.height);
+        if (c.y > 0) g.fillRect(c.x, c.y - 1, c.width, 2);
+      }
+    },
+
+    /** A plan's grid (returns its step in meters), scale bar and north arrow. */
+    planOverlay(frame: { x: number; z: number; width: number; height: number }, cell: Cell): number {
+      const step = niceLength(Math.max(frame.width, frame.height) / 10);
+      const left = frame.x - frame.width / 2;
+      const top = frame.z - frame.height / 2;
+      const sx = (x: number) => cell.x + ((x - left) / frame.width) * cell.width;
+      const sy = (z: number) => cell.y + ((z - top) / frame.height) * cell.height;
+      g.save();
+      g.strokeStyle = "rgba(30, 32, 38, 0.13)";
+      g.lineWidth = 1;
+      g.beginPath();
+      for (let x = Math.ceil(left / step) * step; x <= left + frame.width; x += step) {
+        g.moveTo(Math.round(sx(x)) + 0.5, cell.y);
+        g.lineTo(Math.round(sx(x)) + 0.5, cell.y + cell.height);
+      }
+      for (let z = Math.ceil(top / step) * step; z <= top + frame.height; z += step) {
+        g.moveTo(cell.x, Math.round(sy(z)) + 0.5);
+        g.lineTo(cell.x + cell.width, Math.round(sy(z)) + 0.5);
+      }
+      g.stroke();
+      // The scale bar, bottom left.
+      const px = Math.max(11, Math.round(cell.width / 45));
+      const bar = niceLength(frame.width / 5);
+      const barPx = (bar / frame.width) * cell.width;
+      const bx = cell.x + px;
+      const by = cell.y + cell.height - px * 1.4;
+      g.fillStyle = "rgba(20, 22, 28, 0.85)";
+      g.fillRect(bx, by, barPx, Math.max(3, px / 4));
+      g.font = font(px);
+      g.textBaseline = "bottom";
+      g.fillText(`${bar} m`, bx, by - 3);
+      // North, top right.
+      g.textBaseline = "top";
+      g.textAlign = "right";
+      g.fillText("N ↑", cell.x + cell.width - px * 0.7, cell.y + px * 0.6);
+      g.restore();
+      return step;
+    },
+
+    async result(text: string, camera?: ShotCamera): Promise<RenderResult> {
+      const png = await new Promise<Blob>((resolve, reject) => canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("The image came back empty"))), "image/png"));
+      return { image: await blobToBase64(png), width, height, text, ...(camera ? { camera } : {}) };
+    },
+  };
+}

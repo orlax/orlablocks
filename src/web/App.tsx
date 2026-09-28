@@ -41,7 +41,7 @@ import { highlightedText, typingInField } from "./keys";
 import { Outliner } from "./Outliner";
 import { ProjectPicker } from "./ProjectPicker";
 import { ContextualBar, EDIT_POINTS_HINT, HINTS, TOOLS, ToolBar, ViewBar, WalkBar } from "./ToolBar";
-import { useScene } from "./useScene";
+import { useScene, type RenderHandler } from "./useScene";
 import { Viewport, type KindFields, type LineStyle, type RampStyle, type Tool, type ViewportApi } from "./Viewport";
 import { blobToBase64 } from "./capture";
 import { ShotsPanel, ShutterFlash } from "./ShotsPanel";
@@ -121,7 +121,9 @@ const WALK_PRESET_KEY = "dd.walk.preset";
 const PLAYER_SAVE_MS = 400;
 
 export function App() {
-  const { scene, history, seq, shots, player: savedPlayer, projects, open, restore, library: libraryState, connected, error, clearError, send } = useScene();
+  // The agent's renders are drawn by the view (09.3).
+  const renderer = useRef<RenderHandler | null>(null);
+  const { scene, history, seq, shots, player: savedPlayer, projects, open, restore, library: libraryState, connected, error, clearError, send } = useScene(renderer);
   const library = libraryState.library;
   // The Library panel, open or not, remembered per viewer.
   const [libraryOpen, setLibraryOpenState] = useState(() => {
@@ -195,6 +197,10 @@ export function App() {
   const [notice, setNotice] = useState<string | null>(null);
   // Shots (09.1): what the view can capture, the Shots panel (remembered per viewer), and the shutter's flash.
   const viewportApi = useRef<ViewportApi | null>(null);
+  renderer.current = (job) => {
+    const api = viewportApi.current;
+    return api ? api.render(job) : Promise.reject(new Error("The editor's view isn't up yet."));
+  };
   const [shotsOpen, setShotsOpenState] = useState(() => {
     try {
       return localStorage.getItem(SHOTS_OPEN_KEY) === "1";

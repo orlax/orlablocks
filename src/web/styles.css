@@ -1046,9 +1046,6 @@ body {
 }
 .entity-banner button:hover { background: rgba(255, 255, 255, 0.26); }
 
-/* A capture's own canvas (09.1): off screen, at the image's size, never seen or clicked. */
-.capture-stage { position: fixed; left: -100000px; top: 0; pointer-events: none; }
-
 /* The shutter's flash: over the view, fading out by itself. */
 .shutter-flash {
   position: fixed;

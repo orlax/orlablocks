@@ -15,6 +15,9 @@ import {
   MirrorNodesSchema,
   MoveNodesSchema,
   NodeUpdateSchema,
+  DEFAULT_RENDER_SIZE,
+  MAX_RENDER_SIZE,
+  RenderRequestSchema,
   RotateNodesSchema,
   ShapeInputSchema,
   UngroupSchema,
@@ -24,6 +27,7 @@ import { isGroup, isShape } from "../shared/tree";
 import { GUIDE_TOPICS, guideTopic, INSTRUCTIONS, topicList } from "./guide";
 import { describeScene, entitySize, findNodes, FULL_SCENE_MAX, MAX_MATCHES } from "./outline";
 import { definitionOf } from "../shared/entities";
+import { prepareRender, type RenderBroker } from "./render";
 import { SceneError } from "./scene";
 import type { Workspace } from "./workspace";
 
@@ -47,7 +51,28 @@ function guided<T>(run: () => T): T {
   }
 }
 
-function buildServer(workspace: Workspace) {
+const R = RenderRequestSchema.shape;
+/** render_view's input, each field described for the agent. */
+const RENDER_INPUT = {
+  view: R.view.describe(
+    "sheet (default: a labeled top-down plan plus views from the northeast, south and west, in one image), plan (top-down, north up, with a scale bar), " +
+      "node (a close-up of ids), eye (what a player sees from a point), walk (frames at eye height along a path), or shot (a stored shot's camera again, now)",
+  ),
+  ids: R.ids.describe("plan / sheet: only these (and what's in them); node: what to frame"),
+  from: R.from.describe('eye: the feet {x, y?, z} (y from the floor there when left out), or "human" for where the human is walking'),
+  at: R.at.describe("eye: a point {x, y, z} or a node ID to look at (default: along yaw / pitch)"),
+  yaw: R.yaw.describe("node: the direction to look from (the view's by default); eye: where to look without at (degrees, 0 = north, counterclockwise)"),
+  pitch: R.pitch.describe("eye: up (+) or down (-), in degrees, without at"),
+  path: R.path.describe("walk: a line or ramp ID (e.g. the critical path), or at least 2 points (y from the floor when left out)"),
+  frames: R.frames.describe("walk: how many frames, 3 to 8 (default 5)"),
+  preset: R.preset.describe("eye / walk: first (default) or third person, with the project's player camera"),
+  shot: R.shot.describe("shot: the shot to take again (see get_shots)"),
+  labels: R.labels.describe("plan / sheet / node: letter labels on the image, with the legend in the text (default true)"),
+  size: R.size.describe(`the image's long edge in pixels (default ${DEFAULT_RENDER_SIZE}, at most ${MAX_RENDER_SIZE})`),
+  save: R.save.describe("keep the image as a shot (by the agent) in the human's Shots panel: node, eye and shot views only"),
+};
+
+function buildServer(workspace: Workspace, renders: RenderBroker) {
   /** A result with the scene's hole warnings added (holes that cut nothing), when there are any. */
   const warned = <T extends object>(result: T) => {
     const own = (result as { warnings?: string[] }).warnings ?? [];
@@ -62,7 +87,7 @@ function buildServer(workspace: Workspace) {
     const warnings = [...own, ...holes, ...missing];
     return warnings.length > 0 ? { ...result, warnings } : result;
   };
-  const server = new McpServer({ name: "orlablocks", version: "0.0.18" }, { instructions: INSTRUCTIONS });
+  const server = new McpServer({ name: "orlablocks", version: "0.0.19" }, { instructions: INSTRUCTIONS });
   // Every tool reads or edits the open scene, and fails with a clear message while nothing is open.
   const store = () => workspace.requireScene();
   const library = (): Library => (workspace.getOpen() ? workspace.library.get() : EMPTY_LIBRARY);
@@ -392,6 +417,71 @@ function buildServer(workspace: Workspace) {
   );
 
   server.registerTool(
+    "render_view",
+    {
+      title: "Render view",
+      description:
+        "Render the open document as an image, to see your work: stairs that end in walls, doors that cut nothing, " +
+        "floating shapes, scale against the human. The editor draws it (it must be open in a browser), without moving the human's view. " +
+        "Labels are letters, and the text result is their legend. Hidden nodes are left out, and notes aren't drawn (read them in get_scene).",
+      inputSchema: RENDER_INPUT,
+    },
+    async (input) => {
+      const scene = store().getScene();
+      const request = RenderRequestSchema.parse(input);
+      const job = prepareRender(request, { nodes: scene.nodes, view: scene.view, shot: (id) => workspace.shots.get(id) });
+      const result = await renders.request(job);
+      const lines = [result.text];
+      if (job.view === "shot") {
+        const shot = workspace.shots.get(job.shot!)!;
+        const since = (workspace.documentSeq() ?? shot.seq) - shot.seq;
+        lines.push(since === 0 ? `Nothing has changed since ${shot.id} was taken.` : `${since} step${since === 1 ? "" : "s"} since ${shot.id} was taken: compare with its image (get_shots id).`);
+      }
+      if (request.save && result.camera) {
+        const kept = workspace.addShot({ camera: result.camera, image: result.image }, "agent");
+        lines.push(`Kept as ${kept.id} in the Shots panel.`);
+      }
+      return { content: [{ type: "image" as const, data: result.image, mimeType: "image/png" }, { type: "text" as const, text: lines.join("\n") }] };
+    },
+  );
+
+  server.registerTool(
+    "get_shots",
+    {
+      title: "Get shots",
+      description:
+        "The human's shots of the open document (captures of the editor's view, or of a walk, each with its camera and an optional caption), " +
+        "oldest first, with `changedSince`: the steps since each was taken. With `id`, that shot's record and its image as it was taken. " +
+        "To see the same view now, render_view { view: \"shot\", shot }.",
+      inputSchema: { id: z.string().optional().describe("a shot's ID, for its image") },
+    },
+    async ({ id }) => {
+      store();
+      const seq = workspace.documentSeq() ?? 0;
+      const summary = (s: ReturnType<typeof workspace.shots.list>[number]) => ({
+        id: s.id,
+        ...(s.caption ? { caption: s.caption } : {}),
+        createdBy: s.createdBy,
+        createdAt: s.createdAt,
+        size: `${s.width} × ${s.height}`,
+        camera: s.camera,
+        changedSince: seq - s.seq,
+      });
+      if (!id) return json({ shots: workspace.shots.list().map(summary) });
+      const shot = workspace.shots.list().find((s) => s.id === id);
+      if (!shot) throw new SceneError(`No shot "${id}" in the open document. get_shots lists them.`);
+      const image = workspace.shots.image(id);
+      if (!image) throw new SceneError(`${id}'s image is missing from the data folder.`);
+      return {
+        content: [
+          { type: "image" as const, data: image.toString("base64"), mimeType: "image/png" },
+          { type: "text" as const, text: JSON.stringify(summary(shot)) },
+        ],
+      };
+    },
+  );
+
+  server.registerTool(
     "ungroup",
     {
       title: "Ungroup",
@@ -405,9 +495,9 @@ function buildServer(workspace: Workspace) {
 }
 
 /** Stateless Streamable HTTP: a fresh server + transport per request, all sharing one scene store(). */
-export function mountMcp(app: Express, workspace: Workspace) {
+export function mountMcp(app: Express, workspace: Workspace, renders: RenderBroker) {
   app.post("/mcp", async (req, res) => {
-    const server = buildServer(workspace);
+    const server = buildServer(workspace, renders);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     res.on("close", () => {
       transport.close();

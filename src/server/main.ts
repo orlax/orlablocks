@@ -6,6 +6,7 @@ import react from "@vitejs/plugin-react";
 import { createServer as createViteServer } from "vite";
 import { mountMcp } from "./mcp";
 import { LockedError, openDataDir } from "./persist";
+import { createRenderBroker } from "./render";
 import { createWorkspace } from "./workspace";
 import { attachWebSocket } from "./ws";
 
@@ -37,7 +38,9 @@ workspace.restore();
 const app = createMcpExpressApp({ host: HOST });
 const httpServer = createHttpServer(app);
 
-mountMcp(app, workspace);
+// render_view (09.3): the editor tabs render for the agent.
+const renders = createRenderBroker();
+mountMcp(app, workspace, renders);
 
 // Shot images (09.1), for the editor's thumbnails and downloads. Revalidated each time (IDs are never reused, but a
 // scene can be deleted by hand and made again with the same name).
@@ -48,7 +51,7 @@ app.get("/shots/:project/:kind/:doc/:file", (req, res) => {
   if (!found) return void res.status(404).send("No such shot");
   res.sendFile(found, { headers: { "Cache-Control": "no-cache" } });
 });
-attachWebSocket(httpServer, workspace);
+attachWebSocket(httpServer, workspace, renders);
 
 const vite = await createViteServer({
   configFile: false,

@@ -22,12 +22,15 @@ import {
   type SceneNode,
   type ShapeInput,
   type PlayerCamera,
+  type RenderJob,
+  type RenderResult,
   type ShotCamera,
   type ShotView,
   type View,
   type WalkPreset,
 } from "../shared/scene.types";
 import { reportError } from "./errors";
+import { renderJob } from "./renderView";
 import {
   boundsOf,
   isClosed,
@@ -113,7 +116,7 @@ import {
   type PointPart,
 } from "./points";
 import { TransformGizmo } from "./TransformGizmo";
-import { CaptureStage, editorView, type CaptureJob, type CaptureView } from "./capture";
+import { captureScene, editorView, type CaptureView } from "./capture";
 import { fitSize } from "./shots";
 import {
   eyeOf,
@@ -395,6 +398,8 @@ export type ViewportApi = {
   capture(options: CaptureOptions): Promise<ViewCapture>;
   /** Walks into a walk shot: its pose, preset, field of view and boom, paused (09.2). */
   walkTo(camera: Extract<ShotCamera, { kind: "walk" }>): void;
+  /** Renders what the agent asked for (09.3), without touching the view. */
+  render(job: RenderJob): Promise<RenderResult>;
 };
 
 /**
@@ -462,25 +467,34 @@ export function Viewport({
     invalidate();
   }, [cameraFrame]);
 
-  // Captures, one at a time: each mounts a hidden canvas of its own (capture.tsx) until it's taken.
-  const [jobs, setJobs] = useState<(CaptureJob & CaptureOptions & { extra: Shape[] })[]>([]);
-  const nextJob = useRef(1);
-  /** Queues a capture and resolves with its PNG. Holes are cut once the boolean library is ready: never uncut walls. */
+  /**
+   * A clean capture of the scene (capture.tsx): what it holds as saved, without hidden nodes (the isolation ignored)
+   * or hole ghosts, notes and lines as asked, and `extra` shapes (a walk's avatar). Holes are cut once the boolean
+   * library is ready: never uncut walls.
+   */
   const runCapture = async (view: CaptureView, width: number, height: number, pixelRatio: number, options: CaptureOptions, extra: Shape[] = []) => {
     await manifoldReady();
-    return new Promise<Blob>((resolve, reject) => {
-      const id = nextJob.current++;
-      // Also if the capture's canvas fails without answering (its error boundary caught it).
-      const timer = setTimeout(() => finish(() => reject(new Error("The capture didn't finish"))), CAPTURE_GIVE_UP_MS);
-      const finish = (done: () => void) => {
-        clearTimeout(timer);
-        setJobs((js) => js.filter((j) => j.id !== id));
-        done();
-      };
-      setJobs((js) => [
-        ...js,
-        { id, view, width, height, pixelRatio, ...options, extra, resolve: (b) => finish(() => resolve(b)), reject: (e) => finish(() => reject(e)) },
-      ]);
+    const hiddenNow = hiddenIds(nodesRef.current);
+    const shapes = [
+      ...expandShapes(
+        boxesRef.current.filter((b) => !hiddenNow.has(b.id) && (options.notes || b.type !== "note") && (options.lines || b.type !== "line")),
+      ).filter((b) => !isHole(b)),
+      ...extra,
+    ];
+    const cutsNow = cutsRef.current;
+    const entityNow = entityModeRef.current;
+    return captureScene({
+      view,
+      width,
+      height,
+      pixelRatio,
+      background: BACKGROUND,
+      content: (light) => (
+        <>
+          <Lighting cam={light} />
+          <Boxes boxes={shapes} entityMode={entityNow} cuts={cutsNow} showHoles={false} draft={null} selected={NO_IDS} hovered={NO_IDS} />
+        </>
+      ),
     });
   };
   if (api) {
@@ -494,6 +508,20 @@ export function Viewport({
         const camera = { ...cam.current, focus: { ...cam.current.focus } };
         const png = await runCapture(editorView(camera), width, height, width / cssWidth, options);
         return { png, width, height, camera };
+      },
+      render(job) {
+        const nodesNow = nodesRef.current;
+        const hiddenNow = hiddenIds(nodesNow);
+        const standable = expandShapes(boxesRef.current.filter((b) => !hiddenNow.has(b.id)));
+        return renderJob(job, {
+          nodes: nodesNow,
+          hidden: hiddenNow,
+          editor: walkRef.current?.before ?? cam.current,
+          player: playerRef.current,
+          avatarEntity: avatarEntityRef.current,
+          surfaceY: (x, z) => surfaceUnder({ origin: { x, y: 10_000, z }, dir: { x: 0, y: -1, z: 0 } }, standable)?.y ?? 0,
+          capture: (view, width, height, options, extra) => runCapture(view, width, height, 1, options, extra),
+        });
       },
       walkTo(c) {
         if (walkRef.current) return;
@@ -521,6 +549,8 @@ export function Viewport({
   playerRef.current = player;
   const onPlayerRef = useRef(onPlayer);
   onPlayerRef.current = onPlayer;
+  const avatarEntityRef = useRef(avatarEntity);
+  avatarEntityRef.current = avatarEntity;
   const onViewChangeRef = useRef(onViewChange);
   onViewChangeRef.current = onViewChange;
   const [walkFlash, setWalkFlash] = useState<{ key: number; label: string } | null>(null);
@@ -900,6 +930,13 @@ export function Viewport({
   // In an entity's definition the top level is a group (in every instance), so its holes cut there.
   const cutList = expandNodes([...nodes.filter(isGroup), ...shown.filter((b) => !(isHole(b) && hidden.has(b.id))), ...ghosts]);
   const cuts = cutters(entityMode ? inEntityRoot(cutList) : cutList);
+  // For captures, which run after awaits: the scene as it is then.
+  const nodesRef = useRef(nodes);
+  nodesRef.current = nodes;
+  const cutsRef = useRef(cuts);
+  cutsRef.current = cuts;
+  const entityModeRef = useRef(entityMode);
+  entityModeRef.current = entityMode;
   // The free-form or line in point editing, as shown. A free-form's points sit on its top face (`editTop`); a
   // line's carry their own y, and its path is open.
   const editShape =
@@ -1892,33 +1929,6 @@ export function Viewport({
           onContinue={continueWalk}
           onExit={exitWalk}
         />
-      )}
-      {jobs[0] && (
-        <ErrorBoundary scope="view">
-        <CaptureStage key={jobs[0].id} job={jobs[0]} background={BACKGROUND}>
-          {(captureCam) => (
-            <>
-              <Lighting cam={captureCam} />
-              <Boxes
-                // What the scene holds, as saved: hidden nodes left out, the isolation ignored, no hole ghosts.
-                boxes={[
-                  ...expandShapes(
-                    boxes.filter((b) => !hidden.has(b.id) && (jobs[0].notes || b.type !== "note") && (jobs[0].lines || b.type !== "line")),
-                  ).filter((b) => !isHole(b)),
-                  // A third-person walk shot's avatar.
-                  ...jobs[0].extra,
-                ]}
-                entityMode={entityMode}
-                cuts={cuts}
-                showHoles={false}
-                draft={null}
-                selected={NO_IDS}
-                hovered={NO_IDS}
-              />
-            </>
-          )}
-        </CaptureStage>
-        </ErrorBoundary>
       )}
     </div>
   );

@@ -1,12 +1,28 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { NO_USES, type Library, type Uses } from "../shared/library";
 import { setDefinitions } from "../shared/entities";
-import { DEFAULT_PLAYER, type ClientMessage, type EditorRestore, type HistorySummary, type OpenScene, type PlayerCamera, type ProjectSummary, type Scene, type ServerMessage, type ShotView } from "../shared/scene.types";
+import {
+  DEFAULT_PLAYER,
+  type ClientMessage,
+  type EditorRestore,
+  type HistorySummary,
+  type OpenScene,
+  type PlayerCamera,
+  type ProjectSummary,
+  type RenderJob,
+  type RenderResult,
+  type Scene,
+  type ServerMessage,
+  type ShotView,
+} from "../shared/scene.types";
 
 const NO_HISTORY: HistorySummary = { canUndo: false, canRedo: false };
 
+/** What renders the agent's render_view in this tab (09.3): set by the app once the view is up. */
+export type RenderHandler = (job: RenderJob) => Promise<RenderResult>;
+
 /** Server is the source of truth: we render whatever scene it last sent. */
-export function useScene() {
+export function useScene(renderer?: { current: RenderHandler | null }) {
   const [scene, setScene] = useState<Scene | null>(null);
   const [history, setHistory] = useState<HistorySummary>(NO_HISTORY);
   // The open document's history step, and its shots (09.1).
@@ -38,7 +54,10 @@ export function useScene() {
     const connect = () => {
       const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
       wsRef.current = ws;
-      ws.onopen = () => setConnected(true);
+      ws.onopen = () => {
+        setConnected(true);
+        reportTab();
+      };
       ws.onclose = () => {
         setConnected(false);
         if (!closed) retry = setTimeout(connect, 1000);
@@ -64,6 +83,15 @@ export function useScene() {
           setShots(msg.shots);
         } else if (msg.type === "player") {
           setPlayer(msg.player);
+        } else if (msg.type === "render") {
+          const answer = (m: ClientMessage) => ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify(m));
+          const run = renderer?.current;
+          if (!run) answer({ type: "rendered", requestId: msg.requestId, error: "The editor isn't ready to render (no scene shown yet)." });
+          else
+            run(msg.job).then(
+              (result) => answer({ type: "rendered", requestId: msg.requestId, result }),
+              (err: unknown) => answer({ type: "rendered", requestId: msg.requestId, error: err instanceof Error ? err.message : String(err) }),
+            );
         } else if (msg.type === "library") {
           setLibrary({ library: msg.library, history: msg.history, uses: msg.uses });
         } else if (msg.type === "error") {
@@ -72,11 +100,23 @@ export function useScene() {
       };
     };
 
+    // Whether this tab is on screen and has focus, so the server asks the right tab to render (09.3).
+    const reportTab = () => {
+      const ws = wsRef.current;
+      if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "tab", visible: document.visibilityState === "visible", focused: document.hasFocus() }));
+    };
+    window.addEventListener("focus", reportTab);
+    window.addEventListener("blur", reportTab);
+    document.addEventListener("visibilitychange", reportTab);
+
     connect();
     return () => {
       closed = true;
       clearTimeout(retry);
       wsRef.current?.close();
+      window.removeEventListener("focus", reportTab);
+      window.removeEventListener("blur", reportTab);
+      document.removeEventListener("visibilitychange", reportTab);
     };
   }, []);
 

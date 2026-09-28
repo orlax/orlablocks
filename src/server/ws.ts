@@ -4,12 +4,13 @@ import { z } from "zod";
 import { NO_USES } from "../shared/library";
 import { ClientMessageSchema, type ServerMessage } from "../shared/scene.types";
 import { SceneError } from "./scene";
+import type { RenderBroker, RenderTab } from "./render";
 import type { Workspace } from "./workspace";
 
 /** The message minus its `type`: the store's input schemas are strict, so the envelope field must go. */
 const withoutType = <T extends { type: string }>({ type: _type, ...rest }: T) => rest;
 
-export function attachWebSocket(httpServer: Server, workspace: Workspace) {
+export function attachWebSocket(httpServer: Server, workspace: Workspace, renders: RenderBroker) {
   const { store } = workspace;
   const wss = new WebSocketServer({ noServer: true });
 
@@ -63,6 +64,10 @@ export function attachWebSocket(httpServer: Server, workspace: Workspace) {
   workspace.onPlayerChanged((player) => broadcast({ type: "player", player }));
 
   wss.on("connection", (ws) => {
+    // This tab can render for the agent (09.3).
+    const tab: RenderTab = { send: (requestId, job) => send(ws, { type: "render", requestId, job }) };
+    renders.add(tab);
+    ws.on("close", () => renders.remove(tab));
     // The scene before `opened`, so the selection it restores is checked against this scene's nodes.
     send(ws, { type: "projects", projects: workspace.projects() });
     send(ws, sceneMessage());
@@ -104,6 +109,8 @@ export function attachWebSocket(httpServer: Server, workspace: Workspace) {
         if (msg.type === "update_shot") return workspace.shots.update(msg.id, msg.caption);
         if (msg.type === "remove_shot") return workspace.shots.remove(msg.id);
         if (msg.type === "set_player") return workspace.setPlayer(msg.player);
+        if (msg.type === "tab") return renders.report(tab, msg);
+        if (msg.type === "rendered") return renders.answer(tab, msg.requestId, msg);
         if (msg.type === "detach_instances") return void workspace.requireScene().detachInstances(msg.ids, "human");
         const scene = workspace.requireScene();
         if (msg.type === "add_shapes") scene.drawShapes(msg.shapes, "human");

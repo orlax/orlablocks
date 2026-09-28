@@ -153,16 +153,18 @@ export function LineMesh({ line, highlight }: { line: Line; highlight?: "hover" 
 /** One arrowhead: a cone with its tip on the line's end, sized in screen pixels (so readable at any zoom). */
 function Arrowhead({ tip, dir, color, thickness }: { tip: Point3; dir: THREE.Vector3; color: string; thickness: number }) {
   const group = useRef<THREE.Group>(null);
-  const camera = useThree((s) => s.camera) as THREE.PerspectiveCamera;
+  const camera = useThree((s) => s.camera);
   const size = useThree((s) => s.size);
   const quaternion = useMemo(() => new THREE.Quaternion().setFromUnitVectors(UP, dir), [dir]);
 
   useFrame(() => {
     const g = group.current;
     if (!g) return;
-    // Meters per pixel at the tip's distance from the camera.
-    const d = camera.position.distanceTo(g.position);
-    const perPx = (2 * d * Math.tan(((camera.fov / 2) * Math.PI) / 180)) / size.height;
+    // Meters per pixel at the tip's distance from the camera (the same everywhere for a plan's straight-down camera).
+    const perPx =
+      camera instanceof THREE.OrthographicCamera
+        ? (camera.top - camera.bottom) / camera.zoom / size.height
+        : (2 * camera.position.distanceTo(g.position) * Math.tan((((camera as THREE.PerspectiveCamera).fov / 2) * Math.PI) / 180)) / size.height;
     g.scale.set(arrowWidth(thickness) * perPx, arrowLength(thickness) * perPx, arrowWidth(thickness) * perPx);
   });
 

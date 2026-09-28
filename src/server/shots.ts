@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import { MAX_SHOT_CAPTION, type ShotCamera, type ShotRecord, type ShotView } from "../shared/scene.types";
 import type { ShotsFile } from "../shared/project.types";
 import type { DataDir, DocumentRef } from "./persist";
@@ -68,6 +69,13 @@ export function createShotStore(data: DataDir) {
       if (!open) return [];
       const { project, doc } = open;
       return file.shots.map((s) => ({ ...s, url: shotUrl(project, doc, s.id) }));
+    },
+
+    /** A shot's image (the PNG as taken), or null if it has none. */
+    image(id: string): Buffer | null {
+      if (!open) return null;
+      const file = data.shotImageFile(open.project, open.doc, id);
+      return file ? fs.readFileSync(file) : null;
     },
 
     /** One shot's record, or undefined. */

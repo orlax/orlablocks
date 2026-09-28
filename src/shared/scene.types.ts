@@ -971,6 +971,44 @@ export type ShotRecord = z.infer<typeof ShotRecordSchema>;
 /** A shot as the editor gets it: its record and where its image is served. */
 export type ShotView = ShotRecord & { url: string };
 
+/** The views `render_view` renders (plan 09 §6). */
+export const RENDER_VIEWS = ["sheet", "plan", "node", "eye", "walk", "shot"] as const;
+export type RenderViewKind = (typeof RENDER_VIEWS)[number];
+/** An image's long edge, in pixels: the largest the model reads without scaling it down. */
+export const MIN_RENDER_SIZE = 256;
+export const MAX_RENDER_SIZE = 1568;
+export const DEFAULT_RENDER_SIZE = 1024;
+
+const RenderPointSchema = z.object({ x: z.number(), y: z.number().optional(), z: z.number() });
+/** What the agent asks `render_view` for (see the tool's description). */
+export const RenderRequestSchema = z.object({
+  view: z.enum(RENDER_VIEWS).default("sheet"),
+  ids: z.array(z.string()).min(1).optional(),
+  from: z.union([RenderPointSchema, z.literal("human")]).optional(),
+  at: z.union([z.object({ x: z.number(), y: z.number(), z: z.number() }), z.string()]).optional(),
+  yaw: z.number().optional(),
+  pitch: z.number().min(-89).max(89).optional(),
+  path: z.union([z.string(), z.array(RenderPointSchema).min(2)]).optional(),
+  frames: z.number().int().min(3).max(8).optional(),
+  preset: WalkPresetSchema.optional(),
+  shot: z.string().optional(),
+  labels: z.boolean().optional(),
+  size: z.number().int().min(MIN_RENDER_SIZE).max(MAX_RENDER_SIZE).optional(),
+  save: z.boolean().optional(),
+});
+export type RenderRequest = z.infer<typeof RenderRequestSchema>;
+/** What the editor renders: the request, with what only the server knows (where the human walks, a shot's camera). */
+export type RenderJob = RenderRequest & { human?: Walking; shotCamera?: { camera: ShotCamera; width: number; height: number } };
+/** What the editor sends back: the PNG (base64), what it shows (the text result), and its camera when it has one. */
+export const RenderResultSchema = z.object({
+  image: z.string().min(1),
+  width: z.number().int().positive(),
+  height: z.number().int().positive(),
+  text: z.string(),
+  camera: ShotCameraSchema.optional(),
+});
+export type RenderResult = z.infer<typeof RenderResultSchema>;
+
 /** What a tab restores when a scene opens (or when it connects): the scene's saved camera (null = keep its own) and selection. */
 export type EditorRestore = { camera: Camera | null; selection: string[] };
 
@@ -1025,6 +1063,10 @@ export const ClientMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("remove_shot"), id: z.string() }),
   // The pause menu's player camera (09.2), saved for the project.
   z.object({ type: z.literal("set_player"), player: PlayerCameraSchema }),
+  // Whether this tab can render for the agent (09.3): shown (not in the background) and when it last had focus.
+  z.object({ type: z.literal("tab"), visible: z.boolean(), focused: z.boolean() }),
+  // A render the server asked for (09.3): its image and text, or why it failed.
+  z.object({ type: z.literal("rendered"), requestId: z.number().int(), result: RenderResultSchema.optional(), error: z.string().optional() }),
 ]);
 export type ClientMessage = z.input<typeof ClientMessageSchema>;
 
@@ -1042,4 +1084,6 @@ export type ServerMessage =
   // The open document's shots (09.1), newest last: on open and after every change.
   | { type: "shots"; shots: ShotView[] }
   // The open project's player camera (09.2): on connect, when a project opens and after every change.
-  | { type: "player"; player: PlayerCamera };
+  | { type: "player"; player: PlayerCamera }
+  // The agent's render_view (09.3), for this tab to render and answer with `rendered`.
+  | { type: "render"; requestId: number; job: RenderJob };
