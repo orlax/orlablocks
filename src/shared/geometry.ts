@@ -53,10 +53,10 @@ export const normalizeDeg = (deg: number) => ((deg % 360) + 360) % 360;
 export const isFootprinted = (shape: Shape): shape is Box | Cylinder => shape.type === "box" || shape.type === "cylinder";
 
 /** Boxes, cylinders and free-forms: a footprint, a kind, an elevation and a height (lines and ramps have none). */
-export const isClosed = (shape: Shape): shape is ClosedShape => shape.type !== "line" && shape.type !== "ramp";
+export const isClosed = (shape: Shape): shape is ClosedShape => shape.type !== "line" && shape.type !== "ramp" && shape.type !== "note";
 
 /** Closed shapes and ramps: a kind and a mesh, so holes cut them (only closed shapes can be holes). */
-export const isSolid = (shape: Shape): shape is Solid => shape.type !== "line";
+export const isSolid = (shape: Shape): shape is Solid => shape.type !== "line" && shape.type !== "note";
 
 /** A shape's rotation (a free-form's or a line's is always 0: turning it turns its points). */
 export const rotationOf = (shape: Shape) => (isFootprinted(shape) ? shape.rotation : 0);
@@ -230,7 +230,9 @@ export const footprint = (shape: ClosedShape): Point[] => {
  * seen from above), a line's polyline.
  */
 export const groundPoints = (shape: Shape): Point[] =>
-  shape.type === "line"
+  shape.type === "note"
+    ? [{ x: shape.x, z: shape.z }]
+    : shape.type === "line"
     ? polyline(shape)
     : shape.type === "ramp"
       ? rampEdges(shape).flat()
@@ -600,6 +602,7 @@ export function verticalRange(shape: Shape): [number, number] {
   }
   if (isClosed(shape)) return [shape.y, shape.y + shape.height];
   if (shape.type === "ramp") return rampRange(shape);
+  if (shape.type === "note") return [shape.y, shape.y];
   const ys = polyline(shape).map((p) => p.y);
   return [Math.min(...ys), Math.max(...ys)];
 }
@@ -616,7 +619,7 @@ export function handleFrame(shape: Shape): Frame {
  * a drag took it.
  */
 export const anchorOf = (shape: Shape) => {
-  if (isFootprinted(shape)) return { x: shape.x, y: shape.y, z: shape.z };
+  if (isFootprinted(shape) || shape.type === "note") return { x: shape.x, y: shape.y, z: shape.z };
   const p = shape.points[0];
   return { x: p.x, y: shape.type === "freeform" ? shape.y : shape.points[0].y, z: p.z };
 };
@@ -784,6 +787,12 @@ export function lineProblem(points: LinePoint[]): string | null {
  */
 export function moveShape(shape: Shape, dx: number, dy: number, dz: number): ShapePatch {
   const patch: ShapePatch = {};
+  if (shape.type === "note") {
+    if (dx !== 0) patch.x = round2(shape.x + dx);
+    if (dy !== 0) patch.y = round2(shape.y + dy);
+    if (dz !== 0) patch.z = round2(shape.z + dz);
+    return patch;
+  }
   if (shape.type === "line" || shape.type === "ramp") {
     // A line or a ramp has no elevation of its own: moving it up moves its points.
     if (dx !== 0 || dy !== 0 || dz !== 0) patch.points = mapPoints(shape.points, (p) => ({ x: p.x + dx, z: p.z + dz }), (o) => o, dy);
@@ -812,6 +821,10 @@ export function rotateShape(shape: Shape, pivot: Point, degrees: number): ShapeP
     const t = turn({ x: p.x - pivot.x, z: p.z - pivot.z });
     return { x: pivot.x + t.x, z: pivot.z + t.z };
   };
+  if (shape.type === "note") {
+    const c = orbit(shape);
+    return { x: round2(c.x), z: round2(c.z) };
+  }
   if (!isFootprinted(shape)) return { points: mapPoints<FootPoint>(shape.points, orbit, turn) };
   const c = orbit(shape);
   return { x: round2(c.x), z: round2(c.z), rotation: round2(normalizeDeg(shape.rotation + degrees)) % 360 };
@@ -828,7 +841,7 @@ export function rotateAround(shapes: Shape[], pivot: Point, degrees: number): Re
  */
 export function resizeShape(shape: Shape, from: Frame, to: { x: number; z: number; width: number; depth: number }): ShapePatch {
   if (isFootprinted(shape)) return { x: to.x, z: to.z, width: to.width, depth: to.depth };
-  if (shape.type === "line" || shape.type === "ramp") return {}; // lines and ramps have no scale handles
+  if (shape.type === "line" || shape.type === "ramp" || shape.type === "note") return {}; // lines, ramps and notes have no scale handles
   const sx = from.width > 0 ? to.width / from.width : 1;
   const sz = from.depth > 0 ? to.depth / from.depth : 1;
   const target = { ...to, rotation: from.rotation };
@@ -875,6 +888,7 @@ function round2HalfEven(n: number): number {
  *   order (so their indices stay stable), which only reverses the outline's winding.
  */
 export function mirrorShape(shape: Shape, axis: MirrorAxis, sum: number): ShapePatch {
+  if (shape.type === "note") return axis === "x" ? { x: round2(sum - shape.x) } : { z: round2(sum - shape.z) };
   if (!isFootprinted(shape)) {
     const points: FootPoint[] = shape.points;
     return axis === "x"

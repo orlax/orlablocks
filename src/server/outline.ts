@@ -1,7 +1,7 @@
 import { boundsOf, isTilted, round2 } from "../shared/geometry";
 import { currentTags, EMPTY_LIBRARY, findRefs, resolveRef, type Library, type Skill, type Tag } from "../shared/library";
 import { COMPASS, type OpenScene, type Scene, type SceneNode, type Shape } from "../shared/scene.types";
-import { ancestry, childrenOf, countsText, isGroup, isShape, shapesUnder, subtreeIds } from "../shared/tree";
+import { ancestry, childrenOf, countsText, isGroup, isShape, shapesUnder, subtreeIds, tagsOf } from "../shared/tree";
 import { SceneError } from "./scene";
 
 /**
@@ -34,6 +34,7 @@ export type SceneOutline = OpenScene & {
   hint?: string;
   nodes: AgentNode[];
   selected?: AgentNode[];
+  notes?: AgentNode[];
   glossary?: Glossary;
 };
 
@@ -57,11 +58,12 @@ export function glossaryFor(library: Library, shown: AgentNode[]): Glossary | un
     }
   };
   for (const n of shown) {
-    for (const t of n.type !== "line" ? (n.tags ?? []) : []) {
+    for (const t of tagsOf(n) ?? []) {
       const tag = resolveRef(library, "tag", t);
       if (tag) tags.set(tag.name, tag);
     }
     if (n.type === "group") addText(n.description);
+    if (n.type === "note") addText(n.text);
   }
   // One level more.
   for (const k of [...skills.values()]) {
@@ -115,9 +117,10 @@ export function pathOf(nodes: SceneNode[], id: string): string {
  */
 function describeNodeIn(nodes: SceneNode[], n: SceneNode, library: Library): AgentNode {
   // Tags by their current names; ones the library no longer has are left out.
-  if (n.type !== "line" && n.tags) {
-    const { tags: _stored, ...rest } = n;
-    const tags = currentTags(library, n.tags);
+  const stored = tagsOf(n);
+  if (stored) {
+    const { tags: _stored, ...rest } = n as SceneNode & { tags?: string[] };
+    const tags = currentTags(library, stored);
     n = (tags.length > 0 ? { ...rest, tags } : rest) as SceneNode;
   }
   if (!isGroup(n)) return isTilted(n) ? { ...n, bounds: boundsFor([n]) } : n;
@@ -186,7 +189,10 @@ export function describeScene(open: OpenScene, scene: Scene, query: SceneQuery =
   const selected = scene.selection.filter((id) => !shown.has(id) && byId.has(id)).map((id) => byId.get(id)!);
   const listedNodes = listed.map(describe);
   const selectedNodes = selected.map((n) => ({ ...describeNode(nodes, n), path: pathOf(nodes, n.id) }));
-  const glossary = glossaryFor(library, [...(rootInfo.root ? [rootInfo.root] : []), ...listedNodes, ...selectedNodes]);
+  // Every open note, wherever it is: notes are work items, so the depth never hides them.
+  const listedOrSelected = new Set([...shown, ...selected.map((n) => n.id)]);
+  const openNotes = nodes.filter((n) => n.type === "note" && n.status === "open" && !listedOrSelected.has(n.id)).map((n) => ({ ...describeNode(nodes, n), path: pathOf(nodes, n.id) }));
+  const glossary = glossaryFor(library, [...(rootInfo.root ? [rootInfo.root] : []), ...listedNodes, ...selectedNodes, ...openNotes]);
   return {
     ...header,
     ...rootInfo,
@@ -198,6 +204,7 @@ export function describeScene(open: OpenScene, scene: Scene, query: SceneQuery =
         }),
     nodes: listedNodes,
     ...(selectedNodes.length > 0 ? { selected: selectedNodes } : {}),
+    ...(openNotes.length > 0 ? { notes: openNotes } : {}),
     ...(glossary ? { glossary } : {}),
   };
 }
@@ -205,6 +212,7 @@ export function describeScene(open: OpenScene, scene: Scene, query: SceneQuery =
 export type FindQuery = {
   name?: string;
   tag?: string;
+  status?: "open" | "done";
   type?: SceneNode["type"];
   kind?: "room" | "volume" | "hole";
   under?: string;
@@ -217,7 +225,7 @@ export type FindQuery = {
  * whose bounds come within `radius` of the point (on the ground). At most MAX_MATCHES, with the count of the rest.
  */
 export function findNodes(nodes: SceneNode[], query: FindQuery, library: Library = EMPTY_LIBRARY) {
-  const { name, tag, type, kind, under, near } = query;
+  const { name, tag, status, type, kind, under, near } = query;
   const wanted = tag !== undefined ? resolveRef(library, "tag", tag) : undefined;
   if (tag !== undefined && !wanted) throw new SceneError(`tag: no tag #${tag.replace(/^#/, "")} in the project library. Nothing was found.`);
   if (under !== undefined) {
@@ -244,8 +252,9 @@ export function findNodes(nodes: SceneNode[], query: FindQuery, library: Library
     if (inside && !inside.has(n.id)) return false;
     if (type !== undefined && n.type !== type) return false;
     if (kind !== undefined && !(isShape(n) && "kind" in n && n.kind === kind)) return false;
-    if (needle && !(n.name ?? "").toLowerCase().includes(needle)) return false;
-    if (wanted && !(n.type !== "line" && currentTags(library, n.tags).includes(wanted.name))) return false;
+    if (needle && !(n.name ?? "").toLowerCase().includes(needle) && !(n.type === "note" && n.text.toLowerCase().includes(needle))) return false;
+    if (status !== undefined && !(n.type === "note" && n.status === status)) return false;
+    if (wanted && !currentTags(library, tagsOf(n)).includes(wanted.name)) return false;
     return true;
   });
   const found: ReturnType<typeof line>[] = [];
@@ -256,7 +265,8 @@ export function findNodes(nodes: SceneNode[], query: FindQuery, library: Library
       type: n.type,
       ...(isShape(n) && "kind" in n ? { kind: n.kind } : {}),
       ...(n.name !== undefined ? { name: n.name } : {}),
-      ...(n.type !== "line" && currentTags(library, n.tags).length > 0 ? { tags: currentTags(library, n.tags) } : {}),
+      ...(n.type === "note" ? { text: n.text.length > 120 ? `${n.text.slice(0, 120)}…` : n.text, status: n.status, ...(n.label ? { label: n.label } : {}) } : {}),
+      ...(currentTags(library, tagsOf(n)).length > 0 ? { tags: currentTags(library, tagsOf(n)) } : {}),
       ...(n.parent !== undefined ? { parent: n.parent, path: pathOf(nodes, n.id) } : {}),
       ...(bounds ? { bounds } : {}),
     };

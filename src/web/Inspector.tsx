@@ -26,7 +26,10 @@ import {
   MIN_THICKNESS,
   MIN_WALL,
   MAX_DESCRIPTION,
+  MAX_NOTE_LABEL,
+  MAX_NOTE_TEXT,
   type LineArrow,
+  type NoteStatus,
 } from "../shared/scene.types";
 import type { Library } from "../shared/library";
 import { RefTextArea, TagsField } from "./RefText";
@@ -49,6 +52,18 @@ export type InspectorProps = {
   info?: string;
   /** The project library, for the description's references and the tags field. */
   library?: Library | null;
+  /**
+   * A single note: its text (with references), its label (the letters on its flag) and whether it's done. `focus`
+   * puts the caret in the text (a note just placed), once.
+   */
+  note?: {
+    text: string;
+    label: string;
+    status: NoteStatus;
+    focus: boolean;
+    onFocused: () => void;
+    onChange: (patch: { text?: string; label?: string | null; status?: NoteStatus }) => void;
+  };
   /** A single group's description: what that part of the level is, for people and the agent. */
   description?: { value: string; onChange: (text: string) => void };
   /** A single group's or shape's tags (not a line's), and adding a new tag to the library and to it. */
@@ -78,7 +93,7 @@ export type InspectorProps = {
   editPoints?: { active: boolean; onToggle: () => void };
 };
 
-export function Inspector({ title, info, library = null, description, tags, sides, wall, profile, tilt, line, ramp, onMirror, onConvert, editPoints }: InspectorProps) {
+export function Inspector({ title, info, library = null, note, description, tags, sides, wall, profile, tilt, line, ramp, onMirror, onConvert, editPoints }: InspectorProps) {
   const { ref, header, style, collapsed, toggle } = useFloating();
   const actions = onMirror || onConvert || editPoints;
   return (
@@ -93,6 +108,7 @@ export function Inspector({ title, info, library = null, description, tags, side
       {!collapsed && (
         <div className="inspector-body">
           {info && <div className="inspector-info">{info}</div>}
+          {note && <NoteSection {...note} library={library} />}
           {description && (
             <Section label="Description">
               <DescriptionField {...description} library={library} />
@@ -370,6 +386,73 @@ function DescriptionField({ value, onChange, library }: { value: string; onChang
         if (e.key === "Escape" || (e.key === "Enter" && (e.metaKey || e.ctrlKey))) e.currentTarget.blur();
       }}
     />
+  );
+}
+
+/** A note's fields: the text (sent on leaving it or ⌘Enter), the flag's label, and Done. */
+function NoteSection({ text, label, status, focus, onFocused, onChange, library }: NonNullable<InspectorProps["note"]> & { library: Library | null }) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const [labelDraft, setLabelDraft] = useState<string | null>(null);
+  const cancelled = useRef(false);
+  const wrap = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!focus) return;
+    wrap.current?.querySelector("textarea")?.focus();
+    onFocused();
+  }, [focus, onFocused]);
+  const commit = () => {
+    if (!cancelled.current && draft !== null && draft.trim() !== text) onChange({ text: draft.trim() });
+    cancelled.current = false;
+    setDraft(null);
+  };
+  const commitLabel = () => {
+    if (labelDraft !== null && labelDraft.trim() !== label) onChange({ label: labelDraft.trim() || null });
+    setLabelDraft(null);
+  };
+  return (
+    <Section label="Note">
+      <div ref={wrap}>
+        <RefTextArea
+          library={library}
+          className="description"
+          rows={4}
+          maxLength={MAX_NOTE_TEXT}
+          title="What the note says, for you and the agent. @skill and #tag refer to the library. ⌘Enter to set, Esc to cancel"
+          placeholder="In this area we need a @telekinesis challenge…"
+          value={draft ?? text}
+          onFocus={() => setDraft(text)}
+          onValue={setDraft}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") cancelled.current = true;
+            if (e.key === "Escape" || (e.key === "Enter" && (e.metaKey || e.ctrlKey))) e.currentTarget.blur();
+          }}
+        />
+      </div>
+      <Row label="flag">
+        <input
+          className="note-label"
+          maxLength={MAX_NOTE_LABEL}
+          placeholder="TK"
+          title={`Up to ${MAX_NOTE_LABEL} letters shown on the note's flag; empty makes it a plain pin`}
+          value={labelDraft ?? label}
+          onFocus={() => setLabelDraft(label)}
+          onChange={(e) => setLabelDraft(e.target.value.toUpperCase())}
+          onBlur={commitLabel}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") e.currentTarget.blur();
+            if (e.key === "Escape") {
+              setLabelDraft(label);
+              e.currentTarget.blur();
+            }
+          }}
+        />
+        <label className="note-done" title="Done: handled (it grays out, and leaves the agent's outline)">
+          <input type="checkbox" checked={status === "done"} onChange={(e) => onChange({ status: e.target.checked ? "done" : "open" })} />
+          done
+        </label>
+      </Row>
+    </Section>
   );
 }
 

@@ -12,6 +12,7 @@ import {
   Square,
   SquareDashed,
   SquareDot,
+  StickyNote,
   Trash2,
   Undo2,
   Waypoints,
@@ -32,6 +33,7 @@ export const TOOLS: { tool: Tool; label: string; key: string; icon: LucideIcon }
   { tool: "pen", label: "Pen (free-form)", key: "p", icon: PenTool },
   { tool: "line", label: "Line", key: "l", icon: Waypoints },
   { tool: "ramp", label: "Ramp (and stairs)", key: "r", icon: Stairs },
+  { tool: "note", label: "Note", key: "n", icon: StickyNote },
 ];
 
 /** What each tool does and its modifiers, shown in the info-label. */
@@ -43,6 +45,7 @@ export const HINTS: Record<Tool, string> = {
   pen: `click for a corner (the first one sets the surface it stands on) · drag for a curve · click the first point or Enter to close · ⌫ removes the last point · ${MOD} no snap · Esc to cancel`,
   line: `click to place a point on the surface under the cursor · drag for a curve · double-click or Enter to finish · ⌫ removes the last point · ${MOD} no snap · Esc to cancel`,
   ramp: `click on the floor, then on the top it climbs to (each point on the surface under the cursor) · drag for a curve · double-click or Enter to finish · ⌫ removes the last point · ${MOD} no snap · Esc to cancel`,
+  note: "click to pin a note on the surface under the cursor, then write it in the inspector · a label (up to 3 letters) makes it a flag",
 };
 
 /** The hint while editing a free-form's points (the Select tool, after double-clicking it). */
@@ -174,10 +177,12 @@ export function ContextualBar({
 export function ViewBar({
   holes,
   grid,
+  notes,
   isolated,
 }: {
   holes: { on: boolean; onToggle: () => void };
   grid: { on: boolean; onToggle: () => void };
+  notes: { on: boolean; onToggle: () => void };
   isolated: { label: string; onEnd: () => void } | null;
 }) {
   return (
@@ -203,6 +208,9 @@ export function ViewBar({
       </button>
       <button type="button" className={grid.on ? "toggle" : "toggle off"} title={grid.on ? "Hide the grid" : "Show the grid"} onClick={grid.onToggle}>
         <Grid3x3 size={13} /> grid
+      </button>
+      <button type="button" className={notes.on ? "toggle" : "toggle off"} title={notes.on ? "Hide the notes" : "Show the notes"} onClick={notes.onToggle}>
+        <StickyNote size={13} /> notes
       </button>
     </div>
   );

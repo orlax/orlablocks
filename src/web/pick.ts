@@ -122,6 +122,35 @@ export function pickLine(cam: CameraState, size: Size, sx: number, sy: number, s
   return best && { id: best.id, point: best.point };
 }
 
+/**
+ * A note's pin on screen (from 08): a pole standing on its point, with a flag (or, without a label, a round head)
+ * at the top, at a constant size in pixels whatever the zoom. `noteRect` is the area a click picks it in.
+ */
+export const NOTE_PX = { pole: 30, flagW: 34, flagH: 20, head: 11 } as const;
+export function noteRect(anchor: { sx: number; sy: number }, labeled: boolean): { x0: number; y0: number; x1: number; y1: number } {
+  const top = anchor.sy - NOTE_PX.pole - (labeled ? NOTE_PX.flagH / 2 : NOTE_PX.head / 2);
+  const right = anchor.sx + (labeled ? NOTE_PX.flagW : NOTE_PX.head / 2);
+  return { x0: anchor.sx - NOTE_PX.head / 2 - 2, y0: top - 2, x1: right + 2, y1: anchor.sy + 3 };
+}
+
+/**
+ * The note whose pin is under the cursor (the nearest one, when pins overlap), with its point. Pins are drawn over
+ * everything, so the view checks them first.
+ */
+export function pickNote(cam: CameraState, size: Size, sx: number, sy: number, shapes: Shape[]): { id: string; point: Vec3 } | null {
+  let best: { id: string; point: Vec3; d: number } | null = null;
+  for (const note of shapes) {
+    if (note.type !== "note") continue;
+    const at = worldToScreen(cam, size, note);
+    if (!at) continue;
+    const r = noteRect(at, !!note.label);
+    if (sx < r.x0 || sx > r.x1 || sy < r.y0 || sy > r.y1) continue;
+    const d = Math.hypot(sx - at.sx, sy - (at.sy - NOTE_PX.pole));
+    if (!best || d < best.d) best = { id: note.id, point: { x: note.x, y: note.y, z: note.z }, d };
+  }
+  return best && { id: best.id, point: best.point };
+}
+
 /** A flat surface a new shape can stand on: a volume's top, a room's floor or the top of its walls. */
 export type Surface = { id: string; y: number; what: "top" | "floor" | "wall top" };
 

@@ -869,3 +869,21 @@ body {
   user-select: text;
 }
 .tags-field input::placeholder { color: rgba(255, 255, 255, 0.45); }
+
+/* A note's flag label and Done (from 08). */
+.inspector input.note-label {
+  width: 52px;
+  height: 24px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--bar-text);
+  font: 700 12px/1 system-ui, sans-serif;
+  text-align: center;
+  user-select: text;
+}
+.inspector input.note-label:focus { outline: 1px solid #8fb4f2; }
+.inspector .note-done { display: inline-flex; align-items: center; gap: 4px; margin-left: 10px; font-size: 12px; cursor: pointer; }
+.draft-label.note-hover { max-width: 320px; white-space: normal; }
+.draft-label.note-hover.done { opacity: 0.7; }
+.outliner .label.done { text-decoration: line-through; opacity: 0.6; }

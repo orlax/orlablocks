@@ -53,7 +53,7 @@ function buildServer(workspace: Workspace) {
     const warnings = [...own, ...holeWarnings(store().getScene().nodes).map(withTopic)];
     return warnings.length > 0 ? { ...result, warnings } : result;
   };
-  const server = new McpServer({ name: "dungeon-designer", version: "0.0.13" }, { instructions: INSTRUCTIONS });
+  const server = new McpServer({ name: "dungeon-designer", version: "0.0.14" }, { instructions: INSTRUCTIONS });
   // Every tool reads or edits the open scene, and fails with a clear message while nothing is open.
   const store = () => workspace.requireScene();
   const library = (): Library => (workspace.getOpen() ? workspace.library.get() : EMPTY_LIBRARY);
@@ -67,7 +67,7 @@ function buildServer(workspace: Workspace) {
   /** Warnings for references to nothing in the descriptions an edit set. */
   const refWarnings = (described: { id: string; description?: string | null }[]) =>
     described.flatMap(({ id, description }) =>
-      description ? unknownRefs(library(), description).map((r) => `${id}'s description: ${r} names nothing in the library (get_guide library)`) : [],
+      description ? unknownRefs(library(), description).map((r) => `${id}: ${r} names nothing in the library (get_guide library)`) : [],
     );
 
   server.registerTool(
@@ -101,9 +101,10 @@ function buildServer(workspace: Workspace) {
         `(id, type, kind, name, parent, path of group names, bounds), at most ${MAX_MATCHES}. Use it to resolve a name to an ` +
         `ID ("entry_window"), or to find what's in or near an area.`,
       inputSchema: {
-        name: z.string().optional().describe("Part of the name, any case"),
+        name: z.string().optional().describe("Part of the name (or of a note's text), any case"),
         tag: z.string().optional().describe("A library tag (without #): only nodes carrying it"),
-        type: z.enum(["box", "cylinder", "freeform", "line", "ramp", "group"]).optional(),
+        type: z.enum(["box", "cylinder", "freeform", "line", "ramp", "note", "group"]).optional(),
+        status: z.enum(["open", "done"]).optional().describe("Notes only: open (the default outline lists these anyway) or done"),
         kind: z.enum(["room", "volume", "hole"]).optional().describe("Closed shapes and ramps only"),
         under: z.string().optional().describe("ID of a group: only nodes inside it, at any depth"),
         near: z
@@ -169,8 +170,8 @@ function buildServer(workspace: Workspace) {
       title: "Draw shapes",
       description:
         `Add one or more shapes to the scene in a single batch; they appear live in the editor. Each has a \`type\` ` +
-        `(box, the default, cylinder, freeform, line or ramp) and that type's fields. For a box or cylinder (a room, a volume or a hole) only ` +
-        `kind, x, z, width and depth are required; for a free-form, kind and points; for a line, points; for a ramp, points or spiral. The rest have defaults (the kind's ` +
+        `(box, the default, cylinder, freeform, line, ramp or note) and that type's fields. For a box or cylinder (a room, a volume or a hole) only ` +
+        `kind, x, z, width and depth are required; for a free-form, kind and points; for a line, points; for a ramp, points or spiral; for a note, x, z and text. The rest have defaults (the kind's ` +
         `height, y 0, rotation 0, color ${DEFAULT_COLOR} (${DEFAULT_LINE_COLOR} for a line), ${DEFAULT_WALL} m room walls, no taper or bevel, no name, top level, a smooth cylinder, ` +
         `and a solid ${DEFAULT_THICKNESS} px line with no arrow). ` +
         `Set \`parent\` to a group's ID to draw straight into that group. ` +
@@ -179,6 +180,7 @@ function buildServer(workspace: Workspace) {
     },
     async ({ shapes }) => {
       const created = guided(() => store().drawShapes(shapes, "agent"));
+      const refs = refWarnings(created.flatMap((c) => (c.type === "note" ? [{ id: c.id, description: c.text }] : [])));
       const all = store().getScene().nodes;
       // Rooms, volumes and holes of every closed shape; a ramp counts as a ramp.
       const count = (kind: string) => all.filter((n) => isShape(n) && isClosed(n) && n.kind === kind).length;
@@ -188,9 +190,10 @@ function buildServer(workspace: Workspace) {
         holes: count("hole"),
         ramps: all.filter((n) => n.type === "ramp").length,
         lines: all.filter((n) => n.type === "line").length,
+        notes: all.filter((n) => n.type === "note" && n.status === "open").length,
         groups: all.filter(isGroup).length,
       };
-      return json(warned({ created, totals }));
+      return json(warned({ created, totals, ...(refs.length > 0 ? { warnings: refs } : {}) }));
     },
   );
 
@@ -204,7 +207,7 @@ function buildServer(workspace: Workspace) {
         `taper and bevel (a volume's; 0 clears them), pitch and roll (a box or cylinder volume's; 0 levels it); ` +
         `a cylinder those and sides; a free-form name, parent, kind, y, height, color, wall, taper, bevel and points (the whole outline); a line name, parent, color, ` +
         `points (the whole path, with y), thickness, dashed and arrow; a ramp name, parent, color, ` +
-        `points (with y), width, step (null = smooth) and base. ` +
+        `points (with y), width, step (null = smooth) and base; a note name, parent, x, y, z, color, text, label (null removes it) and status (open or done). ` +
         `A group takes only name, description (what that part of the level is; null removes it), parent, locked and hidden (any node takes those two). ` +
         `{ id, type: "freeform" } alone converts a box or cylinder into a free-form with a new ID; a call that converts ` +
         `only converts (edit the new free-form in a second call). ` +
@@ -215,7 +218,7 @@ function buildServer(workspace: Workspace) {
     },
     async ({ changes }) => {
       const updated = guided(() => store().updateNodes(changes, "agent"));
-      const refs = refWarnings(changes);
+      const refs = refWarnings(changes.map((c) => ({ id: c.id, description: c.description ?? c.text })));
       if (!changes.some((c) => c.type !== undefined)) return json(warned({ updated, ...(refs.length > 0 ? { warnings: refs } : {}) }));
       return json(warned({ converted: changes.map((c, i) => ({ from: c.id, to: updated[i].id })), updated }));
     },

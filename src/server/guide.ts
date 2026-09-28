@@ -19,7 +19,7 @@ import { FULL_SCENE_MAX } from "./outline";
  * topic, which `get_guide` returns on demand, so a session only pays for the topics it uses.
  */
 
-export const GUIDE_TOPICS = ["design", "shapes", "volumes", "holes", "ramps", "lines", "groups", "library"] as const;
+export const GUIDE_TOPICS = ["design", "shapes", "volumes", "holes", "ramps", "lines", "notes", "groups", "library"] as const;
 export type GuideTopic = (typeof GUIDE_TOPICS)[number];
 
 /** One line per topic, for the core and for get_guide's description. */
@@ -30,6 +30,7 @@ const TOPIC_SUMMARIES: Record<GuideTopic, string> = {
   holes: "which shapes a hole cuts; doors, windows, arches and holes in floors",
   ramps: "ramps, stairs, landings, walkways and spiral stairs",
   lines: "lines: routes, patrols, jump arcs and pointers",
+  notes: "notes: post-its pinned in the scene, the human's intents and work items (and yours)",
   groups: "groups, copying, mirroring and turning things as a unit",
   library: "the project's tags (#name) and skills (@name): what they mean, tagging nodes, referring to them",
 };
@@ -64,6 +65,9 @@ export const INSTRUCTIONS =
   "things, copy them with move_nodes and copy: true (count for a row) instead of redrawing; for symmetry, copy then " +
   "mirror_nodes. A door or window is a hole shape in the room's group: cut it, don't build walls around the opening. " +
   "Draw lines for paths, routes, jumps and ideas. " +
+  "NOTES (type: note) are post-its pinned in the scene: the human's intents and work items. The outline always lists " +
+  "the open ones (`notes`); treat them as intent, act on them when asked, and mark one done (update_nodes status: " +
+  "done) once it's handled. Leave a note of your own for an assumption or a question. " +
   "THE PROJECT: its library has tags (#climbable) and skills (@telekinesis: what the player can do), and nodes carry " +
   "tags; the outline's `glossary` explains the ones it shows, and get_library lists them all. Build around the " +
   "player's skills. The project's DESIGN GUIDE (get_guide design; get_scene's `guide` says when it changed) holds the " +
@@ -166,6 +170,17 @@ const GUIDE: Record<Exclude<GuideTopic, "design">, string> = {
     `${DEFAULT_THICKNESS}), \`dashed\` (default false) and \`arrow\`: none (default), end (an arrowhead at the last ` +
     "point) or both. It has no kind, x, z, y, height or rotation; move_nodes, rotate_nodes and mirror_nodes change " +
     "its points.",
+  notes:
+    "A NOTE (type: note) is a post-it pinned to a point: x, z and y (the surface it stands on: a floor's y, a " +
+    "platform's top), its `text`, an optional `label` of up to 3 characters shown on its flag (\"TK\", \"?\"; without " +
+    "one it's a plain pin), a `color` (default yellow) and a `status`: open (a work item) or done (handled). Its text can " +
+    "refer to skills (@name) and tags (#name). Notes have no size, kind or tags; move_nodes, rotate_nodes and " +
+    "mirror_nodes move their point, and a note in a group moves with it, so pin a note about a room inside the room's " +
+    "group. Every open note is in get_scene's `notes` (wherever it is, at any depth), and find_nodes { type: note, " +
+    "status: done } finds the handled ones; find_nodes' name also searches a note's text. An area is described in the " +
+    "text (\"slow the player down within 10 m of here\"): read it, act on it when asked, and mark the note done " +
+    "(update_nodes status: done) rather than removing it, so the human sees what was handled. Leave notes of your own " +
+    "for assumptions and questions (\"I assumed a 3 m jump here\").",
   groups:
     "A group (type: group) has NO position of its own: its shapes keep absolute world coordinates, and a node is in " +
     "a group when its `parent` is that group's ID (groups can nest). get_scene adds each group's derived `bounds` " +

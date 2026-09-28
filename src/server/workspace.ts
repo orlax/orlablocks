@@ -141,7 +141,7 @@ export function restoreLibrary(file: LibraryFile | null, guide: string | null, l
   return { library, seq, history, caughtUp: seq !== start };
 }
 
-/** How many nodes in `nodes` use each tag and skill: carrying the tag, or naming it in a group's description. */
+/** How many nodes in `nodes` use each tag and skill: carrying the tag, or naming it in a group's description or a note. */
 export function countUses(library: Library, nodes: SceneNode[]): { tags: Map<string, number>; skills: Map<string, number> } {
   const tags = new Map<string, number>();
   const skills = new Map<string, number>();
@@ -151,8 +151,9 @@ export function countUses(library: Library, nodes: SceneNode[]): { tags: Map<str
       const tag = resolveRef(library, "tag", t);
       if (tag) used.tag.add(tag.name);
     }
-    if (isGroup(n) && n.description) {
-      for (const r of findRefs(n.description)) {
+    const text = isGroup(n) ? n.description : n.type === "note" ? n.text : undefined;
+    if (text) {
+      for (const r of findRefs(text)) {
         const found = resolveRef(library, r.kind, r.name);
         if (found) used[r.kind].add(found.name);
       }

@@ -2,6 +2,7 @@ import type { Shape, Solid } from "../shared/scene.types";
 import { worldToScreen, type CameraState, type Size } from "./camera";
 import { isSolid, polyline } from "../shared/geometry";
 import { hitMesh } from "../shared/mesh";
+import { noteRect } from "./pick";
 
 /**
  * The marquee: which shapes a screen rectangle touches. Exact: a closed shape's outline on screen is the union of
@@ -109,6 +110,13 @@ export function marqueeHits(cam: CameraState, size: Size, boxes: Shape[], rect: 
   return boxes
     .filter((b) => {
       if (isSolid(b)) return shapeTouches(cam, size, b, rect);
+      if (b.type === "note") {
+        // A note's pin overlapping the rectangle.
+        const at = worldToScreen(cam, size, b);
+        if (!at) return false;
+        const r = noteRect(at, !!b.label);
+        return r.x0 <= Math.max(rect.x0, rect.x1) && r.x1 >= Math.min(rect.x0, rect.x1) && r.y0 <= Math.max(rect.y0, rect.y1) && r.y1 >= Math.min(rect.y0, rect.y1);
+      }
       const path = polyline(b).map((p) => worldToScreen(cam, size, p));
       return path.every((p) => p !== null) && pathOverlapsRect(path, rect);
     })

@@ -162,12 +162,37 @@ export type Ramp = {
   createdBy: Actor;
 };
 
+export type NoteStatus = "open" | "done";
+
+/**
+ * A note (from 08): a post-it pinned to a point in the scene, for the human and the agent. `x, y, z` is where it's
+ * pinned (y the surface it stands on). `label` is up to 3 characters shown on its flag ("TK"); without one it's a
+ * plain pin. Its text can refer to @skills and #tags. `status` is open (a work item) or done. Like a line, it's an
+ * annotation: no kind, size or mesh; moving, rotating and mirroring move its point.
+ */
+export type Note = {
+  id: string; // "note_1", ...
+  type: "note";
+  name?: string;
+  parent?: string;
+  locked?: true;
+  hidden?: true;
+  x: number;
+  y: number;
+  z: number;
+  text: string;
+  label?: string;
+  color: ShapeColor;
+  status: NoteStatus;
+  createdBy: Actor;
+};
+
 /** A closed shape: one with a footprint, a kind (room or volume), an elevation and a height. */
 export type ClosedShape = Box | Cylinder | Freeform;
 /** A solid: a shape with a kind and a mesh, that holes cut (a closed shape or a ramp; only closed shapes are holes). */
 export type Solid = ClosedShape | Ramp;
 /** Anything drawn: every node that isn't a group. */
-export type Shape = ClosedShape | Line | Ramp;
+export type Shape = ClosedShape | Line | Ramp | Note;
 export type ShapeType = Shape["type"];
 
 /**
@@ -204,6 +229,9 @@ export type ShapePatch = Partial<Pick<Footprinted, "name" | "kind" | "x" | "z" |
   thickness?: number;
   dashed?: boolean;
   arrow?: LineArrow;
+  text?: string;
+  label?: string;
+  status?: NoteStatus;
 };
 /** What an update op can change on any node: shape fields (shapes only), `description` (groups only), `name` and `parent`. */
 export type NodePatch = ShapePatch & { parent?: string; description?: string; tags?: string[]; locked?: true; hidden?: true };
@@ -300,6 +328,11 @@ export const MIN_STEP = 0.05;
 export const RAMP_SLAB = 0.2;
 export const RAMP_SINK = 0.02;
 export const RAMP_BASES = ["solid", "floating"] as const;
+export const NOTE_STATUSES = ["open", "done"] as const;
+export const DEFAULT_NOTE_COLOR: ShapeColor = "yellow";
+/** A note's longest text, and its label's (the letters on its flag). */
+export const MAX_NOTE_TEXT = 4000;
+export const MAX_NOTE_LABEL = 3;
 
 export const ShapeKindSchema = z.enum(["room", "volume", "hole"]);
 export const ShapeColorSchema = z.enum(SHAPE_COLORS);
@@ -427,6 +460,23 @@ const RampSchema = z.object({
   createdBy: ActorSchema,
 });
 
+const NoteSchema = z.object({
+  id: z.string(),
+  type: z.literal("note"),
+  name: z.string().optional(),
+  parent: z.string().optional(),
+  locked: z.literal(true).optional(),
+  hidden: z.literal(true).optional(),
+  x: z.number(),
+  y: z.number(),
+  z: z.number(),
+  text: z.string(),
+  label: z.string().max(MAX_NOTE_LABEL).optional(),
+  color: ShapeColorSchema,
+  status: z.enum(NOTE_STATUSES),
+  createdBy: ActorSchema,
+});
+
 const GroupSchema = z.object({
   id: z.string(),
   type: z.literal("group"),
@@ -440,7 +490,7 @@ const GroupSchema = z.object({
 });
 
 /** A stored node, as in `scene.json` (and on the clipboard). */
-export const NodeSchema: z.ZodType<SceneNode> = z.discriminatedUnion("type", [BoxSchema, CylinderSchema, FreeformSchema, LineSchema, RampSchema, GroupSchema]);
+export const NodeSchema: z.ZodType<SceneNode> = z.discriminatedUnion("type", [BoxSchema, CylinderSchema, FreeformSchema, LineSchema, RampSchema, NoteSchema, GroupSchema]);
 
 export const BoxInputSchema = z.strictObject({
   kind: field.kind,
@@ -573,6 +623,26 @@ export const RampInputSchema = z.strictObject({
  * A new shape for `draw_shapes`: its `type` (box, the default, cylinder, freeform or line) and that type's fields.
  * Boxes and cylinders share every field; `sides` is for cylinders only (the store rejects it on a box).
  */
+const noteField = {
+  text: z.string().max(MAX_NOTE_TEXT).describe("What the note says. It can refer to skills (@name) and tags (#name)"),
+  label: z.string().trim().max(MAX_NOTE_LABEL).describe(`Up to ${MAX_NOTE_LABEL} characters shown on its flag, e.g. "TK"; without one it's a plain pin`),
+  status: z.enum(NOTE_STATUSES).describe("open (a work item, the default) or done (handled)"),
+};
+
+/** A note for `draw_shapes`: where it's pinned and what it says. */
+export const NoteInputSchema = z.strictObject({
+  type: z.literal("note").describe("A post-it pinned to a point: an intent, a question, a work item"),
+  x: z.number().describe("World x, meters"),
+  z: z.number().describe("World z, meters"),
+  y: z.number().optional().describe("The height it stands at: the surface there (a floor's y, a platform's top). Defaults to 0"),
+  text: noteField.text,
+  label: noteField.label.optional(),
+  status: noteField.status.optional(),
+  color: field.color.optional().describe(`Palette key: ${SHAPE_COLORS.join(", ")}. Defaults to ${DEFAULT_NOTE_COLOR}`),
+  name: field.name.optional(),
+  parent: field.parent.optional().describe("ID of the group to put it in (it moves with the group). Omit for the top level"),
+});
+
 export const ShapeInputSchema = z.discriminatedUnion("type", [
   BoxInputSchema.extend({
     type: z.enum(["box", "cylinder"]).optional().describe("box (the default) or cylinder (the ellipse inscribed in width × depth)"),
@@ -581,6 +651,7 @@ export const ShapeInputSchema = z.discriminatedUnion("type", [
   FreeformInputSchema,
   LineInputSchema,
   RampInputSchema,
+  NoteInputSchema,
 ]);
 export type ShapeInput = z.input<typeof ShapeInputSchema>;
 
@@ -633,6 +704,9 @@ export const NodeUpdateSchema = z.strictObject({
     .nullable()
     .optional()
     .describe("Groups and closed shapes and ramps: the whole list of library tag names (without #), or null / [] to remove them"),
+  text: noteField.text.optional().describe("Notes only: the whole new text"),
+  label: noteField.label.nullable().optional().describe(`Notes only: up to ${MAX_NOTE_LABEL} characters on its flag; null or "" removes it`),
+  status: noteField.status.optional().describe("Notes only: open or done (mark a note done when it's handled, rather than removing it)"),
   description: z
     .string()
     .max(MAX_DESCRIPTION)

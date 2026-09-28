@@ -8,6 +8,8 @@ import type { Shape, Group, SceneNode } from "./scene.types";
 
 export const isShape = (n: SceneNode): n is Shape => n.type !== "group";
 export const isGroup = (n: SceneNode): n is Group => n.type === "group";
+/** A node's tags: groups, closed shapes and ramps have them; lines and notes don't. */
+export const tagsOf = (n: SceneNode): string[] | undefined => (n.type === "line" || n.type === "note" ? undefined : n.tags);
 
 /** The nodes directly inside `parent` (undefined = the top level), in list order. */
 export const childrenOf = (nodes: SceneNode[], parent: string | undefined) => nodes.filter((n) => n.parent === parent);
@@ -104,8 +106,8 @@ export const lockedIds = (nodes: SceneNode[]) => flaggedIds(nodes, "locked");
 export const hiddenIds = (nodes: SceneNode[]) => flaggedIds(nodes, "hidden");
 
 /**
- * What the nodes hold, as one line: `3 rooms · 2 volumes · 1 hole · 1 ramp · 2 lines · 1 group`, leaving out what
- * there's none of ("empty" when there's nothing). A ramp counts as a ramp; rooms, volumes and holes are the closed
+ * What the nodes hold, as one line: `3 rooms · 2 volumes · 1 hole · 1 ramp · 2 lines · 1 note · 1 group`, leaving
+ * out what there's none of ("empty" when there's nothing). Only open notes count (a done one is handled). A ramp counts as a ramp; rooms, volumes and holes are the closed
  * shapes of each kind. The editor's info-label and the agent's outline both use it.
  */
 export function countsText(nodes: SceneNode[]): string {
@@ -115,12 +117,15 @@ export function countsText(nodes: SceneNode[]): string {
     ["hole", 0],
     ["ramp", 0],
     ["line", 0],
+    ["note", 0],
     ["group", 0],
   ];
   const bump = (key: string) => counts.find(([k]) => k === key)![1]++;
   for (const n of nodes) {
     if (isGroup(n)) bump("group");
-    else if (isClosed(n)) bump(n.kind);
+    else if (n.type === "note") {
+      if (n.status === "open") bump("note");
+    } else if (isClosed(n)) bump(n.kind);
     else bump(n.type);
   }
   const parts = counts.filter(([, c]) => c > 0).map(([k, c]) => `${c} ${k}${c === 1 ? "" : "s"}`);

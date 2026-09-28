@@ -15,6 +15,7 @@ import {
   SquareDashed,
   Squircle,
   SquircleDashed,
+  StickyNote,
   TriangleAlert,
   Waypoints,
 } from "lucide-react";
@@ -31,7 +32,24 @@ const SHAPE_ICONS = {
 } as const;
 /** The icon for a node: a folder for a group, a line's own, a closed shape's by type and kind. */
 const iconOf = (node: SceneNode) =>
-  isGroup(node) ? Folder : node.type === "line" ? Waypoints : node.type === "ramp" ? Stairs : SHAPE_ICONS[node.type][node.kind];
+  isGroup(node)
+    ? Folder
+    : node.type === "line"
+      ? Waypoints
+      : node.type === "ramp"
+        ? Stairs
+        : node.type === "note"
+          ? StickyNote
+          : SHAPE_ICONS[node.type][node.kind];
+
+/** A row's label: the name, else a note's label and the start of its text, else the ID. */
+const labelOf = (node: SceneNode) => {
+  if (node.name) return node.name;
+  if (node.type !== "note") return node.id;
+  const text = node.text.split("\n")[0].trim();
+  const start = text.length > 28 ? `${text.slice(0, 28)}…` : text;
+  return [node.label, start].filter(Boolean).join(" · ") || node.id;
+};
 
 type Row = { node: SceneNode; depth: number; hasChildren: boolean };
 type Drop = { id: string | null; where: "before" | "after" | "into" | "end" };
@@ -250,10 +268,10 @@ export function Outliner({
                   />
                 ) : (
                   <>
-                    <span className="label" title={node.type === "group" ? node.description : undefined}>
-                      {node.name ?? node.id}
+                    <span className={node.type === "note" && node.status === "done" ? "label done" : "label"} title={node.type === "group" ? node.description : node.type === "note" ? node.text : undefined}>
+                      {labelOf(node)}
                     </span>
-                    {node.name && <span className="id">{node.id}</span>}
+                    {labelOf(node) !== node.id && <span className="id">{node.id}</span>}
                     {isHole(node) && node.parent === undefined && (
                       <span className="warn" title="Not in a group: this hole cuts nothing">
                         <TriangleAlert size={12} />

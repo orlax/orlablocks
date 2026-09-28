@@ -673,6 +673,63 @@ The instructions went from 10,342 to 3,642 characters. The topics range from 0.7
 6. **Guide tab:** the default guide is there. Edit a line, stop typing for a second, and the library's Undo says "Edit design guide". Undo it.
 7. Ask the agent: *"what can the player do in this project, and what's in this scene?"* It should answer from the outline's glossary, and read `get_guide design` before any design task.
 8. **Read the default guide** and tell me what to change: this is the version every new project gets.
+### 08.3 — Notes (done; checked in the browser by Orlando)
+
+**Built:**
+- **The type:**
+  - `Note` (`note_N`): `x, y, z`, `text`, `label?` (up to 3 characters, trimmed), `color` (default yellow), `status` (`open` / `done`), `name?`, `parent?`, `locked?`, `hidden?`;
+  - it's a `Shape`, like a line, so moving, rotating, mirroring, copying, pasting and grouping work with no special cases in the tools;
+  - `isClosed` and `isSolid` leave it out (no mesh, no kind, no cutting);
+  - its bounds are its point;
+  - `tagsOf` gives a node's tags, with none for lines and notes.
+- **The store:**
+  - `draw_shapes { type: "note", x, z, text, y?, label?, status?, color? }`;
+  - `update_nodes` takes `text`, `label` (null removes it) and `status`, and refuses a note's missing fields (and a note's fields on other types) with plain errors;
+  - the undo labels are `Draw note_1`, `Change status of note_1`, `Label note_1` and `Edit note_1`.
+- **The agent:**
+  - every outline has `notes`: each open note not already listed, at any depth, with its `path`;
+  - `counts` and `contains` count open notes only;
+  - the glossary covers what notes name;
+  - `find_nodes` takes `type: "note"` and `status`, its `name` also searches a note's text, and it returns a note's text (up to 120 characters), label and status;
+  - `draw_shapes` and `update_nodes` warn about references to nothing in a note's text;
+  - a `notes` guide topic, and a short paragraph in the core instructions: treat notes as intent, mark them done rather than removing them, leave your own for assumptions (4.8 kB now);
+  - server version 0.0.14.
+- **Uses:** a skill or tag named in a note counts as a use.
+- **The editor:**
+  - **`NoteMesh`:** a sprite painted from a canvas: a pole with a flag and its label, or a round head without one, at a constant size on screen (`NOTE_PX`), drawn over everything; a done note is gray and faint; selected it's outlined blue, hovered yellow;
+  - `pickNote` (on screen, checked before lines and shapes), and the marquee takes a pin that overlaps it;
+  - hovering a note shows its label and first line next to the cursor;
+  - the **Note tool (`N`)** pins a note on the surface under the click, in the entered group, selects it, puts the caret in its text, and goes back to Select. The contextual bar has the next note's color;
+  - the inspector's **Note** section: the text (`RefTextArea`: references and completion), the flag's label (uppercase), and **done**;
+  - the outliner has a sticky-note icon; the label is the name, else the flag's label and the start of the text; a done note is struck through; the tooltip is the whole text;
+  - the view bar's **notes** toggle;
+  - a single note's gizmo has only the move arrows (no ring or scale), and nothing snaps to a note's height.
+- There are 8 new tests (`notes.test.ts`), 330 in all. Typecheck is clean, and the editor builds.
+
+**Scripted check** (port 5171, scratch `DATA_DIR`, 17 checks, all passed):
+- the editor pins a note in a group as one step;
+- counts, and the glossary from the note's text;
+- `find_nodes` by the note's text;
+- the agent leaves its own note (with a warning for `@fsh`) and marks the human's done (`Agent: change status of note_1`);
+- a note refuses `width`;
+- a done note leaves the counts, and `find_nodes { status: done }` finds it;
+- a note moves with its group;
+- `get_guide notes`;
+- uses from notes.
+
+**Changed from the plan:**
+- **`find_nodes`' name also searches a note's text:** notes usually have no name.
+- **A note can be locked and hidden** like any node.
+
+**Browser checklist for Orlando** (restart the server, then reconnect with `/mcp`):
+1. Press `N` (or the sticky note in the tool bar) and click on a room's floor. A pin stands there, selected, and the inspector's Note text has the caret. Type "we need a @tele…", pick `@telekinesis` from the completion, and press `⌘Enter`.
+2. Type `TK` in **flag**: the pin becomes a flag with "TK" on it. It keeps its size as you zoom in and out and turn the view, and it shows through walls.
+3. Hover the flag: its first line shows next to the cursor. Click it: it's selected (blue outline), with only the move arrows. Drag it, and use the y arrow to raise it.
+4. Put it in the room's group (outliner). Move and rotate the group: the note goes along. Alt-drag the group: the copy has its own note. Undo the copy.
+5. Tick **done**: the flag goes gray and faint, the outliner row is struck through, and the counts in the bottom bar drop by one. Untick it.
+6. The view bar's **notes** toggle hides every note (a selected one stays). Marquee over a note: it's selected.
+7. Ask the agent: *"act on the open notes"*. It should read the note from the outline, build something for it, mark it done, and perhaps leave a note of its own (with a "?" flag).
+
 ---
 
 ## 14. Notes for phase 09: the review loop

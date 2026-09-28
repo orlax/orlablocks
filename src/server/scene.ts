@@ -21,6 +21,7 @@ import {
   ConvertNodesSchema,
   DEFAULT_COLOR,
   DEFAULT_WALL,
+  DEFAULT_NOTE_COLOR,
   DEFAULT_RAMP_WIDTH,
   DEFAULT_HEIGHT,
   DEFAULT_LINE_COLOR,
@@ -125,6 +126,9 @@ const FIELD_VERBS: Record<keyof NodePatch, string> = {
   base: "restyle",
   locked: "lock",
   hidden: "hide",
+  text: "edit",
+  label: "label",
+  status: "change status of",
 };
 
 /** What a kind-specific field is called in errors ("only a room has walls"). */
@@ -425,6 +429,20 @@ export function createSceneStore({ resolveTag = () => undefined }: { resolveTag?
             arrow: d.arrow ?? "none",
           };
         }
+        if (d.type === "note") {
+          return {
+            type: "note" as const,
+            ...(name ? { name } : {}),
+            ...(d.parent !== undefined ? { parent: d.parent } : {}),
+            x: round2(d.x),
+            y: round2(d.y ?? 0),
+            z: round2(d.z),
+            text: d.text.trim(),
+            ...(d.label?.trim() ? { label: d.label.trim() } : {}),
+            color: d.color ?? DEFAULT_NOTE_COLOR,
+            status: d.status ?? "open",
+          };
+        }
         if (d.type === "ramp") {
           if ((d.points === undefined) === (d.spiral === undefined)) errors.push(`${prefix}: give a ramp either points or spiral (one of them)`);
           if (d.kind === "hole") errors.push(`${prefix}.kind: a ramp is always a volume, never a hole (to cut under a stair, use a closed shape as the hole)`);
@@ -537,6 +555,16 @@ export function createSceneStore({ resolveTag = () => undefined }: { resolveTag?
         } else if (node) {
           if (fields.description !== undefined) errors.push(`changes[${i}].description: only a group has a description ("${id}" is a ${node.type})`);
           if (fields.tags !== undefined && node.type === "line") errors.push(`changes[${i}].tags: a line has no tags (it's an annotation)`);
+          const noteOnly = (["text", "label", "status"] as const).filter((k) => fields[k] !== undefined);
+          if (node.type !== "note" && noteOnly.length > 0) errors.push(`changes[${i}]: only a note has ${noteOnly.join(", ")} ("${id}" is a ${node.type})`);
+          if (node.type === "note") {
+            const notNote = (
+              ["kind", "width", "depth", "height", "rotation", "sides", "wall", "taper", "bevel", "pitch", "roll", "points", "tags", "thickness", "dashed", "arrow", "step", "base"] as const
+            ).filter((k) => fields[k] !== undefined);
+            if (notNote.length > 0) {
+              errors.push(`changes[${i}]: "${id}" is a note, with no ${notNote.join(", ")}: it has x, y, z, text, label, color and status`);
+            }
+          }
           if (fields.sides !== undefined && node.type !== "cylinder") {
             errors.push(`changes[${i}].sides: only a cylinder has sides ("${id}" is a ${node.type})`);
           }
@@ -574,7 +602,7 @@ export function createSceneStore({ resolveTag = () => undefined }: { resolveTag?
               );
             }
           }
-          if (node.type !== "line" && node.type !== "ramp") {
+          if (node.type !== "line" && node.type !== "ramp" && node.type !== "note") {
             const kind = fields.kind ?? node.kind;
             for (const f of Object.keys(KIND_FIELDS) as KindField[]) {
               if (fields[f] !== undefined && fields[f] !== null && !kindAllows(f, kind)) {
@@ -661,6 +689,9 @@ export function createSceneStore({ resolveTag = () => undefined }: { resolveTag?
         if (fields.name !== undefined) patch.name = fields.name.trim() || undefined;
         if (fields.description !== undefined) patch.description = fields.description?.trim() || undefined;
         if (fields.tags !== undefined) patch.tags = tagList(`changes[${i}]`, fields.tags, errors);
+        if (fields.text !== undefined) patch.text = fields.text.trim();
+        if (fields.label !== undefined) patch.label = fields.label?.trim() || undefined;
+        if (fields.status !== undefined) patch.status = fields.status;
         if (fields.parent !== undefined) patch.parent = parent;
         if (fields.locked !== undefined) patch.locked = fields.locked || undefined;
         if (fields.hidden !== undefined) patch.hidden = fields.hidden || undefined;
@@ -817,6 +848,7 @@ export function createSceneStore({ resolveTag = () => undefined }: { resolveTag?
           return { ...(rest as typeof n), ...kept, thickness: round2(n.thickness), points: checkLinePoints(`nodes[${i}]`, n.points, errors) };
         }
         if (n.type === "ramp") return { ...(rest as typeof n), ...kept, ...checkRamp(`nodes[${i}]`, n, errors) };
+        if (n.type === "note") return { ...(rest as typeof n), ...kept, x: round2(n.x), y: round2(n.y), z: round2(n.z) };
         const shape = { ...(rest as ClosedShape), ...kept, height: round2(n.height) } as ClosedShape;
         if (shape.type === "freeform") return { ...shape, points: checkPoints(`nodes[${i}]`, shape.points, errors) };
         return { ...shape, width: round2(shape.width), depth: round2(shape.depth), rotation: normalizeRotation(shape.rotation) };

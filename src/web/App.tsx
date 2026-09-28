@@ -3,6 +3,7 @@ import { BookOpen, ChevronDown, Map as MapIcon } from "lucide-react";
 import {
   DEFAULT_COLOR,
   DEFAULT_LINE_COLOR,
+  DEFAULT_NOTE_COLOR,
   DEFAULT_THICKNESS,
   DEFAULT_VIEW,
   DEFAULT_RAMP_WIDTH,
@@ -21,7 +22,7 @@ import {
   type View,
 } from "../shared/scene.types";
 import { footprintBounds, isClosed, isTilted, polyline, rampStations, reversePoints, round2, wallOf } from "../shared/geometry";
-import { shapesUnder, childrenOf, countsText, isShape, isGroup, hiddenIds, lockedIds, subtreeIds } from "../shared/tree";
+import { shapesUnder, childrenOf, countsText, isShape, isGroup, hiddenIds, lockedIds, subtreeIds, tagsOf } from "../shared/tree";
 import type { CameraState, GroundPoint } from "./camera";
 import { clipboardText, readClipboard } from "./clipboard";
 import { ErrorPanel } from "./ErrorPanel";
@@ -66,6 +67,7 @@ const title = (n: SceneNode) => (n.name ? `${n.name} (${n.id})` : n.id);
  * `3 points · 14.2 m long · 3 px · dashed · arrow at the end`.
  */
 const details = (s: Shape) => {
+  if (s.type === "note") return `note${s.label ? ` · ${s.label}` : ""} · ${s.status} · by ${s.createdBy} · y ${s.y}`;
   if (s.type === "line") {
     const path = polyline(s);
     const length = path.slice(1).reduce((sum, p, i) => sum + Math.hypot(p.x - path[i].x, p.y - path[i].y, p.z - path[i].z), 0);
@@ -147,6 +149,10 @@ export function App() {
   const [nextRamp, setNextRamp] = useState<RampStyle>({ kind: "volume", width: DEFAULT_RAMP_WIDTH, base: "solid", color: DEFAULT_COLOR });
   // The view bar: whether holes show as ghosts (off: only what they cut away shows), and the grid.
   const [showHoles, setShowHoles] = useState(true);
+  const [showNotes, setShowNotes] = useState(true);
+  // The Note tool's next color, and the note it just placed (its text field takes the focus once it's selected).
+  const [nextNoteColor, setNextNoteColor] = useState<ShapeColor>(DEFAULT_NOTE_COLOR);
+  const [freshNote, setFreshNote] = useState<string | null>(null);
   const [showGrid, setShowGrid] = useState(true);
   // Isolation: only this node and what's in it show, plus anything new since it started (`before`: the IDs then),
   // so what's drawn or pasted meanwhile doesn't vanish. For this tab only; not an edit.
@@ -535,7 +541,7 @@ export function App() {
 
   // The contextual bar (kind and colors) and the inspector (every other field): for the drawing tool's next shape,
   // or for the selection in the Select tool.
-  const nextTitle: Partial<Record<Tool, string>> = { box: "next box", cylinder: "next cylinder", pen: "next free-form", line: "next line", ramp: "next ramp" };
+  const nextTitle: Partial<Record<Tool, string>> = { box: "next box", cylinder: "next cylinder", pen: "next free-form", line: "next line", ramp: "next ramp", note: "next note" };
   const closedTool = tool === "box" || tool === "cylinder" || tool === "pen";
   const selecting = tool === "select" && selectedNodes.length > 0;
   const bar: ComponentProps<typeof ContextualBar> | null = closedTool
@@ -544,7 +550,9 @@ export function App() {
       ? { kind: null, color: nextLine.color, onColor: (color) => setNextLine({ ...nextLine, color }) }
       : tool === "ramp"
         ? { kind: null, color: nextRamp.color, onColor: (color) => setNextRamp({ ...nextRamp, color }) }
-        : selecting
+        : tool === "note"
+          ? { kind: null, color: nextNoteColor, onColor: setNextNoteColor }
+          : selecting
           ? {
               kind: singleClosed?.kind ?? null,
               kindDisabled: !singleClosed,
@@ -566,23 +574,36 @@ export function App() {
       ? { title: "next line", line: { style: nextLine, onChange: (patch) => setNextLine({ ...nextLine, ...patch }) } }
       : tool === "ramp"
         ? { title: "next ramp", ramp: { style: nextRamp, onChange: (patch) => setNextRamp({ ...nextRamp, ...patch }) } }
-        : selecting
+        : tool === "note"
+          ? { title: "next note", info: "click to pin it on the surface under the cursor, then write it here" }
+          : selecting
           ? {
               title: contextNode ? `${contextNode.name ?? contextNode.id} › ${selectionTitle}` : selectionTitle,
               info: editing && editable ? `editing points · ${selectionInfo}` : selectionInfo,
               library,
+              note:
+                single?.type === "note"
+                  ? {
+                      text: single.text,
+                      label: single.label ?? "",
+                      status: single.status,
+                      focus: freshNote === single.id,
+                      onFocused: () => setFreshNote(null),
+                      onChange: (patch) => send({ type: "update_nodes", changes: [{ id: single.id, ...patch }] }),
+                    }
+                  : undefined,
               description:
                 single && isGroup(single)
                   ? { value: single.description ?? "", onChange: (text) => send({ type: "update_nodes", changes: [{ id: single.id, description: text || null }] }) }
                   : undefined,
               tags:
-                single && single.type !== "line" && library
+                single && single.type !== "line" && single.type !== "note" && library
                   ? {
-                      value: currentTags(library, single.tags),
+                      value: currentTags(library, tagsOf(single)),
                       onChange: (tags) => send({ type: "update_nodes", changes: [{ id: single.id, tags }] }),
                       onCreate: (name) => {
                         send({ type: "update_library", upsert: [{ kind: "tag", name }] });
-                        send({ type: "update_nodes", changes: [{ id: single.id, tags: [...currentTags(library, single.tags), name] }] });
+                        send({ type: "update_nodes", changes: [{ id: single.id, tags: [...currentTags(library, tagsOf(single)), name] }] });
                       },
                     }
                   : undefined,
@@ -622,6 +643,19 @@ export function App() {
         visible={visible}
         preview={preview}
         onSelect={setSelection}
+        showNotes={showNotes}
+        onPlaceNote={(at) => {
+          pendingSelect.current = {
+            before: new Set(nodes.map((n) => n.id)),
+            pick: (added) => {
+              const note = added.find((n) => n.type === "note");
+              if (note) setFreshNote(note.id);
+              return note ? [note.id] : [];
+            },
+          };
+          send({ type: "add_shapes", shapes: [{ type: "note", ...at, text: "", color: nextNoteColor, ...(context !== null ? { parent: context } : {}) }] });
+          setTool("select");
+        }}
         onDrawShape={(shape) =>
           send({
             type: "add_shapes",
@@ -739,6 +773,7 @@ export function App() {
           <ViewBar
             holes={{ on: showHoles, onToggle: () => setShowHoles(!showHoles) }}
             grid={{ on: showGrid, onToggle: () => setShowGrid(!showGrid) }}
+            notes={{ on: showNotes, onToggle: () => setShowNotes(!showNotes) }}
             isolated={
               isolated
                 ? { label: isolatedNode ? title(isolatedNode) : isolated, onEnd: () => isolate(null) }

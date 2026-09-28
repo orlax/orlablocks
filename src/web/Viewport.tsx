@@ -89,7 +89,8 @@ import { typingInField } from "./keys";
 import { Lighting } from "./Lighting";
 import { marqueeHits, rectFrom, type ScreenPoint } from "./marquee";
 import { LineMesh } from "./LineMesh";
-import { pickHit, pickLine, surfaceUnder, type Surface } from "./pick";
+import { pickHit, pickLine, pickNote, surfaceUnder, type Surface } from "./pick";
+import { NoteMesh } from "./NoteMesh";
 import {
   handleEnd,
   hitPoints,
@@ -143,7 +144,7 @@ const rampPoints = (points: EditPoint[]): RampPoint[] =>
 type YawKey = "left" | "right";
 const YAW_KEYS: Record<string, YawKey> = { a: "left", arrowleft: "left", d: "right", arrowright: "right" };
 
-export type Tool = "select" | "hand" | "box" | "cylinder" | "pen" | "line" | "ramp";
+export type Tool = "select" | "hand" | "box" | "cylinder" | "pen" | "line" | "ramp" | "note";
 /** The tools that drag a footprint on the ground, and the shape type each draws. */
 const DRAWS: Partial<Record<Tool, "box" | "cylinder">> = { box: "box", cylinder: "cylinder" };
 
@@ -224,7 +225,9 @@ type PointDrag = {
 type Turn = { key: string; angle: number; expect: string };
 /** The selected shapes' footprints, for telling whether something other than our own drags changed them. */
 const footprintKey = (shapes: Shape[]) =>
-  JSON.stringify(shapes.map((s) => (isFootprinted(s) ? [s.x, s.z, s.width, s.depth, s.rotation, s.type === "cylinder" ? s.sides : 0] : s.points)));
+  JSON.stringify(
+    shapes.map((s) => (isFootprinted(s) ? [s.x, s.z, s.width, s.depth, s.rotation, s.type === "cylinder" ? s.sides : 0] : s.type === "note" ? [s.x, s.z] : s.points)),
+  );
 
 const snap = (n: number) => Math.round(n / SNAP) * SNAP;
 const round2 = (n: number) => Math.round(n * 100) / 100;
@@ -274,6 +277,10 @@ type Props = {
   showHoles: boolean;
   /** Whether the grid shows (the view bar). */
   showGrid: boolean;
+  /** Whether notes show (the view bar); off, they can't be clicked either, unless selected. */
+  showNotes: boolean;
+  /** A note was placed with the Note tool (at this point, on the surface under the click). */
+  onPlaceNote: (at: { x: number; y: number; z: number }) => void;
   /**
    * The nodes that show (null = everything): not the hidden ones, and while a node is isolated only it (and what's
    * new since). The rest can't be seen, picked or snapped to.
@@ -316,6 +323,8 @@ export function Viewport({
   nextRamp,
   showHoles,
   showGrid,
+  showNotes,
+  onPlaceNote,
   visible,
   preview,
   onSelect,
@@ -348,6 +357,8 @@ export function Viewport({
   // Where a press would start a shape (a drawing tool, hovering): shown next to the cursor when it's not the ground.
   const [landing, setLanding] = useState<{ sx: number; sy: number; text: string } | null>(null);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
+  // The note under the cursor, for its text next to it.
+  const [noteHover, setNoteHover] = useState<{ id: string; sx: number; sy: number } | null>(null);
   const [pen, setPen] = useState<Pen>(NO_PEN);
   // The key listener is installed once; it reads the Pen from here.
   const penRef = useRef(pen);
@@ -398,7 +409,7 @@ export function Viewport({
   // Hidden holes (Show holes off) can't be clicked or marquee-selected, unless they're selected.
   const selectedIds = new Set(shapesUnder(nodes, selection).map((b) => b.id));
   // Hidden nodes and what's outside the isolation don't show.
-  const onView = visible ? shown.filter((b) => visible.has(b.id)) : shown;
+  const onView = (visible ? shown.filter((b) => visible.has(b.id)) : shown).filter((b) => showNotes || b.type !== "note" || selectedIds.has(b.id));
   const onViewRef = useRef(onView);
   onViewRef.current = onView;
   const pickable = showHoles ? onView : onView.filter((b) => !isHole(b) || selectedIds.has(b.id));
@@ -448,7 +459,11 @@ export function Viewport({
       ? {
           anchor: gizmoAnchor(boundsOf(selectedBoxes), frame),
           parts: [
-            ...(scalable ? ["x", "y", "z", "rotate", "height", ...SCALE_PARTS, ...profileParts(scalable)] : ["x", "y", "z", "rotate"]),
+            ...(scalable
+              ? ["x", "y", "z", "rotate", "height", ...SCALE_PARTS, ...profileParts(scalable)]
+              : selectedBoxes.every((b) => b.type === "note")
+                ? ["x", "y", "z"]
+                : ["x", "y", "z", "rotate"]),
             ...(tiltable ? ["pitch", "roll"] : []),
           ] as GizmoPart[],
           boxes: selectedBoxes,
@@ -495,7 +510,9 @@ export function Viewport({
    * within a few px of their path on screen), else the first closed shape the ray hits.
    */
   const hitAt = (sx: number, sy: number, size: Size) =>
-    pickLine(cam.current, size, sx, sy, selectable) ?? pickHit(screenRay(cam.current, size, sx, sy), selectable);
+    pickNote(cam.current, size, sx, sy, selectable) ??
+    pickLine(cam.current, size, sx, sy, selectable) ??
+    pickHit(screenRay(cam.current, size, sx, sy), selectable);
   const pickAt = (sx: number, sy: number, size: Size) => {
     const id = hitAt(sx, sy, size)?.id;
     return id === undefined ? null : resolve(id).id;
@@ -785,6 +802,12 @@ export function Viewport({
     const { sx, sy, size } = local(e);
     // Working in the view drops any highlighted page text, so Cmd/Ctrl+C copies the shapes again, not stale text.
     window.getSelection()?.removeAllRanges();
+    // The Note tool: a click pins a note on the surface under it.
+    if (e.button === 0 && tool === "note") {
+      const p = surfaceAt(e);
+      onPlaceNote({ x: round2(p.x), y: round2(p.y), z: round2(p.z) });
+      return;
+    }
     if (e.button === 0 && tool === "select") {
       // In point editing, a press grabs a point, a handle or an edge. Pressing the free-form elsewhere deselects
       // the points; pressing anything else leaves point editing (empty ground does only that).
@@ -924,6 +947,8 @@ export function Viewport({
     const hot = gizmoAt(sx, sy, size);
     setHotPart(hot);
     setHoveredId(tool === "select" && !hot ? pickAt(sx, sy, size) : null);
+    const note = tool === "select" && !hot ? pickNote(cam.current, size, sx, sy, selectable) : null;
+    setNoteHover(note ? { id: note.id, sx, sy } : null);
   };
 
   const onPointerUp = (e: PointerEvent) => {
@@ -1184,6 +1209,7 @@ export function Viewport({
         onCursor(null);
         setLanding(null);
         setHoveredId(null);
+        setNoteHover(null);
         setHotPart(null);
       }}
     >
@@ -1243,6 +1269,19 @@ export function Viewport({
           {round2(draft.width)} × {round2(draft.depth)} m{draft.on ? ` · ${draft.on}` : ""}
         </div>
       )}
+      {noteHover &&
+        (() => {
+          const note = onView.find((b) => b.id === noteHover.id);
+          if (note?.type !== "note") return null;
+          const first = note.text.split("\n")[0] || "(empty note)";
+          return (
+            <div className={note.status === "done" ? "draft-label note-hover done" : "draft-label note-hover"} style={{ left: noteHover.sx + 14, top: noteHover.sy + 14 }}>
+              {note.label && <b>{note.label} · </b>}
+              {first.length > 90 ? `${first.slice(0, 90)}…` : first}
+              {note.status === "done" && " · done"}
+            </div>
+          );
+        })()}
       {landing && !draft && (
         <div className="draft-label" style={{ left: landing.sx + 14, top: landing.sy + 14 }}>
           {landing.text}
@@ -1328,6 +1367,7 @@ function Boxes({
       {boxes.map((b) => {
         const highlight = selected.has(b.id) ? "selected" : hovered.has(b.id) ? "hover" : undefined;
         if (b.type === "line") return <LineMesh key={b.id} line={b} highlight={highlight} />;
+        if (b.type === "note") return <NoteMesh key={b.id} note={b} highlight={highlight} />;
         if (isHole(b) && !showHoles && !highlight) return null;
         return (
           <group key={b.id}>
