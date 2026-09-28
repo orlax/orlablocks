@@ -21,6 +21,7 @@ One demo, end to end:
 5. Orlando asks the agent: *"Look at shot_3. I want the window to read from the top of the stair."* The agent reads the shot (`get_shots`) and sees the caption and the picture. It moves a tree, then calls `render_view { shot: "shot_3" }` to take the same shot again and compare it with the original. It reports that the window now shows in the frame.
 6. Orlando asks: *"Build a small crypt under the chapel, then check your work."* The agent builds it, calls `render_view { view: "sheet" }` (a top-down plan with IDs plus three angles in one image), notices a stair that ends in a wall, fixes it, and calls `render_view { view: "walk", path: "line_12" }` along the critical path it drew: a strip of frames at eye height.
 7. The agent calls `render_view { view: "entities" }` once and learns what `tree tall` and `poison` look like.
+8. After changing the chapel, the agent calls `render_view { view: "shots" }`: `shot_3`, as taken and now, side by side. Its caption says the window must show from the stair, and it still does.
 
 ---
 
@@ -48,8 +49,10 @@ One demo, end to end:
   - views: `plan`, `sheet`, `node` (a close-up), `eye`, `walk` and `shot`;
   - labels (IDs and names) on plans and sheets;
   - `get_shots` for reading the human's shots.
-- **Review habits (09.4):**
-  - a `review` guide topic and a review budget in the core instructions and the default design guide;
+- **Reviewing as a level designer (09.4):**
+  - captioned shots as requirements, and `render_view { view: "shots" }`: each as taken and now, side by side;
+  - a `review` guide topic with the level designer's checks (requirements, reveals, wayfinding, landmarks, metrics, structure) and blockout discipline;
+  - a line in the core instructions, and Detail and Review sections in the default design guide;
   - `render_view { view: "entities" }`: model sheets of the library's entities.
 
 ### Out (deliberately deferred or dropped)
@@ -241,7 +244,7 @@ server → client  "opened" gains `player`, and { type: "player", player } on ev
 
 ```
 render_view {
-  view: "sheet" | "plan" | "node" | "eye" | "walk" | "shot" | "entities",   // default "sheet"
+  view: "sheet" | "plan" | "node" | "eye" | "walk" | "shot" | "shots" | "entities",   // default "sheet"; the last two are 09.4
   ids?: string[],          // plan / sheet: only these (and what's in them); node: what to frame
   from?: { x, y, z } | "human",   // eye: the eye point, or where the human is walking
   at?: { x, y, z } | string,      // eye: a point or a node ID to look at (default: along yaw / pitch)
@@ -250,6 +253,7 @@ render_view {
   frames?: number,         // walk: 3 to 8, default 5
   preset?: "first" | "third",     // eye / walk: default first
   shot?: string,           // shot: take this stored shot again, now
+  shots?: string[],        // shots (09.4): these shots as taken and now (default: the captioned ones changed since)
   labels?: boolean,        // plan / sheet / node: default true
   size?: number,           // long edge in px, 256 to 1568
   save?: boolean,          // keep the image as a shot (createdBy "agent"), default false
@@ -277,17 +281,49 @@ get_shots { id?: string }
 
 ---
 
-## 7. Review habits and model sheets (09.4)
+## 7. Reviewing as a level designer (09.4)
 
-- **A `review` guide topic:** when to render, and which view to use:
-  - after building or reshaping something: a `sheet` of it;
-  - after changing a route: a `walk` along the critical path;
-  - when the human refers to a shot: `get_shots`, then the same `shot` again after the change;
-  - "what I'm seeing": `eye` from `"human"`;
-  - before placing entities it hasn't seen: `entities`.
-  It also says what to look for: stairs that end in walls, doors that cut nothing, floating shapes, overlaps, and scale against the human.
-- **The review budget** goes in the core instructions (one line: "render a `sheet` after every build, and walk the critical path after changing a route; see `get_guide review`") and in the default design guide, where Orlando can tune it.
-- **The core instructions stay under 6 kB.** The detail lives in the `review` topic.
+Rewritten after 09.3, from a session where the agent was asked to replace the castle's blocks "with a flag at the top", for Orlando's `shot_1`. It built the castle, re-rendered `shot_1`, saw that the flag was above the frame, and lowered the tower until the flag showed from the approach. That is the loop this phase is for: **the human's shot was a requirement, and the agent changed the design to meet it.** The first draft of this section copied the animation kit's habit ("render after every build"), which says when to look but not what a level designer looks for. This one is about the second.
+
+### Shots are requirements
+
+- **A captioned shot is a claim about the level from a place**: "the flag reads from the approach", "the player can see the window from the stair". The caption is the claim; the camera is where it must hold.
+- **After a change near one, check it:** take it again (`render_view { view: "shots" }`, below), compare it with the image as taken, and say which claims still hold and which broke, and why. A broken claim is fixed, or reported with the trade-off (the castle session's "the tower is shorter than you might want, so the flag stays in frame").
+- **An uncaptioned shot is just a picture:** the agent may look at it, but it doesn't have to keep it true.
+- **The agent leaves its own:** when it builds a view that matters (a reveal, a landmark), it can keep the render as a shot (`save: true`) with the claim in the text of a note or its reply, so the next change is checked against it too.
+
+### `render_view { view: "shots" }`: before and after
+
+- **What it renders:** the captioned shots taken before the document's last step (`changedSince > 0`), or the ones given in `shots: [...]`, at most 6 (the most recent, saying how many were left out). Nothing to re-check: a text answer and no image.
+- **The image:** one row per shot, the image as taken on the left and the same camera now on the right, each captioned (`shot_3, as taken`, `now`). The text lists each shot's caption and how many steps have passed.
+
+### What to look at, and when
+
+These are the level designer's checks, in the `review` guide topic:
+
+- **Requirements:** after any change, the captioned shots whose area it touched (`view: "shots"`).
+- **Reveals:** the first view of each area, an `eye` view from its entrance. Does the player see the goal, the landmark or the way on? Is the thing the room is about in view?
+- **Wayfinding:** after a route changes, a `walk` along the critical path. In each frame: is the next goal, door or landmark visible, or something that leads the eye there (light, a line of sight, a contrasting shape)? A frame with no lead needs a breadcrumb.
+- **Landmarks:** something big seen from far should stay visible from the places that navigate by it; check them from those places, not from above.
+- **Metrics:** against the design guide's numbers (jump height and distance, door width, stair rise, ramp slope, corridor width), measured from the shapes (`get_scene`), not judged from an image. A render is for what a player sees; numbers are for what a player can do.
+- **Structure:** a `sheet` after building or reshaping something: stairs that end in walls, doors that cut nothing, floating shapes, overlaps, rooms with no way in, scale against the human.
+- **Entities:** `view: "entities"` (below) before placing ones it hasn't seen.
+
+### Blockout discipline
+
+- **Shapes are gameplay space:** where the player walks, climbs, hides and looks. Detail goes where the player's attention is (a landmark, a goal), in as few shapes as read clearly.
+- **Decoration is one volume,** not many: battlements as a band along the wall top, not 150 blocks; a roof as one cone. A detail repeated many times is an entity.
+- **Why:** a blockout is for deciding the level, and the next change is cheaper the fewer shapes it moves. (It's also what keeps the editor fast: `thinking-05-performance`.)
+
+### `render_view { view: "entities" }`: model sheets
+
+- The library's entities (or `ids`, as entity IDs), at most 24, each in a cell from the same angle, on the ground, with the human beside it for scale (not beside the human itself), captioned with its name. The text lists each one's ID, name, size and tags.
+
+### Where it's written
+
+- **The `review` topic** (`get_guide review`): all of the above, for the agent.
+- **The core instructions:** one line: after a change, check the human's captioned shots it may affect, walk the critical path after a route changes, and keep detail proportional to gameplay; see `get_guide review`. The core stays under 6 kB.
+- **The default design guide** gains **Detail** (the blockout discipline, as the game's taste) and **Review** (when to check what, which Orlando tunes per game). Projects that already have a guide keep theirs: the `review` topic applies to them anyway, and Orlando can paste the new sections in.
 
 ---
 
@@ -348,12 +384,15 @@ Each increment is checked before the next one starts: typecheck, tests, a script
   - `get_shots` shows the caption and the stored image;
   - Orlando's view doesn't move during any of it.
 
-### 09.4 — Review habits and model sheets
+### 09.4 — Reviewing as a level designer
 
-- The `review` topic, the budget in the core instructions and the default design guide, and `entities` model sheets.
+- `view: "shots"` and `view: "entities"`, the `review` topic, the core line, and the default design guide's Detail and Review sections.
+- **Tests:** which shots are re-checked (captioned, changed, the limit), the pairs' and the model sheet's layouts, the refusals.
 - **Check:**
-  - `render_view { view: "entities" }` on a project with several entities: one cell each, with the human for scale;
-  - a fresh agent session asked to "build a small crypt under the chapel" renders a sheet without being told, and fixes something it saw;
+  - caption a shot ("the flag shows from here"), ask for a change that could break it: the agent re-checks it with `view: "shots"` without being told, and says whether the claim holds;
+  - `view: "shots"` with nothing changed: a text answer, no image;
+  - `view: "entities"` on a project with several entities: one cell each, with the human for scale;
+  - a fresh agent session asked to build a gatehouse renders a sheet, keeps the detail to a few shapes, and walks the route through it;
   - the goal's demo (§1) end to end.
 
 ---
@@ -393,6 +432,10 @@ Adopted as recommended (say if any should change):
 17. **Labels are short tags with a legend** in the text result, not full names on the image.
 18. **Agent renders aren't kept by default:** `save: true` keeps one as a shot.
 19. **`sheet` is the default view:** the one render to take after every build.
+20. **Captioned shots are requirements** (09.4, from the castle session): after a change near one, the agent re-checks it and says whether its claim still holds. Uncaptioned shots are pictures.
+21. **Review is a level designer's, not the animation kit's:** reveals, wayfinding, landmarks and metrics, with renders for what a player sees and numbers for what a player can do.
+22. **Blockout discipline:** detail proportional to gameplay; decoration as one volume, repeats as entities.
+23. **Editor performance is a phase of its own** (`thinking-05-performance`): measured, not guessed, before it's fixed.
 
 ---
 
@@ -441,3 +484,18 @@ Adopted as recommended (say if any should change):
 - **MCP:** `render_view` (each field described) returns an image and a text; `save: true` keeps a node, eye or shot render as an agent shot. `get_shots` lists shots with `changedSince`, or returns one's stored image. Server version 0.0.19. The `review` guide topic and the review budget are 09.4.
 - **Tests:** `server/render.test.ts` (the broker: no editor, the tab chosen, answers, errors, a tab leaving, the timeout; `prepareRender`'s refusals and what it fills in) and `web/renders.test.ts` (tags, label targets, the plan's fit and size, the layouts, `lookAt`, walk frames, round lengths). 393 in all.
 - **Scripted check** (port 5171, a scratch `DATA_DIR`): with no tab, `render_view` fails with the clear message, and a bad request with its reason; with a fake tab answering, the image comes back as an MCP image with its text, `save` keeps it as `shot_1` (by the agent), `get_shots` lists it and returns its image, and `view: "shot"` after an edit says 1 step has passed. Every changed editor module compiles in Vite. The drawing itself is for Orlando's browser check.
+
+### 09.4 — Reviewing as a level designer (done; checked in the browser by Orlando)
+
+- **§7 rewritten** around the castle session (the agent lowered its tower so the flag stayed in `shot_1`'s frame): captioned shots are requirements, and the checks are a level designer's (reveals, wayfinding, landmarks, metrics, structure) rather than the animation kit's "render after every build". Blockout discipline (detail proportional to gameplay) is part of it, and performance became its own note, `thinking-05-performance`.
+- **`view: "shots"`:** the server picks the captioned shots taken before the document's last step (or `shots: [...]`), the latest 6, and says how many older ones it left out; with none, a text answer and no render. The editor draws one row per shot, the stored image (fetched from its URL) beside the same camera now, captioned with the steps since. The `shot` view shares the re-capture (`shotAgain`).
+- **`view: "entities"`:** the library's entities (or `ids`, as entity IDs), at most 24, each in a 4:3 cell of a near-square grid from yaw 30°, with the human 0.8 m to its east (not beside the human itself), numbered and named; the text gives each one's size and tags. Captures can now take other nodes than the document's (an entity's definition, its holes cut as in an instance).
+- **The `review` topic** (about 2.9 kB) and a two-sentence REVIEWING line in the core instructions, now 5.9 kB. `render_view`'s description points to the topic.
+- **The default design guide** gains **Detail** and **Review**, and three more common failures (a hidden landmark, a critical-path frame with nothing to steer by, detail everywhere). Projects that already have a guide keep theirs; the topic applies to them anyway.
+- **Server version 0.0.20.**
+- **Tests:** the shots picked (captioned, before the last step, the latest 6, or the ones asked for), the model sheet's entities and refusals, and the pair and grid layouts. 396 in all.
+- **Scripted check** (port 5171, a scratch `DATA_DIR`): the instructions carry the REVIEWING line; `view: "shots"` answers in text with nothing changed, and after an edit sends the captioned shot to the tab with 1 step since; `view: "entities"` sends the library's entities; `get_guide review` returns the topic. Every changed editor module compiles in Vite.
+
+### Phase 09 done (2026-09-28)
+
+Every increment was checked in the browser by Orlando. What's next is using the tools on real levels, for more specific feedback on the review loop (which checks the agent does unprompted, what it misses, how the renders read). Phase 10 is the array tool; editor performance with many shapes is its own phase (`thinking-05-performance`); export to engines and the evals are in `thinking-04-evals`.

@@ -53,6 +53,18 @@ Fill these in. Until they're here, ask before relying on a number.
 - **Build in named, described groups,** so the outline reads as the level's plan.
 - **Mark the critical path** with a line when you change a route.
 
+## Detail
+
+- **A blockout decides the level, it doesn't decorate it.** Shapes are gameplay space: where the player walks, climbs, hides and looks.
+- **Detail where the player's attention is:** a landmark, a goal, the thing a room is about. Elsewhere, plain volumes.
+- **Decoration is one shape:** battlements as a band along the wall top, a roof as one cone. A detail repeated many times is an entity.
+
+## Review
+
+- **A captioned shot is a requirement:** after a change near one, re-check it and say whether its caption still holds.
+- **After building something,** a sheet of it. **After changing a route,** walk the critical path. **For each new area,** the view from its entrance.
+- **Numbers are measured, not eyeballed:** jumps, drops, doors and stairs against the facts above.
+
 ## Common failures
 
 Check your work against these.
@@ -64,6 +76,9 @@ Check your work against these.
 - A dead end with no payoff.
 - A room with no way in, or walls with no doors.
 - Symmetry everywhere, because it was easy to mirror.
+- A landmark hidden by something closer, from the place the player should see it.
+- A frame of the critical path with nothing to steer by.
+- Detail everywhere: a hundred small blocks where one volume reads the same.
 
 ## A worked example
 

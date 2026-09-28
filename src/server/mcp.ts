@@ -56,9 +56,10 @@ const R = RenderRequestSchema.shape;
 const RENDER_INPUT = {
   view: R.view.describe(
     "sheet (default: a labeled top-down plan plus views from the northeast, south and west, in one image), plan (top-down, north up, with a scale bar), " +
-      "node (a close-up of ids), eye (what a player sees from a point), walk (frames at eye height along a path), or shot (a stored shot's camera again, now)",
+      "node (a close-up of ids), eye (what a player sees from a point), walk (frames at eye height along a path), shot (a stored shot's camera again, now), " +
+      "shots (the human's captioned shots, as taken and now, side by side: are their claims still true?) or entities (a model sheet of the library's entities, or ids, with the human for scale)",
   ),
-  ids: R.ids.describe("plan / sheet: only these (and what's in them); node: what to frame"),
+  ids: R.ids.describe("plan / sheet: only these (and what's in them); node: what to frame; entities: entity IDs"),
   from: R.from.describe('eye: the feet {x, y?, z} (y from the floor there when left out), or "human" for where the human is walking'),
   at: R.at.describe("eye: a point {x, y, z} or a node ID to look at (default: along yaw / pitch)"),
   yaw: R.yaw.describe("node: the direction to look from (the view's by default); eye: where to look without at (degrees, 0 = north, counterclockwise)"),
@@ -67,6 +68,7 @@ const RENDER_INPUT = {
   frames: R.frames.describe("walk: how many frames, 3 to 8 (default 5)"),
   preset: R.preset.describe("eye / walk: first (default) or third person, with the project's player camera"),
   shot: R.shot.describe("shot: the shot to take again (see get_shots)"),
+  shots: R.shots.describe("shots: which shots to re-check, as taken and now (default: the captioned ones taken before the last change, the latest 6)"),
   labels: R.labels.describe("plan / sheet / node: letter labels on the image, with the legend in the text (default true)"),
   size: R.size.describe(`the image's long edge in pixels (default ${DEFAULT_RENDER_SIZE}, at most ${MAX_RENDER_SIZE})`),
   save: R.save.describe("keep the image as a shot (by the agent) in the human's Shots panel: node, eye and shot views only"),
@@ -87,7 +89,7 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
     const warnings = [...own, ...holes, ...missing];
     return warnings.length > 0 ? { ...result, warnings } : result;
   };
-  const server = new McpServer({ name: "orlablocks", version: "0.0.19" }, { instructions: INSTRUCTIONS });
+  const server = new McpServer({ name: "orlablocks", version: "0.0.20" }, { instructions: INSTRUCTIONS });
   // Every tool reads or edits the open scene, and fails with a clear message while nothing is open.
   const store = () => workspace.requireScene();
   const library = (): Library => (workspace.getOpen() ? workspace.library.get() : EMPTY_LIBRARY);
@@ -421,7 +423,8 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
     {
       title: "Render view",
       description:
-        "Render the open document as an image, to see your work: stairs that end in walls, doors that cut nothing, " +
+        "Render the open document as an image, to see your work as a player would (get_guide review says what to check, and when): " +
+        "the human's captioned shots, reveals, wayfinding along the critical path, landmarks, stairs that end in walls, doors that cut nothing, " +
         "floating shapes, scale against the human. The editor draws it (it must be open in a browser), without moving the human's view. " +
         "Labels are letters, and the text result is their legend. Hidden nodes are left out, and notes aren't drawn (read them in get_scene).",
       inputSchema: RENDER_INPUT,
@@ -429,9 +432,26 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
     async (input) => {
       const scene = store().getScene();
       const request = RenderRequestSchema.parse(input);
-      const job = prepareRender(request, { nodes: scene.nodes, view: scene.view, shot: (id) => workspace.shots.get(id) });
+      const job = prepareRender(request, {
+        nodes: scene.nodes,
+        view: scene.view,
+        shot: (id) => workspace.shots.get(id),
+        shots: workspace.shots.list(),
+        seq: workspace.documentSeq() ?? 0,
+        entities: library().entities,
+      });
+      if (job.pairs?.length === 0) {
+        return { content: [{ type: "text" as const, text: "No captioned shot was taken before the last change: nothing to re-check." }] };
+      }
       const result = await renders.request(job);
       const lines = [result.text];
+      if (job.view === "shots" && !request.shots) {
+        const changed = workspace.shots.list().filter((s) => s.caption && s.seq < (workspace.documentSeq() ?? 0)).length;
+        if (changed > job.pairs!.length) lines.push(`${changed - job.pairs!.length} older captioned shots weren't re-checked: pass shots: [...] for them.`);
+      }
+      if (job.view === "entities" && !request.ids && library().entities.length > job.entities!.length) {
+        lines.push(`${library().entities.length - job.entities!.length} more entities weren't drawn: pass ids for them.`);
+      }
       if (job.view === "shot") {
         const shot = workspace.shots.get(job.shot!)!;
         const since = (workspace.documentSeq() ?? shot.seq) - shot.seq;

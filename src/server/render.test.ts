@@ -106,4 +106,30 @@ describe("preparing a render", () => {
     expect(prepareRender(RenderRequestSchema.parse({ view: "eye", from: "human" }), { ...doc, view: { ...DEFAULT_VIEW, walking } }).human).toEqual(walking);
     expect(prep({ view: "shot", shot: "shot_2", save: true }).shotCamera).toEqual({ camera: shot.camera, width: 800, height: 450 });
   });
+
+  it("re-checks the captioned shots taken before the last change, at most 6, or the ones asked for", () => {
+    const view = (id: string, seq: number, caption?: string) => ({ ...shot, id, seq, url: `/shots/p/scenes/s/${id}.png`, ...(caption ? { caption } : {}) });
+    const shots = [view("shot_1", 1, "flag"), view("shot_2", 2), view("shot_3", 5, "window"), ...[4, 5, 6, 7, 8, 9].map((i) => view(`shot_${i}`, 1, `claim ${i}`))];
+    const at = (input: object, seq = 5) => prepareRender(RenderRequestSchema.parse(input), { ...doc, shots, seq });
+    // shot_2 has no caption, shot_3 was taken at the last step: neither; of the rest, the latest 6.
+    expect(at({ view: "shots" }).pairs!.map((p) => p.id)).toEqual(["shot_4", "shot_5", "shot_6", "shot_7", "shot_8", "shot_9"]);
+    expect(at({ view: "shots" }).pairs![0]).toMatchObject({ caption: "claim 4", since: 4, url: "/shots/p/scenes/s/shot_4.png", width: 800, height: 450 });
+    expect(at({ view: "shots", shots: ["shot_2", "shot_3"] }).pairs!.map((p) => [p.id, p.since])).toEqual([
+      ["shot_2", 3],
+      ["shot_3", 0],
+    ]);
+    expect(at({ view: "shots" }, 1).pairs).toEqual([]);
+    expect(() => at({ view: "shots", shots: ["shot_99"] })).toThrow(/no shot shot_99/);
+    expect(() => at({ view: "shots", save: true })).toThrow(/only a node, eye or shot view/);
+  });
+
+  it("draws the library's entities in a model sheet, or the ones asked for", () => {
+    const entities = [{ id: "human", name: "human" }, { id: "tree-tall", name: "tree tall", tags: ["climbable"] }];
+    const at = (input: object, list = entities) => prepareRender(RenderRequestSchema.parse(input), { ...doc, entities: list });
+    expect(at({ view: "entities" }).entities).toEqual(entities);
+    // ids are entity IDs here, not nodes.
+    expect(at({ view: "entities", ids: ["tree-tall"] }).entities).toEqual([entities[1]]);
+    expect(() => at({ view: "entities", ids: ["rock"] })).toThrow(/no entity rock/);
+    expect(() => at({ view: "entities" }, [])).toThrow(/no entities yet/);
+  });
 });

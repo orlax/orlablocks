@@ -1,0 +1,37 @@
+# Thinking 05 — Performance
+
+Written 2026-09-28, during phase 09, after the agent rebuilt the castle in `outside_castle` from 2 shapes into about 190 (most of them battlement blocks) and the editor got noticeably slower. To be tackled as a phase of its own.
+
+## What was measured
+
+The scene had 428 shapes (203 in the castle). The editor's own work was timed on a synthetic scene of the same size and mix (200 small boxes, 20 sixteen-sided cylinders, some tapered, 208 other volumes), in Node:
+
+| Work | When | Time |
+|---|---|---|
+| ShapeMesh keys (a JSON of each footprint) | every render of the view | 0.37 ms |
+| which holes cut what (`cutters`) | every render | 0.02 ms |
+| expanding instances, hidden and locked sets, `shapesUnder`, counts | every render | 0.13 ms |
+| bounds of everything | every render | 0.17 ms |
+| picking under the cursor (`pickHit`, warm) | every pointer move | 0.08 ms |
+| building every shape's mesh (new objects) | after an edit | 2.7 ms |
+| the first pick after an edit (hit meshes rebuilt) | after an edit | 3.5 ms |
+
+So the calculations aren't the problem: well under a millisecond per render, a few after an edit. (The server sends the whole scene after every edit, so every per-object cache misses then; `ShapeMesh` still reuses its geometry when a shape's key is unchanged.)
+
+## Where the time goes
+
+**Draw calls.** Every shape is its own mesh, drawn up to three times (its body, a room's floor, its edges as line segments) and once more into the shadow map: about 428 × 3 + 428 ≈ 1,700 draw calls a frame while panning or orbiting. In Chrome on a Mac (WebGL on Metal through ANGLE) each draw call has a fixed cost, so the frame time grows with the number of shapes, whatever their size: 150 tiny battlements cost as much as 150 halls.
+
+Not yet measured in the browser: the frame time and draw calls themselves, React's reconciling of ~430 `ShapeMesh` components on each hover change, and the shadow pass on its own.
+
+## What to do, most useful first
+
+1. **Measure in the browser.** A small stats readout, off by default (a view bar toggle or a key): frame time, draw calls (`gl.info.render.calls`), triangles, shapes. Before and after numbers for everything below.
+2. **Merge static shapes.** Everything that isn't selected, hovered, being dragged or edited is combined into one mesh per material (color, and the floor shade), and the edges into one `LineSegments` per edge material. The ones that change live stay as they are. A few dozen draw calls instead of ~1,700; rebuilding the merged buffers after an edit costs a few milliseconds. `BatchedMesh` (three.js) is the other way to do it, with per-shape visibility for free. Picking stays on the data (`pick.ts`), so it's unaffected. To check: holes (cut meshes merge like any other), hidden and isolated nodes, highlights, and instances.
+3. **Instances.** An entity placed many times (a forest) is the same geometry again and again: an `InstancedMesh` per entity part, or the merge above.
+4. **Shadows.** The shadow map redraws every caster every frame. Once merged it's cheap; if not, only redraw it when the scene or the sun moves.
+5. **React.** Keep `Boxes` from re-rendering every `ShapeMesh` on hover: the highlight could be a separate overlay mesh for the few highlighted shapes, not a material change on each.
+
+## The agent's side
+
+A blockout should be cheap to draw because it's simple, not only because the renderer is clever. Phase 09.4's review topic and the default design guide tell the agent to keep detail proportional to gameplay: battlements as one band volume, not 150 blocks, and repeated details as an entity. That rule is about level design first; the performance is a bonus.

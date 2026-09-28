@@ -972,8 +972,11 @@ export type ShotRecord = z.infer<typeof ShotRecordSchema>;
 export type ShotView = ShotRecord & { url: string };
 
 /** The views `render_view` renders (plan 09 §6). */
-export const RENDER_VIEWS = ["sheet", "plan", "node", "eye", "walk", "shot"] as const;
+export const RENDER_VIEWS = ["sheet", "plan", "node", "eye", "walk", "shot", "shots", "entities"] as const;
 export type RenderViewKind = (typeof RENDER_VIEWS)[number];
+/** At most this many shots are re-checked in one image, and this many entities in a model sheet. */
+export const MAX_RECHECKED_SHOTS = 6;
+export const MAX_MODEL_SHEET = 24;
 /** An image's long edge, in pixels: the largest the model reads without scaling it down. */
 export const MIN_RENDER_SIZE = 256;
 export const MAX_RENDER_SIZE = 1568;
@@ -992,13 +995,24 @@ export const RenderRequestSchema = z.object({
   frames: z.number().int().min(3).max(8).optional(),
   preset: WalkPresetSchema.optional(),
   shot: z.string().optional(),
+  shots: z.array(z.string()).min(1).max(MAX_RECHECKED_SHOTS).optional(),
   labels: z.boolean().optional(),
   size: z.number().int().min(MIN_RENDER_SIZE).max(MAX_RENDER_SIZE).optional(),
   save: z.boolean().optional(),
 });
 export type RenderRequest = z.infer<typeof RenderRequestSchema>;
-/** What the editor renders: the request, with what only the server knows (where the human walks, a shot's camera). */
-export type RenderJob = RenderRequest & { human?: Walking; shotCamera?: { camera: ShotCamera; width: number; height: number } };
+/** A shot to take again beside its image as taken (`view: "shots"`), with the steps since it was taken. */
+export type RecheckedShot = { id: string; caption?: string; url: string; camera: ShotCamera; width: number; height: number; since: number };
+/**
+ * What the editor renders: the request, with what only the server knows (where the human walks, a shot's camera, the
+ * shots to re-check, the entities of a model sheet).
+ */
+export type RenderJob = RenderRequest & {
+  human?: Walking;
+  shotCamera?: { camera: ShotCamera; width: number; height: number };
+  pairs?: RecheckedShot[];
+  entities?: { id: string; name: string; tags?: string[] }[];
+};
 /** What the editor sends back: the PNG (base64), what it shows (the text result), and its camera when it has one. */
 export const RenderResultSchema = z.object({
   image: z.string().min(1),

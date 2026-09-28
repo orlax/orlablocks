@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SceneNode } from "../shared/scene.types";
-import { labelTag, labelTargets, legendLine, lookAt, niceLength, planFrame, planSize, sheetLayout, stripLayout, walkFrames } from "./renders";
+import { gridLayout, labelTag, labelTargets, pairLayout, legendLine, lookAt, niceLength, planFrame, planSize, sheetLayout, stripLayout, walkFrames } from "./renders";
 
 const box = (id: string, x: number, z: number, extra: Partial<SceneNode> = {}): SceneNode =>
   ({ id, type: "box", kind: "volume", x, z, y: 0, width: 2, depth: 2, height: 3, rotation: 0, color: "stone", createdBy: "human", ...extra }) as SceneNode;
@@ -90,5 +90,18 @@ describe("render planning", () => {
 
   it("rounds scale lengths to 1, 2 or 5 times a power of ten", () => {
     expect([0.8, 1.6, 4, 9, 13, 30, 80].map(niceLength)).toEqual([1, 2, 5, 10, 10, 20, 100]);
+  });
+
+  it("lays re-checked shots out as rows of before and now, and a model sheet as a near-square grid", () => {
+    expect(pairLayout([16 / 9], 1024)).toEqual({ width: 1024, height: 288, rows: [{ before: { x: 0, y: 0, width: 512, height: 288 }, now: { x: 512, y: 0, width: 512, height: 288 } }] });
+    // Six 16:9 rows would be 1728 tall: all shrink to fit 1024.
+    const six = pairLayout(Array(6).fill(16 / 9), 1024);
+    expect(six.height).toBeLessThanOrEqual(1024);
+    expect(six.rows[5].now.x).toBe(six.width / 2);
+    expect(gridLayout(1, 1024)).toMatchObject({ width: 1024, height: 768 });
+    const nine = gridLayout(9, 1200);
+    expect(nine.cells).toHaveLength(9);
+    expect(nine.cells[8]).toEqual({ x: 800, y: 600, width: 400, height: 300 });
+    expect(Math.max(gridLayout(24, 1024).width, gridLayout(24, 1024).height)).toBeLessThanOrEqual(1024);
   });
 });

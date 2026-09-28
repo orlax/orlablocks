@@ -164,3 +164,36 @@ export function niceLength(target: number): number {
   const m = target / p;
   return (m < 1.5 ? 1 : m < 3.5 ? 2 : m < 7.5 ? 5 : 10) * p;
 }
+
+/**
+ * Re-checked shots (`view: "shots"`): one row per shot, the image as taken and the view now side by side, each row
+ * at its shot's aspect, `size` wide (all rows shrunk together if they'd be taller than `size`).
+ */
+export function pairLayout(aspects: number[], size: number): { width: number; height: number; rows: { before: Cell; now: Cell }[] } {
+  const total = aspects.reduce((h, a) => h + size / 2 / a, 0);
+  const scale = total > size ? size / total : 1;
+  const w = Math.floor((size / 2) * scale);
+  let y = 0;
+  const rows = aspects.map((a) => {
+    const h = Math.max(1, Math.round(w / a));
+    const row = { before: { x: 0, y, width: w, height: h }, now: { x: w, y, width: w, height: h } };
+    y += h;
+    return row;
+  });
+  return { width: w * 2, height: y, rows };
+}
+
+/** A model sheet: `n` 4:3 cells in a near-square grid, `size` on the long edge. */
+export function gridLayout(n: number, size: number): { width: number; height: number; cells: Cell[] } {
+  const cols = Math.max(1, Math.min(n, Math.ceil(Math.sqrt(n * 0.9))));
+  const rows = Math.ceil(n / cols);
+  let w = size / cols;
+  let h = (w * 3) / 4;
+  if (h * rows > size) {
+    h = size / rows;
+    w = (h * 4) / 3;
+  }
+  const cw = Math.floor(w);
+  const ch = Math.floor(h);
+  return { width: cw * cols, height: ch * rows, cells: Array.from({ length: n }, (_, i) => ({ x: (i % cols) * cw, y: Math.floor(i / cols) * ch, width: cw, height: ch })) };
+}

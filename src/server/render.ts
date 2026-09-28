@@ -1,4 +1,5 @@
-import type { RenderJob, RenderRequest, RenderResult, SceneNode, ShotRecord, View } from "../shared/scene.types";
+import type { EntityMeta } from "../shared/library";
+import { MAX_MODEL_SHEET, MAX_RECHECKED_SHOTS, type RenderJob, type RenderRequest, type RenderResult, type SceneNode, type ShotRecord, type ShotView, type View } from "../shared/scene.types";
 import { SceneError } from "./scene";
 
 /**
@@ -20,13 +21,26 @@ const SAVABLE = new Set(["node", "eye", "shot"]);
  * Checks a render request against the open document, and fills in what only the server knows: where the human is
  * walking (`from: "human"`) and a stored shot's camera. Throws a SceneError saying what's missing.
  */
-export function prepareRender(request: RenderRequest, doc: { nodes: SceneNode[]; view: View; shot: (id: string) => ShotRecord | undefined }): RenderJob {
+export function prepareRender(
+  request: RenderRequest,
+  doc: {
+    nodes: SceneNode[];
+    view: View;
+    shot: (id: string) => ShotRecord | undefined;
+    /** The document's shots (with their URLs) and its history step now, for re-checking (09.4). */
+    shots?: ShotView[];
+    seq?: number;
+    /** The project's entities, for model sheets (09.4). */
+    entities?: EntityMeta[];
+  },
+): RenderJob {
   const failure = "Nothing was rendered.";
   const fail = (why: string): never => {
     throw new SceneError(`${failure}\n${why}`);
   };
   const ids = new Set(doc.nodes.map((n) => n.id));
-  const unknown = (request.ids ?? []).filter((id) => !ids.has(id));
+  // A model sheet's ids are entities', checked below.
+  const unknown = request.view === "entities" ? [] : (request.ids ?? []).filter((id) => !ids.has(id));
   if (unknown.length > 0) fail(`ids: no node ${unknown.join(", ")} in the open ${doc.nodes.length === 0 ? "document (it's empty)" : "document"}.`);
   if (request.save && !SAVABLE.has(request.view)) fail(`save: only a node, eye or shot view can be kept as a shot (it has one camera); this is a ${request.view}.`);
   const job: RenderJob = { ...request };
@@ -55,6 +69,37 @@ export function prepareRender(request: RenderRequest, doc: { nodes: SceneNode[];
       const record = doc.shot(request.shot!);
       if (!record) fail(`shot: no shot ${request.shot} in the open document (see get_shots).`);
       job.shotCamera = { camera: record!.camera, width: record!.width, height: record!.height };
+      break;
+    }
+    case "shots": {
+      // The captioned shots taken before the last step (or the ones asked for), the most recent ones if there are more.
+      const all = doc.shots ?? [];
+      const seq = doc.seq ?? 0;
+      let chosen: ShotView[];
+      if (request.shots) {
+        const missing = request.shots.filter((id) => !all.some((s) => s.id === id));
+        if (missing.length > 0) fail(`shots: no shot ${missing.join(", ")} in the open document (see get_shots).`);
+        chosen = all.filter((s) => request.shots!.includes(s.id));
+      } else chosen = all.filter((s) => s.caption && s.seq < seq).slice(-MAX_RECHECKED_SHOTS);
+      job.pairs = chosen.map((s) => ({
+        id: s.id,
+        ...(s.caption ? { caption: s.caption } : {}),
+        url: s.url,
+        camera: s.camera,
+        width: s.width,
+        height: s.height,
+        since: seq - s.seq,
+      }));
+      break;
+    }
+    case "entities": {
+      const all = doc.entities ?? [];
+      const missing = (request.ids ?? []).filter((id) => !all.some((e) => e.id === id));
+      if (missing.length > 0) fail(`ids: no entity ${missing.join(", ")} in the project library (get_library lists them).`);
+      if ((request.ids?.length ?? 0) > MAX_MODEL_SHEET) fail(`ids: at most ${MAX_MODEL_SHEET} entities in one model sheet.`);
+      const chosen = request.ids ? all.filter((e) => request.ids!.includes(e.id)) : all.slice(0, MAX_MODEL_SHEET);
+      if (chosen.length === 0) fail("The project library has no entities yet.");
+      job.entities = chosen.map((e) => ({ id: e.id, name: e.name, ...(e.tags ? { tags: e.tags } : {}) }));
       break;
     }
   }

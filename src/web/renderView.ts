@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { expandShapes, ownerOf } from "../shared/entities";
+import { definitionOf, expandShapes, ownerOf } from "../shared/entities";
 import { boundsOf, polyline, rampStations } from "../shared/geometry";
 import {
   DEFAULT_RENDER_SIZE,
@@ -16,10 +16,12 @@ import { framedCamera, FOV_DEG, type Box3, type CameraState } from "./camera";
 import { blobToBase64, editorView, makeCamera, type CaptureView } from "./capture";
 import {
   drawnShapes,
+  gridLayout,
   labelTargets,
   legendLine,
   lookAt,
   niceLength,
+  pairLayout,
   planFrame,
   planSize,
   SHEET_ANGLES,
@@ -51,6 +53,8 @@ export type RenderContext = {
   surfaceY: (x: number, z: number) => number;
   /** A clean capture (no notes; lines as asked) at 1 × pixel ratio, with extra shapes (an avatar). */
   capture: (view: CaptureView, width: number, height: number, options: { notes: boolean; lines: boolean }, extra?: Shape[]) => Promise<Blob>;
+  /** A capture of other nodes than the document's: an entity's definition (its holes cut as in an instance), plus extra shapes. */
+  captureNodes: (view: CaptureView, width: number, height: number, nodes: SceneNode[], extra?: Shape[]) => Promise<Blob>;
 };
 
 const round = (n: number) => Math.round(n * 100) / 100;
@@ -174,18 +178,78 @@ export async function renderJob(job: RenderJob, ctx: RenderContext): Promise<Ren
       const { width, height } = shotSize(shot, size);
       const img = compose(width, height);
       const c = shot.camera;
-      if (c.kind === "editor") {
-        const view = editorView({ focus: c.focus, yaw: c.yaw, distance: c.distance });
-        await img.draw(await ctx.capture(view, width, height, lines), { x: 0, y: 0, width, height });
-      } else {
-        const pose: Pose = { feet: { x: c.eye.x, y: c.eye.y - ctx.player.eyeHeight, z: c.eye.z }, yaw: c.yaw, pitch: c.pitch };
-        const boom = c.boom ?? presetOf(ctx.player, c.preset).boom;
-        const { image } = await eyeFrame({ pose, preset: c.preset, fov: c.fov, boom }, width, height, ctx);
-        await img.draw(image, { x: 0, y: 0, width, height });
-      }
+      await img.draw(await shotAgain(c, width, height, ctx), { x: 0, y: 0, width, height });
       return img.result([`${job.shot} taken again now, with its camera (${c.kind === "editor" ? "the editor's" : `a ${c.preset}-person walk`}).`, ...notes].join("\n"), c);
     }
+    case "shots": {
+      const pairs = job.pairs ?? [];
+      const layout = pairLayout(
+        pairs.map((p) => p.width / p.height),
+        size,
+      );
+      const img = compose(layout.width, layout.height);
+      const said: string[] = [];
+      for (const [i, p] of pairs.entries()) {
+        const row = layout.rows[i];
+        const before = await (await fetch(p.url)).blob();
+        await img.draw(before, row.before);
+        await img.draw(await shotAgain(p.camera, row.now.width, row.now.height, ctx), row.now);
+        img.caption(`${p.id}, as taken`, row.before);
+        img.caption(p.since === 0 ? "now (no change)" : `now, ${p.since} step${p.since === 1 ? "" : "s"} later`, row.now);
+        said.push(`${p.id}${p.caption ? `: "${p.caption}"` : " (no caption)"}, ${p.since} step${p.since === 1 ? "" : "s"} since`);
+      }
+      img.dividers(layout.rows.flatMap((r) => [r.before, r.now]));
+      return img.result(
+        [
+          `${pairs.length} shot${pairs.length === 1 ? "" : "s"} re-checked, one per row: on the left as taken, on the right the same camera now. For each, is its caption still true?`,
+          ...said,
+          ...notes,
+        ].join("\n"),
+      );
+    }
+    case "entities": {
+      const entities = job.entities ?? [];
+      const layout = gridLayout(entities.length, size);
+      const img = compose(layout.width, layout.height);
+      const said: string[] = [];
+      for (const [i, e] of entities.entries()) {
+        const cell = layout.cells[i];
+        const def = definitionOf(e.id) ?? [];
+        const own = def.filter(isShape).filter((s) => s.type !== "note");
+        if (own.length === 0) {
+          img.caption(`${e.name} (empty)`, cell);
+          said.push(`${i + 1}. ${e.id} "${e.name}": no shapes`);
+          continue;
+        }
+        const b = boundsOf(own);
+        // The human beside it for scale (not beside the human itself).
+        const human = e.id === ctx.avatarEntity ? [] : avatarShapes(ctx.avatarEntity, ctx.player.eyeHeight, { x: b.maxX + 0.8, y: 0, z: (b.minZ + b.maxZ) / 2, rotation: 0 });
+        const all = human.length > 0 ? boundsOf([...own, ...human]) : b;
+        const view = editorView(framedCamera({ focus: { x: 0, z: 0 }, yaw: MODEL_SHEET_YAW, distance: 50 }, cell, all));
+        await img.draw(await ctx.captureNodes(view, cell.width, cell.height, def, human), cell);
+        img.caption(`${i + 1} ${e.name}`, cell);
+        said.push(`${i + 1}. ${e.id} "${e.name}": ${round(b.maxX - b.minX)} × ${round(b.maxZ - b.minZ)} × ${round(b.maxY - b.minY)} m${e.tags?.length ? `, ${e.tags.map((t) => `#${t}`).join(" ")}` : ""}`);
+      }
+      img.dividers(layout.cells);
+      return img.result(
+        [
+          `Model sheet: ${entities.length} entit${entities.length === 1 ? "y" : "ies"}, each from the same angle, with the human (${round(boundsOf(avatarShapes(ctx.avatarEntity, ctx.player.eyeHeight)).maxY)} m) beside it for scale. Sizes are width × depth × height.`,
+          ...said,
+        ].join("\n"),
+      );
+    }
   }
+}
+
+/** Every model sheet cell looks from the southeast, a little turned, so fronts (south) and sides both show. */
+const MODEL_SHEET_YAW = 30;
+
+/** A stored shot's camera, captured now. */
+async function shotAgain(c: ShotCamera, width: number, height: number, ctx: RenderContext): Promise<Blob> {
+  if (c.kind === "editor") return ctx.capture(editorView({ focus: c.focus, yaw: c.yaw, distance: c.distance }), width, height, { notes: false, lines: true });
+  const pose: Pose = { feet: { x: c.eye.x, y: c.eye.y - ctx.player.eyeHeight, z: c.eye.z }, yaw: c.yaw, pitch: c.pitch };
+  const boom = c.boom ?? presetOf(ctx.player, c.preset).boom;
+  return (await eyeFrame({ pose, preset: c.preset, fov: c.fov, boom }, width, height, ctx)).image;
 }
 
 const pointText = (p: Vec3) => `(${round(p.x)}, ${round(p.y)}, ${round(p.z)})`;

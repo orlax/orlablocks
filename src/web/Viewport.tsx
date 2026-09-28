@@ -472,17 +472,27 @@ export function Viewport({
    * or hole ghosts, notes and lines as asked, and `extra` shapes (a walk's avatar). Holes are cut once the boolean
    * library is ready: never uncut walls.
    */
-  const runCapture = async (view: CaptureView, width: number, height: number, pixelRatio: number, options: CaptureOptions, extra: Shape[] = []) => {
+  const runCapture = async (
+    view: CaptureView,
+    width: number,
+    height: number,
+    pixelRatio: number,
+    options: CaptureOptions,
+    extra: Shape[] = [],
+    /** Other nodes than the document's: an entity's definition (a model sheet), cut as in an instance. */
+    source?: SceneNode[],
+  ) => {
     await manifoldReady();
-    const hiddenNow = hiddenIds(nodesRef.current);
+    const from = source ?? nodesRef.current;
+    const hiddenNow = hiddenIds(from);
     const shapes = [
       ...expandShapes(
-        boxesRef.current.filter((b) => !hiddenNow.has(b.id) && (options.notes || b.type !== "note") && (options.lines || b.type !== "line")),
+        from.filter(isShape).filter((b) => !hiddenNow.has(b.id) && (options.notes || b.type !== "note") && (options.lines || b.type !== "line")),
       ).filter((b) => !isHole(b)),
       ...extra,
     ];
-    const cutsNow = cutsRef.current;
-    const entityNow = entityModeRef.current;
+    const cutsNow = source ? cutters(inEntityRoot(expandNodes(source.filter((n) => !hiddenNow.has(n.id))))) : cutsRef.current;
+    const entityNow = source ? true : entityModeRef.current;
     return captureScene({
       view,
       width,
@@ -521,6 +531,7 @@ export function Viewport({
           avatarEntity: avatarEntityRef.current,
           surfaceY: (x, z) => surfaceUnder({ origin: { x, y: 10_000, z }, dir: { x: 0, y: -1, z: 0 } }, standable)?.y ?? 0,
           capture: (view, width, height, options, extra) => runCapture(view, width, height, 1, options, extra),
+          captureNodes: (view, width, height, nodes, extra) => runCapture(view, width, height, 1, { notes: false, lines: true }, extra, nodes),
         });
       },
       walkTo(c) {

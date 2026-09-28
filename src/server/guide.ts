@@ -19,12 +19,13 @@ import { FULL_SCENE_MAX } from "./outline";
  * topic, which `get_guide` returns on demand, so a session only pays for the topics it uses.
  */
 
-export const GUIDE_TOPICS = ["design", "shapes", "volumes", "holes", "ramps", "lines", "notes", "groups", "library", "entities"] as const;
+export const GUIDE_TOPICS = ["design", "review", "shapes", "volumes", "holes", "ramps", "lines", "notes", "groups", "library", "entities"] as const;
 export type GuideTopic = (typeof GUIDE_TOPICS)[number];
 
 /** One line per topic, for the core and for get_guide's description. */
 const TOPIC_SUMMARIES: Record<GuideTopic, string> = {
   design: "THIS PROJECT's design guide: what a good level is for this game, its facts (player size, jumps) and house rules",
+  review: "checking your work as a level designer: shots as requirements, reveals, wayfinding, landmarks, metrics, detail",
   shapes: "boxes, cylinders and free-forms in detail: rooms and their walls, volumes, colors, converting to a free-form",
   volumes: "taper, bevel and tilt (pyramids, cones, hills, a cylinder lying on its side)",
   holes: "which shapes a hole cuts; doors, windows, arches and holes in floors",
@@ -67,6 +68,8 @@ export const INSTRUCTIONS =
   "things, copy them with move_nodes and copy: true (count for a row) instead of redrawing; for symmetry, copy then " +
   "mirror_nodes. A door or window is a hole shape in the room's group: cut it, don't build walls around the opening. " +
   "Draw lines for paths, routes, jumps and ideas. " +
+  "REVIEWING (get_guide review): the human's captioned shots are requirements: after a change that may touch one, " +
+  "re-check it (render_view view: shots) and say whether its caption holds. Keep detail proportional to gameplay. " +
   "ENTITIES are the project's prefabs (a tree, a door, a poison pit): an instance (type: instance, e.g. instance_4) " +
   "shows its entity's shapes at its x, y, z and rotation, and carries its description and tags; the outline shows " +
   "one line per instance, and the glossary what each entity is and its size. Place and repeat entities instead of " +
@@ -85,6 +88,34 @@ export const INSTRUCTIONS =
   ". Errors and warnings name the topic to read when one helps.";
 
 const GUIDE: Record<Exclude<GuideTopic, "design">, string> = {
+  review:
+    "Review your work as a level designer: what the player will see, from where, and what they can do there. A render " +
+    "(render_view) is for what a player SEES; numbers (get_scene, find_nodes) are for what a player can DO. " +
+    "SHOTS ARE REQUIREMENTS. The human takes shots of views that matter, and a shot's caption is a claim about the " +
+    "level from that camera (\"the flag reads from the approach\", \"the window shows from the stair\"). get_shots lists " +
+    "them with changedSince (steps since each was taken). After a change that may touch a captioned shot's view, " +
+    "re-check it: render_view { view: \"shots\" } draws each captioned shot taken before the last change as taken and " +
+    "now, side by side (or pass shots: [...]). For each, say whether its claim still holds; if it broke, fix it, or say " +
+    "what you traded and why (a tower lowered so its flag stays in frame). Treat a caption you're asked to satisfy the " +
+    "same way: build, then re-check the shot before calling it done. An uncaptioned shot is only a picture. When you " +
+    "make a view that matters, you can keep it (save: true on a node, eye or shot render) and state its claim in your " +
+    "reply or a note. " +
+    "WHAT TO CHECK, AND WHEN. Reveals: the first view of each area, an eye view from its entrance (render_view view: " +
+    "eye, from the doorway's floor, at the room): is the thing the room is about in view, and the way on? Wayfinding: " +
+    "after changing a route, walk it (view: walk, path: the critical path's line or ramp): in each frame, is the next " +
+    "goal, door or landmark visible, or something that leads the eye to it (light, an opening, a line of sight, a " +
+    "contrasting shape)? A frame with nothing to follow needs a breadcrumb. Landmarks: something big meant to be seen " +
+    "from far must stay visible from the places that steer by it; check from those places (eye), not from above. " +
+    "Metrics: jumps, drops, door widths, stair rises, ramp slopes and corridor widths against the design guide's " +
+    "numbers, measured from the shapes, never judged from a picture. Structure: a sheet (the default view) after " +
+    "building or reshaping something, for stairs that end in walls, doors that cut nothing, floating shapes, overlaps, " +
+    "rooms with no way in, and scale against the human. Entities: view: entities before placing ones you haven't seen. " +
+    "Say what you checked and what you found, in a line each; don't describe every image. " +
+    "HOW MUCH DETAIL. A blockout decides the level: shapes are gameplay space (where the player walks, climbs, hides " +
+    "and looks). Put detail where the player's attention is (a landmark, a goal), in as few shapes as read clearly. " +
+    "Decoration is one volume, not many: battlements as a band along the wall top, a roof as one cone, a railing as one " +
+    "thin box. A detail repeated many times is an entity, placed as instances. Every extra shape makes the next change " +
+    "slower, for you and for the editor. The design guide may set its own budget: follow it.",
   entities:
     "An ENTITY is a prefab in the project library: a name, a description (what it is and does in the game), tags, " +
     "and a DEFINITION, its shapes around a PIVOT at the origin (its bottom center). Its ID is a slug of its first " +
