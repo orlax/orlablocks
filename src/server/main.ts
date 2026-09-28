@@ -1,7 +1,8 @@
-import { createServer as createHttpServer } from "node:http";
+import { createServer as createHttpServer, type Server as HttpServer } from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseArgs } from "node:util";
 import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
 import express from "express";
 import { mountMcp } from "./mcp";
@@ -9,11 +10,20 @@ import { LockedError, openDataDir } from "./persist";
 import { createWorkspace } from "./workspace";
 import { attachWebSocket } from "./ws";
 
-const HOST = "127.0.0.1";
-const PORT = Number(process.env.PORT ?? 5170);
+const { values } = parseArgs({
+  args: process.argv.slice(2),
+  options: {
+    port: { type: "string", short: "p" },
+    data: { type: "string", short: "d" },
+    host: { type: "string", short: "h" },
+  },
+  strict: false,
+});
 
-// The data folder: ./data where the server runs, or DATA_DIR. Scripted checks must point DATA_DIR elsewhere.
-const DATA_DIR = path.resolve(process.env.DATA_DIR ?? "data");
+const HOST = (values.host as string | undefined) ?? process.env.HOST ?? "127.0.0.1";
+const requestedPort = values.port ? Number(values.port) : Number(process.env.PORT ?? 5170);
+const rawDataDir = (values.data as string | undefined) ?? process.env.DATA_DIR ?? "data";
+const DATA_DIR = path.resolve(rawDataDir);
 
 let data;
 try {
@@ -42,13 +52,15 @@ mountMcp(app, workspace);
 const distWeb = path.resolve(fileURLToPath(new URL("../../dist/web", import.meta.url)));
 const isProd = process.env.NODE_ENV === "production" || (fs.existsSync(distWeb) && process.env.NODE_ENV !== "development");
 
+let activePort = requestedPort;
+
 // Health check endpoint for the companion app and automation
 app.get("/api/health", (_req, res) => {
   const open = workspace.getOpen();
   res.json({
     status: "ok",
     mode: isProd ? "production" : "development",
-    port: PORT,
+    port: activePort,
     host: HOST,
     dataDir: DATA_DIR,
     open: open ? { project: open.project, scene: open.scene } : null,
@@ -88,10 +100,42 @@ if (isProd && fs.existsSync(distWeb)) {
   app.use(vite.middlewares);
 }
 
-httpServer.listen(PORT, HOST, () => {
-  console.log(`orlablocks editor (${isProd ? "production" : "development"}): http://${HOST}:${PORT}`);
-  console.log(`MCP endpoint:            http://${HOST}:${PORT}/mcp`);
+function listenWithFallback(server: HttpServer, startPort: number, host: string, maxAttempts = 10): Promise<number> {
+  return new Promise((resolve, reject) => {
+    let currentPort = startPort;
+    let attempts = 0;
+
+    const tryListen = () => {
+      const onError = (err: NodeJS.ErrnoException) => {
+        server.removeListener("error", onError);
+        if (err.code === "EADDRINUSE" && attempts < maxAttempts) {
+          attempts++;
+          currentPort++;
+          tryListen();
+        } else {
+          reject(err);
+        }
+      };
+
+      server.once("error", onError);
+      server.listen(currentPort, host, () => {
+        server.removeListener("error", onError);
+        resolve(currentPort);
+      });
+    };
+
+    tryListen();
+  });
+}
+
+try {
+  activePort = await listenWithFallback(httpServer, requestedPort, HOST);
+  console.log(`orlablocks editor (${isProd ? "production" : "development"}): http://${HOST}:${activePort}`);
+  console.log(`MCP endpoint:            http://${HOST}:${activePort}/mcp`);
   const open = workspace.getOpen();
   console.log(`Data folder:             ${DATA_DIR}`);
   console.log(`Open scene:              ${open ? `${open.project.name} ▸ ${open.scene.name}` : "none (create a project in the editor)"}`);
-});
+} catch (err) {
+  console.error(`Failed to start server on ${HOST} (ports ${requestedPort}..${requestedPort + 10}):`, err);
+  process.exit(1);
+}

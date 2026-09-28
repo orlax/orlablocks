@@ -5,8 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "NODE_ENV=development tsx src/server/main.ts",
-    "build": "vite build",
-    "start": "NODE_ENV=production tsx src/server/main.ts",
+    "build": "npm run build:web && npm run build:server",
+    "build:web": "vite build",
+    "build:server": "esbuild src/server/main.ts --bundle --platform=node --target=node20 --format=esm --external:vite --external:@vitejs/plugin-react '--banner:js=import { createRequire } from \"node:module\"; const require = createRequire(import.meta.url);' --outfile=dist/server/main.js",
+    "start": "NODE_ENV=production node dist/server/main.js",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
@@ -32,6 +34,7 @@
     "@types/three": "^0.186.0",
     "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^6.1.1",
+    "esbuild": "^0.28.2",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
     "vite": "^8.3.1",

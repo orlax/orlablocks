@@ -311,8 +311,8 @@ claude mcp add --transport http orlablocks http://127.0.0.1:5170/mcp
 
 ## 7. Acceptance Checklist
 
-- [ ] `npm run build` generates `dist/web` and `dist/server`.
-- [ ] Running the production server serves the web editor without any dev dependencies (`tsx` or Vite not needed).
+- [x] `npm run build` generates `dist/web` and `dist/server`.
+- [x] Running the production server serves the web editor without any dev dependencies (`tsx` or Vite not needed).
 - [ ] Changing the Data folder via the Control Panel re-points `DATA_DIR` and loads projects from the selected folder cleanly.
 - [ ] Control Panel window opens on app launch, displays live server status, and "Open Editor in Browser" opens the default browser.
 - [ ] "Install to Claude Desktop" writes valid JSON to `claude_desktop_config.json`.
@@ -327,3 +327,4 @@ claude mcp add --transport http orlablocks http://127.0.0.1:5170/mcp
 
 - **2026-09-28:** Plan created on branch `feat/gemini-packaging` in worktree `dungeon_designer_packaging`. Scope reformulated based on user feedback: dropped menu-bar icon in favor of a visible desktop Control Panel window UI, defined Tauri 2.0 + default browser architecture, detailed skill distribution, and structured 11.1–11.5 increments.
 - **2026-09-28:** **Increment 11.1 completed.** Added `vite.config.ts` and `npm run build` producing optimized static assets (`dist/web`) including WebAssembly (`manifold-3d`). Updated `src/server/main.ts` with static Express serving, Express 5 SPA fallback, and `/api/health` monitoring endpoint. Verified dev and production modes with unit tests, typechecks, and live servers.
+- **2026-09-28:** **Increment 11.2 completed.** Added standalone server bundling via `esbuild` to `dist/server/main.js` with `build:server` and unified `npm run build`. Added CLI argument parsing (`--port`, `--data`, `--host`). Implemented automatic dynamic port fallback (`5170 -> 5171..5180`) on `EADDRINUSE`. Tested two server processes running concurrently on separate ports and separate data folders with zero conflicts.
