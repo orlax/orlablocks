@@ -1,0 +1,399 @@
+# 09 — The Review Loop
+
+> **For the agent reading this:** Read `plans/08-semantics-and-entities` first, especially its §14 (the starting sketch for this phase), and `plans/thinking-04-evals` (why being able to see the result matters, and where this is heading: evals and export). This phase lets both sides of the loop **see** the level, not just read it. It adds:
+> - **shots:** a capture of the view, saved in the project with the camera that took it, so a shot is also a bookmark that can be revisited and taken again after the level changes. Every capture, the human's or the agent's, goes to one **Shots** panel;
+> - **the Walk tool:** drop a first-person or third-person camera into the level and move through it at the player's eye height, to check sightlines. It's a camera, not a game: no physics and no collision, only **floor-follow** (the eye stays at player height above whatever is underneath);
+> - **`render_view`:** the agent renders the scene (a plan, a contact sheet, a close-up, an eye view, a walk along a path, or a stored shot) and gets it back as an image, to check its own work;
+> - **review habits** in the guide, and model sheets of the entities.
+>
+> The array tool is phase 10. Export to engines and the evals of `thinking-04` come later. The work is split into small increments (§9). Each one ends with the human ↔ agent loop still working and a browser checklist for Orlando. Add this phase's terms to `GLOSSARY.md` (marked "from 09") as they land. Log progress in a §12 at the end of this file, as 08 did.
+
+---
+
+## 1. Goal
+
+One demo, end to end:
+
+1. Orlando opens the castle from 08 and presses **`K`** (or the shutter on the view bar). A clean capture of the view (no grid, gizmo or selection) lands in the **Shots** panel as `shot_1`.
+2. Orlando picks the **Walk** tool (**`W`**), with **First person** in the contextual bar, and clicks the courtyard. The camera flies down to eye height (1.65 m) facing the way the editor was looking, and the mouse now turns it. `WASD` walks, the eye rises up the spiral stair with floor-follow, and walking through a wall simply passes through it.
+3. At the top of the stair, Orlando clicks three times: three shots, each with a short flash and a counter. **`Esc`** pauses: the pause menu shows the field of view, eye height, speed and frame guide, plus the shots taken so far. Orlando switches to **Third person**, where the default `human` stands in front of the camera, and presses **Enter** to keep walking. **`E`** floats up to look over a wall, and **`F`** lands again. **`Esc`** twice returns to the editor, where the camera flies back to where it was before.
+4. In the Shots panel, Orlando captions `shot_3` "can the player see entry_window from here?", clicks **Save all** (one zip), and copies `shot_2` to the clipboard to paste into a chat.
+5. Orlando asks the agent: *"Look at shot_3. I want the window to read from the top of the stair."* The agent reads the shot (`get_shots`) and sees the caption and the picture. It moves a tree, then calls `render_view { shot: "shot_3" }` to take the same shot again and compare it with the original. It reports that the window now shows in the frame.
+6. Orlando asks: *"Build a small crypt under the chapel, then check your work."* The agent builds it, calls `render_view { view: "sheet" }` (a top-down plan with IDs plus three angles in one image), notices a stair that ends in a wall, fixes it, and calls `render_view { view: "walk", path: "line_12" }` along the critical path it drew: a strip of frames at eye height.
+7. The agent calls `render_view { view: "entities" }` once and learns what `tree tall` and `poison` look like.
+
+---
+
+## 2. Scope
+
+### In
+
+- **Capture and shots (09.1):**
+  - a capture pipeline in the editor: render the view (or any camera) to an image at a chosen size, without the editor's aids;
+  - the shutter (`K`, and a button on the view bar);
+  - shots stored in the project on the server: an image plus the camera, caption, author and when it was taken;
+  - the Shots panel: go to a shot, caption, copy image, save, save all (zip) and delete.
+- **The Walk tool (09.2):**
+  - `W`, with first person and third person as presets in the contextual bar;
+  - click (or drag from the tool-bar) to drop the camera;
+  - mouse look with pointer lock, `WASD`, `E` / `Q` to float, `F` to land, `Shift` to go fast and the wheel to change speed;
+  - floor-follow by default;
+  - click to take a shot;
+  - the pause menu (`Esc`), with Continue (`Enter`) and Exit (`Esc`);
+  - the **player camera**, saved per project: eye height, fields of view, the third-person boom and speed;
+  - the `human` entity drawn as the third-person avatar;
+  - walking reported to the agent.
+- **`render_view` (09.3):**
+  - the agent asks, and the open editor renders offscreen and sends the image back;
+  - views: `plan`, `sheet`, `node` (a close-up), `eye`, `walk` and `shot`;
+  - labels (IDs and names) on plans and sheets;
+  - `get_shots` for reading the human's shots.
+- **Review habits (09.4):**
+  - a `review` guide topic and a review budget in the core instructions and the default design guide;
+  - `render_view { view: "entities" }`: model sheets of the library's entities.
+
+### Out (deliberately deferred or dropped)
+
+- **Physics, collision, gravity, jumping:** the Walk tool is a camera. Walls can be walked through, and "can the player reach this" stays a question for plan 00's validators (later).
+- **Export to engines and formats** (glTF, Unity prefabs): the biggest multiplier in `thinking-04`, and a phase of its own after the array tool.
+- **The evals** of `thinking-04`: 09's renders are what make judging their results possible, but running them isn't part of this phase.
+- **Video or GIF capture** of a walk: the walk strip covers the agent's need, and shots cover Orlando's.
+- **Drawing on shots** (arrows and circles on the picture): a note in the scene does this today. Maybe later.
+- **Restoring right-click → "Save image as…":** the shutter replaces it (the view keeps its right-click for itself).
+- **Rendering without an open editor** (a headless browser or a second renderer on the server): `render_view` needs a connected editor tab, as 08 §14 decided.
+
+---
+
+## 3. Naming and data
+
+### Terms
+
+| Term | Meaning |
+|---|---|
+| **shot** (`shot_N`) | a capture: an image plus the camera that took it (an editor camera or a walk pose with its settings), a caption, `createdBy`, `createdAt` and the document's `seq` when it was taken. IDs per document, never reused. |
+| **Shots panel** | the floating panel (like the Entities panel) with the open document's shots as thumbnails. |
+| **shutter** | `K` or the view bar's camera button in the editor, and a click in Walk mode. |
+| **clean capture** | a capture without the editor's aids: grid, origin axes, gizmo, selection outlines, hover, marquee, drafts. Notes and lines are optional (off in Walk shots by default, on in editor shots). |
+| **Walk tool / Walk mode** | `W`: drop a camera into the level, then move it with the mouse and keys until `Esc` twice. |
+| **preset** | **First person** or **Third person**: the same walk with a different camera. |
+| **player camera** | the project's walk settings (eye height, fields of view, third-person boom and speed), shared by Orlando's walks and the agent's eye and walk renders. |
+| **floor-follow** | the eye stays at eye height above the surface under it. `E` / `Q` float free of it, and `F` lands again. |
+| **pause menu** | what `Esc` shows in Walk mode: the settings, the shots taken so far, Continue and Exit. |
+| **frame guide** | the aspect ratio a walk shot is cropped to (16:9 by default), shown as a frame on screen. |
+| **sheet** | the agent's contact sheet: a labeled plan plus three angles in one image. |
+| **walk strip** | the agent's walk: frames at eye height along a path, numbered, in one image. |
+
+### The data folder
+
+```
+projects/<project>/
+  player.json                 the player camera                          (new, 09.2)
+  scenes/<scene>/
+    shots/                    (new, 09.1)
+      shots.json              nextId, and each shot's record (no image)
+      shot_1.png              the image
+  entities/<entity>/shots/    the same, for shots taken in Edit entity mode
+```
+
+- **Shots belong to the document they were taken in** (a scene, or an entity in Edit entity mode). A shot's camera is in that document's coordinates.
+- **Shots aren't scene edits.** They aren't in any undo history, and deleting a shot is permanent (the panel asks first). They are saved as they are taken.
+- **A shot's record:**
+  ```
+  { id, caption?, createdBy: "human" | "agent", createdAt, seq, width, height,
+    camera: { kind: "editor", focus, yaw, distance }
+          | { kind: "walk", preset, eye: { x, y, z }, yaw, pitch, fov, boom? } }
+  ```
+  `seq` is the document's history position when the shot was taken, so the agent can tell whether the level changed since (`get_shots` reports `changedSince`).
+- **Images are PNG,** served over HTTP at `/shots/<project>/<document>/<id>.png`. The editor loads thumbnails from there, and Save downloads from there.
+- **`player.json`**, with defaults when missing:
+  ```
+  { eyeHeight: 1.65, speed: 4,
+    first: { fov: 90 },
+    third: { fov: 60, distance: 3, height: 0.4, shoulder: 0.5, avatar: true } }
+  ```
+  It isn't undoable (it's settings, like the view). Degrees for `fov` (horizontal), meters for everything else, and `speed` in m/s. `height` is above the eye, and `shoulder` is to the right of it.
+- **The editor's aids go on their own three.js layer,** so a capture camera that only sees the scene layer is a clean capture, without hiding and re-showing anything.
+
+---
+
+## 4. Capture and shots (09.1)
+
+### The capture pipeline (`src/web/capture.ts`)
+
+- **`capture(camera, size, options)`:** renders the scene into an offscreen render target of `size` (not the canvas, so the size is free and nothing flickers), reads the pixels, and draws them onto a 2D canvas. Labels and a legend go on that canvas (§6). It returns a PNG blob. The on-screen canvas never needs `preserveDrawingBuffer`.
+- **It waits for the holes:** if the hole cutting (`csg.ts`) is still running, the capture waits for it, so a capture never shows uncut walls.
+- **One pipeline for everything:** the editor's shutter, Walk shots, and every `render_view`.
+- **Hidden nodes stay hidden** (as Orlando set them). Isolation is ignored: a capture shows the whole document.
+
+### The shutter
+
+- **`K`** (a free key), or the **camera button** on the view bar (with the count of shots): captures the view exactly as framed, at the canvas size × the device pixel ratio, capped at 4096 px on the long edge. It's a clean capture with notes and lines shown.
+- **A short white flash** over the view, and the new thumbnail slides into the Shots panel. The panel opens on the first shot of a session.
+
+### The Shots panel (`src/web/ShotsPanel.tsx`)
+
+- **Floating like the inspector and the Entities panel** (`useFloating`): bottom right by default, collapsible, with a max height. It opens from the view bar's camera button.
+- **A grid of thumbnails,** newest first, each with its ID, caption, and an agent badge for the agent's shots. Hovering shows the caption and when it was taken, and marks it "the level changed since" when it has.
+- **Click a shot to go to it:**
+  - an editor shot flies the camera to its view (the 09 flight, which already exists);
+  - a walk shot enters Walk mode at its pose, paused, with the shot's settings (for this walk only, without changing the player camera).
+- **Each shot has:** Caption (inline edit), Copy image (the clipboard, as PNG), Save (download `shot_3.png`) and Delete (with a confirm).
+- **The panel has Save all:** one zip (`<scene>-shots.zip`, with `fflate`, small and dependency-free), images named `shot_3 caption.png`.
+- **Selecting a shot** doesn't change the scene's selection. The agent reads shots with `get_shots` (§6) and doesn't need a selection to know which one Orlando means, because Orlando names it.
+
+### Protocol
+
+```
+client → server  { type: "add_shot", camera, width, height, caption?, image: base64 PNG }
+client → server  { type: "update_shot", id, caption } / { type: "remove_shot", id }
+server → client  { type: "shots", shots: [ShotRecord] }       // the open document's, on open and every change
+```
+
+The image goes over the WebSocket once (a few MB at most, locally) so there's one code path, and it's read back over HTTP.
+
+---
+
+## 5. The Walk tool (09.2)
+
+### Dropping in
+
+- **The Walk tool (`W`, a person icon)** is in the tool-bar with the others. The contextual bar shows the preset: **First person** / **Third person** (like the kind toggle), remembered per viewer.
+- **Click on the view** to drop the camera there. The feet land on the surface under the cursor (the same as placing an entity), the look direction is the editor camera's yaw, and the pitch is level. **Dragging the Walk button onto the view** does the same, like dragging an entity.
+- **The camera flies to the eye** (the existing flight, about 0.6 s), then locks the pointer. The click is the user gesture that pointer lock needs.
+- **In Edit entity mode** the Walk tool works too, around the entity's pivot.
+
+### Moving
+
+| Input | Does |
+|---|---|
+| mouse | look (yaw, and pitch clamped to ±85°) |
+| `W` `A` `S` `D` | walk along the look direction, flattened to the ground |
+| `E` / `Q` | float up / down, which turns floor-follow off |
+| `F` | land: floor-follow on, dropping onto the surface below |
+| `Shift` | 3 × speed |
+| wheel | speed, from 0.5 to 20 m/s, shown briefly |
+| click | take a shot |
+| `Esc` | pause |
+
+- **The editor's shortcuts are off** while walking, and `W` / `A` / `D` don't also turn the editor camera.
+- **The pure part is in `src/web/walk.ts`:** the pose update from the held keys, the mouse and the time step, the eye from the feet, the third-person camera from the pose, and the floor-follow choice (below). It's unit-tested.
+
+### Floor-follow
+
+- **Each frame, one ray goes straight down** from the feet plus a **step height** (0.45 m) against the rendered meshes (three.js `Raycaster`). They're the cut meshes, so a floor hole lets you fall through, and ramps, stairs, tilts and tapers count as they look.
+- **Only faces that face up count** (normal y > 0.3). The first one hit is the floor. With none, the ground (y = 0) is the floor if the feet are above it; otherwise the feet stay where they are.
+- **The step height is what lets you climb stairs** and not walls: a floor within 0.45 m above the feet is stepped onto, and anything higher is passed through at the current floor's height. The eye eases toward its new height (up in 0.1 s, down in 0.25 s), so stairs are smooth and a drop looks like a drop without being physics.
+- **Floating** (after `E` / `Q`) ignores floors until `F`. The HUD says "floating".
+- **The cost is one raycast per frame** against the scene's meshes, fine at blockout sizes. If big scenes get slow, a BVH (`three-mesh-bvh`) is the fix.
+
+### First person and third person
+
+- **First person:** the camera is the eye, at `eyeHeight`, with `first.fov`. The avatar isn't drawn.
+- **Third person:** the camera sits `third.distance` behind the eye along the look direction, `third.height` above it and `third.shoulder` to its right, looking the same way. It uses `third.fov`. **The avatar is the project's `human` entity** (or a capsule of the eye's height + 0.15 m if the project deleted it), standing at the feet and turning with the yaw. The camera can end up inside a wall (there's no collision). A shorter distance in the pause menu fixes that.
+
+### The HUD
+
+- **Small and in a corner:** "Walking · First person · 4 m/s · floating", the shot count, and "Esc pause · click shot".
+- **A crosshair** (optional, on by default in first person) and the **frame guide** (a dimmed border outside the crop).
+- **A flash and "shot_7"** on each shot. Walk shots are clean captures cropped to the frame guide, at 1920 px on the long edge by default, without notes and lines (both are pause-menu options).
+
+### The pause menu
+
+- **`Esc` pauses.** The browser releases the pointer lock on `Esc` by itself, so the pause menu shows on the `pointerlockchange` event. Losing the lock any other way (switching windows) pauses too.
+- **A panel over the dimmed view:**
+  - **Player camera:** preset (First / Third), eye height, field of view, speed, and for third person the distance, height, shoulder and avatar toggle. Changes show live behind the panel and are saved to `player.json` (the agent's renders use them too).
+  - **This walk:** floor-follow, crosshair, frame guide (none, 16:9, 4:3, 1:1, 21:9), shot size, and notes and lines in shots.
+  - **Shots:** the ones taken during this walk, as a strip, each with a delete button. The Shots panel has the rest of the actions.
+  - **Continue** (`Enter`) and **Exit** (`Esc`).
+- **Continue relocks the pointer.** Chrome refuses a relock for about a second after an `Esc`: if it's refused, the menu says "click to continue" and the next click relocks.
+- **Exit** flies the camera back to the editor camera from before the walk, and the tool goes back to Select. The selection is unchanged.
+
+### The agent sees the walk
+
+- **While Orlando walks,** the editor's `set_view` carries the pose, and `get_scene`'s `view` gains `walking: { preset, eye, yaw, pitch, fov }`. "Look at what I'm seeing" becomes `render_view { view: "eye", from: "human" }`.
+
+### Protocol
+
+```
+client → server  { type: "set_view", view, camera, walk? }         // walk: the pose while walking
+client → server  { type: "set_player", player }                     // the pause menu's player camera
+server → client  "opened" gains `player`, and { type: "player", player } on every change
+```
+
+---
+
+## 6. `render_view` (09.3)
+
+### How it renders
+
+- **The server asks an editor tab to render,** since the renderer lives in the browser (08 §14). The tab that asks is the most recently focused one showing the open document. Other tabs aren't touched.
+  ```
+  server → client  { type: "render", requestId, request }
+  client → server  { type: "rendered", requestId, image: base64 PNG, legend, cameras } | { type: "rendered", requestId, error }
+  ```
+- **The tab renders offscreen** with the capture pipeline (§4). Orlando's view doesn't move, and Walk mode isn't interrupted.
+- **No editor connected, or no answer in 20 s:** the tool fails with "render_view needs the editor open in a browser: ask the human to open http://127.0.0.1:5170".
+- **Images default to 1024 px on the long edge** (up to 1568, the largest size the model uses without scaling it down). A 1024 × 1024 image costs about 1.4k tokens, less than a large scene's full JSON.
+
+### The tool
+
+```
+render_view {
+  view: "sheet" | "plan" | "node" | "eye" | "walk" | "shot" | "entities",   // default "sheet"
+  ids?: string[],          // plan / sheet: only these (and what's in them); node: what to frame
+  from?: { x, y, z } | "human",   // eye: the eye point, or where the human is walking
+  at?: { x, y, z } | string,      // eye: a point or a node ID to look at (default: along yaw / pitch)
+  yaw?, pitch?,            // eye: the look direction instead of `at`
+  path?: string | [{ x, y?, z }], // walk: a line or ramp ID, or points (y from floor-follow when left out)
+  frames?: number,         // walk: 3 to 8, default 5
+  preset?: "first" | "third",     // eye / walk: default first
+  shot?: string,           // shot: take this stored shot again, now
+  labels?: boolean,        // plan / sheet / node: default true
+  size?: number,           // long edge in px, 256 to 1568
+  save?: boolean,          // keep the image as a shot (createdBy "agent"), default false
+}
+```
+
+- **`plan`:** top-down orthographic, north up, framed on `ids` or the whole document, with a scale bar, a compass and a light 1 m / 10 m grid.
+- **`sheet`:** four panels in one image (2 × 2): the plan, and perspective views from the northeast, the south and the west at the editor's pitch, all framed on the same bounds. This is the default, the one to take after every build.
+- **`node`:** a close-up of `ids`, framed on their bounds (the 09 `framedCamera`) from the editor's current yaw, or `yaw` if given.
+- **`eye`:** one frame at eye height with the player camera and `preset`, from `from` (feet at the surface under it, eye above) toward `at`, or along `yaw` / `pitch`.
+- **`walk`:** `frames` frames at eye height along the path, evenly spaced, each looking along the path (a little ahead), numbered in one strip image (up to 4 per row). Floor-follow runs from the start, so it climbs the path's stairs.
+- **`shot`:** re-renders a stored shot's camera, now. It's the "after" to the shot's "before": the text result says how many steps the document has changed since the shot.
+- **`entities`:** a model sheet: every entity in the library (or `ids` as entity IDs) on a neutral floor, one per cell, from the same angle, labeled with its name and size, with a human beside it for scale.
+- **Labels** mark each top-level group and each shape (or, above 40 of them, only the groups) with a short tag (`A`, `B`, ...) at its center, and the text result is the legend: `A = group_3 "crypt", B = box_41 "altar"`. Tags instead of full names keep the image readable, and the legend keeps it exact.
+- **The text result** says what was rendered: the view, the bounds or camera, the player camera used, hidden nodes left out, and the legend.
+
+### `get_shots`
+
+```
+get_shots { id?: string }
+```
+
+- **Without `id`:** the open document's shots: ID, caption, author, when, size, camera kind, and `changedSince` (the steps since the shot).
+- **With `id`:** that shot's record and its stored image (the picture Orlando saw, not a new render).
+
+---
+
+## 7. Review habits and model sheets (09.4)
+
+- **A `review` guide topic:** when to render, and which view to use:
+  - after building or reshaping something: a `sheet` of it;
+  - after changing a route: a `walk` along the critical path;
+  - when the human refers to a shot: `get_shots`, then the same `shot` again after the change;
+  - "what I'm seeing": `eye` from `"human"`;
+  - before placing entities it hasn't seen: `entities`.
+  It also says what to look for: stairs that end in walls, doors that cut nothing, floating shapes, overlaps, and scale against the human.
+- **The review budget** goes in the core instructions (one line: "render a `sheet` after every build, and walk the critical path after changing a route; see `get_guide review`") and in the default design guide, where Orlando can tune it.
+- **The core instructions stay under 6 kB.** The detail lives in the `review` topic.
+
+---
+
+## 8. MCP surface
+
+| Tool | Change |
+|---|---|
+| `render_view` | new (§6). |
+| `get_shots` | new (§6). |
+| `get_scene` | `view.walking` while the human walks (§5). |
+| `get_guide` | the `review` topic (§7). |
+
+- **The server version goes up one patch per increment,** from 0.0.16. **Restart the server and reconnect with `/mcp`** after each.
+- **CLAUDE.md:** "Working with the scene" gains shots, walking and `render_view`. "Code layout" gains `capture.ts`, `walk.ts`, `ShotsPanel.tsx`, `Walk.tsx`, `src/server/shots.ts` and `src/server/render.ts`. The paragraph about the next phase points at 10 (the array tool).
+
+---
+
+## 9. Increments
+
+Each increment is checked before the next one starts: typecheck, tests, a scripted check on a spare port with a scratch `DATA_DIR` where it can be scripted, and Orlando's browser checklist.
+
+### 09.1 — Capture and shots
+
+- The aids layer, `capture.ts`, the shutter (`K` and the view bar), the shots store and its files, the HTTP route, the Shots panel with go to, caption, copy, save, save all and delete, and the protocol.
+- **Tests:** the shots store (IDs, records, `seq`, deletion, a missing folder reads as no shots), the record schema, zip naming.
+- **Check:**
+  - `K` in the castle: a clean capture (no grid, gizmo or selection) at the view's size, with notes shown;
+  - holes are cut in the capture, also right after opening the scene;
+  - go to a shot after panning away: the camera flies back to it;
+  - caption, copy (paste into another app), save, save all (open the zip) and delete;
+  - reload and restart the server: the shots are still there;
+  - shots in Edit entity mode stay with the entity.
+
+### 09.2 — The Walk tool
+
+- The tool, presets, dropping in, `walk.ts`, pointer lock, floor-follow, float and land, first and third person with the human avatar, the HUD, the frame guide, walk shots, the pause menu, `player.json`, walking in `get_scene`, and the protocol.
+- **Tests:** `walk.ts` (movement along the flattened look, speed and `Shift`, pitch clamp, eye from feet, the third-person camera, the floor choice from a list of hits with the step height).
+- **Check:**
+  - `W`, click the courtyard: the camera flies to eye height, and the mouse looks around;
+  - walk up the spiral stair and down a ramp with floor-follow, fall through a floor hole, and walk through a wall at the same floor height;
+  - `E` to float over a wall, `F` to land on it;
+  - click three times: three shots, cropped to 16:9, without notes;
+  - `Esc`: the pause menu. Switch to Third person (the human stands in front), change the distance, then `Enter` to continue (and, if Chrome refuses, click);
+  - `Esc` `Esc`: back to the editor camera from before, with the Select tool;
+  - go to a walk shot in the Shots panel: Walk mode, paused, at its pose;
+  - the agent's `get_scene` reports `walking` while Orlando walks.
+
+### 09.3 — `render_view`
+
+- The render request and response, the tab that renders, the timeout, every view but `entities`, labels and the legend, `save`, and `get_shots`.
+- **Tests:** the request broker (the most recently focused tab, timeout, a tab that leaves mid-request, an error passed back), label tags and the legend, walk frame placement along a path, the sheet's layout.
+- **Scripted check:** with no editor connected, `render_view` fails with the clear message; with a fake WebSocket client that answers, the image comes back as an MCP image.
+- **Check (a fresh agent session, the editor open):**
+  - `sheet` of the castle: four panels, labeled, with a legend that matches;
+  - `node` of the crypt, `eye` from a point toward `entry_window`, and `eye` from `"human"` while Orlando walks;
+  - `walk` along a red dashed critical-path line, climbing its stairs;
+  - `shot` of one of Orlando's shots after a change, which says how many steps have happened since;
+  - `get_shots` shows the caption and the stored image;
+  - Orlando's view doesn't move during any of it.
+
+### 09.4 — Review habits and model sheets
+
+- The `review` topic, the budget in the core instructions and the default design guide, and `entities` model sheets.
+- **Check:**
+  - `render_view { view: "entities" }` on a project with several entities: one cell each, with the human for scale;
+  - a fresh agent session asked to "build a small crypt under the chapel" renders a sheet without being told, and fixes something it saw;
+  - the goal's demo (§1) end to end.
+
+---
+
+## 10. Acceptance test (end of phase)
+
+1. **The goal's demo (§1),** end to end, in the browser, with a fresh agent session.
+2. **Before and after:** Orlando takes a shot, the agent changes the level to answer the shot's caption, and `render_view { shot }` shows the change from the same camera.
+3. **Old projects open unchanged,** with no shots and the default player camera.
+4. **The token cost of a review,** measured: a `sheet` of the castle against its full `get_scene` JSON, recorded in §12.
+
+---
+
+## 11. Decisions
+
+Decided with Orlando:
+
+1. **Floor-follow is on by default.** `E` / `Q` float free of it, and `F` lands.
+2. **Shots are stored on the server,** in the project, so they survive reloads and the agent can see them.
+3. **Walking is a tool** (`W`), with click-to-drop like the other tools, and dragging its button onto the view works too.
+4. **A shot is a view plus an image:** the camera is kept, so a shot is a bookmark and can be taken again after changes.
+5. **One Shots panel for every capture:** the editor's shutter, walk shots and the agent's saved renders.
+6. **One Walk mode with two presets,** first person and third person, instead of two controllers.
+7. **The `human` entity is the third-person avatar,** and a scale check.
+8. **Walk shots are clean captures** cropped to a frame guide.
+9. **The player camera is shared** by Orlando's walks and the agent's `eye` and `walk` renders.
+10. **No physics and no collision.** The Walk tool is a camera.
+
+Adopted as recommended (say if any should change):
+
+11. **`K` is the shutter** in the editor, and a click is the shutter in Walk mode.
+12. **`Esc` pauses, `Esc` again exits, `Enter` continues,** and exiting returns to the editor camera from before the walk.
+13. **Floor-follow uses one downward raycast** against the rendered (cut) meshes with a 0.45 m step height: no navmesh.
+14. **Shots belong to the document they were taken in,** aren't undoable, and deleting one is permanent after a confirm.
+15. **The eye height defaults to 1.65 m** (the 1.8 m human's eyes), editable in the pause menu.
+16. **`render_view` renders in the most recently focused editor tab,** offscreen, without moving Orlando's view. Without an editor it fails clearly.
+17. **Labels are short tags with a legend** in the text result, not full names on the image.
+18. **Agent renders aren't kept by default:** `save: true` keeps one as a shot.
+19. **`sheet` is the default view:** the one render to take after every build.
+
+---
+
+## 12. Progress
+
+(Nothing yet.)
