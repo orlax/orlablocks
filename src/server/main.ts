@@ -1,9 +1,9 @@
 import { createServer as createHttpServer } from "node:http";
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
-import react from "@vitejs/plugin-react";
-import { createServer as createViteServer } from "vite";
+import express from "express";
 import { mountMcp } from "./mcp";
 import { LockedError, openDataDir } from "./persist";
 import { createWorkspace } from "./workspace";
@@ -39,6 +39,22 @@ const httpServer = createHttpServer(app);
 
 mountMcp(app, workspace);
 
+const distWeb = path.resolve(fileURLToPath(new URL("../../dist/web", import.meta.url)));
+const isProd = process.env.NODE_ENV === "production" || (fs.existsSync(distWeb) && process.env.NODE_ENV !== "development");
+
+// Health check endpoint for the companion app and automation
+app.get("/api/health", (_req, res) => {
+  const open = workspace.getOpen();
+  res.json({
+    status: "ok",
+    mode: isProd ? "production" : "development",
+    port: PORT,
+    host: HOST,
+    dataDir: DATA_DIR,
+    open: open ? { project: open.project, scene: open.scene } : null,
+  });
+});
+
 // Shot images (09.1), for the editor's thumbnails and downloads. Revalidated each time (IDs are never reused, but a
 // scene can be deleted by hand and made again with the same name).
 app.get("/shots/:project/:kind/:doc/:file", (req, res) => {
@@ -50,17 +66,30 @@ app.get("/shots/:project/:kind/:doc/:file", (req, res) => {
 });
 attachWebSocket(httpServer, workspace);
 
-const vite = await createViteServer({
-  configFile: false,
-  root: fileURLToPath(new URL("../web", import.meta.url)),
-  plugins: [react()],
-  appType: "spa",
-  server: { middlewareMode: true, hmr: { server: httpServer } },
-});
-app.use(vite.middlewares);
+if (isProd && fs.existsSync(distWeb)) {
+  app.use(express.static(distWeb));
+  app.use((req, res, next) => {
+    if (req.method !== "GET") return next();
+    if (req.path.startsWith("/api") || req.path.startsWith("/shots") || req.path.startsWith("/mcp") || req.path.startsWith("/ws")) {
+      return next();
+    }
+    res.sendFile(path.join(distWeb, "index.html"));
+  });
+} else {
+  const react = (await import("@vitejs/plugin-react")).default;
+  const { createServer: createViteServer } = await import("vite");
+  const vite = await createViteServer({
+    configFile: false,
+    root: fileURLToPath(new URL("../web", import.meta.url)),
+    plugins: [react()],
+    appType: "spa",
+    server: { middlewareMode: true, hmr: { server: httpServer } },
+  });
+  app.use(vite.middlewares);
+}
 
 httpServer.listen(PORT, HOST, () => {
-  console.log(`orlablocks editor: http://${HOST}:${PORT}`);
+  console.log(`orlablocks editor (${isProd ? "production" : "development"}): http://${HOST}:${PORT}`);
   console.log(`MCP endpoint:            http://${HOST}:${PORT}/mcp`);
   const open = workspace.getOpen();
   console.log(`Data folder:             ${DATA_DIR}`);
