@@ -475,7 +475,7 @@ Entities: definitions in library, placed as instances with rotation`}</pre>
         <span>
           MCP endpoint <code>127.0.0.1:{status.port}/mcp</code>
         </span>
-        <span>OrlaBlocks v0.0.18</span>
+        <span>OrlaBlocks v{__APP_VERSION__}</span>
       </footer>
 
       {/* Toast Notification */}

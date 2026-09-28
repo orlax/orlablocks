@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Orlablocks",
-  "version": "0.0.18",
+  "version": "1.0.0",
   "identifier": "com.orlablocks.controlpanel",
   "build": {
     "frontendDist": "../dist/control-panel",

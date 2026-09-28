@@ -2513,7 +2513,7 @@ dependencies = [
 
 [[package]]
 name = "orlablocks"
-version = "0.0.18"
+version = "1.0.0"
 dependencies = [
  "dirs 5.0.1",
  "log",
