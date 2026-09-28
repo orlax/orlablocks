@@ -462,6 +462,24 @@ export function spiralPoints(sp: { x: number; z: number; radius: number; turn: n
   );
 }
 
+/**
+ * A spiral as a line's (or a path layout's) points (plan 13 §5): `spiralPoints`, with 3D handles that climb a third
+ * of each segment's rise, so the curve rises evenly between its points instead of in steps at them.
+ */
+export function spiralLinePoints(sp: Parameters<typeof spiralPoints>[0]): LinePoint[] {
+  const points = spiralPoints(sp);
+  const climb = sp.rise / Math.max(1, points.length - 1) / 3;
+  return roundPoints(
+    points.map((p) => ({
+      x: p.x,
+      y: p.y,
+      z: p.z,
+      ...(p.in ? { in: { x: p.in.x, y: -climb, z: p.in.z } } : {}),
+      ...(p.out ? { out: { x: p.out.x, y: climb, z: p.out.z } } : {}),
+    })),
+  );
+}
+
 /** Twice the signed area of a polygon in the x/z plane (shoelace); the sign gives its winding. */
 export function signedArea2(poly: Point[]): number {
   let a = 0;

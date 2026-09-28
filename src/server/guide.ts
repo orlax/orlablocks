@@ -171,8 +171,12 @@ const GUIDE: Record<Exclude<GuideTopic, "design">, string> = {
     "Removing the followed node unlinks the array (it keeps its last path; remove_nodes says which), converting it to " +
     "a free-form keeps the follow, a copy made with its target follows the copy and one made without it is unlinked. " +
     "update_nodes { layout: { along: { offset: 0.3 } } } changes the follow, { along: null } unlinks it. " +
-    "{ type: \"circle\", x, z, y?, radius, count, start?, sweep? }: angles in degrees from 0 = east (+x), 90 = north " +
-    "(-z), counterclockwise; sweep under 360 is an arc with items at both ends. { type: \"grid\", x, z, y?, rotation?, " +
+    "{ type: \"circle\", x, z, y?, radius, count, start?, sweep?, rise? }: angles in degrees from 0 = east (+x), 90 = " +
+    "north (-z), counterclockwise; sweep under 360 is an arc with items at both ends; `rise` makes the items climb " +
+    "evenly, the last one `rise` above the first on an arc (over a full circle, `rise` per turn): a spiral of " +
+    "platforms round a wall, 9 slabs over 120° climbing 8 m, is { type: \"circle\", x: 0, z: 0, y: 0.5, radius: 17, " +
+    "count: 9, start: 270, sweep: 120, rise: 8 }. A path takes `spiral` too, as a line does (get_guide lines), for " +
+    "items spaced by distance along a spiral rather than by angle. { type: \"grid\", x, z, y?, rotation?, " +
     "columns, rows, layers?, spacing: { x, z, y? }, stagger? }: centered on x, z, columns along its local x, rows along " +
     "its local z, layers up (spacing.y), stagger offsets every other row by half (brick). { type: \"scatter\", x, z, " +
     "radius (a circle) or area (an outline as a free-form's points), y?, count, minDistance?, rotation? }: items at " +
@@ -286,8 +290,12 @@ const GUIDE: Record<Exclude<GuideTopic, "design">, string> = {
     "point (a jump arc from a platform is 2 points with an `out` handle pulling up on the first). It has `color` " +
     `(default ${DEFAULT_LINE_COLOR}), \`thickness\` in screen pixels (${MIN_THICKNESS}..${MAX_THICKNESS}, default ` +
     `${DEFAULT_THICKNESS}), \`dashed\` (default false) and \`arrow\`: none (default), end (an arrowhead at the last ` +
-    "point) or both. It has no kind, x, z, y, height or rotation; move_nodes, rotate_nodes and mirror_nodes change " +
-    "its points.",
+    "point) or both. ARCS AND SPIRALS: instead of points, give `spiral: { x, z, radius, turn, y, rise, from? }` (a " +
+    "ramp's): a circle of `radius` round (x, z) from angle `from` (0 = east, 90 = north) through `turn` degrees " +
+    "(counterclockwise; negative clockwise), climbing `rise` from `y`; the server makes it points (one every 90°, with " +
+    "circle handles), so don't sample a circle yourself. A 17 m arc over 120° rising 8 m from the south: spiral: { x: " +
+    "0, z: 0, radius: 17, from: 270, turn: 120, y: 0.5, rise: 8 }; rise 0 is a flat arc. It has no kind, x, z, y, " +
+    "height or rotation; move_nodes, rotate_nodes and mirror_nodes change its points.",
   notes:
     "A NOTE (type: note) is a post-it pinned to a point: x, z and y (the surface it stands on: a floor's y, a " +
     "platform's top), its `text`, an optional `label` of up to 3 characters shown on its flag (\"TK\", \"?\"; without " +

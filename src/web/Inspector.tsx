@@ -762,6 +762,16 @@ function ArraySection(props: ArrayControls & { lib: Library }) {
               onChange={(sweep) => onLayout({ sweep: Math.min(360, sweep) })}
             />
           </Row>
+          <Row label="rise">
+            <NumberField
+              title="Meters the items climb over the sweep (over a full circle, in one turn): a spiral of platforms"
+              value={layout.rise ?? 0}
+              unit="m"
+              step={0.25}
+              fallback={0}
+              onChange={(rise) => onLayout({ rise })}
+            />
+          </Row>
         </>
       )}
       {layout.type === "grid" && (

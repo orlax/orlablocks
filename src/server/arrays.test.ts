@@ -530,3 +530,59 @@ describe("following an outline", () => {
     expect(arrayItems(again).every((i) => Math.abs(i.x) === 5 || Math.abs(i.z) === 3)).toBe(true);
   });
 });
+
+describe("arcs and spirals (plan 13 §5)", () => {
+  const store = () => createSceneStore({ entityName: (id) => (id === "block" ? id : undefined) });
+
+  it("draws a line from a spiral, climbing evenly with 3D handles", () => {
+    const [line] = store().drawShapes([{ type: "line", spiral: { x: 0, z: 0, radius: 10, from: 270, turn: 180, y: 1, rise: 6 } }], "agent");
+    const pts = (line as { points: { x: number; y: number; z: number; in?: { y: number }; out?: { y: number } }[] }).points;
+    // One point every 90°: south, east, north.
+    expect(pts.map((p) => [p.x, p.y, p.z])).toEqual([
+      [0, 1, 10],
+      [10, 4, 0],
+      [0, 7, -10],
+    ]);
+    // Each segment climbs 3 m: the handles pull a third of it.
+    expect(pts[0].out?.y).toBe(1);
+    expect(pts[1].in?.y).toBe(-1);
+  });
+
+  it("refuses a line with both points and a spiral, or neither", () => {
+    const s = store();
+    expect(() => s.drawShapes([{ type: "line", points: [{ x: 0, y: 0, z: 0 }, { x: 1, y: 0, z: 0 }], spiral: { x: 0, z: 0, radius: 1, turn: 90, y: 0, rise: 0 } }], "agent")).toThrow(/points or spiral/);
+    expect(() => s.drawShapes([{ type: "line" }], "agent")).toThrow(/points or spiral/);
+  });
+
+  it("puts a path layout on a spiral, its items climbing with it", () => {
+    const [a] = store().drawShapes([{ type: "array", entity: "block", layout: { type: "path", spiral: { x: 0, z: 0, radius: 10, turn: 360, y: 0, rise: 4 }, place: "count", count: 5 } }], "agent");
+    const ys = arrayItems(a as ArrayNode).map((i) => i.y);
+    expect(ys[0]).toBe(0);
+    expect(ys.at(-1)).toBe(4);
+    expect(ys).toEqual([...ys].sort((p, q) => p - q));
+  });
+
+  it("gives a path one of points, spiral or along", () => {
+    expect(() =>
+      store().drawShapes([{ type: "array", entity: "block", layout: { type: "path", points: [{ x: 0, y: 0, z: 0 }, { x: 1, y: 0, z: 0 }], spiral: { x: 0, z: 0, radius: 1, turn: 90, y: 0, rise: 0 } } }], "agent"),
+    ).toThrow(/one of points, spiral or along/);
+  });
+
+  it("makes a circle rise: over an arc the last item `rise` above the first, over a full circle `rise` per turn", () => {
+    const arc = array({ type: "circle", x: 0, y: 0.5, z: 0, radius: 17, count: 9, start: 270, sweep: 120, rise: 8 });
+    expect(arrayItems(arc).map((i) => i.y)).toEqual([0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5]);
+    const full = array({ type: "circle", x: 0, y: 0, z: 0, radius: 5, count: 4, rise: 4 });
+    expect(arrayItems(full).map((i) => i.y)).toEqual([0, 1, 2, 3]);
+  });
+
+  it("stores rise when drawn, and an update's spiral replaces a path's points", () => {
+    const s = store();
+    const [ring] = s.drawShapes([{ type: "array", entity: "block", layout: { type: "circle", x: 0, z: 0, radius: 5, count: 4, rise: 2.004 } }], "agent");
+    expect((ring as ArrayNode).layout).toMatchObject({ rise: 2 });
+    const [path] = s.drawShapes([{ type: "array", entity: "block", layout: { type: "path", points: [{ x: 0, y: 0, z: 0 }, { x: 9, y: 0, z: 0 }] } }], "agent");
+    const [updated] = s.updateNodes([{ id: path.id, layout: { spiral: { x: 0, z: 0, radius: 3, turn: 180, y: 0, rise: 2 } } }], "agent");
+    const points = ((updated as ArrayNode).layout as Extract<ArrayLayout, { type: "path" }>).points;
+    expect(points).toHaveLength(3);
+    expect(points.at(-1)).toMatchObject({ x: -3, y: 2, z: 0 });
+  });
+});

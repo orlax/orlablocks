@@ -1,5 +1,5 @@
 // A scripted run of the temple room of plans/thinking-06 (plan 13 §11): the calls an agent makes to build it,
-// against a spare server, printing each result's size in characters. It guards compactness between increments and
+// against a spare server, printing the size in characters of what each call sends and of what comes back. It guards compactness between increments and
 // shows each one's effect. It needs a server of its own:
 //
 //   PORT=5171 DATA_DIR=<scratch>/data npm run dev
@@ -40,16 +40,18 @@ await client.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`)));
 
 const sizes = [];
 async function call(label, name, args) {
-  const result = await client.callTool({ name, arguments: verbose && EDITS.has(name) ? { ...args, verbose: true } : args });
+  const sent = verbose && EDITS.has(name) ? { ...args, verbose: true } : args;
+  const result = await client.callTool({ name, arguments: sent });
   const text = result.content.filter((c) => c.type === "text").map((c) => c.text).join("\n");
   if (result.isError) throw new Error(`${label}: ${text}`);
-  sizes.push([label, text.length]);
+  sizes.push([label, JSON.stringify(sent).length, text.length]);
   return JSON.parse(text);
 }
 const idOf = (result, i = 0) => result.created[i].id;
 
-// A spiral, sampled every 10°, as the agent had to script it in thinking-06 (13.2 replaces this with `spiral`).
-const spiral = ({ x, z, radius, from, turn, y, rise }) =>
+// A spiral, sampled every 10°, as the agent had to script it in thinking-06. Since 13.2 the script sends `spiral`
+// instead (--verbose keeps the sampled points, the tools before plan 13).
+const sampled = ({ x, z, radius, from, turn, y, rise }) =>
   Array.from({ length: Math.round(turn / 10) + 1 }, (_, i) => {
     const a = ((from + i * 10) * Math.PI) / 180;
     return { x: +(x + radius * Math.cos(a)).toFixed(2), y: +(y + (rise * i * 10) / turn).toFixed(2), z: +(z - radius * Math.sin(a)).toFixed(2) };
@@ -73,10 +75,11 @@ const slab = await call("make slab", "make_entity", { ids: [idOf(slabShape)], na
 await call("remove slab instance", "remove_nodes", { ids: [slab.instance.id] });
 
 // 3. The spines and the arrays on them.
+const spine = (sp) => (verbose ? { points: sampled(sp) } : { spiral: sp });
 const spines = await call("spines", "draw_shapes", {
   shapes: [
-    { type: "line", points: spiral({ x: 0, z: 0, radius: 17, from: 270, turn: 120, y: 0.5, rise: 8 }), dashed: true, name: "wall spine" },
-    { type: "line", points: spiral({ x: 0, z: 0, radius: 5.5, from: 90, turn: 180, y: 14, rise: 3.5 }), dashed: true, name: "spire spine" },
+    { type: "line", ...spine({ x: 0, z: 0, radius: 17, from: 270, turn: 120, y: 0.5, rise: 8 }), dashed: true, name: "wall spine" },
+    { type: "line", ...spine({ x: 0, z: 0, radius: 5.5, from: 90, turn: 180, y: 14, rise: 3.5 }), dashed: true, name: "spire spine" },
   ],
 });
 const arrays = await call("arrays", "draw_shapes", {
@@ -103,9 +106,10 @@ await call("critical path", "draw_shapes", { shapes: [{ type: "line", points: st
 // 5. Looking things up.
 await call("find items near the door", "find_nodes", { type: "item", near: { x: 0, z: 17, radius: 4 } });
 await call("an array's items", "get_scene", { root: idOf(arrays, 2) });
-await call("reshape a spine", "update_nodes", { changes: [{ id: idOf(spines, 0), points: spiral({ x: 0, z: 0, radius: 16, from: 270, turn: 120, y: 0.5, rise: 8 }) }] });
+await call("reshape a spine", "update_nodes", { changes: [{ id: idOf(spines, 0), points: sampled({ x: 0, z: 0, radius: 16, from: 270, turn: 120, y: 0.5, rise: 8 }) }] });
 
 await client.close();
-const total = sizes.reduce((sum, [, n]) => sum + n, 0);
-for (const [label, n] of sizes) console.log(`${String(n).padStart(7)}  ${label}`);
-console.log(`${String(total).padStart(7)}  total characters in ${sizes.length} results`);
+const sum = (k) => sizes.reduce((total, row) => total + row[k], 0);
+console.log(`${"sent".padStart(7)} ${"back".padStart(7)}`);
+for (const [label, sent, back] of sizes) console.log(`${String(sent).padStart(7)} ${String(back).padStart(7)}  ${label}`);
+console.log(`${String(sum(1)).padStart(7)} ${String(sum(2)).padStart(7)}  total characters in ${sizes.length} calls (${sum(1) + sum(2)} both ways)`);

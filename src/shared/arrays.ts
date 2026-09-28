@@ -244,11 +244,15 @@ function layoutPoses(layout: ArrayLayout, limit: number, seed = 1): { poses: Pos
   if (layout.type === "circle") {
     const { start, step } = circleAngles(layout);
     const n = Math.min(layout.count, limit);
+    // A rising circle (plan 13 §5) climbs `rise` over its sweep: over an arc, the last item is `rise` above the first;
+    // over a full circle, one turn is.
+    const sweep = Math.min(layout.sweep ?? 360, 360);
+    const climb = (i: number) => (layout.rise ? (layout.rise * step * i) / sweep : 0);
     const poses = Array.from({ length: n }, (_, i) => {
       const a = start + step * i;
       const r = (a * Math.PI) / 180;
       // The facing here is the angle itself (out); tangent and in are turned from it below.
-      return { x: layout.x + Math.cos(r) * layout.radius, y: layout.y, z: layout.z - Math.sin(r) * layout.radius, facing: a };
+      return { x: layout.x + Math.cos(r) * layout.radius, y: layout.y + climb(i), z: layout.z - Math.sin(r) * layout.radius, facing: a };
     });
     return { poses, total: layout.count };
   }

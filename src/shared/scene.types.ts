@@ -235,7 +235,7 @@ export type PathLayout = {
   spacing?: number; // place: spacing, meters (the real spacing is fitted to the path)
   count?: number; // place: count
 };
-export type CircleLayout = { type: "circle"; x: number; y: number; z: number; radius: number; count: number; start?: number; sweep?: number };
+export type CircleLayout = { type: "circle"; x: number; y: number; z: number; radius: number; count: number; start?: number; sweep?: number; rise?: number };
 export type GridLayout = {
   type: "grid";
   x: number;
@@ -643,6 +643,7 @@ export const ArrayLayoutSchema = z.discriminatedUnion("type", [
     count,
     start: z.number().optional(),
     sweep: z.number().positive().max(360).optional(),
+    rise: z.number().optional(),
   }),
   z.object({
     type: z.literal("grid"),
@@ -767,14 +768,30 @@ const lineField = {
   arrow: z.enum(LINE_ARROWS).describe("Arrowheads: none, end (at the last point) or both"),
 };
 
-/** A line for `draw_shapes`: its points, and optional style. */
+/**
+ * A spiral, given instead of points to a ramp, a line or a path layout (plan 13 §5): the server turns it into points,
+ * one every 90° at most, with circle handles.
+ */
+export const SpiralInputSchema = z.strictObject({
+  x: z.number().describe("The spiral's center x"),
+  z: z.number().describe("The spiral's center z"),
+  radius: z.number().positive().describe("The radius, meters (a ramp's centerline)"),
+  turn: z.number().describe("Degrees around, counterclockwise seen from above (negative: clockwise); 120 is an arc, 720 two full turns"),
+  y: z.number().describe("The start's height"),
+  rise: z.number().describe("How much it climbs over the whole turn (negative: descends; 0: a flat arc)"),
+  from: z.number().optional().describe("The start's angle in degrees: 0 = east (+x), 90 = north (-z). Default 0"),
+});
+
+/** A line for `draw_shapes`: its points (or a spiral), and optional style. */
 export const LineInputSchema = z.strictObject({
   type: z.literal("line").describe("An open path of 3D points, for annotations (a route, a jump arc)"),
   points: z
     .array(LinePointInputSchema)
     .min(MIN_LINE_POINTS)
     .max(MAX_POINTS)
-    .describe(`The path, ${MIN_LINE_POINTS}..${MAX_POINTS} points in absolute world x/y/z (it doesn't close)`),
+    .optional()
+    .describe(`The path, ${MIN_LINE_POINTS}..${MAX_POINTS} points in absolute world x/y/z (it doesn't close). Give points or spiral`),
+  spiral: SpiralInputSchema.optional().describe("An arc or a spiral instead of points (a curved route, a spine for an array): the server turns it into points"),
   color: field.color.optional().describe(`Palette key: ${SHAPE_COLORS.join(", ")}. Defaults to ${DEFAULT_LINE_COLOR}`),
   thickness: lineField.thickness.optional().describe(`Screen pixels, ${MIN_THICKNESS}..${MAX_THICKNESS}. Defaults to ${DEFAULT_THICKNESS}`),
   dashed: lineField.dashed.optional().describe("Dashed instead of solid. Defaults to false"),
@@ -808,18 +825,7 @@ export const RampInputSchema = z.strictObject({
     .max(MAX_POINTS)
     .optional()
     .describe("The centerline, 2 or more points in absolute world x/z with the surface's y at each (give points or spiral)"),
-  spiral: z
-    .strictObject({
-      x: z.number().describe("The spiral's center x"),
-      z: z.number().describe("The spiral's center z"),
-      radius: z.number().positive().describe("The centerline's radius, meters"),
-      turn: z.number().describe("Degrees around, counterclockwise seen from above (negative: clockwise)"),
-      y: z.number().describe("The start's height"),
-      rise: z.number().describe("How much it climbs over the whole turn (negative: descends)"),
-      from: z.number().optional().describe("The start's angle in degrees: 0 = east (+x), 90 = north (-z). Default 0"),
-    })
-    .optional()
-    .describe("A spiral stair or ramp, instead of points: the server turns it into points (one every 90°)"),
+  spiral: SpiralInputSchema.optional().describe("A spiral stair or ramp, instead of points: the server turns it into points (one every 90°)"),
   width: rampField.width.optional(),
   step: rampField.step.optional(),
   base: rampField.base.optional(),
@@ -883,7 +889,8 @@ export const ArrayLayoutInputSchema = z.discriminatedUnion("type", [
       .min(MIN_LINE_POINTS)
       .max(MAX_POINTS)
       .optional()
-      .describe("The path, points in absolute world x/y/z as a line's (items stand at the path's height). Give points or along"),
+      .describe("The path, points in absolute world x/y/z as a line's (items stand at the path's height). Give points, spiral or along"),
+    spiral: SpiralInputSchema.optional().describe("An arc or a spiral instead of points: items climb with it (a spiral of platforms round a tower)"),
     closed: z.boolean().optional().describe("The last point joins the first (a loop). Default false"),
     along: FollowInputSchema.optional().describe("Instead of points, FOLLOW another node's path, live: its items move when it changes"),
     place: z
@@ -902,6 +909,10 @@ export const ArrayLayoutInputSchema = z.discriminatedUnion("type", [
     count: arrayCount.describe("How many items"),
     start: z.number().optional().describe("The first item's angle in degrees: 0 = east (+x), 90 = north (-z). Default 0"),
     sweep: z.number().positive().max(360).optional().describe("Degrees covered, counterclockwise from start. Default 360 (evenly around); less than 360 puts items at both ends of the arc"),
+    rise: z
+      .number()
+      .optional()
+      .describe("Meters the items climb over the sweep, evenly (the last item rise above the first; over a full circle, rise over one turn): a spiral of platforms. Default 0"),
   }),
   z.strictObject({
     type: z.literal("grid").describe("Items in rows and columns (and layers)"),
@@ -1033,6 +1044,7 @@ export const NodeUpdateSchema = z.strictObject({
     .strictObject({
       type: z.enum(ARRAY_LAYOUTS).optional(),
       points: z.array(LinePointInputSchema).min(MIN_LINE_POINTS).max(MAX_POINTS).optional(),
+      spiral: SpiralInputSchema.optional(),
       closed: z.boolean().optional(),
       along: z
         .strictObject({ id: z.string().optional(), at: z.enum(["top", "bottom"]).optional(), offset: z.number().nullable().optional() })
@@ -1047,6 +1059,7 @@ export const NodeUpdateSchema = z.strictObject({
       radius: z.number().optional(),
       start: z.number().optional(),
       sweep: z.number().optional(),
+      rise: z.number().optional(),
       rotation: z.number().optional(),
       columns: z.number().int().optional(),
       rows: z.number().int().optional(),

@@ -14,6 +14,7 @@ import {
   round2,
   rampProblem,
   roundPoints,
+  spiralLinePoints,
   spiralPoints,
   sameValue,
   toFreeformPoints,
@@ -513,8 +514,9 @@ export function createSceneStore({
         const f = followPath(byId().get(along.id), along);
         if ("problem" in f) errors.push(`${prefix}.along: ${f.problem}`);
         else [points, closed] = [f.points, f.closed];
-      } else if (d.points) points = checkLinePoints(prefix, d.points, errors);
-      else errors.push(`${prefix}: give a path either points or along (a node to follow)`);
+      } else if (d.spiral) points = spiralLinePoints(d.spiral);
+      else if (d.points) points = checkLinePoints(prefix, d.points, errors);
+      else errors.push(`${prefix}: give a path points, a spiral or along (a node to follow)`);
       if (!along && closed && points.length < 3) errors.push(`${prefix}.closed: a closed path needs at least 3 points`);
       const place = d.place ?? (d.count !== undefined && d.spacing === undefined ? "count" : "spacing");
       if (place === "count" && d.count === undefined) errors.push(`${prefix}.count: place: count needs a count`);
@@ -545,6 +547,7 @@ export function createSceneStore({
         count: d.count,
         ...("value" in start ? { start: start.value } : {}),
         ...(sweep !== undefined ? { sweep } : {}),
+        ...(d.rise !== undefined && round2(d.rise) !== 0 ? { rise: round2(d.rise) } : {}),
       };
     }
     if (d.type === "scatter") {
@@ -622,6 +625,11 @@ export function createSceneStore({
     // A following path's points are its target's (and can be more than a path given as points may have): they
     // come from what it follows, and points given with it are ignored (unlink it first).
     if (input.along) delete input.points;
+    // A spiral given to a path replaces its points (and unlinks a following one, as points would be refused).
+    if (rest.spiral !== undefined) {
+      delete input.points;
+      if (!("along" in rest)) delete input.along;
+    }
     // A scatter given an area leaves its circle, and given a circle's field leaves its area.
     if (same && node.layout.type === "scatter") {
       if (rest.area !== undefined) for (const k of ["x", "z", "radius"]) if (!(k in rest)) delete input[k];
@@ -707,12 +715,13 @@ export function createSceneStore({
         }
         const name = d.name?.trim();
         if (d.type === "line") {
+          if ((d.points === undefined) === (d.spiral === undefined)) errors.push(`${prefix}: give a line either points or spiral (one of them)`);
           return {
             type: "line" as const,
             ...(name ? { name } : {}),
             ...(d.parent !== undefined ? { parent: d.parent } : {}),
             color: d.color ?? DEFAULT_LINE_COLOR,
-            points: checkLinePoints(prefix, d.points, errors),
+            points: d.spiral ? spiralLinePoints(d.spiral) : checkLinePoints(prefix, d.points ?? [], errors),
             thickness: round2(d.thickness ?? DEFAULT_THICKNESS),
             dashed: d.dashed ?? false,
             arrow: d.arrow ?? "none",
@@ -735,7 +744,9 @@ export function createSceneStore({
         }
         if (d.type === "array") {
           if ((d.entity === undefined) === (d.entities === undefined)) errors.push(`${prefix}: give an array either entity or entities (one of them)`);
-          if (d.layout.type === "path" && d.layout.points && d.layout.along) errors.push(`${prefix}.layout: give a path either points or along, not both`);
+          if (d.layout.type === "path" && [d.layout.points, d.layout.spiral, d.layout.along].filter(Boolean).length > 1) {
+            errors.push(`${prefix}.layout: give a path one of points, spiral or along`);
+          }
           const entities = arrayEntitiesFrom(`${prefix}.entities`, d.entities ?? (d.entity !== undefined ? [{ entity: d.entity }] : []), errors);
           const layout = arrayLayoutFrom(`${prefix}.layout`, d.layout, arrayDefaults(entities), errors);
           return defined({
