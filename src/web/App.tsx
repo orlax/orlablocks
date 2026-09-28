@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps } from "react";
-import { BookOpen, ChevronDown, Map as MapIcon } from "lucide-react";
+import { ArrowLeft, BookOpen, ChevronDown, Map as MapIcon, Package } from "lucide-react";
 import {
   DEFAULT_COLOR,
   DEFAULT_LINE_COLOR,
@@ -132,6 +132,11 @@ export function App() {
   const [camera, setCamera] = useState<CameraState | null>(null);
   const [cursor, setCursor] = useState<GroundPoint | null>(null);
   const [tool, setTool] = useState<Tool>("select");
+  // Notes belong in scenes: the Note tool is off while an entity is open.
+  const chooseTool = (t: Tool) => {
+    if (t === "note" && state.current.open?.entity) return setNotice("Notes go in scenes, not in an entity");
+    setTool(t);
+  };
   // Holding Space switches to the hand for as long as it's held.
   const [spaceHand, setSpaceHand] = useState(false);
   // Node IDs (boxes and groups), at the level of `context`.
@@ -220,12 +225,16 @@ export function App() {
   // A scene opened (here, in another tab, or when this tab connected): close the picker, drop the local state that
   // belonged to the old scene, and restore the scene's selection (the Viewport restores its camera). A rename
   // doesn't send `restore`, so it changes nothing here.
-  const sceneKey = open ? `${open.project.id}/${open.scene.id}` : "";
+  const sceneKey = open ? `${open.project.id}/${open.scene.id}${open.entity ? `/${open.entity.id}` : ""}` : "";
+  // Edit entity mode (08.5): the entity whose definition is open, instead of the scene.
+  const editingEntity = open?.entity ?? null;
   useEffect(() => {
     if (!restore) return;
     setPickerOpen(false);
     setSelection(restore.selection);
     setContext(null);
+    setIsolation(null);
+    setPlacing(null);
     setEditing(null);
     setOutlinerHover(null);
     pendingSelect.current = null;
@@ -366,6 +375,11 @@ export function App() {
         setPlacing(null);
         return;
       }
+      // In Edit entity mode, Esc with nothing selected (and nothing isolated) goes back to the scene.
+      if (e.key === "Escape" && state.current.open?.entity && selection.length === 0 && !isolated && context === null) {
+        send({ type: "close_entity" });
+        return;
+      }
       if (e.key === "Escape") {
         // While isolated, Esc deselects first (staying in the isolated group), then ends the isolation.
         if (isolated && selection.length > 0) setSelection([]);
@@ -386,7 +400,7 @@ export function App() {
         send({ type: "remove_nodes", ids: selection });
       }
       const match = TOOLS.find((t) => t.key === key);
-      if (match) setTool(match.tool);
+      if (match) chooseTool(match.tool);
     };
     const onKeyUp = (e: KeyboardEvent) => {
       if (e.key !== " " || typingInField(e)) return;
@@ -603,6 +617,7 @@ export function App() {
                   ? {
                       entity: single.entity,
                       entities: library.entities,
+                      onEdit: () => send({ type: "open_entity", entity: single.entity }),
                       onSwap: (entity) => send({ type: "update_nodes", changes: [{ id: single.id, entity }] }),
                       onDetach: () => {
                         pendingSelect.current = { before: new Set(nodes.map((n) => n.id)), pick: (added) => added.filter((n) => n.type === "group" && n.parent === single.parent).map((n) => n.id).slice(0, 1) };
@@ -611,7 +626,7 @@ export function App() {
                     }
                   : undefined,
               makeEntity:
-                selectedShapes.length > 0 && !selectedShapes.some((b) => b.type === "instance" || b.type === "note")
+                !editingEntity && selectedShapes.length > 0 && !selectedShapes.some((b) => b.type === "instance" || b.type === "note")
                   ? {
                       suggested: (single && isGroup(single) ? single.name : undefined) ?? "entity",
                       onMake: (name) => {
@@ -684,6 +699,8 @@ export function App() {
         preview={preview}
         onSelect={setSelection}
         showNotes={showNotes}
+        entityMode={!!editingEntity}
+        onOpenEntity={(entity) => send({ type: "open_entity", entity })}
         placing={placing}
         onPlaceInstance={(entity, at) => {
           pendingSelect.current = { before: new Set(nodes.map((n) => n.id)), pick: (added) => added.filter((n) => n.type === "instance").map((n) => n.id) };
@@ -748,6 +765,7 @@ export function App() {
           onLock={(id, locked) => send({ type: "update_nodes", changes: [{ id, locked }] })}
           onHide={(id, hidden) => send({ type: "update_nodes", changes: [{ id, hidden }] })}
           entityNames={Object.fromEntries((library?.entities ?? []).map((e) => [e.id, e.name]))}
+          entityMode={!!editingEntity}
         />
         {open && library && (
           <EntitiesPanel
@@ -755,7 +773,9 @@ export function App() {
             uses={libraryState.uses}
             edit={(e) => send({ type: "update_library", ...e })}
             placing={placing}
-            onPlace={(id) => setPlacing(placing === id ? null : id)}
+            onPlace={(id) => (editingEntity ? setNotice("Entities can't hold instances: go back to a scene to place one") : setPlacing(placing === id ? null : id))}
+            onEdit={(id) => send({ type: "open_entity", entity: id })}
+            editing={editingEntity?.id ?? null}
           />
         )}
       </div>
@@ -774,6 +794,7 @@ export function App() {
             <MapIcon size={14} className="icon" />
             <span className="where">
               {open.project.name} ▸ {open.scene.name}
+              {editingEntity && ` ▸ ${library ? (entityMeta(library, editingEntity.id)?.name ?? editingEntity.name) : editingEntity.name}`}
             </span>
             <ChevronDown size={14} className="icon" />
           </button>
@@ -796,6 +817,23 @@ export function App() {
           send={send}
           onClose={() => setLibraryOpen(false)}
         />
+      )}
+      {editingEntity && (
+        <div className="entity-banner">
+          <Package size={14} />
+          <span>
+            Editing entity <b>{library ? (entityMeta(library, editingEntity.id)?.name ?? editingEntity.name) : editingEntity.name}</b>
+            {" · "}
+            {(() => {
+              const u = libraryState.uses.entities[editingEntity.id];
+              return u ? `placed ${u.nodes} time${u.nodes === 1 ? "" : "s"} in ${u.sceneNames.join(", ")}` : "not placed yet";
+            })()}
+            {" · the origin is its pivot; changes reach every instance"}
+          </span>
+          <button type="button" title="Back to the scene (Esc with nothing selected)" onClick={() => send({ type: "close_entity" })}>
+            <ArrowLeft size={13} /> Back to {open?.scene.name}
+          </button>
+        </div>
       )}
       {placing && library && (
         <div className="placing-banner">
@@ -830,7 +868,7 @@ export function App() {
         {bar && <ContextualBar {...bar} />}
         <ToolBar
           tool={activeTool}
-          onTool={setTool}
+          onTool={chooseTool}
           history={history}
           connected={connected}
           onUndo={() => send({ type: "undo" })}

@@ -13,6 +13,7 @@ import {
   Rotate3d,
   Spline,
   Package,
+  PencilRuler,
   Unlink,
   type LucideIcon,
 } from "lucide-react";
@@ -75,6 +76,8 @@ export type InspectorProps = {
     entities: EntityMeta[];
     onSwap: (entity: string) => void;
     onDetach: () => void;
+    /** Edit entity: open its definition (every instance follows the edits). */
+    onEdit: () => void;
   };
   /** Make entity (the selection has shapes, and no instances or notes): with the name to give it. */
   makeEntity?: { suggested: string; onMake: (name: string) => void };
@@ -446,7 +449,7 @@ function MakeEntity({ suggested, onMake }: { suggested: string; onMake: (name: s
 }
 
 /** An instance: which entity it shows (swap it), what that entity is (its description and tags), and Detach. */
-function InstanceSection({ entity, entities, onSwap, onDetach, library }: NonNullable<InspectorProps["instance"]> & { library: Library | null }) {
+function InstanceSection({ entity, entities, onSwap, onDetach, onEdit, library }: NonNullable<InspectorProps["instance"]> & { library: Library | null }) {
   const meta = entities.find((e) => e.id === entity);
   return (
     <Section label="Entity">
@@ -471,6 +474,11 @@ function InstanceSection({ entity, entities, onSwap, onDetach, library }: NonNul
         </div>
       )}
       <div className="inspector-actions">
+        {meta && (
+          <button className="labeled" title="Edit entity: change its shapes (or double-click the instance); every instance follows" onClick={onEdit}>
+            <PencilRuler size={16} /> Edit entity
+          </button>
+        )}
         <button className="labeled" title="Detach: turn it into a plain group of shapes you can edit (it stops following the entity)" onClick={onDetach}>
           <Unlink size={16} /> Detach
         </button>

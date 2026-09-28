@@ -390,6 +390,30 @@ export function openDataDir(root: string) {
       writeJson(entityFile(project, entity), file);
     },
 
+    readEntity(project: string, entity: string): EntityFile {
+      return readJson(entityFile(project, entity), EntityFileSchema);
+    },
+
+    /** Adds one line to an entity's own history log (08.5: its edits, apart from every scene's). */
+    appendEntityHistory(project: string, entity: string, line: HistoryLine): void {
+      const encoded = line.type === "commit" ? { ...line, ops: encodeOps(line.ops), inverse: encodeOps(line.inverse) } : line;
+      fs.appendFileSync(path.join(entitiesDir(project), entity, "history.jsonl"), `${JSON.stringify(encoded)}\n`);
+    },
+
+    readEntityHistory(project: string, entity: string): HistoryLine[] | null {
+      return readLines(path.join(entitiesDir(project), entity, "history.jsonl"), HistoryLineSchema) as HistoryLine[] | null;
+    },
+
+    /** An entity's `editor.json` (the camera and selection it was left with), or null. */
+    readEntityEditor(project: string, entity: string): EditorFile | null {
+      const file = path.join(entitiesDir(project), entity, "editor.json");
+      return fs.existsSync(file) ? readJson(file, EditorFileSchema) : null;
+    },
+
+    writeEntityEditor(project: string, entity: string, file: EditorFile): void {
+      writeJson(path.join(entitiesDir(project), entity, "editor.json"), file);
+    },
+
     /** When the design guide last changed on disk, or null if the project has none. */
     guideChangedAt(project: string): Date | null {
       return fs.existsSync(guideFile(project)) ? fs.statSync(guideFile(project)).mtime : null;

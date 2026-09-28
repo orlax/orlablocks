@@ -93,6 +93,7 @@ export function Outliner({
   onLock,
   onHide,
   entityNames = {},
+  entityMode = false,
 }: {
   nodes: SceneNode[];
   selection: string[];
@@ -110,6 +111,8 @@ export function Outliner({
   onHide: (id: string, hidden: boolean) => void;
   /** Entity names by ID, for instances' rows. */
   entityNames?: Record<string, string>;
+  /** Editing an entity: a top-level hole is fine there (no warning). */
+  entityMode?: boolean;
 }) {
   const locked = lockedIds(nodes);
   const hidden = hiddenIds(nodes);
@@ -279,7 +282,7 @@ export function Outliner({
                       {labelOf(node, entityNames)}
                     </span>
                     {labelOf(node, entityNames) !== node.id && <span className="id">{node.id}</span>}
-                    {isHole(node) && node.parent === undefined && (
+                    {isHole(node) && node.parent === undefined && !entityMode && (
                       <span className="warn" title="Not in a group: this hole cuts nothing">
                         <TriangleAlert size={12} />
                       </span>

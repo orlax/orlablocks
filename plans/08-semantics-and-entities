@@ -805,6 +805,69 @@ The instructions went from 10,342 to 3,642 characters. The topics range from 0.7
 7. Try to delete a placed entity in the Library: it's refused, with the error naming the scene.
 8. Ask the agent: *"make a tree entity and plant a row of five"*, then *"what's in this scene?"*. It should use `make_entity` and instances, and describe the scene from the outline's entity glossary.
 
+### 08.5 — Edit entity and default entities (done; checked in the browser by Orlando)
+
+**Built:**
+- **The workspace's open document can be an entity:**
+  - `openEntity` loads the entity's `entity.json` and its own `history.jsonl` (via `restoreScene`) and its `editor.json` into the store, remembering the scene. The first camera is on the pivot;
+  - every step appends to the entity's log and writes its file, updates the registry, and broadcasts the definitions, so every instance in every tab follows live;
+  - `closeEntity` reopens the scene, whose history is untouched;
+  - `OpenScene` gains `entity: { id, name }`;
+  - the uses read every scene from disk while an entity is open.
+- **The store knows its document:** in an entity, notes and instances are refused (draw and paste), and Make entity is refused. Deleting the entity being edited is refused too.
+- **The default `human`** (`defaultEntities.ts`): two leg cylinders, a torso box, two arms and a head (bevel 1), 1.8 m, gray, facing north. It's seeded once per project (`seeded: ["guide", "human"]`), existing projects included, and a deleted one stays deleted.
+- **The agent** (server version 0.0.16):
+  - `get_scene` in entity mode has `editing` (the entity, its name, description, tags, where it's placed, and what that means) before the outline;
+  - no "cuts nothing" warnings for top-level holes there;
+  - the core and the `entities` topic explain the mode (5.4 kB core).
+- **The editor:**
+  - the ways in: double-click an instance (at its own level), the inspector's **Edit entity**, or the Entities panel's edit button (the row shows as selected while it's edited);
+  - a blue **banner**: `Editing entity tree tall · placed 3 times in Keep · …` with **Back to Keep**. `Esc` with nothing selected goes back too. The project bar ends in the entity's name;
+  - top-level holes cut the definition's top level (a virtual root group, as an instance has) and show no warning in the view or the outliner;
+  - the Note tool, placing and Make entity are off (with a notice);
+  - entering or leaving resets the selection, the entered group, the isolation and placing.
+  - The origin axes (already drawn) mark the pivot. A separate cross wasn't needed.
+- There are 2 new tests (entity mode end to end with a restart; the human, seeded once), 346 in all. Typecheck is clean, and the editor builds.
+
+**Scripted check** (port 5171, scratch `DATA_DIR`, 15 checks, all passed):
+- a new project has the human, and the editor its definition;
+- the editor opens `tree tall` (entity mode, camera on the pivot, its own empty history);
+- `get_scene`'s `editing` ("3 times, in Scene 1");
+- the agent adds a crown, and every tab gets the definition live, as the entity's own undo step;
+- a note is refused;
+- a top-level hole isn't warned about;
+- Back reopens the scene with its history untouched;
+- the instances' size is now 4 × 4 × 8.
+
+**Changed from the plan:**
+- **The pivot is shown by the origin axes the view already draws,** not a new cross.
+- **The entity's name, description and tags were already editable in 08.4** (the Entities panel and `update_library { entities }`), so entity mode edits only its shapes.
+
+**Browser checklist for Orlando** (restart the server, then reconnect with `/mcp`):
+1. A new project's Entities panel has **human**. Drag it into the view: a 1.8 m gray person.
+2. Double-click a tree instance (or its inspector's **Edit entity**): the blue banner appears, the view shows only the tree around the origin, and the outliner lists its shapes.
+3. Make the trunk taller and add a crown. Undo and redo: only the entity's steps. Press **Back** (or `Esc` with nothing selected): every tree in the scene is taller, and the scene's undo is where it was.
+4. Place the tree in a second scene, edit it from there, and go back: both scenes' trees changed (open the first to see).
+5. In entity mode the Note tool and placing give a notice, and there's no Make entity.
+6. Edit the window entity: its hole cuts nothing inside the definition (it's alone), and there's no warning mark. Back in the scene, it still cuts the tower's wall.
+7. Delete the human (while it's unplaced), restart the server: it doesn't come back.
+8. Ask the agent, while you're editing an entity: *"add a door to this"*. It should see `editing` and draw in the definition's frame.
+
+### Phase 08 built (2026-09-28); waiting for Orlando's browser acceptance (§11)
+
+The demo in §1 end to end, the token measurement (done in 08.1: the default outline is about 3% of the old output), old projects opening unchanged (they gain an empty library, the default guide and the human), and the separate histories (scene, entity and library, each surviving restarts).
+
+### Notes for the next session (written 2026-09-28, at the end of phase 08)
+
+- **Where things stand:** phase 08 is on the branch, one commit per increment (08.5's commit follows Orlando's check). **Phase 09 is the review loop** (§14): `render_view`, rendered by the open editor. **Phase 10 is the array tool.**
+- **The registry in `src/shared/entities.ts` is process-wide:** the server has one project open, and each editor tab one. Tests that build instances call `setDefinitions` first (`entities.test.ts` does it in `beforeEach`).
+- **Instances are shapes for geometry, and groups for holes and drawing.** Anything new that walks shapes for rendering or hit-testing must expand them (`expandShapes`, `expandNodes`) and map hits back (`ownerOf`).
+- **The MCP instructions are 5.4 kB,** under the 9 kB they had reached. Keep new detail in `get_guide` topics.
+- **Loose ends:**
+  - the tags field works on one node at a time;
+  - the Guide tab has no markdown preview;
+  - Make entity in the editor asks only for a name (the description and tags go in the Entities panel after).
+
 ---
 
 ## 14. Notes for phase 09: the review loop

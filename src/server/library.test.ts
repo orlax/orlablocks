@@ -237,7 +237,7 @@ describe("the library in the data folder", () => {
     workspace.createProject({ name: "Castle", sceneName: "Entrance" });
     expect(workspace.library.get().guide).toBe(DEFAULT_GUIDE);
     expect(fs.readFileSync(path.join(projectDir(root), "rules", "design-guide.md"), "utf8")).toBe(DEFAULT_GUIDE);
-    expect(JSON.parse(fs.readFileSync(path.join(projectDir(root), "library.json"), "utf8"))).toMatchObject({ seq: 0, seeded: ["guide"] });
+    expect(JSON.parse(fs.readFileSync(path.join(projectDir(root), "library.json"), "utf8"))).toMatchObject({ seq: 0, seeded: ["guide", "human"] });
 
     // Emptied, it stays empty after a restart.
     workspace.editLibrary({ guide: "" }, "human");

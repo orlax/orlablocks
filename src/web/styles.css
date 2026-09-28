@@ -980,3 +980,38 @@ body {
 }
 .placing-banner button { border: 0; background: rgba(255, 255, 255, 0.1); color: inherit; border-radius: 5px; padding: 2px 8px; font: inherit; cursor: pointer; }
 .sigil.entity { color: #9fb7f0; flex: none; align-self: center; }
+
+/* Edit entity mode (from 08.5): the banner at the top, with Back. */
+.entity-banner {
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 21;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: calc(100vw - 560px);
+  padding: 5px 6px 5px 10px;
+  border-radius: 8px;
+  background: #2f4a7a;
+  color: #eef3ff;
+  font: 12px/1.3 system-ui, sans-serif;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.25);
+}
+.entity-banner span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.entity-banner button {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.16);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.entity-banner button:hover { background: rgba(255, 255, 255, 0.26); }

@@ -193,6 +193,12 @@ export function createSceneStore({
   const nextId: NextId = firstIds();
 
   let history = createHistory();
+  // What the store holds: a scene, or an entity's definition (08.5), which can't hold notes or instances.
+  let document: "scene" | "entity" = "scene";
+  const entityProblem = (n: { type?: string }) =>
+    document === "entity" && (n.type === "note" || n.type === "instance")
+      ? `an entity can't hold ${n.type === "note" ? "notes (put them in the scene)" : "instances (no nested entities)"}`
+      : null;
 
   /** The next ID for a new node of `type`. */
   const newId = (type: SceneNode["type"]) => `${type}_${nextId[type]++}`;
@@ -408,7 +414,11 @@ export function createSceneStore({
      * Replaces the whole scene with a saved one (opening a scene): its nodes, ID counters and history (rebuilt from
      * the log; empty if none), and no selection. Broadcasts; isn't a step.
      */
-    load(saved: { nodes: SceneNode[]; nextId: NextId; history?: History }): void {
+    /** Whether the store holds a scene or an entity's definition. */
+    getDocument: () => document,
+
+    load(saved: { nodes: SceneNode[]; nextId: NextId; history?: History; document?: "scene" | "entity" }): void {
+      document = saved.document ?? "scene";
       scene.nodes = saved.nodes;
       scene.selection = [];
       Object.assign(nextId, saved.nextId);
@@ -449,6 +459,8 @@ export function createSceneStore({
             arrow: d.arrow ?? "none",
           };
         }
+        const inEntity = entityProblem(d);
+        if (inEntity) errors.push(`${prefix}: ${inEntity}`);
         if (d.type === "instance") {
           if (!entityName(d.entity)) errors.push(`${prefix}.entity: no entity "${d.entity}" in the project library (get_library lists them)`);
           return {
@@ -878,6 +890,8 @@ export function createSceneStore({
       const errors: string[] = [];
       const seen = new Set<string>();
       snapshot.forEach((n, i) => {
+        const inEntity = entityProblem(n);
+        if (inEntity) errors.push(`nodes[${i}]: ${inEntity}`);
         if (seen.has(n.id)) errors.push(`nodes[${i}].id: "${n.id}" appears more than once`);
         seen.add(n.id);
       });
@@ -984,6 +998,7 @@ export function createSceneStore({
      * takes the group's place, and behaves like it). Refused for instances and notes. Keeps the nodes' IDs.
      */
     prepareEntity(ids: string[]): PreparedEntity {
+      if (document === "entity") throw new SceneError("You're editing an entity: make entities in a scene. No entity was made.");
       if (ids.length === 0) throw new SceneError("ids: at least one ID is required. No entity was made.");
       const errors: string[] = [];
       checkIds("ids", ids, errors);

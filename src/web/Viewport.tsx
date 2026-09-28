@@ -145,6 +145,13 @@ const rampPoints = (points: EditPoint[]): RampPoint[] =>
 type YawKey = "left" | "right";
 const YAW_KEYS: Record<string, YawKey> = { a: "left", arrowleft: "left", d: "right", arrowright: "right" };
 
+/** An entity's definition as its instances hold it: the top level in a group, so its top-level holes cut there. */
+const ENTITY_ROOT = "entity:root";
+const inEntityRoot = (nodes: SceneNode[]): SceneNode[] => [
+  { id: ENTITY_ROOT, type: "group", createdBy: "human" },
+  ...nodes.map((n) => (n.parent === undefined ? ({ ...n, parent: ENTITY_ROOT } as SceneNode) : n)),
+];
+
 /** The drag-and-drop type of an entity dragged from the Library (its ID). */
 export const ENTITY_DRAG = "application/x-dungeon-entity";
 
@@ -293,6 +300,10 @@ type Props = {
   showNotes: boolean;
   /** A note was placed with the Note tool (at this point, on the surface under the click). */
   onPlaceNote: (at: { x: number; y: number; z: number }) => void;
+  /** Edit entity mode (08.5): the nodes are an entity's definition, whose top level is a group in every instance. */
+  entityMode: boolean;
+  /** Double-clicking an instance opens its entity for editing. */
+  onOpenEntity: (entity: string) => void;
   /** An entity being placed from the Library (its ID): the next click puts an instance there. */
   placing: string | null;
   /** An instance of `entity` goes here (a click while placing, or an entity dropped from the Library). */
@@ -341,6 +352,8 @@ export function Viewport({
   showGrid,
   showNotes,
   onPlaceNote,
+  entityMode,
+  onOpenEntity,
   placing,
   onPlaceInstance,
   visible,
@@ -441,7 +454,9 @@ export function Viewport({
   // A hidden hole cuts nothing; holes outside the isolation still cut what shows (the cut follows the data).
   const hidden = hiddenIds(nodes);
   // Instances cut and are cut as groups of their shapes.
-  const cuts = cutters(expandNodes([...nodes.filter(isGroup), ...shown.filter((b) => !(isHole(b) && hidden.has(b.id))), ...ghosts]));
+  // In an entity's definition the top level is a group (in every instance), so its holes cut there.
+  const cutList = expandNodes([...nodes.filter(isGroup), ...shown.filter((b) => !(isHole(b) && hidden.has(b.id))), ...ghosts]);
+  const cuts = cutters(entityMode ? inEntityRoot(cutList) : cutList);
   // The free-form or line in point editing, as shown. A free-form's points sit on its top face (`editTop`); a
   // line's carry their own y, and its path is open.
   const editShape =
@@ -1074,8 +1089,13 @@ export function Viewport({
     if (id === undefined) return;
     const target = resolve(id).id;
     if (target === id) {
-      // Already the shape itself.
-      const type = shown.find((b) => b.id === id)?.type;
+      // Already the shape itself (an instance: open its entity for editing).
+      const hitNode = shown.find((b) => b.id === id);
+      if (hitNode?.type === "instance") {
+        onOpenEntity(hitNode.entity);
+        return;
+      }
+      const type = hitNode?.type;
       if (type === "freeform" || type === "line" || type === "ramp") {
         onSelect([id]);
         onEditing(id);
@@ -1277,6 +1297,7 @@ export function Viewport({
         <OriginAxes />
         <Boxes
           boxes={[...drawn, ...expandShapes(ghosts)]}
+          entityMode={entityMode}
           cuts={cuts}
           showHoles={showHoles}
           draft={draft}
@@ -1388,6 +1409,7 @@ export function Viewport({
  */
 function Boxes({
   boxes,
+  entityMode,
   cuts,
   showHoles,
   draft,
@@ -1395,6 +1417,8 @@ function Boxes({
   hovered,
 }: {
   boxes: Shape[];
+  /** Editing an entity: a top-level hole is fine there (no warning). */
+  entityMode: boolean;
   /** The holes that cut each shape, by its ID. */
   cuts: Map<string, ClosedShape[]>;
   /** Whether holes show as ghosts; hidden ones still show while selected or hovered. */
@@ -1421,7 +1445,7 @@ function Boxes({
         return (
           <group key={b.id}>
             <ShapeMesh shape={b} highlight={highlight} cuts={cuts.get(b.id)} />
-            {isHole(b) && b.parent === undefined && <HoleWarning hole={b} />}
+            {isHole(b) && b.parent === undefined && !entityMode && <HoleWarning hole={b} />}
           </group>
         );
       })}

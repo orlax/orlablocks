@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ChevronDown, ChevronRight, MousePointerClick, Package } from "lucide-react";
+import { ChevronDown, ChevronRight, MousePointerClick, Package, PencilRuler } from "lucide-react";
 import { definitionOf } from "../shared/entities";
 import { boundsOf } from "../shared/geometry";
 import type { Library, LibraryEdit, Uses } from "../shared/library";
@@ -39,6 +39,8 @@ export function EntitiesPanel({
   edit,
   placing,
   onPlace,
+  onEdit,
+  editing,
 }: {
   library: Library;
   uses: Uses;
@@ -46,6 +48,10 @@ export function EntitiesPanel({
   /** The entity being placed (its ID), and starting or stopping placing one. */
   placing: string | null;
   onPlace: (entity: string) => void;
+  /** Edit entity: open one's definition. */
+  onEdit: (entity: string) => void;
+  /** The entity open for editing, if any. */
+  editing: string | null;
 }) {
   const [open, setOpen] = useState(loadOpen);
   const [openId, setOpenId] = useState<string | null>(null);
@@ -79,7 +85,7 @@ export function EntitiesPanel({
             return (
               <div key={e.id} className={expanded ? "entity-item open" : "entity-item"}>
                 <div
-                  className={placing === e.id ? "outliner-row selected" : "outliner-row"}
+                  className={placing === e.id || editing === e.id ? "outliner-row selected" : "outliner-row"}
                   draggable
                   title={`${e.description ? `${e.description}\n\n` : ""}${sizeText(e.id)} · drag into the view to place one`}
                   onDragStart={(ev) => {
@@ -94,6 +100,17 @@ export function EntitiesPanel({
                   <span className="id" title={u ? `in ${u.sceneNames.join(", ")}` : undefined}>
                     {u ? `${u.nodes} placed` : "unused"}
                   </span>
+                  <button
+                    type="button"
+                    className={editing === e.id ? "outliner-action on" : "outliner-action"}
+                    title={editing === e.id ? "Being edited" : "Edit entity: change its shapes; every instance follows"}
+                    onClick={(ev) => {
+                      ev.stopPropagation();
+                      onEdit(e.id);
+                    }}
+                  >
+                    <PencilRuler size={13} />
+                  </button>
                   <button
                     type="button"
                     className={placing === e.id ? "outliner-action on" : "outliner-action"}

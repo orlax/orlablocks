@@ -875,6 +875,8 @@ export type ProjectSummary = {
 export type OpenScene = {
   project: { id: string; name: string; description: string };
   scene: { id: string; name: string };
+  /** While an entity is being edited (08.5): which one. The store holds its definition; `scene` is where Back goes. */
+  entity?: { id: string; name: string };
 };
 
 /** The editor's camera (see `src/web/camera.ts`): saved per scene in `editor.json`, restored when the scene opens. */
@@ -924,6 +926,8 @@ export const ClientMessageSchema = z.discriminatedUnion("type", [
     tags: z.array(z.string()).optional(),
   }),
   z.object({ type: z.literal("detach_instances"), ids: IdsSchema }),
+  z.object({ type: z.literal("open_entity"), entity: z.string() }),
+  z.object({ type: z.literal("close_entity") }),
 ]);
 export type ClientMessage = z.input<typeof ClientMessageSchema>;
 

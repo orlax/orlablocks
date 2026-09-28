@@ -57,10 +57,12 @@ function buildServer(workspace: Workspace) {
         ? [`${n.id} shows entity "${n.entity}", which isn't in the library (it shows as a red block): swap its entity or remove it`]
         : [],
     );
-    const warnings = [...own, ...holeWarnings(nodes).map(withTopic), ...missing];
+    // In an entity's definition a top-level hole is fine: every instance puts it in a group.
+    const holes = store().getDocument() === "entity" ? [] : holeWarnings(nodes).map(withTopic);
+    const warnings = [...own, ...holes, ...missing];
     return warnings.length > 0 ? { ...result, warnings } : result;
   };
-  const server = new McpServer({ name: "dungeon-designer", version: "0.0.15" }, { instructions: INSTRUCTIONS });
+  const server = new McpServer({ name: "dungeon-designer", version: "0.0.16" }, { instructions: INSTRUCTIONS });
   // Every tool reads or edits the open scene, and fails with a clear message while nothing is open.
   const store = () => workspace.requireScene();
   const library = (): Library => (workspace.getOpen() ? workspace.library.get() : EMPTY_LIBRARY);
@@ -95,7 +97,29 @@ function buildServer(workspace: Workspace) {
     },
     async (query) => {
       const scene = store().getScene();
-      return json(warned(describeScene(workspace.getOpen()!, scene, query, { library: library(), guide: guideLine() })));
+      const open = workspace.getOpen()!;
+      const outline = describeScene(open, scene, query, { library: library(), guide: guideLine() });
+      if (!open.entity) return json(warned(outline));
+      // Edit entity mode: the nodes are the entity's definition.
+      const meta = library().entities.find((e) => e.id === open.entity!.id);
+      const placed = workspace.uses().entities[open.entity.id];
+      return json(
+        warned({
+          editing: {
+            entity: open.entity.id,
+            name: meta?.name,
+            ...(meta?.description ? { description: meta.description } : {}),
+            ...(meta?.tags ? { tags: meta.tags } : {}),
+            placed: placed ? `${placed.nodes} times, in ${placed.sceneNames.join(", ")}` : "nowhere yet",
+            about:
+              "The human is editing this ENTITY's definition, not a scene: the nodes are its shapes around its pivot (the " +
+              "origin, its bottom center: keep its bottom at y = 0), and every change reaches every instance of it. Notes " +
+              "and instances can't go in it, and a hole at its top level is fine (each instance is a group). Its name, " +
+              "description and tags change with update_library { entities }. The human goes back to the scene in the editor.",
+          },
+          ...outline,
+        }),
+      );
     },
   );
 

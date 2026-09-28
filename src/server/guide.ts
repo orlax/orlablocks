@@ -69,7 +69,8 @@ export const INSTRUCTIONS =
   "ENTITIES are the project's prefabs (a tree, a door, a poison pit): an instance (type: instance, e.g. instance_4) " +
   "shows its entity's shapes at its x, y, z and rotation, and carries its description and tags; the outline shows " +
   "one line per instance, and the glossary what each entity is and its size. Place and repeat entities instead of " +
-  "redrawing a thing twice. " +
+  "redrawing a thing twice. When get_scene has `editing`, the human is editing an entity: the nodes are its shapes " +
+  "around its pivot, and your changes reach every instance. " +
   "NOTES (type: note) are post-its pinned in the scene: the human's intents and work items. The outline always lists " +
   "the open ones (`notes`); treat them as intent, act on them when asked, and mark one done (update_nodes status: " +
   "done) once it's handled. Leave a note of your own for an assumption or a question. " +
@@ -99,7 +100,9 @@ const GUIDE: Record<Exclude<GuideTopic, "design">, string> = {
     "become the entity). detach_instances turns an instance back into a plain group of shapes, only when one copy must " +
     "differ. get_library { entity } returns a definition's nodes. For HOLES an instance is a group: its shapes are " +
     "directly in it. So an entity that is a hole (a window) cuts what's directly in the instance's parent group and in " +
-    "the groups beside it: place a window instance in the room's group and it cuts that room's walls. A hole in the " +
+    "the groups beside it: place a window instance in the room's group and it cuts that room's walls. The human edits " +
+    "an entity's shapes in Edit entity mode: then get_scene has `editing`, the nodes are the definition (around the " +
+    "pivot: keep its bottom at y = 0), the tools change it (as its own undo steps), and every instance follows. A hole in the " +
     "scene cuts an instance's shapes as it cuts a sibling group's. An instance whose entity is missing shows as a red " +
     "block (results warn about it).",
   library:

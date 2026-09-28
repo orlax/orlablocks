@@ -21,6 +21,7 @@ import { isGroup, tagsOf } from "../shared/tree";
 import type { SceneNode } from "../shared/scene.types";
 import { applyOp, createHistory, type HistoryEntry } from "./commands";
 import { DEFAULT_GUIDE } from "./defaultGuide";
+import { HUMAN, HUMAN_DESCRIPTION } from "./defaultEntities";
 import { createLibraryStore, newLibraryHistory, type LibraryEntry, type LibraryStep, type LibraryStore } from "./library";
 import type { DataDir, HistoryLine, LibraryHistoryLine } from "./persist";
 import { createSceneStore, SceneError, type SceneStore, type Step } from "./scene";
@@ -41,6 +42,9 @@ function fileOp<T>(failure: string, fn: () => T): T {
     throw new SceneError(`${failure}\n${(err as Error).message}`);
   }
 }
+
+/** Where the camera starts in an entity opened for the first time: its pivot, the origin, from close by. */
+const ENTITY_CAMERA: Camera = { focus: { x: 0, z: 0 }, yaw: 45, distance: 18 };
 
 /** `editor.json` is written this long after the last camera or selection change (once it stops, not while it moves). */
 export const EDITOR_SAVE_DELAY_MS = 500;
@@ -187,14 +191,37 @@ export function createWorkspace(data: DataDir) {
   let openLibrary: { project: string; seq: number; seeded: string[] } | null = null;
   // Each other scene's nodes in the open project, for counting uses (read when the library loads or changes).
   let otherScenes: { name: string; nodes: SceneNode[] }[] = [];
-  let open: (OpenScene & { createdAt: string; seq: number; camera: Camera | null }) | null = null;
+  let open:
+    | (Omit<OpenScene, "entity"> & {
+        createdAt: string;
+        seq: number;
+        camera: Camera | null;
+        // While an entity is being edited (08.5): its file's fields and camera. The scene stays as where Back goes.
+        entity?: { id: string; createdAt: string; seq: number; camera: Camera | null };
+      })
+    | null = null;
   const openedListeners = new Set<(open: OpenScene | null, restore?: EditorRestore) => void>();
   const projectsListeners = new Set<(projects: ProjectSummary[]) => void>();
 
-  const publicOpen = (): OpenScene | null => (open ? { project: open.project, scene: open.scene } : null);
+  const publicOpen = (): OpenScene | null =>
+    open
+      ? {
+          project: open.project,
+          scene: open.scene,
+          ...(open.entity ? { entity: { id: open.entity.id, name: entityMeta(library.get(), open.entity.id)?.name ?? open.entity.id } } : {}),
+        }
+      : null;
 
   const writeScene = () => {
     if (!open) return;
+    if (open.entity) {
+      // An entity's step: its file, and its definition for every instance (live, in every tab).
+      const nodes = store.getScene().nodes;
+      data.writeEntity(open.project.id, open.entity.id, { createdAt: open.entity.createdAt, seq: open.entity.seq, nextId: store.getNextId(), nodes });
+      setDefinition(open.entity.id, nodes);
+      entitiesChanged();
+      return;
+    }
     data.writeScene(open.project.id, open.scene.id, {
       name: open.scene.name,
       createdAt: open.createdAt,
@@ -207,9 +234,14 @@ export function createWorkspace(data: DataDir) {
   // The log first, then the state: a crash in between leaves the log one step ahead, which opening repairs.
   store.onStep((step) => {
     if (!open) return;
-    open.seq += 1;
     try {
-      data.appendHistory(open.project.id, open.scene.id, lineOf(open.seq, step));
+      if (open.entity) {
+        open.entity.seq += 1;
+        data.appendEntityHistory(open.project.id, open.entity.id, lineOf(open.entity.seq, step));
+      } else {
+        open.seq += 1;
+        data.appendHistory(open.project.id, open.scene.id, lineOf(open.seq, step));
+      }
       writeScene();
     } catch (err) {
       console.error("Saving the scene failed", err);
@@ -229,7 +261,7 @@ export function createWorkspace(data: DataDir) {
     if (!open) return void (otherScenes = []);
     const project = data.listProjects().find((p) => p.id === open!.project.id);
     otherScenes = (project?.scenes ?? [])
-      .filter((sc) => sc.id !== open!.scene.id && !sc.error)
+      .filter((sc) => (open!.entity || sc.id !== open!.scene.id) && !sc.error)
       .flatMap((sc) => {
         try {
           return [{ name: sc.name, nodes: data.readScene(open!.project.id, sc.id).nodes }];
@@ -268,11 +300,19 @@ export function createWorkspace(data: DataDir) {
     }
     const seeded = [...(file?.seeded ?? [])];
     let { library: loaded } = restored;
-    const seed = !seeded.includes("guide");
-    if (seed) {
+    const seedGuide = !seeded.includes("guide");
+    if (seedGuide) {
       if (!loaded.guide) loaded = { ...loaded, guide: DEFAULT_GUIDE };
       seeded.push("guide");
     }
+    // The default entities (08.5): a person for scale. Once per project, so one it deleted stays deleted.
+    const seedHuman = !seeded.includes("human");
+    if (seedHuman) {
+      const id = data.createEntity(project, "human", { createdAt: new Date().toISOString(), seq: 0, nextId: raisedNextId(firstIds(), { label: "", actor: "human", at: 0, ops: [{ op: "add", nodes: HUMAN }], inverse: [] }), nodes: HUMAN });
+      loaded = applyLibraryOp(loaded, { op: "entity", name: id, value: { id, name: "human", description: HUMAN_DESCRIPTION } });
+      seeded.push("human");
+    }
+    const seed = seedGuide || seedHuman;
     // The definitions, for every instance in the project's scenes (a folder that doesn't load shows as missing).
     const { entities, errors } = data.readEntities(project);
     errors.forEach((e) => console.warn(`Skipping an entity that didn't load: ${e}`));
@@ -287,7 +327,8 @@ export function createWorkspace(data: DataDir) {
   const usesNow = (): Uses => {
     const lib = library.get();
     const result: Uses = { tags: {}, skills: {}, entities: {} };
-    const scenes = open ? [{ name: open.scene.name, nodes: store.getScene().nodes }, ...otherScenes] : [];
+    // While an entity is open, the store holds it, and every scene (the one to go back to included) is read from disk.
+    const scenes = open && !open.entity ? [{ name: open.scene.name, nodes: store.getScene().nodes }, ...otherScenes] : otherScenes;
     for (const { name: sceneName, nodes } of scenes) {
       const counts = countUses(lib, nodes);
       for (const kind of ["tags", "skills"] as const) {
@@ -317,7 +358,7 @@ export function createWorkspace(data: DataDir) {
   };
 
   const restoreOf = (): EditorRestore | undefined =>
-    open ? { camera: open.camera, selection: store.getScene().selection } : undefined;
+    open ? { camera: open.entity ? open.entity.camera : open.camera, selection: store.getScene().selection } : undefined;
 
   // editor.json: debounced, so a pan writes once, after it stops.
   let editorTimer: ReturnType<typeof setTimeout> | null = null;
@@ -327,7 +368,8 @@ export function createWorkspace(data: DataDir) {
     editorTimer = null;
     if (!open) return;
     try {
-      data.writeEditor(open.project.id, open.scene.id, restoreOf()!);
+      if (open.entity) data.writeEntityEditor(open.project.id, open.entity.id, restoreOf()!);
+      else data.writeEditor(open.project.id, open.scene.id, restoreOf()!);
     } catch (err) {
       console.error("Saving the editor state failed", err);
     }
@@ -404,6 +446,9 @@ export function createWorkspace(data: DataDir) {
     editLibrary(input: LibraryEdit, actor: "human" | "agent") {
       if (!open) throw new SceneError(NO_SCENE_OPEN);
       const uses = usesNow().entities;
+      if (open.entity && (input.remove ?? []).some((r) => r.kind === "entity" && r.name === open!.entity!.id)) {
+        throw new SceneError("The library wasn't changed: that entity is open for editing. Go back to the scene first.");
+      }
       const placed = (input.remove ?? []).filter((r) => r.kind === "entity" && uses[r.name]);
       if (placed.length > 0) {
         const lines = placed.map((r) => {
@@ -443,6 +488,44 @@ export function createWorkspace(data: DataDir) {
       return { entity: meta, instance };
     },
 
+    /**
+     * Edit entity (08.5): opens an entity's definition in the store, as the open document, with its own history
+     * (`entities/<id>/history.jsonl`) and camera. Every step saves it and redraws every instance. The scene stays
+     * as where closeEntity goes back to.
+     */
+    openEntity(entity: string): void {
+      if (!open) throw new SceneError(NO_SCENE_OPEN);
+      const meta = entityMeta(library.get(), entity);
+      if (!meta) throw new SceneError(`No entity "${entity}" in the project library.`);
+      flushEditor();
+      let loaded;
+      try {
+        const file = data.readEntity(open.project.id, entity);
+        loaded = { file, ...restoreScene({ ...file, name: meta.name }, data.readEntityHistory(open.project.id, entity)) };
+      } catch (err) {
+        throw new SceneError(`The entity didn't load, so it wasn't opened:\n${(err as Error).message}`);
+      }
+      let editor = null;
+      try {
+        editor = data.readEntityEditor(open.project.id, entity);
+      } catch (err) {
+        console.warn(`Ignoring the entity's editor state: ${(err as Error).message}`);
+      }
+      open = { ...open, entity: { id: entity, createdAt: loaded.file.createdAt, seq: loaded.seq, camera: editor?.camera ?? ENTITY_CAMERA } };
+      store.load({ nodes: loaded.nodes, nextId: loaded.nextId, history: loaded.history, document: "entity" });
+      store.setSelection(editor?.selection ?? []);
+      if (loaded.caughtUp) writeScene();
+      readOtherScenes();
+      openedChanged(restoreOf());
+    },
+
+    /** Leaves Edit entity: reopens the scene it was opened from. Nothing to do when no entity is open. */
+    closeEntity(): void {
+      if (!open?.entity) return;
+      flushEditor();
+      openScene(open.project.id, open.scene.id);
+    },
+
     /** Every definition in the open project (for the editor). */
     definitions: () => allDefinitions(),
 
@@ -470,8 +553,9 @@ export function createWorkspace(data: DataDir) {
       store.setView(view);
       if (!open) return;
       const next = { focus: { x: round2(camera.focus.x), z: round2(camera.focus.z) }, yaw: round2(camera.yaw), distance: round2(camera.distance) };
-      if (JSON.stringify(next) === JSON.stringify(open.camera)) return;
-      open.camera = next;
+      const holder = open.entity ?? open;
+      if (JSON.stringify(next) === JSON.stringify(holder.camera)) return;
+      holder.camera = next;
       editorChanged();
     },
 

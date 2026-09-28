@@ -227,21 +227,23 @@ describe("entities in the workspace", () => {
       ["box_2", 1],
     ]);
     expect(file.nextId).toMatchObject({ box: 3 });
-    expect(ws.library.get().entities).toEqual([entity]);
+    // Every project starts with a human (08.5).
+    expect(ws.library.get().entities.map((e) => e.id)).toEqual(["human", "poison"]);
+    expect(ws.library.get().entities.find((e) => e.id === "poison")).toEqual(entity);
     // Not a library step: the library's undo is the tag.
     expect(ws.library.getHistory().undoLabel).toBe("Add #hazard");
 
     // Undo puts the shapes back; the entity stays.
     store.undo();
     expect(store.getScene().nodes.map((n) => n.id).sort()).toEqual([a.id, b.id, g.id].sort());
-    expect(ws.library.get().entities).toHaveLength(1);
+    expect(ws.library.get().entities.map((e) => e.id)).toContain("poison");
 
     // After a restart the definition is loaded again.
     releases.splice(0).forEach((r) => r());
     setDefinitions({});
     const again = start(root);
     expect(definitionOf("poison")).toHaveLength(2);
-    expect(again.library.get().entities[0].id).toBe("poison");
+    expect(again.library.get().entities.map((e) => e.id)).toEqual(["human", "poison"]);
   });
 
   it("refuses to delete an entity that's placed, naming the scenes, and deletes it once it isn't", () => {
@@ -258,10 +260,68 @@ describe("entities in the workspace", () => {
     ws.openScene({ project: "castle", scene: "keep" });
     ws.requireScene().removeNodes([instance.id], "human");
     ws.editLibrary({ remove: [{ kind: "entity", name: "crate" }] }, "human");
-    expect(ws.library.get().entities).toEqual([]);
+    expect(ws.library.get().entities.map((e) => e.id)).toEqual(["human"]);
     // Its folder stays, so undoing the delete brings it back whole.
     ws.library.undo();
-    expect(ws.library.get().entities[0]).toMatchObject({ id: "crate" });
+    expect(ws.library.get().entities.map((e) => e.id)).toEqual(["crate", "human"]);
     expect(definitionOf("crate")).toHaveLength(1);
+  });
+
+  it("edits an entity in its own document: its own undo history, saved, every instance following, and back", () => {
+    const root = tempRoot();
+    const ws = start(root);
+    ws.createProject({ name: "Castle", sceneName: "Keep" });
+    const scene = ws.requireScene();
+    const [a] = scene.drawShapes([{ kind: "volume", x: 0, z: 0, width: 1, depth: 1, height: 2 }], "human");
+    const { instance } = ws.makeEntity({ ids: [a.id], name: "pillar" }, "human");
+    scene.drawShapes([{ type: "instance", entity: "pillar", x: 10, z: 0 }], "human");
+    const sceneUndo = scene.getHistory().undoLabel;
+
+    ws.openEntity("pillar");
+    expect(ws.getOpen()).toMatchObject({ scene: { id: "keep" }, entity: { id: "pillar", name: "pillar" } });
+    expect(ws.getRestore()?.camera).toMatchObject({ focus: { x: 0, z: 0 } });
+    const store = ws.requireScene();
+    expect(store.getScene().nodes.map((n) => n.id)).toEqual(["box_1"]);
+    expect(store.getHistory().canUndo).toBe(false);
+    // Taller: every instance follows.
+    store.updateNodes([{ id: "box_1", height: 5 }], "agent");
+    expect(boundsOf([{ ...instance, x: 0 }]).maxY).toBe(5);
+    expect(definitionOf("pillar")?.[0]).toMatchObject({ height: 5 });
+    expect(JSON.parse(fs.readFileSync(path.join(root, "projects", "castle", "entities", "pillar", "entity.json"), "utf8")).nodes[0].height).toBe(5);
+    expect(fs.readFileSync(path.join(root, "projects", "castle", "entities", "pillar", "history.jsonl"), "utf8").trim().split("\n")).toHaveLength(1);
+    // Notes and instances can't go in; top-level holes can.
+    expect(() => store.drawShapes([{ type: "note", x: 0, z: 0, text: "x" }], "agent")).toThrow(/can't hold notes/);
+    expect(() => store.drawShapes([{ type: "instance", entity: "human", x: 0, z: 0 }], "agent")).toThrow(/no nested entities/);
+    expect(() => ws.makeEntity({ ids: ["box_1"] }, "agent")).toThrow(/editing an entity/);
+    expect(() => ws.editLibrary({ remove: [{ kind: "entity", name: "pillar" }] }, "human")).toThrow(/open for editing/);
+    // The uses count the scene from disk.
+    expect(ws.uses().entities.pillar).toMatchObject({ nodes: 2, sceneNames: ["Keep"] });
+
+    ws.closeEntity();
+    expect(ws.getOpen()).not.toHaveProperty("entity");
+    expect(ws.requireScene().getScene().nodes.map((n) => n.type)).toEqual(["instance", "instance"]);
+    expect(ws.requireScene().getHistory().undoLabel).toBe(sceneUndo);
+
+    // After a restart the entity's own history is still there.
+    releases.splice(0).forEach((r) => r());
+    setDefinitions({});
+    const again = start(root);
+    again.openEntity("pillar");
+    expect(again.requireScene().getHistory()).toMatchObject({ canUndo: true, undoLabel: "Agent: change height of box_1" });
+    again.requireScene().undo();
+    expect(definitionOf("pillar")?.[0]).toMatchObject({ height: 2 });
+  });
+
+  it("gives every project a human, once, 1.8 m tall", () => {
+    const root = tempRoot();
+    const ws = start(root);
+    ws.createProject({ name: "Castle", sceneName: "Keep" });
+    expect(ws.library.get().entities).toEqual([expect.objectContaining({ id: "human", name: "human" })]);
+    const shapes = (definitionOf("human") ?? []).filter((n) => n.type !== "group") as Box[];
+    expect(boundsOf(shapes)).toMatchObject({ minY: 0, maxY: 1.8 });
+    // Deleted, it stays deleted after a restart.
+    ws.editLibrary({ remove: [{ kind: "entity", name: "human" }] }, "human");
+    releases.splice(0).forEach((r) => r());
+    expect(start(root).library.get().entities).toEqual([]);
   });
 });

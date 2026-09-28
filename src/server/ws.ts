@@ -94,6 +94,8 @@ export function attachWebSocket(httpServer: Server, workspace: Workspace) {
         if (msg.type === "library_undo") return void workspace.requireLibrary().undo();
         if (msg.type === "library_redo") return void workspace.requireLibrary().redo();
         if (msg.type === "make_entity") return void workspace.makeEntity(withoutType(msg), "human");
+        if (msg.type === "open_entity") return workspace.openEntity(msg.entity);
+        if (msg.type === "close_entity") return workspace.closeEntity();
         if (msg.type === "detach_instances") return void workspace.requireScene().detachInstances(msg.ids, "human");
         const scene = workspace.requireScene();
         if (msg.type === "add_shapes") scene.drawShapes(msg.shapes, "human");
