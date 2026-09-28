@@ -175,6 +175,7 @@ export type Group = {
   id: string; // server-assigned, "group_1", ... never reused
   type: "group";
   name?: string;
+  description?: string; // what this part of the level is, for people and the agent ("entry hall, safe zone")
   parent?: string;
   locked?: true;
   hidden?: true;
@@ -199,8 +200,8 @@ export type ShapePatch = Partial<Pick<Footprinted, "name" | "kind" | "x" | "z" |
   dashed?: boolean;
   arrow?: LineArrow;
 };
-/** What an update op can change on any node: shape fields (shapes only), `name` and `parent`. */
-export type NodePatch = ShapePatch & { parent?: string; locked?: true; hidden?: true };
+/** What an update op can change on any node: shape fields (shapes only), `description` (groups only), `name` and `parent`. */
+export type NodePatch = ShapePatch & { parent?: string; description?: string; locked?: true; hidden?: true };
 
 /**
  * What the editor currently shows. The camera looks down at the ground (x/z plane, y up) at a fixed pitch,
@@ -234,6 +235,8 @@ export const DEFAULT_VIEW: View = {
  * (at yaw 0 the camera looks north, so north is up the screen).
  */
 export const COMPASS = { north: "-z", east: "+x", south: "+z", west: "-x" } as const;
+/** The longest description a group can have, in characters. */
+export const MAX_DESCRIPTION = 2000;
 /** Ground snap for footprints. */
 export const SNAP = 0.5;
 /** Vertical snap for heights, and the smallest height a box can have. */
@@ -412,6 +415,7 @@ const GroupSchema = z.object({
   id: z.string(),
   type: z.literal("group"),
   name: z.string().optional(),
+  description: z.string().optional(),
   parent: z.string().optional(),
   locked: z.literal(true).optional(),
   hidden: z.literal(true).optional(),
@@ -605,6 +609,12 @@ export const NodeUpdateSchema = z.strictObject({
   dashed: lineField.dashed.optional().describe("Lines only: dashed or solid"),
   arrow: lineField.arrow.optional().describe("Lines only: none, end or both"),
   name: field.name.optional().describe('A label for people, e.g. "lobby". Not unique. An empty string removes it'),
+  description: z
+    .string()
+    .max(MAX_DESCRIPTION)
+    .nullable()
+    .optional()
+    .describe('Groups only: what this part of the level is, e.g. "entry hall, safe zone". An empty string or null removes it'),
   parent: field.parent
     .nullable()
     .optional()
@@ -661,6 +671,7 @@ export const MirrorNodesSchema = z.strictObject({
 export const GroupNodesSchema = z.strictObject({
   ids: IdsSchema.describe("IDs of the boxes and/or groups to put in a new group"),
   name: field.name.optional(),
+  description: z.string().max(MAX_DESCRIPTION).optional().describe('What the group is, e.g. "entry hall, safe zone"'),
 });
 export const UngroupSchema = z.strictObject({ ids: IdsSchema.describe("IDs of groups to dissolve; their contents stay") });
 /** The outliner's drag and drop: put nodes in `parent` (null = top level), just before sibling `before` (null = last). */

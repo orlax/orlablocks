@@ -250,7 +250,9 @@ export function Outliner({
                   />
                 ) : (
                   <>
-                    <span className="label">{node.name ?? node.id}</span>
+                    <span className="label" title={node.type === "group" ? node.description : undefined}>
+                      {node.name ?? node.id}
+                    </span>
                     {node.name && <span className="id">{node.id}</span>}
                     {isHole(node) && node.parent === undefined && (
                       <span className="warn" title="Not in a group: this hole cuts nothing">

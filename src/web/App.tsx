@@ -21,7 +21,7 @@ import {
   type View,
 } from "../shared/scene.types";
 import { footprintBounds, isClosed, isTilted, polyline, rampStations, reversePoints, round2, wallOf } from "../shared/geometry";
-import { shapesUnder, childrenOf, isShape, isGroup, hiddenIds, lockedIds, subtreeIds } from "../shared/tree";
+import { shapesUnder, childrenOf, countsText, isShape, isGroup, hiddenIds, lockedIds, subtreeIds } from "../shared/tree";
 import type { CameraState, GroundPoint } from "./camera";
 import { clipboardText, readClipboard } from "./clipboard";
 import { ErrorPanel } from "./ErrorPanel";
@@ -176,13 +176,6 @@ export function App() {
   const boxes = nodes.filter(isShape);
   const selectedNodes = nodes.filter((n) => selection.includes(n.id));
   const selectedShapes = shapesUnder(nodes, selection);
-  // Rooms, volumes and holes of every closed shape (a ramp counts as a ramp).
-  const rooms = boxes.filter((b) => isClosed(b) && b.kind === "room").length;
-  const volumes = boxes.filter((b) => isClosed(b) && b.kind === "volume").length;
-  const holes = boxes.filter((b) => isClosed(b) && b.kind === "hole").length;
-  const ramps = boxes.filter((b) => b.type === "ramp").length;
-  const lines = boxes.filter((b) => b.type === "line").length;
-  const groups = nodes.filter(isGroup).length;
 
   // A scene opened (here, in another tab, or when this tab connected): close the picker, drop the local state that
   // belonged to the old scene, and restore the scene's selection (the Viewport restores its camera). A rename
@@ -406,7 +399,12 @@ export function App() {
     selectedShapes.length > 0 && selectedShapes.every((b) => b.color === selectedShapes[0].color) ? selectedShapes[0].color : null;
   const contextNode = context !== null ? nodes.find((n) => n.id === context) : undefined;
   const selectionTitle = single ? title(single) : `${selectedNodes.length} selected`;
-  const selectionInfo = singleShape ? details(singleShape) : `${selectedShapes.length} shape${selectedShapes.length === 1 ? "" : "s"}`;
+  // A single group shows what's in it, like the agent's outline.
+  const selectionInfo = singleShape
+    ? details(singleShape)
+    : single
+      ? countsText(nodes.filter((n) => n.id !== single.id && subtreeIds(nodes, single.id).has(n.id)))
+      : `${selectedShapes.length} shape${selectedShapes.length === 1 ? "" : "s"}`;
   // What Convert to free-form converts: every box and cylinder in the selection (groups included).
   // A tilted shape can't convert (a free-form's outline is on the ground).
   const convertible = selectedShapes.filter((s) => (s.type === "box" || s.type === "cylinder") && !isTilted(s));
@@ -548,6 +546,10 @@ export function App() {
           ? {
               title: contextNode ? `${contextNode.name ?? contextNode.id} › ${selectionTitle}` : selectionTitle,
               info: editing && editable ? `editing points · ${selectionInfo}` : selectionInfo,
+              description:
+                single && isGroup(single)
+                  ? { value: single.description ?? "", onChange: (text) => send({ type: "update_nodes", changes: [{ id: single.id, description: text || null }] }) }
+                  : undefined,
               sides:
                 singleShape?.type === "cylinder"
                   ? { value: singleShape.sides, onChange: (sides) => send({ type: "update_nodes", changes: [{ id: singleShape.id, sides: sides ?? null }] }) }
@@ -659,7 +661,7 @@ export function App() {
         <span className="sep" />
         <span className="counts">
           {scene
-            ? `${rooms} rooms · ${volumes} volumes${holes > 0 ? ` · ${holes} hole${holes === 1 ? "" : "s"}` : ""}${ramps > 0 ? ` · ${ramps} ramp${ramps === 1 ? "" : "s"}` : ""}${lines > 0 ? ` · ${lines} line${lines === 1 ? "" : "s"}` : ""} · ${groups} groups`
+            ? countsText(nodes)
             : "—"}
         </span>
         <span className="sep" />

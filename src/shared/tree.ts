@@ -1,4 +1,4 @@
-import { moveShape } from "./geometry";
+import { isClosed, moveShape } from "./geometry";
 import type { Shape, Group, SceneNode } from "./scene.types";
 
 /**
@@ -102,3 +102,27 @@ export const lockedIds = (nodes: SceneNode[]) => flaggedIds(nodes, "locked");
 
 /** The nodes that are hidden, by their own `hidden` or an ancestor's: none of them are drawn in the view. */
 export const hiddenIds = (nodes: SceneNode[]) => flaggedIds(nodes, "hidden");
+
+/**
+ * What the nodes hold, as one line: `3 rooms · 2 volumes · 1 hole · 1 ramp · 2 lines · 1 group`, leaving out what
+ * there's none of ("empty" when there's nothing). A ramp counts as a ramp; rooms, volumes and holes are the closed
+ * shapes of each kind. The editor's info-label and the agent's outline both use it.
+ */
+export function countsText(nodes: SceneNode[]): string {
+  const counts: [string, number][] = [
+    ["room", 0],
+    ["volume", 0],
+    ["hole", 0],
+    ["ramp", 0],
+    ["line", 0],
+    ["group", 0],
+  ];
+  const bump = (key: string) => counts.find(([k]) => k === key)![1]++;
+  for (const n of nodes) {
+    if (isGroup(n)) bump("group");
+    else if (isClosed(n)) bump(n.kind);
+    else bump(n.type);
+  }
+  const parts = counts.filter(([, c]) => c > 0).map(([k, c]) => `${c} ${k}${c === 1 ? "" : "s"}`);
+  return parts.length > 0 ? parts.join(" · ") : "empty";
+}

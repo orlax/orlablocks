@@ -495,7 +495,7 @@ describe("scene store groups", () => {
     expect(store.getHistory().undoLabel).toBe("Regroup box_2");
     store.groupNodes({ ids: ["box_2"] }, "human"); // group_2 inside group_1
     expect(() => store.updateNodes([{ id: "group_1", parent: "group_2" }], "agent")).toThrow(/"group_2" is inside "group_1"/);
-    expect(() => store.updateNodes([{ id: "group_1", x: 3 }], "agent")).toThrow(/only name, parent, locked and hidden/);
+    expect(() => store.updateNodes([{ id: "group_1", x: 3 }], "agent")).toThrow(/only name, description, parent, locked and hidden/);
     store.updateNodes([{ id: "group_1", name: "lobby" }], "agent");
     expect(node(store, "group_1").name).toBe("lobby");
   });

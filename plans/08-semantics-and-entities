@@ -188,8 +188,7 @@ Example output from a large castle (shortened):
     - read the notes;
   - the list of guide topics.
 - **`get_guide({ topic })`** returns one topic's detail, as it's written today:
-  - `shapes`: boxes, cylinders and free-forms;
-  - `rooms`: walls;
+  - `shapes`: boxes, cylinders and free-forms, with rooms and their walls;
   - `volumes`: taper, bevel and tilt;
   - `holes`;
   - `ramps`;
@@ -527,7 +526,62 @@ Adopted as recommended (say if any should change):
 
 ## 13. Progress
 
-Not started.
+### 08.1 — The outline, find and the guide (done; checked in the browser by Orlando)
+
+**Built:**
+- **`src/server/outline.ts`** (pure, tested): `describeScene(open, scene, { root, depth, full })` and `findNodes(nodes, filters)`.
+  - The outline lists the children of `root` (the top level by default) down to `depth` levels (default 1). Every group has `bounds` and `contains`, plus `collapsed: true` when its contents aren't listed.
+  - `detail` says which form came back, and an outline carries a one-line `hint` on how to zoom in.
+  - `full: true`, or a scene of 40 nodes or fewer with no root, lists everything.
+  - The selection comes in `selected`, in full and with its `path`, when the outline doesn't list it.
+  - A shape given as `root` comes back alone, as `root`.
+  - `find_nodes` filters by `name` (part of it, any case), `type`, `kind`, `under` (a group, any depth) and `near` (the bounds within a radius of a point). It returns one line each (id, type, kind, name, parent, path, bounds), at most 100, with a count of the rest.
+- **`src/server/guide.ts`:** the core instructions and six `get_guide` topics: shapes, volumes, holes, ramps, lines and groups.
+  - The core covers the world, the compass, IDs, a box's basics, reading (outline, `find_nodes`, selection, view, isolate, lock and hide), ways of working, and the topic list.
+  - The topics are today's paragraphs, moved.
+  - Warnings about holes end with `(see get_guide holes)`, and a refused `draw_shapes` / `update_nodes` names the topics.
+- **Compact JSON** for every tool result.
+- **Group descriptions:**
+  - `description` on groups (at most 2000 characters, trimmed, and an empty string or null removes it);
+  - set with `update_nodes` (refused on shapes) or with `group_nodes`;
+  - the undo label is `Describe group_1`;
+  - the inspector has a Description text area for a single group (sent on leaving it or `⌘Enter`, `Esc` cancels);
+  - the outliner row's tooltip shows it.
+- **`countsText`** in `tree.ts` (`3 rooms · 2 volumes · 1 group`, leaving out zeros, "empty" for nothing) is used by the info-label, by the inspector for a single group (instead of "N shapes"), and by the outline's `counts` and `contains`.
+- Server version 0.0.12. There are 13 new tests (outline, find, descriptions, counts), 304 in all, and typecheck is clean.
+
+**Measured** on a scratch castle (12 wings of a room, 2 doors and 20 pillars, plus a tower group; 291 nodes):
+
+| get_scene | characters |
+|---|---|
+| before 08 (every node, indented JSON) | 92,408 |
+| `full: true` (compact JSON) | 56,590 |
+| the default outline | 2,979 (3.2% of before, 5.3% of full) |
+
+The instructions went from 10,342 to 3,642 characters. The topics range from 0.7 to 3.1 kB each.
+
+**Scripted check** (port 5171, scratch `DATA_DIR`, over the MCP SDK client and the WebSocket):
+- the outline of the castle;
+- `root` into a wing, and `depth` 2 down to the window in its tower;
+- `find_nodes` by name (with path `wing 3 › tower`), near a point, and capped at 100 with "140 more";
+- the human's selection in `selected`;
+- a description set, and refused on a shape with the guide hint;
+- the topic on a hole warning;
+- `get_guide holes`;
+- 11 tools.
+
+**Changed from the plan:**
+- The `rooms` topic is part of `shapes`: rooms are the most basic kind, and splitting three sentences off cost more than it saved.
+- `get_scene`'s `root` also takes a shape, returning just that shape.
+- `depth` is capped at 20.
+
+**Browser checklist for Orlando** (restart the server, then reconnect with `/mcp`):
+1. Select a group: the inspector shows a **Description** field, and its info line shows what's in the group (`1 room · 2 holes`, not "3 shapes").
+2. Type a description and press `⌘Enter` (or click away): it's one undo step, `Describe group_1`. Hover the group's row in the outliner: the tooltip shows the text. Clear the text: the description is removed.
+3. `Esc` while typing cancels. Typing letters (`B`, `R`, `V`...) in the field never switches tools.
+4. The info-label's counts leave out zeros (`2 rooms · 1 group`, and "empty" in a new scene).
+5. In a fresh Claude Code session on a large scene, ask *"what's in this level?"*. The agent should answer from the outline (the groups and their descriptions) without asking for `full`. Ask about something by name (*"where's the entry window?"*), and it should use `find_nodes`.
+6. Ask the agent for a round tower with a spiral stair and a door. It should read `get_guide` (holes, ramps) before drawing, and the result should be as good as in 07.
 
 ---
 

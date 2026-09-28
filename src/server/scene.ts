@@ -91,8 +91,12 @@ function describeIds(nodes: SceneNode[], ids: string[]): string {
   return name ? `${name} (${ids[0]})` : listIds(ids);
 }
 
+/** What a group's update can change: it has no shape fields. */
+const GROUP_FIELDS: readonly string[] = ["name", "description", "parent", "locked", "hidden"];
+
 const FIELD_VERBS: Record<keyof NodePatch, string> = {
   name: "rename",
+  description: "describe",
   parent: "regroup",
   kind: "change kind of",
   x: "move",
@@ -504,9 +508,12 @@ export function createSceneStore() {
         seen.add(id);
         if (Object.keys(fields).length === 0) errors.push(`changes[${i}]: nothing to change`);
         if (node && isGroup(node)) {
-          const shapeOnly = Object.keys(fields).filter((k) => k !== "name" && k !== "parent" && k !== "locked" && k !== "hidden");
-          if (shapeOnly.length > 0) errors.push(`changes[${i}]: "${id}" is a group; only name, parent, locked and hidden can change (not ${shapeOnly.join(", ")})`);
+          const shapeOnly = Object.keys(fields).filter((k) => !GROUP_FIELDS.includes(k));
+          if (shapeOnly.length > 0) {
+            errors.push(`changes[${i}]: "${id}" is a group; only name, description, parent, locked and hidden can change (not ${shapeOnly.join(", ")})`);
+          }
         } else if (node) {
+          if (fields.description !== undefined) errors.push(`changes[${i}].description: only a group has a description ("${id}" is a ${node.type})`);
           if (fields.sides !== undefined && node.type !== "cylinder") {
             errors.push(`changes[${i}].sides: only a cylinder has sides ("${id}" is a ${node.type})`);
           }
@@ -629,6 +636,7 @@ export function createSceneStore() {
         if (fields.dashed !== undefined) patch.dashed = fields.dashed;
         if (fields.arrow !== undefined) patch.arrow = fields.arrow;
         if (fields.name !== undefined) patch.name = fields.name.trim() || undefined;
+        if (fields.description !== undefined) patch.description = fields.description?.trim() || undefined;
         if (fields.parent !== undefined) patch.parent = parent;
         if (fields.locked !== undefined) patch.locked = fields.locked || undefined;
         if (fields.hidden !== undefined) patch.hidden = fields.hidden || undefined;
@@ -839,17 +847,19 @@ export function createSceneStore() {
      * deepest group that held them all. A node whose ancestor is also listed stays where it is (inside it).
      */
     groupNodes(input: z.input<typeof GroupNodesSchema>, actor: Actor): Group {
-      const { ids, name } = parse(GroupNodesSchema, input, "Nothing was grouped.");
+      const { ids, name, description } = parse(GroupNodesSchema, input, "Nothing was grouped.");
       const errors: string[] = [];
       checkIds("ids", ids, errors);
       failIf(errors, "Nothing was grouped.");
       const members = topmost(scene.nodes, ids);
       const parent = commonParent(scene.nodes, members);
       const trimmed = name?.trim();
+      const described = description?.trim();
       const group: Group = {
         id: newId("group"),
         type: "group",
         ...(trimmed ? { name: trimmed } : {}),
+        ...(described ? { description: described } : {}),
         ...(parent !== undefined ? { parent } : {}),
         createdBy: actor,
       };

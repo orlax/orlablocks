@@ -643,6 +643,23 @@ body {
 }
 .inspector .stepper input.count::placeholder { color: rgba(255, 255, 255, 0.45); }
 .inspector .stepper input.count:focus { outline: 1px solid #8fb4f2; }
+.inspector textarea.description {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 52px;
+  resize: vertical;
+  margin: 0 0 4px;
+  padding: 5px 7px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--bar-text);
+  font: 12px/1.4 system-ui, sans-serif;
+  user-select: text;
+}
+.inspector textarea.description::placeholder { color: rgba(255, 255, 255, 0.45); }
+.inspector textarea.description:focus { outline: 1px solid #8fb4f2; }
 .inspector .slider { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; }
 .inspector .slider input { flex: 1; min-width: 0; accent-color: #8fb4f2; }
 .inspector .slider .value { min-width: 36px; text-align: right; font-variant-numeric: tabular-nums; color: #8fb4f2; }

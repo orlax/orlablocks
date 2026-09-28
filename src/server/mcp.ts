@@ -2,179 +2,56 @@ import type { Express } from "express";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
-import { boundsOf, isClosed, isTilted, round2 } from "../shared/geometry";
+import { isClosed } from "../shared/geometry";
 import { holeWarnings } from "../shared/holes";
 import {
-  SHAPE_COLORS,
-  COMPASS,
   DEFAULT_COLOR,
-  DEFAULT_HEIGHT,
+  DEFAULT_LINE_COLOR,
+  DEFAULT_THICKNESS,
+  DEFAULT_WALL,
   DuplicateNodesSchema,
   GroupNodesSchema,
   MAX_COPIES,
   MirrorNodesSchema,
-  MIN_HEIGHT,
   MoveNodesSchema,
   NodeUpdateSchema,
   RotateNodesSchema,
   ShapeInputSchema,
   UngroupSchema,
-  MAX_SIDES,
-  MIN_SIDES,
-  DEFAULT_LINE_COLOR,
-  DEFAULT_THICKNESS,
-  MAX_THICKNESS,
-  MIN_THICKNESS,
-  DEFAULT_WALL,
-  MIN_WALL,
-  type OpenScene,
-  type Scene,
-  type Shape,
 } from "../shared/scene.types";
-import { isGroup, isShape, shapesUnder } from "../shared/tree";
+import { isGroup, isShape } from "../shared/tree";
+import { GUIDE_TOPICS, guideTopic, INSTRUCTIONS, topicList } from "./guide";
+import { describeScene, findNodes, FULL_SCENE_MAX, MAX_MATCHES } from "./outline";
 import { SceneError } from "./scene";
 import type { Workspace } from "./workspace";
 
-/** Sent once when a client connects (the server's `instructions`), instead of repeating it in every tool description. */
-const INSTRUCTIONS =
-  "Dungeon Designer: an ideation tool for dungeon layouts. The human edits the same scene in a local 3D editor, " +
-  "and you read and edit it with these tools. " +
-  "The scene is one scene of a project (a project holds several scenes, e.g. one per level); get_scene reports " +
-  "which project and scene are open, and the project's description gives the context. You only see the open scene: " +
-  "the human opens and switches scenes in the editor. Every change is saved as it happens (there's no save step), " +
-  "and the undo history survives server restarts. " +
-  "Units are meters; decimals are allowed and kept to 2 places. The world is 3D with y up and the ground at y = 0. " +
-  "The compass is fixed for every scene: NORTH is -z, south +z, east +x, west -x (get_scene repeats it as `compass`), " +
-  'so "the north wall" is a shape\'s -z side and "go east" is +x; the editor shows a compass rose. ' +
-  "The scene is a flat list of nodes: shapes and groups. The shapes are boxes (type: box), cylinders (type: cylinder), free-forms (type: freeform), lines and ramps. " +
-  "A box's footprint is CENTERED at (x, z), with `width` along the box's local x and " +
-  "`depth` along its local z. It rises from its elevation `y` (its bottom: 0 = on the ground, negative = below ground) " +
-  "to y + height, so to stack box B on box A, set B.y = A.y + A.height. " +
-  "`rotation` turns a box around the vertical axis through its center, in degrees, counterclockwise seen from above " +
-  "(0 = grid-aligned: width along world +x, depth along world +z). Rotating never moves the center. " +
-  `A box is either a room (hollow: floor and walls, no ceiling; default height ${DEFAULT_HEIGHT.room} m; ` +
-  `its footprint is the room's OUTSIDE, and its walls grow inward from it, \`wall\` m thick (default ${DEFAULT_WALL}, at least ${MIN_WALL}), ` +
-  "so a 10 m room is 10 m across outside; two rooms that touch have two walls back to back, so overlap them by a wall's thickness to share one) " +
-  `or a volume (solid, e.g. a platform or pillar; default height ${DEFAULT_HEIGHT.volume} m). Minimum height is ${MIN_HEIGHT} m. ` +
-  "A volume (of any shape) can have two fractions: `taper` 0..1 shrinks its top toward its center (1 = a point: a box " +
-  "becomes a pyramid, a cylinder a cone) and `bevel` 0..1 rounds its top edge (1 = as round as it fits: a tall cylinder " +
-  "gets a dome, a box a rounded top); together they make hills and mountains (taper 0.6, bevel 0.5). The top stays at " +
-  "y + height, the bottom stays flat. Rooms have neither; making a volume a room drops them, and making a room a volume drops its wall. " +
-  "A box or cylinder volume can also tilt: `pitch` turns it around its own x axis and `roll` around its own z axis, " +
-  "in degrees through its CENTER (x, y + height / 2, z), roll first, then pitch, then `rotation` as usual (so rotating " +
-  "never changes the tilt). +pitch leans the top toward its local +z, +roll toward its local -x. `y` stays the bottom " +
-  "before tilting and `height` the length along the tilted axis: a cylinder lying on its side (a round window or a " +
-  "log) is pitch 90, with height as its length and its center at y + height / 2. get_scene gives a tilted shape its " +
-  "actual axis-aligned `bounds`. Free-forms and rooms don't tilt, and a tilted shape can't convert to a free-form. " +
-  "A HOLE (kind: hole) is any closed shape that cuts itself out of other shapes when drawn: a door, a window, an arch, " +
-  "a hole in a floor, a tunnel. For a hole in group G, whose parent is P (the top level if G is top-level), it cuts " +
-  "the shapes directly in G, directly in P (beside G), and directly in G's and P's sibling groups; nothing deeper. " +
-  "A hole outside any group cuts nothing (results warn about it), and it only cuts what it overlaps. So give a room " +
-  "a group holding its walls and a `door` group of holes (a door can be several holes): the door cuts its room's " +
-  "walls and the walls of the rooms beside that room (P's sibling groups), for a doorway through two walls. Holes never cut holes. A hole cuts a room's floor only if its bottom is below the " +
-  `room's y (a door standing on the floor doesn't notch it). Default hole height ${DEFAULT_HEIGHT.hole} m. A door: a box hole about 1 m wide, ` +
-  "2.2 m tall, standing on the floor, turned like the wall and a bit deeper than the wall. A round window: a cylinder " +
-  "hole with pitch 90 (lying, its height through the wall). An arch: a box hole plus a lying cylinder hole on top. Holes " +
-  "can taper, bevel and tilt like volumes. " +
-  "A RAMP (type: ramp) is a path with a `width` (default 1.5 m) you walk along its top: a ramp, stairs, a landing, " +
-  "a walkway, a spiral stair. Its `points` are the centerline in ABSOLUTE world x/z, each with the surface's height " +
-  "`y` there (a floor's y, a platform's top); between two points the height changes evenly with the distance, so " +
-  "two points at the same y make a landing, and flat handles `in` / `out` ({ x, z } offsets) curve it. `step` is the " +
-  "riser height (stairs: each edge gets round(rise / step) equal steps, the top one flush with the higher end); " +
-  "without it the ramp is smooth. `base` is solid (the default, filled down to its lowest point) or floating (a " +
-  "slab under the surface). For a spiral, give `spiral: { x, z, radius, turn, y, rise, from? }` instead of points " +
-  "(turn in degrees, counterclockwise seen from above; from 0 = east, 90 = north) and don't compute a helix by hand. " +
-  "A ramp is always a volume (never a hole); it has no x, z, y, height or rotation, and move_nodes, " +
-  "rotate_nodes and mirror_nodes change its points. For a stair up to a floor above, cut a hole in that floor, and " +
-  "keep that hole thin (from about 0.05 m below the floor to just above it): a hole cuts everything in reach that it " +
-  "overlaps, the stair included. " +
-  `\`color\` is a palette key: ${SHAPE_COLORS.join(", ")} (default ${DEFAULT_COLOR}). ` +
-  "A cylinder has exactly a box's fields, and its footprint is the ellipse inscribed in its width × depth rectangle " +
-  "(width = depth for a circle, so a round room 10 m across is width 10, depth 10), centered at (x, z) and turned by `rotation` like a box. " +
-  `It's a room or a volume like a box, with the same walls and heights. With \`sides\` (${MIN_SIDES}..${MAX_SIDES}) it's a regular polygon on that ellipse instead, ` +
-  "with a flat edge facing its local +x (sides 8 at rotation 0: an octagon with flat walls facing ±x and ±z); " +
-  "without sides it's smooth. update_nodes with sides: null makes one smooth. " +
-  "A free-form (type: freeform) is any other outline: a closed list of `points` in ABSOLUTE world x/z (3 or more; " +
-  "the last joins the first), at elevation `y` and rising to y + height, a room or a volume like a box (same walls " +
-  "and default heights). It has no x, z, width, depth or rotation of its own. A point is { x, z } (a corner), " +
-  "optionally with bezier handles `in` and `out`, which are OFFSETS from that point (not absolute positions): the " +
-  "edge from point i to point i + 1 curves when point i has `out` or point i + 1 has `in`. For a smooth point, make " +
-  "`in` the negative of `out`. A circle of radius r through 4 smooth points uses handles of length 0.5523 × r, " +
-  "along the tangent. The outline must not cross itself (the error names the edges that do). update_nodes with " +
-  "`points` replaces the whole outline. move_nodes, rotate_nodes and mirror_nodes change a free-form's points " +
-  "(rotating or mirroring one bakes the turn or the flip into them), so use them instead of recomputing points. " +
-  'To reshape a box or cylinder freely, first convert it with update_nodes { id, type: "freeform" } (a box gives ' +
-  "its 4 corners, a sided cylinder its corners, a smooth one 4 smooth points that are still a true circle or oval), " +
-  "then edit the new free-form's points. The free-form gets a NEW ID (the result maps each old ID to it) and keeps " +
-  "the name, group, kind, color, y, height and place in the list. Don't compute circle handles by hand. " +
-  "A line (type: line) is an annotation, not geometry: an open path of `points` in ABSOLUTE world x/y/z (2 or more; " +
-  "it doesn't close), for a route, a patrol, a jump arc or a pointer. Each point has its own y (0 = the ground; " +
-  "a platform's top to start on it), and bezier handles `in` / `out` are 3D offsets { x, y, z } from the point, as on " +
-  "a free-form (a jump arc from a platform is 2 points with an `out` handle pulling up on the first). It has " +
-  `\`color\` (default ${DEFAULT_LINE_COLOR}), \`thickness\` in screen pixels (${MIN_THICKNESS}..${MAX_THICKNESS}, default ${DEFAULT_THICKNESS}), ` +
-  "`dashed` (default false) and `arrow`: none (default), end (an arrowhead at the last point) or both. It has no " +
-  "kind, x, z, y, height or rotation; move_nodes, rotate_nodes and mirror_nodes change its points. " +
-  "A group (type: group) has NO position of its own: its shapes keep absolute world coordinates, and a node is in " +
-  "a group when its `parent` is that group's ID (groups can nest). get_scene adds each group's derived `bounds` " +
-  "(center x/z, bottom y, sizes). Tools act on a group as a unit. A group left empty disappears. " +
-  "Every node has a server-assigned ID (box_1, cylinder_1, freeform_1, line_1, ramp_1, group_1, ..., never reused), an optional `name` for people " +
-  '("lobby"; not unique, tools always take IDs, so resolve names to IDs with get_scene), and records who created it (human or agent). ' +
-  "To repeat things (a row of pillars, a second wing, another floor), copy them with move_nodes and copy: true " +
-  "(count for several, each offset further) instead of retyping shapes with draw_shapes: copies get new IDs and keep " +
-  "their names, structure and parent group. " +
-  "For symmetry, mirror_nodes flips nodes in place on a WORLD axis (x or z, not the camera's view): copy a wing " +
-  "with move_nodes, then mirror the copy, instead of computing reflected positions and angles by hand. " +
-  "The scene's `selection` lists the IDs of the nodes the human has selected in the editor: when they say " +
-  '"this" or "these", they mean the selection. ' +
-  "The scene's `view` is what the editor shows: `focus` (the ground point at the screen center), `yaw` and `bounds` " +
-  "(x, z at its min corner, width, depth) around the visible ground; draw near `focus` to be on screen. " +
-  "`view.isolated` is the node the human has isolated (only it and what's in it show, so \"this room\" is it); put " +
-  "new shapes for it inside it. A node with `locked: true` can't be picked in the editor (the human's aid, e.g. an " +
-  "island they draw on top of): leave locked nodes alone unless asked (update_nodes locked: true / false). A node " +
-  "with `hidden: true` (and what's in it) isn't drawn in the editor, and a hidden hole cuts nothing there: it still " +
-  "exists, so don't redraw it (update_nodes hidden: false shows it). " +
-  "Every tool call that changes the scene is one step in the undo history shared with the human.";
+const json = (value: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(value) }] });
 
-const json = (value: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }] });
-
-/** Axis-aligned bounds for the agent: center x/z, bottom y, sizes. */
-function boundsFor(shapes: Shape[]) {
-  const b = boundsOf(shapes);
-  return {
-    x: round2((b.minX + b.maxX) / 2),
-    z: round2((b.minZ + b.maxZ) / 2),
-    y: round2(b.minY),
-    width: round2(b.maxX - b.minX),
-    depth: round2(b.maxZ - b.minZ),
-    height: round2(b.maxY - b.minY),
-  };
-}
+/** Which guide topic helps with a warning, named at its end. */
+const withTopic = (warning: string) => (/\bhole\b/.test(warning) ? `${warning} (see get_guide holes)` : warning);
 
 /**
- * The scene for the agent: which project and scene it is; each group gets its derived bounds, and so does each
- * tilted shape (where it really is).
+ * Runs an edit, and when it's refused, points at the guide: the refusal names the field, and the topic has the rules
+ * for it.
  */
-function describeScene(open: OpenScene, scene: Scene) {
-  return {
-    ...open,
-    compass: COMPASS,
-    ...scene,
-    nodes: scene.nodes.map((n) => {
-      if (!isGroup(n)) return isTilted(n) ? { ...n, bounds: boundsFor([n]) } : n;
-      const boxes = shapesUnder(scene.nodes, [n.id]);
-      if (boxes.length === 0) return n;
-      return { ...n, bounds: boundsFor(boxes) };
-    }),
-  };
+function guided<T>(run: () => T): T {
+  try {
+    return run();
+  } catch (err) {
+    if (err instanceof SceneError) {
+      throw new SceneError(`${err.message}\nThe rules for each type and field: get_guide shapes, volumes, holes, ramps or lines.`);
+    }
+    throw err;
+  }
 }
 
 function buildServer(workspace: Workspace) {
   /** A result with the scene's hole warnings added (holes that cut nothing), when there are any. */
   const warned = <T extends object>(result: T) => {
-    const warnings = holeWarnings(store().getScene().nodes);
+    const warnings = holeWarnings(store().getScene().nodes).map(withTopic);
     return warnings.length > 0 ? { ...result, warnings } : result;
   };
-  const server = new McpServer({ name: "dungeon-designer", version: "0.0.11" }, { instructions: INSTRUCTIONS });
+  const server = new McpServer({ name: "dungeon-designer", version: "0.0.12" }, { instructions: INSTRUCTIONS });
   // Every tool reads or edits the open scene, and fails with a clear message while nothing is open.
   const store = () => workspace.requireScene();
 
@@ -182,12 +59,51 @@ function buildServer(workspace: Workspace) {
     "get_scene",
     {
       title: "Get scene",
-      description: `Return the open scene as JSON: its project (id, name, description) and scene (id, name), the compass (north is -z), the visible view, the editor's selection and every node (shapes and groups).`,
+      description:
+        `Return the open scene: its project (id, name, description) and scene, the compass (north is -z), the visible view, ` +
+        `the editor's selection, \`counts\`, and the nodes as an OUTLINE: the children of \`root\` (a group's ID; default the top ` +
+        `level) down to \`depth\` levels (default 1), each group with its description, bounds and \`contains\` (counts), and ` +
+        `\`collapsed: true\` when its contents aren't listed. \`full: true\` lists every node under the root instead; a scene of ` +
+        `${FULL_SCENE_MAX} nodes or fewer comes back in full anyway. Selected nodes the outline doesn't list come in \`selected\`.`,
+      inputSchema: {
+        root: z.string().optional().describe("ID of a group to list the contents of (a shape's ID returns just that shape). Default: the top level"),
+        depth: z.number().int().min(1).max(20).optional().describe("How many levels of groups to open, default 1"),
+        full: z.boolean().optional().describe("List every node under the root, with no depth limit"),
+      },
     },
-    async () => {
-      const scene = store().getScene();
-      return json(warned(describeScene(workspace.getOpen()!, scene)));
+    async (query) => json(warned(describeScene(workspace.getOpen()!, store().getScene(), query))),
+  );
+
+  server.registerTool(
+    "find_nodes",
+    {
+      title: "Find nodes",
+      description:
+        `Look nodes up without reading the whole scene: the nodes matching every filter given, one compact line each ` +
+        `(id, type, kind, name, parent, path of group names, bounds), at most ${MAX_MATCHES}. Use it to resolve a name to an ` +
+        `ID ("entry_window"), or to find what's in or near an area.`,
+      inputSchema: {
+        name: z.string().optional().describe("Part of the name, any case"),
+        type: z.enum(["box", "cylinder", "freeform", "line", "ramp", "group"]).optional(),
+        kind: z.enum(["room", "volume", "hole"]).optional().describe("Closed shapes and ramps only"),
+        under: z.string().optional().describe("ID of a group: only nodes inside it, at any depth"),
+        near: z
+          .strictObject({ x: z.number(), z: z.number(), radius: z.number().min(0) })
+          .optional()
+          .describe("Only nodes whose bounds come within radius meters of the point x, z (on the ground)"),
+      },
     },
+    async (query) => json(findNodes(store().getScene().nodes, query)),
+  );
+
+  server.registerTool(
+    "get_guide",
+    {
+      title: "Get guide",
+      description: `Return one topic of the detailed guide. Read a topic before using its types or fields for the first time in a session. Topics:\n${topicList()}`,
+      inputSchema: { topic: z.enum(GUIDE_TOPICS) },
+    },
+    async ({ topic }) => ({ content: [{ type: "text" as const, text: guideTopic(topic) }] }),
   );
 
   server.registerTool(
@@ -205,7 +121,7 @@ function buildServer(workspace: Workspace) {
       inputSchema: { shapes: z.array(ShapeInputSchema).min(1) },
     },
     async ({ shapes }) => {
-      const created = store().drawShapes(shapes, "agent");
+      const created = guided(() => store().drawShapes(shapes, "agent"));
       const all = store().getScene().nodes;
       // Rooms, volumes and holes of every closed shape; a ramp counts as a ramp.
       const count = (kind: string) => all.filter((n) => isShape(n) && isClosed(n) && n.kind === kind).length;
@@ -232,7 +148,7 @@ function buildServer(workspace: Workspace) {
         `a cylinder those and sides; a free-form name, parent, kind, y, height, color, wall, taper, bevel and points (the whole outline); a line name, parent, color, ` +
         `points (the whole path, with y), thickness, dashed and arrow; a ramp name, parent, color, ` +
         `points (with y), width, step (null = smooth) and base. ` +
-        `A group takes only name, parent, locked and hidden (any node takes those two). ` +
+        `A group takes only name, description (what that part of the level is; null removes it), parent, locked and hidden (any node takes those two). ` +
         `{ id, type: "freeform" } alone converts a box or cylinder into a free-form with a new ID; a call that converts ` +
         `only converts (edit the new free-form in a second call). ` +
         `Values are absolute (x: 4 moves the center to x = 4); to shift boxes or whole groups by an offset, use move_nodes instead. ` +
@@ -241,7 +157,7 @@ function buildServer(workspace: Workspace) {
       inputSchema: { changes: z.array(NodeUpdateSchema).min(1) },
     },
     async ({ changes }) => {
-      const updated = store().updateNodes(changes, "agent");
+      const updated = guided(() => store().updateNodes(changes, "agent"));
       if (!changes.some((c) => c.type !== undefined)) return json(warned({ updated }));
       return json(warned({ converted: changes.map((c, i) => ({ from: c.id, to: updated[i].id })), updated }));
     },
@@ -320,7 +236,7 @@ function buildServer(workspace: Workspace) {
     {
       title: "Group nodes",
       description:
-        `Put boxes and/or groups in a new group, optionally named. The group is created inside the deepest group that ` +
+        `Put boxes and/or groups in a new group, optionally named and described. The group is created inside the deepest group that ` +
         `held them all. Returns the new group (use its ID with move_nodes, rotate_nodes, or as a parent in draw_shapes).`,
       inputSchema: GroupNodesSchema.shape,
     },
