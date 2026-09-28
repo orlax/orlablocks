@@ -4,9 +4,8 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { z } from "zod";
 import { isClosed } from "../shared/geometry";
 import { holeWarnings } from "../shared/holes";
-import { arrayLayout } from "../shared/arrays";
+import { arrayShortfall } from "../shared/arrays";
 import {
-  MAX_ARRAY_ITEMS,
   DEFAULT_COLOR,
   DEFAULT_LINE_COLOR,
   DEFAULT_THICKNESS,
@@ -91,7 +90,7 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
               ...n.entities
                 .filter((e) => !known(e.entity))
                 .map((e) => `${n.id} repeats entity "${e.entity}", which isn't in the library (its items show as red blocks): change its entities or remove it`),
-              ...(arrayLayout(n).total > MAX_ARRAY_ITEMS ? [`${n.id}'s layout places ${arrayLayout(n).total} items, but an array makes at most ${MAX_ARRAY_ITEMS}: widen its spacing or shrink it`] : []),
+              ...(arrayShortfall(n) ? [`${n.id}: ${arrayShortfall(n)}`] : []),
             ]
           : [],
     );
@@ -100,7 +99,7 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
     const warnings = [...own, ...holes, ...missing];
     return warnings.length > 0 ? { ...result, warnings } : result;
   };
-  const server = new McpServer({ name: "orlablocks", version: "0.0.21" }, { instructions: INSTRUCTIONS });
+  const server = new McpServer({ name: "orlablocks", version: "0.0.22" }, { instructions: INSTRUCTIONS });
   // Every tool reads or edits the open scene, and fails with a clear message while nothing is open.
   const store = () => workspace.requireScene();
   const library = (): Library => (workspace.getOpen() ? workspace.library.get() : EMPTY_LIBRARY);

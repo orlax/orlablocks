@@ -1,6 +1,6 @@
 import { boundsOf, isTilted, round2 } from "../shared/geometry";
 import { currentTags, EMPTY_LIBRARY, entityMeta, findRefs, resolveRef, type EntityMeta, type Library, type Skill, type Tag } from "../shared/library";
-import { arrayLayout } from "../shared/arrays";
+import { arrayLayout, arrayShortfall } from "../shared/arrays";
 import { definitionOf } from "../shared/entities";
 import { COMPASS, type OpenScene, type Scene, type SceneNode, type Shape } from "../shared/scene.types";
 import { ancestry, childrenOf, countsText, isGroup, isShape, shapesUnder, subtreeIds, tagsOf } from "../shared/tree";
@@ -162,8 +162,8 @@ function describeNodeIn(nodes: SceneNode[], n: SceneNode, library: Library): Age
   if (n.type === "instance") return { ...n, bounds: boundsFor([n]) };
   // An array in full, with how many items it has (and how many its layout would place past the cap).
   if (n.type === "array") {
-    const { items, total } = arrayLayout(n);
-    return { ...n, items: items.length, ...(total > items.length + (n.skip?.length ?? 0) ? { placed: `${total} by its layout, only ${items.length + (n.skip?.length ?? 0)} made` } : {}), bounds: boundsFor([n]) };
+    const short = arrayShortfall(n);
+    return { ...n, items: arrayLayout(n).items.length, ...(short ? { placed: short } : {}), bounds: boundsFor([n]) };
   }
   if (!isGroup(n)) return isTilted(n) ? { ...n, bounds: boundsFor([n]) } : n;
   const inside = subtreeIds(nodes, n.id);

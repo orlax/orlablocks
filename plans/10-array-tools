@@ -438,3 +438,28 @@ Adopted as recommended (say if any should change):
 8. **Edit entity** from the array's section: changing the window changes every item.
 9. **Detach**: it becomes a group of plain window instances where the items were.
 10. Ask the agent for a row of pillars or battlements with an array: one `draw_shapes` call, one line in its outline.
+
+### 10.2 — Scatter, noise and mixed entities (done; checked in the browser by Orlando)
+
+- **Scatter (`ScatterLayout`):** `{ type: "scatter", y, x, z, radius | area, count, minDistance?, rotation? }`. Dart throwing from one seeded stream (mulberry32), up to 30 tries per item, with a grid hash for the distance checks; inside an area means inside its sampled outline, so curves work. Candidates are drawn in the scatter's own frame (`rotation`), so moving or turning the array moves or turns the same pattern (tested); mirroring reflects the area and scatters afresh in it (mirroring twice restores the data). A larger count keeps the earlier items (tested). `minDistance` defaults to the widest entity's width when the array is drawn (a forest of 1–2 m trees: 1.2 m, 2 m).
+- **Fewer than asked:** `arrayLayout` now also says how many were `made`; `arrayShortfall` explains it (`21 of 60 fit 8 m apart: lower minDistance or grow the area`, or the 500 cap) for the outline's `placed`, the results' warnings and the inspector.
+- **Store:** a scatter needs exactly one of a circle (x, z, radius) or an area (checked like a free-form's outline). An update given `area` leaves the circle, and given a circle's field leaves the area (a circle from an area starts around its bounds).
+- **Editor:** scatter in the layout switch (it starts as 20 items in a circle around the first item, facing random); circle / area in the section, with center and radius, or the area's points through Edit points (and double-click), at the scatter's height; count and apart. The **Entities list** (each row an entity, a weight and its share, remove; + entity up to 8). The noise: jitter, turn jitter, the seed and **Reroll** (`Reroll array_1`).
+- **Agent:** the scatter layout in `draw_shapes` and `update_nodes`, and the `arrays` topic (a forest is a scatter of a few tree entities by weight, facing random). Server 0.0.22.
+- **Checks:** typecheck; 427 tests (5 new); the editor bundles. Scripted on port 5171: three tree entities, a 60-tree forest in a 40 m square area by weights 5 : 3 : 1 (60 items), then `minDistance: 8` warns `21 of 60 fit`, and the library's uses count items per entity (14, 6, 1).
+
+- **After Orlando's first look (UI):** the inspector is wider (264 → 340 px, labels 84 px), and an array's Entities list takes full-width rows. A plain select doesn't scale to 20+ entities, so an **entity picker** (`EntityPicker.tsx`) replaces it in the instance's and the array's sections: a button with the entity's name that opens a list floating over everything (a portal, so the inspector's scroll doesn't clip it) with the Entities panel's fuzzy search (name, #tag, @skill), each row with its tags and size; ↑ / ↓, Enter, Esc, a click outside closes.
+
+- **Icons for choices (Orlando's request):** the choice buttons show icons, with their words as tooltips: the layouts (path, circle, grid, scatter), circle / area, solid / floating, smooth and dashed (as the arrows already did). A first pass also turned row labels and action buttons into icons; that went too far, so labels and actions keep their words.
+
+**Browser checklist for Orlando (10.2):**
+1. Make three tree entities. Select an instance of one, press **Array**, pick **scatter**: 20 trees in a circle around it, turned anyhow.
+2. Change count, apart and radius; with apart too big for the circle, the info line says how many fit.
+3. Switch to **area**, then Edit points (or double-click): reshape it like a free-form, curves included; the trees stay inside. Switch back to **circle**.
+4. In the Entities list, **+ entity** twice, pick the other two trees, set weights 5 / 3 / 1: the shares show 56% / 33% / 11%, and the mix follows.
+5. **Reroll** a few times: the same count, spread differently; undo steps back through the seeds.
+6. On a path or a circle array, jitter and turn jitter add noise; the same seed gives the same look after a reload.
+7. Turn the forest with the yaw ring: the same pattern turns (it doesn't reshuffle); move it: it moves.
+8. Ask the agent for a forest in an area: one `draw_shapes` call with entities by weight.
+9. The inspector is wider and nothing wraps or overflows in the array section. The entity picker on an instance and on each Entities row: click it, type part of a name or `#tag`, move with ↑ / ↓, Enter picks; Esc and a click outside close it; it opens upward near the bottom of the screen.
+10. The choice buttons (an array's layout, circle / area, a ramp's solid / floating and smooth, a line's dashes) are icons with tooltips; row labels and action buttons keep their words.

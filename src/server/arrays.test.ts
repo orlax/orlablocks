@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { arrayItems, arrayLayout } from "../shared/arrays";
+import { arrayItems, arrayLayout, arrayShortfall } from "../shared/arrays";
 import { expandNodes, ownerOf, setDefinitions } from "../shared/entities";
 import { boundsOf, mirrorShape, moveShape, rotateShape } from "../shared/geometry";
 import { cutters } from "../shared/holes";
@@ -326,5 +326,81 @@ describe("the store's arrays", () => {
     expect(copy).toMatchObject({ id: "array_2", layout: { x: 1, z: 5 } });
     const [pasted] = s.pasteNodes({ nodes: [a], focus: { x: 10, z: 10 }, parent: null }, "human");
     expect(pasted).toMatchObject({ id: "array_3", type: "array" });
+  });
+});
+
+describe("a scatter's items", () => {
+  const scatter = (fields: Partial<Extract<ArrayLayout, { type: "scatter" }>> = {}): ArrayLayout => ({ type: "scatter", x: 0, y: 0, z: 0, radius: 10, count: 30, minDistance: 1.5, ...fields });
+  const apart = (items: { x: number; z: number }[]) =>
+    Math.min(...items.flatMap((a, i) => items.slice(i + 1).map((b) => Math.hypot(a.x - b.x, a.z - b.z))));
+
+  it("stays in its circle, at least minDistance apart, the same for the same seed", () => {
+    const items = arrayItems(array(scatter(), { seed: 3 }));
+    expect(items).toHaveLength(30);
+    for (const i of items) expect(Math.hypot(i.x, i.z)).toBeLessThanOrEqual(10.01);
+    expect(apart(items)).toBeGreaterThanOrEqual(1.49);
+    expect(arrayItems(array(scatter(), { seed: 3 }))).toEqual(items);
+    expect(arrayItems(array(scatter(), { seed: 4 }))).not.toEqual(items);
+  });
+
+  it("keeps its earlier items when the count grows", () => {
+    const few = arrayItems(array(scatter({ count: 10 })));
+    const more = arrayItems(array(scatter({ count: 20 })));
+    expect(more.slice(0, 10).map((i) => [i.x, i.z])).toEqual(few.map((i) => [i.x, i.z]));
+  });
+
+  it("stays in its area, and says how many fit when they can't all", () => {
+    const area = [
+      { x: 0, z: 0 },
+      { x: 10, z: 0 },
+      { x: 0, z: 10 },
+    ];
+    const a = array({ type: "scatter", y: 2, area, count: 20, minDistance: 1 });
+    for (const i of arrayItems(a)) {
+      expect(i.x + i.z).toBeLessThanOrEqual(10.01);
+      expect(i.y).toBe(2);
+    }
+    const crowded = array({ type: "scatter", y: 0, x: 0, z: 0, radius: 2, count: 100, minDistance: 1.5 });
+    const { items, total } = arrayLayout(crowded);
+    expect(total).toBe(100);
+    expect(items.length).toBeLessThan(100);
+    expect(arrayShortfall(crowded)).toMatch(new RegExp(`^${items.length} of 100 fit 1.5 m apart`));
+  });
+
+  it("turns the same pattern when the array turns, and moves it when it moves", () => {
+    const a = array(scatter({ count: 8 }), { facing: "fixed" });
+    const turned = { ...a, ...rotateShape(a, { x: 0, z: 0 }, 90) } as ArrayNode;
+    const before = arrayItems(a);
+    const after = arrayItems(turned);
+    // +90° counterclockwise seen from above takes (x, z) to (z, -x), and a fixed item turns with the frame.
+    after.forEach((p, k) => {
+      expect(p.x).toBeCloseTo(before[k].z, 1);
+      expect(p.z).toBeCloseTo(-before[k].x, 1);
+      expect(p.rotation).toBe(90);
+    });
+    const moved = arrayItems({ ...a, ...moveShape(a, 5, 1, 0) } as ArrayNode);
+    moved.forEach((p, k) => {
+      expect(p.x).toBeCloseTo(before[k].x + 5, 1);
+      expect(p.y).toBe(1);
+    });
+  });
+
+  it("is stored with the widest entity's width apart by default, and switches between a circle and an area", () => {
+    const s = createSceneStore({ entityName: (id) => (["block", "window"].includes(id) ? id : undefined) });
+    const [a] = s.drawShapes([{ type: "array", entities: [{ entity: "block" }, { entity: "window", weight: 2 }], layout: { type: "scatter", x: 0, z: 0, radius: 8, count: 12 } }], "agent");
+    expect(a).toMatchObject({ entities: [{ entity: "block" }, { entity: "window", weight: 2 }], layout: { type: "scatter", x: 0, z: 0, radius: 8, count: 12, minDistance: 1.2 } });
+    const area = [
+      { x: -5, z: -5 },
+      { x: 5, z: -5 },
+      { x: 5, z: 5 },
+      { x: -5, z: 5 },
+    ];
+    const [inArea] = s.updateNodes([{ id: a.id, layout: { area } }], "human") as ArrayNode[];
+    expect(inArea.layout).toEqual({ type: "scatter", y: 0, area, count: 12, minDistance: 1.2 });
+    const [inCircle] = s.updateNodes([{ id: a.id, layout: { radius: 3 } }], "human") as ArrayNode[];
+    expect(inCircle.layout).toEqual({ type: "scatter", y: 0, x: 0, z: 0, radius: 3, count: 12, minDistance: 1.2 });
+    expect(() => s.drawShapes([{ type: "array", entity: "block", layout: { type: "scatter", count: 3 } }], "agent")).toThrow(/either x, z and radius/);
+    s.updateNodes([{ id: a.id, seed: 42 }], "human");
+    expect(s.getHistory().undoLabel).toBe(`Reroll ${a.id}`);
   });
 });

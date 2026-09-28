@@ -1,5 +1,5 @@
-import { normalizeDeg, round2, roundPoints, sampleEdge3, shapeAxes, type MirrorAxis, type Point, type Point3 } from "./geometry";
-import { MAX_ARRAY_ITEMS, type ArrayFacing, type ArrayLayout, type ArrayNode, type LinePoint, type ShapePatch } from "./scene.types";
+import { normalizeDeg, pointInPolygon, round2, roundPoints, sampleEdge3, sampleOutline, shapeAxes, type MirrorAxis, type Point, type Point3 } from "./geometry";
+import { MAX_ARRAY_ITEMS, type ArrayFacing, type ArrayLayout, type ArrayNode, type FootPoint, type LinePoint, type ShapePatch } from "./scene.types";
 
 /**
  * Arrays (plan 10 §4): where an array's items go, as one pure function of the array, and how moving, turning and
@@ -131,8 +131,75 @@ export function circleAngles(layout: Extract<ArrayLayout, { type: "circle" }>) {
   return { start, step, span: step * (layout.count - 1) };
 }
 
-function layoutPoses(layout: ArrayLayout, limit: number): { poses: Pose[]; total: number } {
+/** A seeded stream of numbers in [0, 1) (mulberry32). */
+function stream(seed: number): () => number {
+  let a = (seed ^ 0x5bd1e995) >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/** How many tries scattering gets per item, before it settles for fewer items. */
+const SCATTER_TRIES = 30;
+
+/**
+ * A scatter's poses (10.2): dart throwing from the seed's stream. Candidates are drawn in the circle, or in the
+ * area's bounds in the scatter's own (turned) frame, and kept when inside the area and at least `minDistance` from
+ * every kept one, until there are `count` or the tries run out. The stream doesn't depend on the count, so a larger
+ * count keeps the earlier items; drawing in the frame means moving or turning the scatter moves or turns the same
+ * pattern.
+ */
+function scatterPoses(layout: Extract<ArrayLayout, { type: "scatter" }>, limit: number, seed: number): Pose[] {
+  const n = Math.min(layout.count, limit);
+  const g = layout.rotation ?? 0;
+  const { ex, ez } = shapeAxes({ rotation: g });
+  const min = layout.minDistance ?? 0;
+  const next = stream(seed);
+  const polygon = layout.area ? sampleOutline(layout.area).polygon : null;
+  const us = polygon?.map((p) => p.x * ex.x + p.z * ex.z) ?? [];
+  const vs = polygon?.map((p) => p.x * ez.x + p.z * ez.z) ?? [];
+  const [u0, u1, v0, v1] = [Math.min(...us), Math.max(...us), Math.min(...vs), Math.max(...vs)];
+  const candidate = (): Point | null => {
+    const [a, b] = [next(), next()];
+    if (polygon) {
+      const [u, v] = [u0 + a * (u1 - u0), v0 + b * (v1 - v0)];
+      const p = { x: u * ex.x + v * ez.x, z: u * ex.z + v * ez.z };
+      return pointInPolygon(polygon, p) ? p : null;
+    }
+    const r = (layout.radius ?? 0) * Math.sqrt(a);
+    const t = b * 2 * Math.PI;
+    const [lu, lv] = [Math.cos(t) * r, Math.sin(t) * r];
+    return { x: (layout.x ?? 0) + lu * ex.x + lv * ez.x, z: (layout.z ?? 0) + lu * ex.z + lv * ez.z };
+  };
+  // Kept points by grid cell (a cell is minDistance wide), so each check looks at the 9 cells around.
+  const cells = new Map<string, Point[]>();
+  const cell = (p: Point) => [Math.floor(p.x / min), Math.floor(p.z / min)];
+  const clear = (p: Point) => {
+    if (min <= 0) return true;
+    const [cx, cz] = cell(p);
+    for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) for (const q of cells.get(`${cx + i},${cz + j}`) ?? []) if (Math.hypot(q.x - p.x, q.z - p.z) < min) return false;
+    return true;
+  };
+  const poses: Pose[] = [];
+  for (let tries = 0; poses.length < n && tries < SCATTER_TRIES * Math.max(n, 10); tries++) {
+    const p = candidate();
+    if (!p || !clear(p)) continue;
+    poses.push({ x: p.x, y: layout.y, z: p.z, facing: g });
+    if (min > 0) {
+      const key = cell(p).join(",");
+      cells.set(key, [...(cells.get(key) ?? []), p]);
+    }
+  }
+  return poses;
+}
+
+function layoutPoses(layout: ArrayLayout, limit: number, seed = 1): { poses: Pose[]; total: number } {
   if (layout.type === "path") return pathPoses(layout, limit);
+  if (layout.type === "scatter") return { poses: scatterPoses(layout, limit, seed), total: layout.count };
   if (layout.type === "circle") {
     const { start, step } = circleAngles(layout);
     const n = Math.min(layout.count, limit);
@@ -172,7 +239,7 @@ function facingTurn(layout: ArrayLayout, facing: ArrayFacing, pose: Pose, random
     return 0;
   }
   if (layout.type === "path") return facing === "along" || facing === "tangent" ? pose.facing : 0;
-  // A grid's items turn with the grid.
+  // A grid's and a scatter's items turn with their frame.
   return pose.facing;
 }
 
@@ -188,18 +255,19 @@ function pickEntity(entities: ArrayNode["entities"], u: number): string {
   return entities[entities.length - 1].entity;
 }
 
-const itemsCache = new WeakMap<ArrayNode, { items: ArrayItem[]; total: number }>();
+const itemsCache = new WeakMap<ArrayNode, { items: ArrayItem[]; total: number; made: number }>();
 
 /**
- * An array's items, skipped ones left out, rounded to 2 decimals, and how many its layout places in all (`total`,
- * which can be past MAX_ARRAY_ITEMS: only that many are made). Cached per array object.
+ * An array's items, skipped ones left out, rounded to 2 decimals; how many its layout asks for (`total`, which can be
+ * past MAX_ARRAY_ITEMS, when only that many are made); and how many were made before skipping (`made`: fewer than
+ * `total` past the cap, or when a scatter can't fit them all). Cached per array object.
  */
-export function arrayLayout(array: ArrayNode): { items: ArrayItem[]; total: number } {
+export function arrayLayout(array: ArrayNode): { items: ArrayItem[]; total: number; made: number } {
   const hit = itemsCache.get(array);
   if (hit) return hit;
-  const { poses, total } = layoutPoses(array.layout, MAX_ARRAY_ITEMS);
-  const facing = facingOf(array);
   const seed = array.seed ?? 1;
+  const { poses, total } = layoutPoses(array.layout, MAX_ARRAY_ITEMS, seed);
+  const facing = facingOf(array);
   const skip = new Set(array.skip ?? []);
   const items: ArrayItem[] = [];
   poses.forEach((pose, index) => {
@@ -222,9 +290,19 @@ export function arrayLayout(array: ArrayNode): { items: ArrayItem[]; total: numb
       rotation: round2(normalizeDeg(turn)) % 360,
     });
   });
-  const result = { items, total };
+  const result = { items, total, made: poses.length };
   itemsCache.set(array, result);
   return result;
+}
+
+/** Why an array has fewer items than its layout asks for (past the cap, or a scatter that can't fit), or null. */
+export function arrayShortfall(array: ArrayNode): string | null {
+  const { total, made } = arrayLayout(array);
+  if (made >= total) return null;
+  if (array.layout.type === "scatter" && made < Math.min(total, MAX_ARRAY_ITEMS)) {
+    return `${made} of ${total} fit ${array.layout.minDistance ?? 0} m apart: lower minDistance or grow the area`;
+  }
+  return `its layout places ${total} items, but an array makes at most ${MAX_ARRAY_ITEMS}: widen its spacing or shrink it`;
 }
 
 export const arrayItems = (array: ArrayNode): ArrayItem[] => arrayLayout(array).items;
@@ -237,16 +315,19 @@ export function describeLayout(layout: ArrayLayout): string {
     return `${layout.closed ? "loop" : "path"}, ${how}`;
   }
   if (layout.type === "circle") return `circle r ${layout.radius}${layout.sweep !== undefined ? `, arc ${layout.sweep}°` : ""}`;
+  if (layout.type === "scatter") return `scattered in ${layout.area ? "an area" : `a circle r ${layout.radius}`}${layout.minDistance ? `, ${layout.minDistance} m apart` : ""}`;
   return `grid ${layout.columns} × ${layout.rows}${layout.layers ? ` × ${layout.layers}` : ""}${layout.stagger ? ", staggered" : ""}`;
 }
 
 /** The ground points a layout covers (its path, its circle's points, its grid's corners): an empty array's bounds. */
 export function layoutPoints(layout: ArrayLayout): Point3[] {
   if (layout.type === "path") return samplePath(layout.points, !!layout.closed).pts;
-  if (layout.type === "circle") {
+  if (layout.type === "scatter" && layout.area) return sampleOutline(layout.area).polygon.map((p) => ({ ...p, y: layout.y }));
+  if (layout.type === "circle" || layout.type === "scatter") {
+    const [x, z, r] = [layout.x ?? 0, layout.z ?? 0, layout.radius ?? 0];
     return Array.from({ length: 16 }, (_, i) => {
       const a = (i / 16) * 2 * Math.PI;
-      return { x: layout.x + Math.cos(a) * layout.radius, y: layout.y, z: layout.z - Math.sin(a) * layout.radius };
+      return { x: x + Math.cos(a) * r, y: layout.y, z: z - Math.sin(a) * r };
     });
   }
   return layoutPoses({ ...layout, layers: 1 }, MAX_ARRAY_ITEMS).poses.map((p) => ({ x: p.x, y: p.y, z: p.z }));
@@ -258,6 +339,20 @@ export function layoutPoints(layout: ArrayLayout): Point3[] {
  */
 export function layoutGuide(layout: ArrayLayout): LinePoint[] {
   if (layout.type === "path") return layout.closed ? [...layout.points, { ...layout.points[0] }] : layout.points;
+  if (layout.type === "scatter") {
+    if (layout.area) {
+      return [...layout.area, layout.area[0]].map(
+        (p): LinePoint => ({
+          x: p.x,
+          y: layout.y,
+          z: p.z,
+          ...(p.in ? { in: { x: p.in.x, y: 0, z: p.in.z } } : {}),
+          ...(p.out ? { out: { x: p.out.x, y: 0, z: p.out.z } } : {}),
+        }),
+      );
+    }
+    return layoutGuide({ type: "circle", x: layout.x ?? 0, y: layout.y, z: layout.z ?? 0, radius: layout.radius ?? 0, count: 1 });
+  }
   if (layout.type === "circle") {
     const { start } = circleAngles(layout);
     const sweep = layout.sweep ?? 360;
@@ -283,6 +378,7 @@ export function layoutAnchor(layout: ArrayLayout): Point3 {
     const p = layout.points[0];
     return { x: p.x, y: p.y, z: p.z };
   }
+  if (layout.type === "scatter") return layout.area ? { x: layout.area[0].x, y: layout.y, z: layout.area[0].z } : { x: layout.x ?? 0, y: layout.y, z: layout.z ?? 0 };
   return { x: layout.x, y: layout.y, z: layout.z };
 }
 
@@ -303,8 +399,24 @@ export function moveArray(array: ArrayNode, dx: number, dy: number, dz: number):
   if (dx === 0 && dy === 0 && dz === 0) return {};
   const l = array.layout;
   if (l.type === "path") return { layout: { ...l, points: mapLinePoints(l.points, (p) => ({ x: p.x + dx, z: p.z + dz }), (o) => o, dy) } };
+  if (l.type === "scatter") {
+    const y = round2(l.y + dy);
+    if (l.area) return { layout: { ...l, y, area: mapFootPoints(l.area, (p) => ({ x: p.x + dx, z: p.z + dz }), (o) => o) } };
+    return { layout: { ...l, y, x: round2((l.x ?? 0) + dx), z: round2((l.z ?? 0) + dz) } };
+  }
   return { layout: { ...l, x: round2(l.x + dx), y: round2(l.y + dy), z: round2(l.z + dz) } };
 }
+
+/** A free-form's points through `f` (a position) and `h` (a handle's offset), rounded. */
+const mapFootPoints = (points: FootPoint[], f: (p: Point) => Point, h: (o: Point) => Point): FootPoint[] =>
+  roundPoints(
+    points.map((p) => ({
+      ...p,
+      ...f(p),
+      ...(p.in ? { in: h(p.in) } : {}),
+      ...(p.out ? { out: h(p.out) } : {}),
+    })),
+  );
 
 /**
  * Degrees in 0..360, 2 decimals. A 0 stays 0 (not undefined): these patches travel as JSON to `update_nodes`, which
@@ -346,6 +458,12 @@ export function rotateArray(array: ArrayNode, pivot: Point, degrees: number): Sh
       ...(follows ? {} : { rotation: turnValue((array.rotation ?? 0) + degrees) }),
     };
   }
+  if (l.type === "scatter") {
+    const rotation = turnValue((l.rotation ?? 0) + degrees);
+    if (l.area) return { layout: { ...l, rotation, area: mapFootPoints(l.area, orbit, turn) } };
+    const c = orbit({ x: l.x ?? 0, z: l.z ?? 0 });
+    return { layout: { ...l, rotation, x: round2(c.x), z: round2(c.z) } };
+  }
   const c = orbit(l);
   const center = { x: round2(c.x), z: round2(c.z) };
   if (l.type === "circle") {
@@ -374,6 +492,14 @@ export function mirrorArray(array: ArrayNode, axis: MirrorAxis, sum: number): Sh
   if (l.type === "path") {
     const follows = facing === "along" || facing === "tangent";
     return { layout: { ...l, points: mapLinePoints(l.points, reflect, flip) }, rotation: follows ? turnValue(-r) : fixedTurn };
+  }
+  // A scatter's area (or circle) reflects, and its frame turns the other way; the items are scattered afresh in it.
+  if (l.type === "scatter") {
+    const rotation = turnValue(-(l.rotation ?? 0));
+    const turnItems = axis === "x" ? turnValue(180 - r) : turnValue(-r);
+    if (l.area) return { layout: { ...l, rotation, area: mapFootPoints(l.area, reflect, flip) }, rotation: turnItems };
+    const c = reflect({ x: l.x ?? 0, z: l.z ?? 0 });
+    return { layout: { ...l, rotation, x: round2(c.x), z: round2(c.z) }, rotation: turnItems };
   }
   const c = reflect(l);
   const center = { x: round2(c.x), z: round2(c.z) };

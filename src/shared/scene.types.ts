@@ -240,7 +240,23 @@ export type GridLayout = {
   spacing: { x: number; z: number; y?: number };
   stagger?: true;
 };
-export type ArrayLayout = PathLayout | CircleLayout | GridLayout;
+/**
+ * Items scattered at random (10.2), in a circle (`x, z, radius`) or in an area (`area`, a closed outline as a
+ * free-form's), at height `y`, at least `minDistance` apart. `rotation` turns the frame they're scattered in, so
+ * turning the array turns the same pattern (and a fixed item turns with it).
+ */
+export type ScatterLayout = {
+  type: "scatter";
+  y: number;
+  x?: number;
+  z?: number;
+  radius?: number;
+  area?: FootPoint[];
+  count: number;
+  minDistance?: number;
+  rotation?: number;
+};
+export type ArrayLayout = PathLayout | CircleLayout | GridLayout | ScatterLayout;
 export type ArrayLayoutType = ArrayLayout["type"];
 
 /**
@@ -419,7 +435,7 @@ export const MAX_ARRAY_ENTITIES = 8;
 export const MIN_ARRAY_SPACING = 0.1;
 export const ARRAY_PLACES = ["spacing", "count", "corners", "midpoints"] as const;
 export const ARRAY_FACINGS = ["fixed", "along", "tangent", "out", "in", "random"] as const;
-export const ARRAY_LAYOUTS = ["path", "circle", "grid"] as const;
+export const ARRAY_LAYOUTS = ["path", "circle", "grid", "scatter"] as const;
 /** A ramp is this wide unless it says otherwise, and at least MIN_RAMP_WIDTH. */
 export const DEFAULT_RAMP_WIDTH = 1.5;
 export const MIN_RAMP_WIDTH = 0.2;
@@ -629,6 +645,17 @@ export const ArrayLayoutSchema = z.discriminatedUnion("type", [
     layers: count.optional(),
     spacing: z.object({ x: z.number().min(0), z: z.number().min(0), y: z.number().min(0).optional() }),
     stagger: z.literal(true).optional(),
+  }),
+  z.object({
+    type: z.literal("scatter"),
+    y: z.number(),
+    x: z.number().optional(),
+    z: z.number().optional(),
+    radius: z.number().positive().optional(),
+    area: z.array(FootPointSchema).min(MIN_POINTS).max(MAX_POINTS).optional(),
+    count,
+    minDistance: z.number().min(0).optional(),
+    rotation: z.number().optional(),
   }),
 ]);
 
@@ -870,6 +897,17 @@ export const ArrayLayoutInputSchema = z.discriminatedUnion("type", [
       .describe("Meters between columns (x), rows (z) and layers (y)"),
     stagger: z.boolean().optional().describe("Every other row offset by half a column (brick). Default false"),
   }),
+  z.strictObject({
+    type: z.literal("scatter").describe("Items scattered at random in a circle (x, z, radius) or in an area (area), seeded"),
+    x: z.number().optional().describe("A circle's center, world x (with z and radius)"),
+    z: z.number().optional().describe("A circle's center, world z"),
+    radius: z.number().positive().optional().describe("A circle's radius, meters"),
+    area: PointsSchema.optional().describe("An area instead of a circle: a closed outline as a free-form's points (absolute world x/z, bezier handles as offsets)"),
+    y: z.number().optional().describe("The height the items stand at. Default 0"),
+    count: arrayCount.describe("How many items (fewer when they can't all fit minDistance apart: the result says)"),
+    minDistance: z.number().min(0).optional().describe("Meters at least between items' pivots. Default: the widest entity's width"),
+    rotation: z.number().optional().describe("Degrees the scatter's frame turns (fixed items turn with it). Default 0"),
+  }),
 ]);
 const arrayField = {
   entities: z
@@ -889,7 +927,7 @@ const arrayField = {
 
 /** An array for `draw_shapes`: its entity (or entities), its layout, and how its items turn and vary. */
 export const ArrayInputSchema = z.strictObject({
-  type: z.literal("array").describe("Repeats entities on a layout (a path, a circle or a grid), live: one node for many items"),
+  type: z.literal("array").describe("Repeats entities on a layout (a path, a circle, a grid or a scatter), live: one node for many items"),
   entity: z.string().optional().describe('The entity to repeat, e.g. "merlon" (or give entities)'),
   entities: arrayField.entities.optional(),
   layout: ArrayLayoutInputSchema,
@@ -990,6 +1028,8 @@ export const NodeUpdateSchema = z.strictObject({
       rows: z.number().int().optional(),
       layers: z.number().int().optional(),
       stagger: z.boolean().optional(),
+      area: z.array(FootPointInputSchema).min(MIN_POINTS).max(MAX_POINTS).optional(),
+      minDistance: z.number().optional(),
     })
     .optional()
     .describe("Arrays only: layout fields to change (they merge into the layout); with another `type`, the whole new layout (as in draw_shapes)"),

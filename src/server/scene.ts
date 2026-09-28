@@ -1,6 +1,7 @@
 import type { z } from "zod";
 import {
   boundsOf,
+  footprintBounds,
   isFootprinted,
   mirrorAcross,
   moveShape,
@@ -414,22 +415,34 @@ export function createSceneStore({
     return b.maxX - b.minX || 1;
   };
 
-  /** An array's default spacing along a path: 1.5 × its first entity's width, at least MIN_ARRAY_SPACING. */
-  const defaultSpacing = (entity: string) => Math.max(MIN_ARRAY_SPACING, round2(entityWidth(entity) * 1.5));
+  /**
+   * An array's defaults: along a path, 1.5 × its first entity's width apart (at least MIN_ARRAY_SPACING); scattered,
+   * its widest entity's width apart.
+   */
+  const arrayDefaults = (entities: { entity: string }[]) => ({
+    spacing: Math.max(MIN_ARRAY_SPACING, round2(entityWidth(entities[0]?.entity ?? "") * 1.5)),
+    minDistance: round2(Math.max(0, ...entities.map((e) => entityWidth(e.entity)))),
+  });
+  const defaultSpacing = (entity: string) => arrayDefaults([{ entity }]).spacing;
 
   /**
    * An array's layout as stored (plan 10 §3), from its input: rounded to 2 decimals, angles in 0..360, defaults left
    * out (a full sweep, one layer, no stagger), a path's `place` from what's given (count → count, else spacing), and
    * only the number its place uses. Errors go in `errors` as `prefix: ...`.
    */
-  const arrayLayoutFrom = (prefix: string, d: z.output<typeof ArrayLayoutInputSchema>, spacingFallback: number, errors: string[]): ArrayLayout => {
+  const arrayLayoutFrom = (
+    prefix: string,
+    d: z.output<typeof ArrayLayoutInputSchema>,
+    fallback: { spacing: number; minDistance: number },
+    errors: string[],
+  ): ArrayLayout => {
     const turn = (v: number | undefined) => (v === undefined || normalizeRotation(v) === 0 ? {} : { value: normalizeRotation(v) });
     if (d.type === "path") {
       const points = checkLinePoints(prefix, d.points, errors);
       if (d.closed && points.length < 3) errors.push(`${prefix}.closed: a closed path needs at least 3 points`);
       const place = d.place ?? (d.count !== undefined && d.spacing === undefined ? "count" : "spacing");
       if (place === "count" && d.count === undefined) errors.push(`${prefix}.count: place: count needs a count`);
-      const spacing = round2(d.spacing ?? spacingFallback);
+      const spacing = round2(d.spacing ?? fallback.spacing);
       if (place === "spacing" && spacing < MIN_ARRAY_SPACING) errors.push(`${prefix}.spacing: ${d.spacing} rounds below ${MIN_ARRAY_SPACING} at 2 decimals`);
       return {
         type: "path",
@@ -455,6 +468,23 @@ export function createSceneStore({
         count: d.count,
         ...("value" in start ? { start: start.value } : {}),
         ...(sweep !== undefined ? { sweep } : {}),
+      };
+    }
+    if (d.type === "scatter") {
+      const circle = d.x !== undefined || d.z !== undefined || d.radius !== undefined;
+      if (circle === (d.area !== undefined)) errors.push(`${prefix}: give a scatter either x, z and radius (a circle) or area (an outline), one of them`);
+      else if (circle && (d.x === undefined || d.z === undefined || d.radius === undefined)) errors.push(`${prefix}: a scatter in a circle needs x, z and radius`);
+      const radius = d.radius === undefined ? undefined : round2(d.radius);
+      if (radius !== undefined && radius <= 0) errors.push(`${prefix}.radius: ${d.radius} rounds to 0 at 2 decimals`);
+      const rotation = turn(d.rotation);
+      const minDistance = round2(d.minDistance ?? fallback.minDistance);
+      return {
+        type: "scatter",
+        y: round2(d.y ?? 0),
+        ...(d.area ? { area: checkPoints(prefix + ".area", d.area, errors) } : { x: round2(d.x ?? 0), z: round2(d.z ?? 0), radius: radius ?? 1 }),
+        count: d.count,
+        ...(minDistance > 0 ? { minDistance } : {}),
+        ...("value" in rotation ? { rotation: rotation.value } : {}),
       };
     }
     const rotation = turn(d.rotation);
@@ -503,12 +533,26 @@ export function createSceneStore({
       if (rest.count !== undefined) input.place = "count";
       else if (typeof rest.spacing === "number") input.place = "spacing";
     }
+    // A scatter given an area leaves its circle, and given a circle's field leaves its area.
+    if (same && node.layout.type === "scatter") {
+      if (rest.area !== undefined) for (const k of ["x", "z", "radius"]) if (!(k in rest)) delete input[k];
+      if (rest.x !== undefined || rest.z !== undefined || rest.radius !== undefined) {
+        if (!("area" in rest)) delete input.area;
+        const c = node.layout.area ? footprintBounds({ id: "", type: "freeform", kind: "volume", y: 0, height: 1, color: DEFAULT_COLOR, points: node.layout.area, createdBy: "human" }) : null;
+        // From an area, a circle starts around its bounds.
+        if (c) {
+          input.x ??= round2((c.minX + c.maxX) / 2);
+          input.z ??= round2((c.minZ + c.maxZ) / 2);
+          input.radius ??= round2(Math.max(c.maxX - c.minX, c.maxZ - c.minZ) / 2);
+        }
+      }
+    }
     const parsed = ArrayLayoutInputSchema.safeParse(input);
     if (!parsed.success) {
       errors.push(...issueLines(prefix, parsed.error.issues));
       return node.layout;
     }
-    return arrayLayoutFrom(prefix, parsed.data, defaultSpacing(node.entities[0].entity), errors);
+    return arrayLayoutFrom(prefix, parsed.data, { ...arrayDefaults(node.entities), minDistance: node.layout.type === "scatter" ? 0 : arrayDefaults(node.entities).minDistance }, errors);
   };
 
   /** Drops the keys whose value is undefined (so a stored node doesn't carry them). */
@@ -603,7 +647,7 @@ export function createSceneStore({
         if (d.type === "array") {
           if ((d.entity === undefined) === (d.entities === undefined)) errors.push(`${prefix}: give an array either entity or entities (one of them)`);
           const entities = arrayEntitiesFrom(`${prefix}.entities`, d.entities ?? (d.entity !== undefined ? [{ entity: d.entity }] : []), errors);
-          const layout = arrayLayoutFrom(`${prefix}.layout`, d.layout, defaultSpacing(entities[0]?.entity ?? ""), errors);
+          const layout = arrayLayoutFrom(`${prefix}.layout`, d.layout, arrayDefaults(entities), errors);
           return defined({
             type: "array" as const,
             ...(name ? { name } : {}),

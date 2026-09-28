@@ -8,7 +8,6 @@ import {
   DEFAULT_VIEW,
   DEFAULT_RAMP_WIDTH,
   DEFAULT_WALL,
-  MAX_ARRAY_ITEMS,
   MIN_ARRAY_SPACING,
   type ArrayLayout,
   type ArrayLayoutType,
@@ -34,7 +33,7 @@ import {
 import { boundsOf, footprintBounds, isClosed, isTilted, polyline, rampStations, reversePoints, round2, wallOf } from "../shared/geometry";
 import { shapesUnder, childrenOf, countsText, isShape, isGroup, hiddenIds, lockedIds, subtreeIds, tagsOf } from "../shared/tree";
 import { definitionOf, expandShapes } from "../shared/entities";
-import { arrayItems, arrayLayout, describeLayout, facingOf, layoutAnchor } from "../shared/arrays";
+import { arrayItems, arrayLayout, arrayShortfall, describeLayout, facingOf, layoutAnchor } from "../shared/arrays";
 import type { Box3, CameraState, GroundPoint } from "./camera";
 import { clipboardText, readClipboard } from "./clipboard";
 import { ErrorPanel } from "./ErrorPanel";
@@ -99,7 +98,11 @@ function layoutAround(a: ArrayNode, type: ArrayLayoutType): { layout: ArrayLayou
     const radius = Math.max(1, round2((8 * s) / (2 * Math.PI)));
     return { layout: { type, x: round2(x - radius), y, z, radius, count: 8 }, facing: "tangent" };
   }
-  return { layout: { type, x: round2(x + s), y, z: round2(z + s), columns: 3, rows: 3, spacing: { x: s, z: s } }, facing: "fixed" };
+  if (type === "scatter") {
+    // 20 items in a circle around the first one, turned anyhow.
+    return { layout: { type, x, y, z, radius: Math.max(2, round2(s * 4)), count: 20 }, facing: "random" };
+  }
+  return { layout: { type: "grid", x: round2(x + s), y, z: round2(z + s), columns: 3, rows: 3, spacing: { x: s, z: s } }, facing: "fixed" };
 }
 
 /** `lobby (group_1)` or just `box_3`. */
@@ -114,13 +117,12 @@ const title = (n: SceneNode) => (n.name ? `${n.name} (${n.id})` : n.id);
  */
 const details = (s: Shape, library: Library | null) => {
   if (s.type === "array") {
-    const { items, total } = arrayLayout(s);
+    const { items } = arrayLayout(s);
     const names = s.entities.map((e) => (library ? entityMeta(library, e.entity)?.name : undefined) ?? `missing entity ${e.entity}`).join(", ");
     const b = boundsOf([s]);
     const size = `${round2(b.maxX - b.minX)} × ${round2(b.maxZ - b.minZ)} × ${round2(b.maxY - b.minY)} m`;
     const skipped = s.skip?.length ? ` · ${s.skip.length} skipped` : "";
-    const capped = total > items.length + (s.skip?.length ?? 0) ? ` · ${total} placed, ${MAX_ARRAY_ITEMS} made` : "";
-    return `${items.length} × ${names}${skipped}${capped} · ${describeLayout(s.layout)} · ${size}`;
+    return `${items.length} × ${names}${skipped} · ${describeLayout(s.layout)} · ${size}`;
   }
   if (s.type === "instance") {
     const meta = library ? entityMeta(library, s.entity) : undefined;
@@ -636,7 +638,11 @@ export function App() {
     send({ type: "convert_nodes", ids });
   };
   const editable =
-    singleShape?.type === "freeform" || singleShape?.type === "line" || (singleShape?.type === "array" && singleShape.layout.type === "path") ? singleShape : null;
+    singleShape?.type === "freeform" ||
+    singleShape?.type === "line" ||
+    (singleShape?.type === "array" && (singleShape.layout.type === "path" || (singleShape.layout.type === "scatter" && !!singleShape.layout.area)))
+      ? singleShape
+      : null;
   // Kind is for closed shapes: hidden when only lines are selected, disabled unless a single closed shape is.
   const singleClosed = singleShape && isClosed(singleShape) ? singleShape : null;
   const selectedLines = selectedShapes.filter((s): s is Line => s.type === "line");
@@ -785,7 +791,7 @@ export function App() {
               array:
                 single?.type === "array" && library
                   ? (() => {
-                      const { items, total } = arrayLayout(single);
+                      const { items } = arrayLayout(single);
                       const update = (change: Record<string, unknown>) => send({ type: "update_nodes", changes: [{ id: single.id, ...change }] });
                       return {
                         entities: single.entities,
@@ -793,13 +799,16 @@ export function App() {
                         layout: single.layout,
                         facing: facingOf(single),
                         rotation: single.rotation ?? 0,
+                        jitter: single.jitter ?? 0,
+                        turnJitter: single.turnJitter ?? 0,
+                        seed: single.seed ?? 1,
                         items: items.length,
-                        total,
                         skipped: single.skip?.length ?? 0,
-                        onEntity: (entity: string) => update({ entities: [{ entity }] }),
+                        shortfall: arrayShortfall(single),
+                        onEntities: (entities: { entity: string; weight?: number }[]) => update({ entities }),
                         onLayoutType: (type: ArrayLayoutType) => update(layoutAround(single, type)),
                         onLayout: (patch: Record<string, unknown>) => update({ layout: patch }),
-                        onChange: (patch: { facing?: ArrayNode["facing"]; rotation?: number }) => update(patch),
+                        onChange: (patch: Record<string, unknown>) => update(patch),
                         onEdit: (entity: string) => send({ type: "open_entity", entity }),
                         onDetach: () => {
                           pendingSelect.current = { before: new Set(nodes.map((n) => n.id)), pick: (added) => added.filter((n) => n.type === "group" && n.parent === single.parent).map((n) => n.id).slice(0, 1) };

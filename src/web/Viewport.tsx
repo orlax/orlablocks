@@ -186,12 +186,22 @@ const YAW_KEYS: Record<string, YawKey> = { a: "left", arrowleft: "left", d: "rig
 
 /** The points point editing edits: a free-form's outline, a line's or a ramp's path, a path array's path; else null. */
 const editablePoints = (s: Shape): EditPoint[] | null =>
-  s.type === "freeform" || s.type === "line" || s.type === "ramp" ? s.points : s.type === "array" && s.layout.type === "path" ? s.layout.points : null;
-/** The shape with its edited points (an array's go in its layout's path). */
+  s.type === "freeform" || s.type === "line" || s.type === "ramp"
+    ? s.points
+    : s.type === "array" && s.layout.type === "path"
+      ? s.layout.points
+      : s.type === "array" && s.layout.type === "scatter" && s.layout.area
+        ? s.layout.area
+        : null;
+/** The shape with its edited points (an array's go in its layout's path, or its scatter's area). */
 const withEditedPoints = (s: Shape, points: EditPoint[]): Shape =>
   s.type === "array" && s.layout.type === "path"
     ? { ...s, layout: { ...s.layout, points: points as LinePoint[] } }
-    : ({ ...s, points } as Shape);
+    : s.type === "array" && s.layout.type === "scatter"
+      ? { ...s, layout: { ...s.layout, area: points as FootPoint[] } }
+      : ({ ...s, points } as Shape);
+/** A scatter array's area: a closed outline on the ground at its height, edited like a free-form's. */
+const isScatterArea = (s: Shape | undefined) => s?.type === "array" && s.layout.type === "scatter";
 
 /** An entity's definition as its instances hold it: the top level in a group, so its top-level holes cut there. */
 const ENTITY_ROOT = "entity:root";
@@ -965,11 +975,16 @@ export function Viewport({
   // A path array's points are its path's (10.1).
   const editShape = editing !== null ? shown.find((b) => b.id === editing && editablePoints(b) !== null) : undefined;
   const editPoints: EditPoint[] | null = editShape ? (pointPreview?.points ?? editablePoints(editShape)) : null;
-  const editTop = editShape?.type === "freeform" ? editShape.y + editShape.height : 0;
-  const editClosed = editShape?.type === "freeform" || (editShape?.type === "array" && editShape.layout.type === "path" && !!editShape.layout.closed);
+  const editTop = editShape?.type === "freeform" ? editShape.y + editShape.height : editShape?.type === "array" && editShape.layout.type === "scatter" ? editShape.layout.y : 0;
+  const editClosed =
+    editShape?.type === "freeform" || isScatterArea(editShape) || (editShape?.type === "array" && editShape.layout.type === "path" && !!editShape.layout.closed);
   // A line's selected point has a y arrow to raise or lower it (and the other selected points with it).
   const yArrow =
-    tool === "select" && (editShape?.type === "line" || editShape?.type === "ramp" || editShape?.type === "array") && editPoints && pointSel.length > 0 && editPoints[pointSel[0]]
+    tool === "select" &&
+    (editShape?.type === "line" || editShape?.type === "ramp" || (editShape?.type === "array" && editShape.layout.type === "path")) &&
+    editPoints &&
+    pointSel.length > 0 &&
+    editPoints[pointSel[0]]
       ? { x: editPoints[pointSel[0]].x, y: pointY(editPoints[pointSel[0]], 0), z: editPoints[pointSel[0]].z }
       : null;
   /** The boxes (as shown) in or under the given nodes. */
@@ -1244,7 +1259,7 @@ export function Viewport({
   const pointsProblem = (points: EditPoint[]) =>
     editShape?.type === "ramp"
       ? rampProblem({ ...editShape, points: rampPoints(points) })
-      : editShape?.type === "freeform"
+      : editShape?.type === "freeform" || isScatterArea(editShape)
         ? outlineProblem(roundPoints(points))
         : lineProblem(roundPoints(points as LinePoint[]));
 
@@ -1264,7 +1279,11 @@ export function Viewport({
     if (sameValue(rounded, editablePoints(original))) return true;
     const patch = { ...withEditedPoints(original, rounded as EditPoint[]) } as ShapePatch;
     // An array's path is in its layout.
-    onUpdate([original.type === "array" ? { id: original.id, layout: { points: rounded as LinePoint[] } } : { id: original.id, points: rounded }]);
+    onUpdate([
+      original.type === "array"
+        ? { id: original.id, layout: original.layout.type === "scatter" ? { area: rounded as FootPoint[] } : { points: rounded as LinePoint[] } }
+        : { id: original.id, points: rounded },
+    ]);
     setPending({ origin: [original], patches: { [original.id]: original.type === "array" ? { layout: patch.layout } : { points: patch.points } }, copy: false });
     return true;
   };

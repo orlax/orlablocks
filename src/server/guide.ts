@@ -35,7 +35,7 @@ const TOPIC_SUMMARIES: Record<GuideTopic, string> = {
   groups: "groups, copying, mirroring and turning things as a unit",
   library: "the project's tags (#name) and skills (@name): what they mean, tagging nodes, referring to them",
   entities: "entities (prefabs): making them, placing instances, swapping, detaching; holes in and around them",
-  arrays: "arrays: one node repeating entities along a path, around a circle or in a grid (battlements, windows, pillars, rows)",
+  arrays: "arrays: one node repeating entities along a path, around a circle, in a grid or scattered (battlements, windows, pillars, forests)",
 };
 
 export const INSTRUCTIONS =
@@ -140,7 +140,7 @@ const GUIDE: Record<Exclude<GuideTopic, "design">, string> = {
     "an entity's shapes in Edit entity mode: then get_scene has `editing`, the nodes are the definition (around the " +
     "pivot: keep its bottom at y = 0), the tools change it (as its own undo steps), and every instance follows. A hole in the " +
     "scene cuts an instance's shapes as it cuts a sibling group's. An instance whose entity is missing shows as a red " +
-    "block (results warn about it). To place many of one entity on a path, a circle or a grid, use an array (get_guide arrays).",
+    "block (results warn about it). To place many of one entity on a path, a circle, a grid or scattered in an area, use an array (get_guide arrays).",
   arrays:
     "An ARRAY (type: array, array_1, ...) repeats entities on a LAYOUT, live: one node whose ITEMS are instances the " +
     "layout places, so change the layout and every item follows. draw_shapes { type: \"array\", entity (or entities: " +
@@ -154,10 +154,14 @@ const GUIDE: Record<Exclude<GuideTopic, "design">, string> = {
     "{ type: \"circle\", x, z, y?, radius, count, start?, sweep? }: angles in degrees from 0 = east (+x), 90 = north " +
     "(-z), counterclockwise; sweep under 360 is an arc with items at both ends. { type: \"grid\", x, z, y?, rotation?, " +
     "columns, rows, layers?, spacing: { x, z, y? }, stagger? }: centered on x, z, columns along its local x, rows along " +
-    "its local z, layers up (spacing.y), stagger offsets every other row by half (brick). FACING turns each item: an " +
+    "its local z, layers up (spacing.y), stagger offsets every other row by half (brick). { type: \"scatter\", x, z, " +
+    "radius (a circle) or area (an outline as a free-form's points), y?, count, minDistance?, rotation? }: items at " +
+    "random from the seed, at least minDistance apart (default: the widest entity's width), fewer when they can't all " +
+    "fit (the result says how many did); a forest is a scatter of a few tree entities by weight, facing random. " +
+    "FACING turns each item: an " +
     "entity at 0 shows as drawn; along (a path's default) and tangent (a circle's) turn its local +x along the way, so " +
     "draw a window or a merlon with its width along x and it lies along the wall; out turns its +x away from a " +
-    "circle's center, in toward it; fixed keeps it as drawn (a grid's items turn with the grid); random turns each " +
+    "circle's center, in toward it; fixed keeps it as drawn (a grid's or a scatter's items turn with it); random turns each " +
     "anyhow. `rotation` is added to every item's facing. NOISE: jitter (meters on the ground) and turnJitter (± " +
     "degrees), both from `seed` (an integer: the same seed, the same look; another seed rerolls). SKIP lists item " +
     "indices (0 = the first, in layout order) to leave out, like the merlons over a gate: skip last, since changing " +

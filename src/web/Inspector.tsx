@@ -1,5 +1,11 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
+  Ellipsis,
+  Slash,
+  Sparkles,
+  Square,
+  SquareDashedBottom,
+  Squircle,
   ArrowLeftRight,
   ChevronDown,
   ChevronRight,
@@ -10,6 +16,8 @@ import {
   MoveHorizontal,
   MoveRight,
   Plus,
+  Dices,
+  X,
   Grid3x3,
   Rotate3d,
   Spline,
@@ -32,6 +40,7 @@ import {
   MAX_DESCRIPTION,
   MAX_NOTE_LABEL,
   MAX_NOTE_TEXT,
+  MAX_ARRAY_ENTITIES,
   MAX_ARRAY_ITEMS,
   MIN_ARRAY_SPACING,
   type ArrayFacing,
@@ -43,6 +52,7 @@ import {
 } from "../shared/scene.types";
 import { currentTags, type EntityMeta, type Library } from "../shared/library";
 import { useFloating } from "./floating";
+import { EntityPicker } from "./EntityPicker";
 import { RefTextArea, TagsField } from "./RefText";
 import type { LineStyle, RampStyle } from "./Viewport";
 
@@ -130,14 +140,19 @@ export type ArrayControls = {
   /** The facing in effect (the layout's default when the array has none). */
   facing: ArrayFacing;
   rotation: number;
-  /** How many items it has, and how many its layout places in all. */
+  /** The noise (10.2): meters, ± degrees, and its seed. */
+  jitter: number;
+  turnJitter: number;
+  seed: number;
+  /** How many items it has, how many are skipped, and why it has fewer than its layout asks for (or null). */
   items: number;
-  total: number;
   skipped: number;
-  onEntity: (entity: string) => void;
+  shortfall: string | null;
+  /** The whole new list of entities, with their weights. */
+  onEntities: (entities: { entity: string; weight?: number }[]) => void;
   onLayoutType: (type: ArrayLayoutType) => void;
   onLayout: (patch: Record<string, unknown>) => void;
-  onChange: (patch: { facing?: ArrayFacing; rotation?: number }) => void;
+  onChange: (patch: { facing?: ArrayFacing; rotation?: number; jitter?: number; turnJitter?: number; seed?: number }) => void;
   onEdit: (entity: string) => void;
   onDetach: () => void;
 };
@@ -159,7 +174,7 @@ export function Inspector({ title, info, library = null, note, instance, array, 
           {info && <div className="inspector-info">{info}</div>}
           {note && <NoteSection {...note} library={library} />}
           {instance && <InstanceSection {...instance} library={library} />}
-          {array && <ArraySection {...array} />}
+          {array && library && <ArraySection {...array} lib={library} />}
           {description && (
             <Section label="Description">
               <DescriptionField {...description} library={library} />
@@ -409,14 +424,18 @@ function InstanceSection({ entity, entities, onSwap, onDetach, onEdit, onArray, 
   return (
     <Section label="Entity">
       <Row label="shows">
-        <select className="entity-picker" value={entity} title="Swap: show another entity in the same place" onChange={(e) => onSwap(e.target.value)}>
-          {!meta && <option value={entity}>missing: {entity}</option>}
-          {entities.map((e) => (
-            <option key={e.id} value={e.id}>
-              {e.name}
-            </option>
-          ))}
-        </select>
+        {library ? (
+          <EntityPicker value={entity} library={library} title="Swap: show another entity in the same place" onPick={onSwap} />
+        ) : (
+          <select className="entity-picker" value={entity} title="Swap: show another entity in the same place" onChange={(e) => onSwap(e.target.value)}>
+            {!meta && <option value={entity}>missing: {entity}</option>}
+            {entities.map((e) => (
+              <option key={e.id} value={e.id}>
+                {e.name}
+              </option>
+            ))}
+          </select>
+        )}
       </Row>
       {meta?.description && <p className="entity-description">{meta.description}</p>}
       {meta?.tags && meta.tags.length > 0 && (
@@ -435,7 +454,7 @@ function InstanceSection({ entity, entities, onSwap, onDetach, onEdit, onArray, 
           </button>
         )}
         {onArray && (
-          <button className="labeled" title="Array: repeat it along a path, around a circle or in a grid (it becomes the first item)" onClick={onArray}>
+          <button className="labeled" title="Array: repeat it along a path, around a circle, in a grid or scattered (it becomes the first item)" onClick={onArray}>
             <Grid3x3 size={16} /> Array
           </button>
         )}
@@ -447,10 +466,11 @@ function InstanceSection({ entity, entities, onSwap, onDetach, onEdit, onArray, 
   );
 }
 
-const LAYOUTS: { type: ArrayLayoutType; label: string; title: string }[] = [
-  { type: "path", label: "path", title: "Along a path (edit its points)" },
-  { type: "circle", label: "circle", title: "Around a circle, or an arc" },
-  { type: "grid", label: "grid", title: "In rows and columns" },
+const LAYOUTS: { type: ArrayLayoutType; icon: LucideIcon; title: string }[] = [
+  { type: "path", icon: Spline, title: "Path: along a path (edit its points)" },
+  { type: "circle", icon: Circle, title: "Circle: around a circle, or an arc" },
+  { type: "grid", icon: Grid3x3, title: "Grid: in rows and columns" },
+  { type: "scatter", icon: Sparkles, title: "Scatter: at random in a circle or an area" },
 ];
 const PLACES: { place: ArrayPlace; label: string }[] = [
   { place: "spacing", label: "every … m" },
@@ -475,7 +495,64 @@ const FACINGS: Record<ArrayLayoutType, { facing: ArrayFacing; label: string }[]>
     { facing: "fixed", label: "with the grid" },
     { facing: "random", label: "random" },
   ],
+  scatter: [
+    { facing: "random", label: "random" },
+    { facing: "fixed", label: "fixed" },
+  ],
 };
+
+/**
+ * An array's entities (10.2): one row each, with its entity, its weight (and its share of the items) and a remove
+ * button while there's more than one; + entity adds a row.
+ */
+function EntitiesField({ entities, library, onChange }: { entities: ArrayControls["entities"]; library: Library; onChange: ArrayControls["onEntities"] }) {
+  const total = entities.reduce((sum, e) => sum + (e.weight ?? 1), 0);
+  const set = (i: number, patch: { entity?: string; weight?: number }) =>
+    onChange(entities.map((e, k) => (k === i ? { ...e, ...patch, ...(patch.weight === 1 ? { weight: undefined } : {}) } : e)));
+  return (
+    <div className="array-entities">
+      {entities.map((e, i) => {
+        return (
+          <div key={i} className="array-entity">
+            <EntityPicker value={e.entity} library={library} title="The entity these items show" onPick={(entity) => set(i, { entity })} />
+            {entities.length > 1 && (
+              <>
+                <NumberField title="Weight: how often it's chosen among these" value={e.weight ?? 1} unit="" step={1} min={0.1} fallback={1} onChange={(weight) => set(i, { weight })} />
+                <span className="array-share" title="Its share of the items">
+                  {Math.round(((e.weight ?? 1) / total) * 100)}%
+                </span>
+                <button className="icon" title="Remove this entity" onClick={() => onChange(entities.filter((_, k) => k !== i))}>
+                  <X size={14} />
+                </button>
+              </>
+            )}
+          </div>
+        );
+      })}
+      {entities.length < MAX_ARRAY_ENTITIES && (
+        <button className="labeled" title="Add an entity: each item shows one of them, chosen by weight" onClick={() => onChange([...entities, { entity: entities[0].entity }])}>
+          <Plus size={14} /> entity
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** A square outline around a circle: where a scatter's area starts. */
+const squareAround = (x: number, z: number, r: number) => [
+  { x: round(x - r), z: round(z - r) },
+  { x: round(x + r), z: round(z - r) },
+  { x: round(x + r), z: round(z + r) },
+  { x: round(x - r), z: round(z + r) },
+];
+/** The circle a scatter's area becomes: around its points' bounds. */
+function circleFromArea(area: { x: number; z: number }[]) {
+  const xs = area.map((p) => p.x);
+  const zs = area.map((p) => p.z);
+  const [x0, x1, z0, z1] = [Math.min(...xs), Math.max(...xs), Math.min(...zs), Math.max(...zs)];
+  return { x: round((x0 + x1) / 2), z: round((z0 + z1) / 2), radius: Math.max(0.5, round(Math.max(x1 - x0, z1 - z0) / 2)) };
+}
+const round = (n: number) => Math.round(n * 100) / 100;
 
 /** A count field: whole numbers, 1 up to MAX_ARRAY_ITEMS. */
 function CountField({ title, value, onChange }: { title: string; value: number; onChange: (n: number) => void }) {
@@ -486,33 +563,18 @@ function CountField({ title, value, onChange }: { title: string; value: number; 
  * An array (10.1): which entity it repeats (several show as a list), its layout (path, circle or grid) and that
  * layout's fields, how its items face and turn, and Edit entity and Detach. Each field sends one step.
  */
-function ArraySection({ entities, library, layout, facing, rotation, items, total, skipped, onEntity, onLayoutType, onLayout, onChange, onEdit, onDetach }: ArrayControls) {
-  const first = entities[0].entity;
-  const meta = library.find((e) => e.id === first);
+function ArraySection(props: ArrayControls & { lib: Library }) {
+  const { entities, library, lib, layout, facing, rotation, jitter, turnJitter, seed, items, skipped, shortfall, onEntities, onLayoutType, onLayout, onChange, onEdit, onDetach } = props;
   const facings = FACINGS[layout.type];
   return (
     <Section label="Array">
-      <Row label="repeats">
-        {entities.length === 1 ? (
-          <select className="entity-picker" value={first} title="The entity every item shows" onChange={(e) => onEntity(e.target.value)}>
-            {!meta && <option value={first}>missing: {first}</option>}
-            {library.map((e) => (
-              <option key={e.id} value={e.id}>
-                {e.name}
-              </option>
-            ))}
-          </select>
-        ) : (
-          <span className="array-entities" title="Several entities, each item one of them by weight">
-            {entities.map((e) => `${library.find((m) => m.id === e.entity)?.name ?? e.entity}${e.weight ? ` ×${e.weight}` : ""}`).join(", ")}
-          </span>
-        )}
-      </Row>
+      <div className="inspector-label array-repeats">repeats</div>
+      <EntitiesField entities={entities} library={lib} onChange={onEntities} />
       <Row label="layout">
         <div className="segmented">
           {LAYOUTS.map((l) => (
-            <button key={l.type} className={layout.type === l.type ? "active labeled" : "labeled"} title={l.title} onClick={() => layout.type !== l.type && onLayoutType(l.type)}>
-              {l.label}
+            <button key={l.type} className={layout.type === l.type ? "active" : ""} title={l.title} onClick={() => layout.type !== l.type && onLayoutType(l.type)}>
+              <l.icon size={16} />
             </button>
           ))}
         </div>
@@ -551,6 +613,50 @@ function ArraySection({ entities, library, layout, facing, rotation, items, tota
               <input type="checkbox" checked={!!layout.closed} onChange={(e) => onLayout({ closed: e.target.checked })} />
               loop
             </label>
+          </Row>
+        </>
+      )}
+      {layout.type === "scatter" && (
+        <>
+          <Row label="in">
+            <div className="segmented">
+              <button
+                className={layout.area ? "" : "active"}
+                title="In a circle: a center and a radius"
+                onClick={() => layout.area && onLayout(circleFromArea(layout.area))}
+              >
+                <Circle size={16} />
+              </button>
+              <button
+                className={layout.area ? "active" : ""}
+                title="In an area: an outline you reshape with Edit points, like a free-form"
+                onClick={() => !layout.area && onLayout({ area: squareAround(layout.x ?? 0, layout.z ?? 0, layout.radius ?? 1) })}
+              >
+                <Squircle size={16} />
+              </button>
+            </div>
+          </Row>
+          {!layout.area && (
+            <>
+              <Row label="center x">
+                <NumberField title="The circle's center x (east +)" value={layout.x} unit="m" step={0.5} fallback={0} onChange={(x) => onLayout({ x })} />
+              </Row>
+              <Row label="center z">
+                <NumberField title="The circle's center z (south +)" value={layout.z} unit="m" step={0.5} fallback={0} onChange={(z) => onLayout({ z })} />
+              </Row>
+              <Row label="radius">
+                <NumberField title="The circle's radius" value={layout.radius} unit="m" step={0.5} min={0.05} fallback={5} onChange={(radius) => onLayout({ radius })} />
+              </Row>
+            </>
+          )}
+          <Row label="y">
+            <NumberField title="The height the items stand at" value={layout.y} unit="m" step={0.25} fallback={0} onChange={(y) => onLayout({ y })} />
+          </Row>
+          <Row label="count">
+            <CountField title="How many items (fewer when they can't all fit apart)" value={layout.count} onChange={(count) => onLayout({ count })} />
+          </Row>
+          <Row label="apart">
+            <NumberField title="Meters at least between items" value={layout.minDistance ?? 0} unit="m" step={0.25} min={0} fallback={0} onChange={(minDistance) => onLayout({ minDistance })} />
           </Row>
         </>
       )}
@@ -637,10 +743,24 @@ function ArraySection({ entities, library, layout, facing, rotation, items, tota
       <Row label="item turn">
         <NumberField title="Degrees added to every item's facing" value={rotation} unit="°" step={15} fallback={0} onChange={(r) => onChange({ rotation: r })} />
       </Row>
+      <Row label="jitter">
+        <NumberField title="Noise: each item moves up to this many meters on the ground" value={jitter} unit="m" step={0.1} min={0} fallback={0} onChange={(j) => onChange({ jitter: j })} />
+      </Row>
+      <Row label="turn jitter">
+        <NumberField title="Noise: each item turns up to ± this many degrees" value={turnJitter} unit="°" step={5} min={0} fallback={0} onChange={(t) => onChange({ turnJitter: Math.min(180, t) })} />
+      </Row>
+      <Row label="seed">
+        <div className="seed-row">
+          <NumberField title="The noise's seed: the same seed, the same look" value={seed} unit="" step={1} fallback={1} onChange={(n) => onChange({ seed: Math.round(n) })} />
+          <button className="icon" title="Reroll: a new seed, a new look" onClick={() => onChange({ seed: 1 + Math.floor(Math.random() * 99999) })}>
+            <Dices size={16} />
+          </button>
+        </div>
+      </Row>
       <div className="inspector-info">
         {items} item{items === 1 ? "" : "s"}
         {skipped > 0 ? ` · ${skipped} skipped` : ""}
-        {total > items + skipped ? ` · ${total} placed, only ${MAX_ARRAY_ITEMS} made` : ""}
+        {shortfall ? ` · ${shortfall}` : ""}
       </div>
       <div className="inspector-actions">
         {entities.map(({ entity }) =>
@@ -875,8 +995,8 @@ function RampSection({ style, onChange, onReverse }: NonNullable<InspectorProps[
         />
       </Row>
       <Row label="surface">
-        <button className={stepped ? "labeled" : "labeled active"} title="Smooth: a ramp, no steps" onClick={() => onChange({ step: undefined })}>
-          smooth
+        <button className={stepped ? "icon" : "icon active"} title="Smooth: a ramp, no steps" onClick={() => onChange({ step: undefined })}>
+          <Slash size={16} />
         </button>
       </Row>
       <Row label="steps">
@@ -887,11 +1007,11 @@ function RampSection({ style, onChange, onReverse }: NonNullable<InspectorProps[
           {(["solid", "floating"] as const).map((base) => (
             <button
               key={base}
-              className={style.base === base ? "active labeled" : "labeled"}
+              className={style.base === base ? "active" : ""}
               title={base === "solid" ? "Solid: filled down to its lowest point" : "Floating: a slab under the surface"}
               onClick={() => onChange({ base })}
             >
-              {base}
+              {base === "solid" ? <Square size={16} /> : <SquareDashedBottom size={16} />}
             </button>
           ))}
         </div>
@@ -930,8 +1050,8 @@ function LineSection({ style, onChange, onPreview, onReverse }: NonNullable<Insp
         />
       </Row>
       <Row label="dashes">
-        <button className={style.dashed ? "labeled active" : "labeled"} title="Dashed" onClick={() => onChange({ dashed: !style.dashed })}>
-          - - -
+        <button className={style.dashed ? "icon active" : "icon"} title="Dashed" onClick={() => onChange({ dashed: !style.dashed })}>
+          <Ellipsis size={16} />
         </button>
       </Row>
       <Row label="arrows">
