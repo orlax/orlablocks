@@ -181,6 +181,11 @@ fn find_server_entry() -> Option<PathBuf> {
 
     for c in candidates {
         if c.exists() {
+            // Not on Windows: canonicalize gives a `\\?\C:\...` path there, which Node can't load a script from
+            // (the paths are absolute already).
+            #[cfg(windows)]
+            return Some(c);
+            #[cfg(not(windows))]
             return Some(fs::canonicalize(&c).unwrap_or(c));
         }
     }
