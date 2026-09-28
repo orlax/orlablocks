@@ -21,8 +21,13 @@ import {
   type FootPoint,
   type SceneNode,
   type ShapeInput,
+  type PlayerCamera,
+  type ShotCamera,
+  type ShotView,
   type View,
+  type WalkPreset,
 } from "../shared/scene.types";
+import { reportError } from "./errors";
 import {
   boundsOf,
   isClosed,
@@ -108,8 +113,27 @@ import {
   type PointPart,
 } from "./points";
 import { TransformGizmo } from "./TransformGizmo";
-import { CaptureStage, type CaptureJob } from "./capture";
+import { CaptureStage, editorView, type CaptureJob, type CaptureView } from "./capture";
 import { fitSize } from "./shots";
+import {
+  eyeOf,
+  floorUnder,
+  frameRect,
+  look,
+  lookDir,
+  move,
+  NO_KEYS,
+  presetOf,
+  settle,
+  shotSize,
+  STEP_HEIGHT,
+  verticalFov,
+  viewVerticalFov,
+  walkCamera,
+  wheelSpeed,
+  type Vec3 as WalkVec3,
+} from "./walk";
+import { Avatar, avatarShapes, loadWalkOptions, newLive, walkKey, WalkHud, WalkMenu, type CameraPose, type WalkLive, type WalkSession } from "./WalkScreens";
 import { manifoldReady } from "./csg";
 
 const BACKGROUND = "#f7f6f2";
@@ -166,7 +190,7 @@ const inEntityRoot = (nodes: SceneNode[]): SceneNode[] => [
 /** The drag-and-drop type of an entity dragged from the Library (its ID). */
 export const ENTITY_DRAG = "application/x-dungeon-entity";
 
-export type Tool = "select" | "hand" | "box" | "cylinder" | "pen" | "line" | "ramp" | "note";
+export type Tool = "select" | "hand" | "box" | "cylinder" | "pen" | "line" | "ramp" | "note" | "walk";
 /** The tools that drag a footprint on the ground, and the shape type each draws. */
 const DRAWS: Partial<Record<Tool, "box" | "cylinder">> = { box: "box", cylinder: "cylinder" };
 
@@ -341,9 +365,25 @@ type Props = {
   cameraRestore: { camera: CameraState | null } | null;
   /** Something to frame, or a camera to go to (a shot's): the camera flies there (a new object each time). */
   cameraFrame: { bounds: Box3 } | { camera: CameraState } | null;
-  /** Filled with what the view can do on request (09.1: capture it). */
+  /** Filled with what the view can do on request (09.1: capture it; 09.2: walk into a shot). */
   api?: RefObject<ViewportApi | null>;
+  /** The Walk tool (09.2): the preset a walk starts with, and the project's player camera and saving it. */
+  walkPreset: WalkPreset;
+  player: PlayerCamera;
+  onPlayer: (player: PlayerCamera) => void;
+  /** The project's `human` entity, the third-person avatar (a capsule without one). */
+  avatarEntity: string | null;
+  /** A shot taken while walking: the app saves it. */
+  onWalkShot: (shot: { png: Blob; width: number; height: number; camera: ShotCamera }) => void;
+  /** A walk started or ended (the app hides its panels meanwhile, and goes back to the Select tool after). */
+  onWalkChange: (walking: boolean) => void;
+  /** The open document's shots (the pause menu shows this walk's), and deleting one. */
+  shots: ShotView[];
+  onRemoveShot: (id: string) => void;
 };
+
+/** What an entity or the Walk button dragged onto the view carries. */
+export const WALK_DRAG = "application/x-orlablocks-walk";
 
 /** What to show in a capture of the view, besides the shapes. */
 export type CaptureOptions = { notes: boolean; lines: boolean };
@@ -353,6 +393,8 @@ export type ViewCapture = { png: Blob; width: number; height: number; camera: Ca
 export type ViewportApi = {
   /** A clean capture of the view as framed, at its size on screen (in device pixels, capped). */
   capture(options: CaptureOptions): Promise<ViewCapture>;
+  /** Walks into a walk shot: its pose, preset, field of view and boom, paused (09.2). */
+  walkTo(camera: Extract<ShotCamera, { kind: "walk" }>): void;
 };
 
 /**
@@ -393,6 +435,14 @@ export function Viewport({
   cameraRestore,
   cameraFrame,
   api,
+  walkPreset,
+  player,
+  onPlayer,
+  avatarEntity,
+  onWalkShot,
+  onWalkChange,
+  shots,
+  onRemoveShot,
 }: Props) {
   const cam = useRef<CameraState>({ ...DEFAULT_CAMERA });
   // The compass rose, turned every frame to where north is on screen.
@@ -413,40 +463,365 @@ export function Viewport({
   }, [cameraFrame]);
 
   // Captures, one at a time: each mounts a hidden canvas of its own (capture.tsx) until it's taken.
-  const [jobs, setJobs] = useState<(CaptureJob & CaptureOptions)[]>([]);
+  const [jobs, setJobs] = useState<(CaptureJob & CaptureOptions & { extra: Shape[] })[]>([]);
   const nextJob = useRef(1);
+  /** Queues a capture and resolves with its PNG. Holes are cut once the boolean library is ready: never uncut walls. */
+  const runCapture = async (view: CaptureView, width: number, height: number, pixelRatio: number, options: CaptureOptions, extra: Shape[] = []) => {
+    await manifoldReady();
+    return new Promise<Blob>((resolve, reject) => {
+      const id = nextJob.current++;
+      // Also if the capture's canvas fails without answering (its error boundary caught it).
+      const timer = setTimeout(() => finish(() => reject(new Error("The capture didn't finish"))), CAPTURE_GIVE_UP_MS);
+      const finish = (done: () => void) => {
+        clearTimeout(timer);
+        setJobs((js) => js.filter((j) => j.id !== id));
+        done();
+      };
+      setJobs((js) => [
+        ...js,
+        { id, view, width, height, pixelRatio, ...options, extra, resolve: (b) => finish(() => resolve(b)), reject: (e) => finish(() => reject(e)) },
+      ]);
+    });
+  };
   if (api) {
     api.current = {
       async capture(options) {
-        // Holes are cut once the boolean library is ready: never capture uncut walls.
-        await manifoldReady();
         const cssWidth = wrap.current?.clientWidth || 800;
         const cssHeight = wrap.current?.clientHeight || 600;
         const dpr = window.devicePixelRatio || 1;
         const { width, height } = fitSize(Math.round(cssWidth * dpr), Math.round(cssHeight * dpr));
         // Drawn at the view's own size in CSS pixels, so what's sized in screen pixels matches the screen.
-        const pixelRatio = width / cssWidth;
         const camera = { ...cam.current, focus: { ...cam.current.focus } };
-        const png = await new Promise<Blob>((resolve, reject) => {
-          const id = nextJob.current++;
-          // Also if the capture's canvas fails without answering (its error boundary caught it).
-          const timer = setTimeout(() => finish(() => reject(new Error("The capture didn't finish"))), CAPTURE_GIVE_UP_MS);
-          const finish = (settle: () => void) => {
-            clearTimeout(timer);
-            setJobs((js) => js.filter((j) => j.id !== id));
-            settle();
-          };
-          setJobs((js) => [
-            ...js,
-            { id, camera, width, height, pixelRatio, ...options, resolve: (b) => finish(() => resolve(b)), reject: (e) => finish(() => reject(e)) },
-          ]);
-        });
+        const png = await runCapture(editorView(camera), width, height, width / cssWidth, options);
         return { png, width, height, camera };
+      },
+      walkTo(c) {
+        if (walkRef.current) return;
+        // Floating, so the eye is exactly where the shot's was (floor-follow would move it; F lands).
+        startWalk(
+          { x: c.eye.x, y: c.eye.y - playerRef.current.eyeHeight, z: c.eye.z },
+          { yaw: c.yaw, pitch: c.pitch, preset: c.preset, override: { fov: c.fov, ...(c.boom ? { boom: c.boom } : {}) }, floating: true, paused: true },
+        );
       },
     };
   }
   const wrap = useRef<HTMLDivElement>(null);
   const yawKeys = useRef(new Set<YawKey>());
+
+  // ---- Walk (09.2): a session in React state (what the screens show), and what the frame loop moves in `live` ----
+  const [walk, setWalkState] = useState<WalkSession | null>(null);
+  const walkRef = useRef<WalkSession | null>(null);
+  const setWalk = (next: WalkSession | null) => {
+    walkRef.current = next;
+    setWalkState(next);
+  };
+  const updateWalk = (patch: Partial<WalkSession>) => walkRef.current && setWalk({ ...walkRef.current, ...patch });
+  const live = useRef<WalkLive | null>(null);
+  const playerRef = useRef(player);
+  playerRef.current = player;
+  const onPlayerRef = useRef(onPlayer);
+  onPlayerRef.current = onPlayer;
+  const onViewChangeRef = useRef(onViewChange);
+  onViewChangeRef.current = onViewChange;
+  const [walkFlash, setWalkFlash] = useState<{ key: number; label: string } | null>(null);
+  const [viewSize, setViewSize] = useState({ width: 0, height: 0 });
+  useEffect(() => {
+    const el = wrap.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setViewSize({ width: el.clientWidth, height: el.clientHeight }));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  // The avatar's shapes at the origin, made again for each walk (the human entity may have changed).
+  const avatar = useMemo(() => avatarShapes(avatarEntity, player.eyeHeight), [avatarEntity, player.eyeHeight, walk?.startedAt]);
+  const avatarGroup = useRef<THREE.Group>(null);
+  const raycaster = useMemo(() => new THREE.Raycaster(), []);
+
+  /** The field of view and boom this walk uses: a shot's (going to one), else the player camera's for the preset. */
+  const walkSettings = (sess: WalkSession) => {
+    const base = presetOf(playerRef.current, sess.preset);
+    return { fov: sess.override?.fov ?? base.fov, boom: sess.override?.boom ?? base.boom };
+  };
+  const lockPointer = () => {
+    const el = wrap.current;
+    if (!el) return;
+    try {
+      // A promise in current browsers; refused for a while after an Esc (the menu then says to click).
+      const p = el.requestPointerLock() as unknown as Promise<void> | undefined;
+      p?.catch?.(() => updateWalk({ relock: true }));
+    } catch {
+      updateWalk({ relock: true });
+    }
+  };
+  /** Drops into the level with the feet at `feet`: the camera flies to the eye, then (unless `paused`) the pointer locks. */
+  const startWalk = (
+    feet: WalkVec3,
+    opts: { yaw?: number; pitch?: number; preset?: WalkPreset; override?: WalkSession["override"]; floating?: boolean; paused?: boolean } = {},
+  ) => {
+    if (walkRef.current) return;
+    flight.current = null;
+    yawKeys.current.clear();
+    const before = { ...cam.current, focus: { ...cam.current.focus } };
+    live.current = newLive({ feet, yaw: opts.yaw ?? cam.current.yaw, pitch: opts.pitch ?? 0 });
+    live.current.flight = { from: editorPose(before), start: performance.now(), ms: reducedMotion() ? 0 : WALK_FLIGHT_MS, toEditor: false };
+    setWalk({
+      phase: "entering",
+      preset: opts.preset ?? walkPreset,
+      floating: opts.floating ?? false,
+      override: opts.override ?? null,
+      before,
+      options: loadWalkOptions(),
+      startedAt: new Date().toISOString(),
+      relock: false,
+      pausedAt: 0,
+    });
+    onWalkChange(true);
+    if (!opts.paused) lockPointer();
+  };
+  /** Leaves the walk: the camera flies back to the editor camera from before it. */
+  const exitWalk = () => {
+    const sess = walkRef.current;
+    const l = live.current;
+    if (!sess || !l || sess.phase === "leaving") return;
+    if (document.pointerLockElement) document.exitPointerLock();
+    l.keys = { ...NO_KEYS };
+    l.flight = { from: l.last ?? editorPose(sess.before), start: performance.now(), ms: reducedMotion() ? 0 : WALK_FLIGHT_MS, toEditor: true };
+    setWalk({ ...sess, phase: "leaving" });
+    invalidate();
+  };
+  /** The walk is over: the editor camera is back, and the agent no longer sees a walk. */
+  const finishWalk = (size: Size) => {
+    const sess = walkRef.current;
+    if (!sess) return;
+    cam.current = { ...sess.before, focus: { ...sess.before.focus } };
+    live.current = null;
+    setWalk(null);
+    onWalkChange(false);
+    onViewChangeRef.current(viewOf(cam.current, size), cam.current);
+  };
+  const continueWalk = () => {
+    updateWalk({ relock: false });
+    lockPointer();
+  };
+  /** A shot of what the walker sees, cropped to the frame guide, at its size. */
+  const walkShot = async () => {
+    const sess = walkRef.current;
+    const l = live.current;
+    const el = wrap.current;
+    if (!sess || !l || !el || sess.phase !== "walking") return;
+    const p = playerRef.current;
+    const { fov, boom } = walkSettings(sess);
+    const frame = frameRect(el.clientWidth, el.clientHeight, sess.options.frame);
+    const wanted = shotSize(frame, sess.options.shotSize);
+    const { width, height } = fitSize(wanted.width, wanted.height);
+    const pose = l.pose;
+    const wc = walkCamera(pose, p.eyeHeight, sess.preset, boom);
+    const view: CaptureView = { ...wc, vfov: verticalFov(fov, width / height), light: { ...cam.current, focus: { ...cam.current.focus } } };
+    const third = sess.preset === "third";
+    const extra = third && p.third.avatar ? avatarShapes(avatarEntity, p.eyeHeight, { ...pose.feet, rotation: pose.yaw }) : [];
+    setWalkFlash({ key: performance.now(), label: "shot" });
+    try {
+      const png = await runCapture(view, width, height, width / frame.width, { notes: sess.options.shotNotes, lines: sess.options.shotLines }, extra);
+      const eye = eyeOf(pose, p.eyeHeight);
+      onWalkShot({
+        png,
+        width,
+        height,
+        camera: { kind: "walk", preset: sess.preset, eye, yaw: pose.yaw, pitch: pose.pitch, fov, ...(third ? { boom } : {}) },
+      });
+    } catch (err) {
+      onNotice("The shot wasn't taken");
+      reportError("view", err);
+    }
+  };
+  const walkShotRef = useRef(walkShot);
+  walkShotRef.current = walkShot;
+  const walkActions = useRef({ exitWalk, continueWalk });
+  walkActions.current = { exitWalk, continueWalk };
+
+  // The pointer lock: locked is walking, and losing it (Esc, another window) pauses. The mouse looks around.
+  useEffect(() => {
+    const onLockChange = () => {
+      const sess = walkRef.current;
+      if (!sess) return;
+      const locked = document.pointerLockElement === wrap.current;
+      if (locked && sess.phase === "paused") setWalk({ ...sess, phase: "walking", relock: false });
+      else if (!locked && sess.phase === "walking") {
+        if (live.current) live.current.keys = { ...NO_KEYS };
+        setWalk({ ...sess, phase: "paused", pausedAt: performance.now() });
+      }
+    };
+    const onLockError = () => updateWalk({ relock: true });
+    const onMouseMove = (e: globalThis.MouseEvent) => {
+      const sess = walkRef.current;
+      const l = live.current;
+      if (!sess || !l || sess.phase !== "walking" || document.pointerLockElement !== wrap.current) return;
+      l.pose = look(l.pose, e.movementX, e.movementY);
+      invalidate();
+    };
+    document.addEventListener("pointerlockchange", onLockChange);
+    document.addEventListener("pointerlockerror", onLockError);
+    document.addEventListener("mousemove", onMouseMove);
+    return () => {
+      document.removeEventListener("pointerlockchange", onLockChange);
+      document.removeEventListener("pointerlockerror", onLockError);
+      document.removeEventListener("mousemove", onMouseMove);
+    };
+  }, []);
+
+  // Keys while walking: they're the walk's, and none reach the editor (capture phase, stopped here). Paused, Enter
+  // continues and Esc exits (not the Esc that paused), and typing in the menu's fields works as usual.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const sess = walkRef.current;
+      const l = live.current;
+      if (!sess || !l) return;
+      if (sess.phase === "paused") {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          if (typingInField(e)) (e.target as HTMLElement).blur();
+          else if (performance.now() - sess.pausedAt > 250) walkActions.current.exitWalk();
+        } else if (e.key === "Enter" && !(e.target instanceof HTMLInputElement && e.target.type !== "checkbox" && e.target.type !== "range")) {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          walkActions.current.continueWalk();
+        } else if (!typingInField(e)) e.stopImmediatePropagation();
+        return;
+      }
+      e.stopImmediatePropagation();
+      if (sess.phase !== "walking" && sess.phase !== "entering") return;
+      if (e.metaKey || e.ctrlKey) return;
+      e.preventDefault();
+      const k = walkKey(e.code);
+      if (k) {
+        l.keys = { ...l.keys, [k]: true };
+        if ((k === "up" || k === "down") && !sess.floating) updateWalk({ floating: true });
+        invalidate();
+      } else if (e.code === "KeyF" && sess.floating) updateWalk({ floating: false });
+      else if (e.code === "KeyK" && !e.repeat) void walkShotRef.current();
+    };
+    const onKeyUp = (e: KeyboardEvent) => {
+      const l = live.current;
+      if (!walkRef.current || !l) return;
+      e.stopImmediatePropagation();
+      const k = walkKey(e.code);
+      if (k) l.keys = { ...l.keys, [k]: false };
+    };
+    const onBlur = () => {
+      if (live.current) live.current.keys = { ...NO_KEYS };
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    window.addEventListener("keyup", onKeyUp, true);
+    window.addEventListener("blur", onBlur);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("keyup", onKeyUp, true);
+      window.removeEventListener("blur", onBlur);
+    };
+  }, []);
+
+  /** Where the Walk tool drops the feet: the flat surface under the pointer (a floor, a top), else the ground. */
+  const dropPoint = (e: { clientX: number; clientY: number }): WalkVec3 => {
+    const { sx, sy, size } = local(e);
+    const y = surfaceFor(sx, sy, size)?.y ?? 0;
+    const g = screenToPlane(cam.current, size, sx, sy, y);
+    return { x: g.x, y, z: g.z };
+  };
+
+  /** The floor under the feet, from the rendered (cut) meshes: see `floorUnder`. */
+  const floorAt = (scene: THREE.Scene, feet: WalkVec3): number | null => {
+    const walkables: THREE.Object3D[] = [];
+    scene.traverse((o) => {
+      if (o.userData.walkable && (o as THREE.Mesh).isMesh) walkables.push(o);
+    });
+    raycaster.set(new THREE.Vector3(feet.x, feet.y + STEP_HEIGHT, feet.z), DOWN);
+    const hits = raycaster.intersectObjects(walkables, false).map((h) => ({
+      y: h.point.y,
+      up: h.face ? h.face.normal.clone().transformDirection(h.object.matrixWorld).y : 0,
+    }));
+    return floorUnder(hits, feet.y);
+  };
+
+  /** One frame of the walk (the rig calls it instead of drawing the editor camera). */
+  const walker = useRef<WalkDriver | null>(null);
+  walker.current = {
+    active: () => walkRef.current !== null && live.current !== null,
+    step(camera, scene, size, delta) {
+      const sess = walkRef.current!;
+      const l = live.current!;
+      const p = playerRef.current;
+      const dt = Math.min(delta, 0.05);
+      if (sess.phase === "walking") {
+        let pose = move(l.pose, l.keys, p.speed, dt);
+        if (!sess.floating) {
+          const floor = floorAt(scene, pose.feet);
+          if (floor !== null && floor !== pose.feet.y) pose = { ...pose, feet: { ...pose.feet, y: settle(pose.feet.y, floor, dt) } };
+        }
+        l.pose = pose;
+      }
+      const { fov, boom } = walkSettings(sess);
+      const frame = frameRect(size.width, size.height, sess.options.frame);
+      let shown: CameraPose = { ...walkCamera(l.pose, p.eyeHeight, sess.preset, boom), vfov: viewVerticalFov(fov, frame, size.height) };
+      let done = false;
+      if (l.flight) {
+        const t = l.flight.ms > 0 ? Math.min(1, (performance.now() - l.flight.start) / l.flight.ms) : 1;
+        shown = blendPose(l.flight.from, l.flight.toEditor ? editorPose(sess.before) : shown, easeInOut(t));
+        if (t >= 1) {
+          done = l.flight.toEditor;
+          l.flight = null;
+          if (!done) {
+            const locked = document.pointerLockElement === wrap.current;
+            setWalk({ ...sess, phase: locked ? "walking" : "paused", pausedAt: performance.now() });
+          }
+        }
+      }
+      camera.position.set(shown.position.x, shown.position.y, shown.position.z);
+      camera.up.set(0, 1, 0);
+      camera.lookAt(shown.target.x, shown.target.y, shown.target.z);
+      // Walking, walls come close: a nearer clipping plane than the editor's.
+      if (camera instanceof THREE.PerspectiveCamera && (camera.fov !== shown.vfov || camera.near !== WALK_NEAR)) {
+        camera.fov = shown.vfov;
+        camera.near = WALK_NEAR;
+        camera.updateProjectionMatrix();
+      }
+      l.last = shown;
+      const g = avatarGroup.current;
+      if (g) {
+        g.visible = sess.preset === "third" && p.third.avatar && sess.phase !== "leaving" && !l.flight;
+        g.position.set(l.pose.feet.x, l.pose.feet.y, l.pose.feet.z);
+        g.rotation.set(0, (l.pose.yaw * Math.PI) / 180, 0);
+      }
+      if (done) {
+        finishWalk(size);
+        invalidate();
+        return;
+      }
+      // The sun and its shadows follow the walker (the editor camera comes back from `before`).
+      const eye = eyeOf(l.pose, p.eyeHeight);
+      const ahead = lookDir(l.pose.yaw, 0);
+      cam.current = { focus: { x: eye.x + ahead.x * 10, z: eye.z + ahead.z * 10 }, yaw: l.pose.yaw, distance: 40 };
+      // The agent sees where the human walks (the saved camera stays the editor's).
+      const now = performance.now();
+      if (now - l.lastReport > WALK_REPORT_MS) {
+        l.lastReport = now;
+        onViewChangeRef.current(
+          { ...viewOf(sess.before, size), walking: { preset: sess.preset, eye: { x: round2(eye.x), y: round2(eye.y), z: round2(eye.z) }, yaw: round2(l.pose.yaw), pitch: round2(l.pose.pitch), fov } },
+          sess.before,
+        );
+      }
+      invalidate();
+    },
+  };
+
+  // A scene opening while walking ends the walk at once (its camera is the new scene's).
+  useEffect(() => {
+    if (!cameraRestore || !walkRef.current) return;
+    if (document.pointerLockElement) document.exitPointerLock();
+    live.current = null;
+    setWalk(null);
+    onWalkChange(false);
+  }, [cameraRestore]);
   const pan = useRef<{ pointerId: number; grabbed: GroundPoint; sx: number; sy: number } | null>(null);
   // A footprint being drawn stands on the surface where the press was (`y`, 0 = the ground), described by `on`.
   type OnSurface = { y: number; on: string | null };
@@ -907,6 +1282,18 @@ export function Viewport({
   // Hand tool (or middle button in any tool): drag to pan, the grabbed ground point stays under the cursor.
   // Box and Cylinder tools: drag a footprint on the ground.
   const onPointerDown = (e: PointerEvent) => {
+    // Walking: a click is the shutter, or (paused after a refused lock) continues. Nothing else happens in the view.
+    if (walkRef.current) {
+      if (e.button !== 0) return;
+      if (walkRef.current.phase === "walking") void walkShot();
+      else if (walkRef.current.phase === "paused" && walkRef.current.relock) continueWalk();
+      return;
+    }
+    // The Walk tool: a click drops the walker on the surface under it.
+    if (e.button === 0 && tool === "walk") {
+      startWalk(dropPoint(e));
+      return;
+    }
     const { sx, sy, size } = local(e);
     // Working in the view drops any highlighted page text, so Cmd/Ctrl+C copies the shapes again, not stale text.
     window.getSelection()?.removeAllRanges();
@@ -1003,6 +1390,7 @@ export function Viewport({
   };
 
   const onPointerMove = (e: PointerEvent) => {
+    if (walkRef.current) return;
     const { sx, sy, size } = local(e);
     onCursor(screenToGround(cam.current, size, sx, sy));
 
@@ -1066,6 +1454,7 @@ export function Viewport({
   };
 
   const onPointerUp = (e: PointerEvent) => {
+    if (walkRef.current) return;
     if (pointDrag?.pointerId === e.pointerId) {
       const d = pointDrag;
       setPointDrag(null);
@@ -1139,6 +1528,7 @@ export function Viewport({
   // (the box itself, or a subgroup). On a free-form that's selected at its own level, it enters point editing, and
   // there a double-click on a point switches it between corner and smooth.
   const onDoubleClick = (e: MouseEvent) => {
+    if (walkRef.current) return;
     // The Line and Ramp tools: a double-click finishes the path (its second press added nothing).
     if (tool === "line" || tool === "ramp") {
       if (pen.owner === tool && pen.points.length > 0) finishPen(pen);
@@ -1258,8 +1648,15 @@ export function Viewport({
   useEffect(() => {
     const el = wrap.current!;
     const onWheel = (e: WheelEvent) => {
+      // The pause menu scrolls as a page does.
+      if (e.target instanceof Element && e.target.closest(".walk-menu")) return;
       e.preventDefault();
       const deltaY = e.deltaMode === WheelEvent.DOM_DELTA_LINE ? e.deltaY * 16 : e.deltaY;
+      // Walking, the wheel is the speed (saved in the player camera).
+      if (walkRef.current) {
+        if (walkRef.current.phase === "walking") onPlayerRef.current({ ...playerRef.current, speed: Math.round(wheelSpeed(playerRef.current.speed, deltaY) * 10) / 10 });
+        return;
+      }
       cam.current = zoomBy(cam.current, deltaY, e.ctrlKey);
       invalidate();
     };
@@ -1310,7 +1707,7 @@ export function Viewport({
     if (activePart && isProfilePart(activePart)) return "shaping";
     if (activePart) return "moving";
     if (panning) return "panning";
-    return DRAWS[tool] || isPointTool(tool) ? "drawing" : tool === "select" ? "selecting" : "";
+    return DRAWS[tool] || isPointTool(tool) || tool === "walk" ? "drawing" : tool === "select" ? "selecting" : "";
   })();
 
   return (
@@ -1324,12 +1721,18 @@ export function Viewport({
       onDoubleClick={onDoubleClick}
       // An entity dragged from the Library lands on the surface under the drop.
       onDragOver={(e) => {
-        if (e.dataTransfer.types.includes(ENTITY_DRAG)) {
+        if (e.dataTransfer.types.includes(ENTITY_DRAG) || (e.dataTransfer.types.includes(WALK_DRAG) && !walkRef.current)) {
           e.preventDefault();
           e.dataTransfer.dropEffect = "copy";
         }
       }}
       onDrop={(e) => {
+        // The Walk button dropped here: a walk starts where it lands, paused (a drop can't lock the pointer).
+        if (e.dataTransfer.types.includes(WALK_DRAG)) {
+          e.preventDefault();
+          startWalk(dropPoint(e), { paused: true });
+          return;
+        }
         const entity = e.dataTransfer.getData(ENTITY_DRAG);
         if (!entity) return;
         e.preventDefault();
@@ -1355,28 +1758,30 @@ export function Viewport({
           gl.toneMapping = THREE.NeutralToneMapping;
         }}
         frameloop="demand"
-        camera={{ position: [start.x, start.y, start.z], fov: FOV_DEG, near: 0.5, far: MAX_DISTANCE * 4 }}
+        camera={{ position: [start.x, start.y, start.z], fov: FOV_DEG, near: EDITOR_NEAR, far: MAX_DISTANCE * 4 }}
       >
         <color attach="background" args={[BACKGROUND]} />
-        <CameraRig cam={cam} yawKeys={yawKeys} flight={flight} onViewChange={onViewChange} />
+        <CameraRig cam={cam} yawKeys={yawKeys} flight={flight} walker={walker} onViewChange={onViewChange} />
         <CompassSync cam={cam} rose={rose} />
         <Lighting cam={cam} />
-        {showGrid && <Grid cam={cam} />}
-        <OriginAxes />
+        {/* Walking, the view is the player's: no grid, axes, gizmo, highlights or hole ghosts (09.2). */}
+        {showGrid && !walk && <Grid cam={cam} />}
+        {!walk && <OriginAxes />}
         <Boxes
           boxes={[...drawn, ...expandShapes(ghosts)]}
           entityMode={entityMode}
           cuts={cuts}
-          showHoles={showHoles}
+          showHoles={showHoles && !walk}
           draft={draft}
-          selected={new Set(ghosts.length > 0 ? ghosts.map((b) => b.id) : shapesUnder(nodes, selection).map((b) => b.id))}
-          hovered={new Set(shapesUnder(nodes, [hoveredId, outsideHover].filter((id) => id !== null)).map((b) => b.id))}
+          selected={walk ? NO_IDS : new Set(ghosts.length > 0 ? ghosts.map((b) => b.id) : shapesUnder(nodes, selection).map((b) => b.id))}
+          hovered={walk ? NO_IDS : new Set(shapesUnder(nodes, [hoveredId, outsideHover].filter((id) => id !== null)).map((b) => b.id))}
         />
+        {walk && <Avatar shapes={avatar} group={avatarGroup} />}
         {pen.points.length > 0 && <PenPreview pen={pen} kind={nextKind} fields={nextFields} line={nextLine} ramp={nextRamp} />}
-        {editPoints && (
+        {editPoints && !walk && (
           <PointOverlay points={editPoints} y={editTop} closed={editClosed} selected={pointSel} bad={!!pointPreview?.problem} />
         )}
-        {yArrow && (
+        {yArrow && !walk && (
           <TransformGizmo
             anchor={yArrow}
             parts={["y"]}
@@ -1386,7 +1791,7 @@ export function Viewport({
             cam={cam}
           />
         )}
-        {gizmo && (
+        {gizmo && !walk && (
           <TransformGizmo
             anchor={gizmo.anchor}
             parts={gizmo.parts}
@@ -1467,6 +1872,27 @@ export function Viewport({
                 : "out handle")}
         </div>
       )}
+      {walk && (
+        <WalkHud
+          session={walk}
+          size={viewSize}
+          speed={player.speed}
+          shots={shots.filter((sh) => sh.camera.kind === "walk" && sh.createdAt >= walk.startedAt).length}
+          flash={walkFlash}
+        />
+      )}
+      {walk?.phase === "paused" && !walk.relock && (
+        <WalkMenu
+          session={walk}
+          player={player}
+          onPlayer={onPlayer}
+          onSession={(patch) => updateWalk(patch)}
+          shots={shots.filter((sh) => sh.camera.kind === "walk" && sh.createdAt >= walk.startedAt)}
+          onRemoveShot={onRemoveShot}
+          onContinue={continueWalk}
+          onExit={exitWalk}
+        />
+      )}
       {jobs[0] && (
         <ErrorBoundary scope="view">
         <CaptureStage key={jobs[0].id} job={jobs[0]} background={BACKGROUND}>
@@ -1475,9 +1901,13 @@ export function Viewport({
               <Lighting cam={captureCam} />
               <Boxes
                 // What the scene holds, as saved: hidden nodes left out, the isolation ignored, no hole ghosts.
-                boxes={expandShapes(
-                  boxes.filter((b) => !hidden.has(b.id) && (jobs[0].notes || b.type !== "note") && (jobs[0].lines || b.type !== "line")),
-                ).filter((b) => !isHole(b))}
+                boxes={[
+                  ...expandShapes(
+                    boxes.filter((b) => !hidden.has(b.id) && (jobs[0].notes || b.type !== "note") && (jobs[0].lines || b.type !== "line")),
+                  ).filter((b) => !isHole(b)),
+                  // A third-person walk shot's avatar.
+                  ...jobs[0].extra,
+                ]}
                 entityMode={entityMode}
                 cuts={cuts}
                 showHoles={false}
@@ -1844,6 +2274,31 @@ function CompassRose() {
 type Flight = { bounds?: Box3; from?: CameraState; to?: CameraState; start?: number; last?: CameraState };
 
 const easeInOut = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+
+/** How long the camera takes to fly down into a walk, and back out (09.2). */
+const WALK_FLIGHT_MS = 600;
+/** How often a walk's pose goes to the server (for the agent's `view.walking`). */
+const WALK_REPORT_MS = 250;
+const DOWN = new THREE.Vector3(0, -1, 0);
+/** The camera's near clipping plane in the editor, and while walking (walls come close). */
+const EDITOR_NEAR = 0.5;
+const WALK_NEAR = 0.05;
+/** A walk's frame, run by the rig while one is under way (see the Viewport). */
+type WalkDriver = { active(): boolean; step(camera: THREE.Camera, scene: THREE.Scene, size: Size, delta: number): void };
+/** The editor camera as a camera pose (a walk's flights start or end there). */
+const editorPose = (c: CameraState): CameraPose => ({ position: cameraPosition(c), target: { x: c.focus.x, y: 0, z: c.focus.z }, vfov: FOV_DEG });
+const mix = (a: number, b: number, t: number) => a + (b - a) * t;
+const mix3 = (a: WalkVec3, b: WalkVec3, t: number) => ({ x: mix(a.x, b.x, t), y: mix(a.y, b.y, t), z: mix(a.z, b.z, t) });
+/** Between two camera poses (the target along, so the look turns smoothly). */
+const blendPose = (a: CameraPose, b: CameraPose, t: number): CameraPose => {
+  // Blend where each looks at 10 m ahead, not the targets 1 m ahead, so a flight doesn't swing the view.
+  const far = (c: CameraPose) => {
+    const d = { x: c.target.x - c.position.x, y: c.target.y - c.position.y, z: c.target.z - c.position.z };
+    const n = Math.hypot(d.x, d.y, d.z) || 1;
+    return { x: c.position.x + (d.x / n) * 10, y: c.position.y + (d.y / n) * 10, z: c.position.z + (d.z / n) * 10 };
+  };
+  return { position: mix3(a.position, b.position, t), target: mix3(far(a), far(b), t), vfov: mix(a.vfov, b.vfov, t) };
+};
 const reducedMotion = () => typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 /** Applies the camera state to the three.js camera every frame, integrates yaw, flies to what's framed and reports the view. */
@@ -1851,18 +2306,29 @@ function CameraRig({
   cam,
   yawKeys,
   flight,
+  walker,
   onViewChange,
 }: {
   cam: RefObject<CameraState>;
   yawKeys: RefObject<Set<YawKey>>;
   flight: RefObject<Flight | null>;
+  walker: RefObject<WalkDriver | null>;
   onViewChange: (view: View, camera: CameraState) => void;
 }) {
   const camera = useThree((s) => s.camera);
+  const scene = useThree((s) => s.scene);
   const size = useThree((s) => s.size);
   const lastReport = useRef({ key: "", at: 0 });
 
   useFrame((_, delta) => {
+    // A walk moves the camera itself (09.2).
+    if (walker.current?.active()) return walker.current.step(camera, scene, size, delta);
+    // Back from a walk (its field of view and clipping plane are the walker's).
+    if (camera instanceof THREE.PerspectiveCamera && (camera.fov !== FOV_DEG || camera.near !== EDITOR_NEAR)) {
+      camera.fov = FOV_DEG;
+      camera.near = EDITOR_NEAR;
+      camera.updateProjectionMatrix();
+    }
     const keys = yawKeys.current;
     const dir = (keys.has("right") ? 1 : 0) - (keys.has("left") ? 1 : 0);
     if (dir !== 0) {

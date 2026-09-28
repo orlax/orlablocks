@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   CreateProjectSchema,
   CreateSceneSchema,
+  DEFAULT_PLAYER,
   DEFAULT_SCENE_NAME,
   DuplicateSceneSchema,
   OpenSceneSchema,
@@ -10,6 +11,7 @@ import {
   type Camera,
   type EditorRestore,
   type OpenScene,
+  type PlayerCamera,
   type ProjectSummary,
   type View,
 } from "../shared/scene.types";
@@ -187,6 +189,20 @@ export function createWorkspace(data: DataDir) {
     entityName: (id) => entityMeta(library.get(), id)?.name,
   });
   const shots: ShotStore = createShotStore(data);
+  // The open project's player camera (09.2): its settings for walks, and whether its file loaded (one that didn't
+  // is never written over).
+  let player: { project: string; camera: PlayerCamera; broken: boolean } | null = null;
+  const playerListeners = new Set<(player: PlayerCamera) => void>();
+  const loadPlayer = (project: string) => {
+    if (player?.project === project) return;
+    try {
+      player = { project, camera: data.readPlayer(project), broken: false };
+    } catch (err) {
+      console.warn(`Using the default player camera: ${(err as Error).message}`);
+      player = { project, camera: DEFAULT_PLAYER, broken: true };
+    }
+    playerListeners.forEach((l) => l(player!.camera));
+  };
   const entitiesListeners = new Set<(definitions: Record<string, SceneNode[]>) => void>();
   const entitiesChanged = () => entitiesListeners.forEach((l) => l(allDefinitions()));
   // The library open with the scene: its project, the step it's saved at, and the defaults it was given.
@@ -410,6 +426,7 @@ export function createWorkspace(data: DataDir) {
       console.warn(`Ignoring the editor state: ${(err as Error).message}`);
     }
     loadLibrary(project);
+    loadPlayer(project);
     open = {
       project: { id: project, name: loaded.project.name, description: loaded.project.description },
       scene: { id: scene, name: loaded.file.name },
@@ -432,6 +449,27 @@ export function createWorkspace(data: DataDir) {
   return {
     /** The store behind the open scene. Always exists (view and selection reports go to it even with nothing open). */
     store,
+
+    /** The open project's player camera (09.2), or the defaults with nothing open. */
+    player(): PlayerCamera {
+      return player?.camera ?? DEFAULT_PLAYER;
+    },
+
+    /** Saves the open project's player camera (not an edit: no history). */
+    setPlayer(camera: PlayerCamera): void {
+      if (!open || !player) throw new SceneError(NO_SCENE_OPEN);
+      if (player.broken) throw new SceneError("The player camera wasn't saved: the project's player.json didn't load.");
+      if (JSON.stringify(camera) === JSON.stringify(player.camera)) return;
+      player = { ...player, camera };
+      data.writePlayer(open.project.id, camera);
+      playerListeners.forEach((l) => l(camera));
+    },
+
+    /** When the player camera changes, or another project's is loaded. */
+    onPlayerChanged(listener: (player: PlayerCamera) => void): () => void {
+      playerListeners.add(listener);
+      return () => playerListeners.delete(listener);
+    },
 
     /** The open document's shots (09.1). */
     shots,

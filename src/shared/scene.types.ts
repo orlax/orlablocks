@@ -267,6 +267,7 @@ export type View = {
   yaw: number; // degrees, 0..360
   bounds: { x: number; z: number; width: number; depth: number };
   isolated?: string; // the node isolated in the editor (only it and what's in it show); none = everything shows
+  walking?: Walking; // while the human walks through the level (09.2)
 };
 
 export type Scene = {
@@ -831,13 +832,54 @@ export const PlaceNodesSchema = z.strictObject({
   before: z.string().nullable(),
 });
 
+/** A walk's preset (09.2): the same walk with a first-person or a third-person camera. */
+export const WalkPresetSchema = z.enum(["first", "third"]);
+export type WalkPreset = z.infer<typeof WalkPresetSchema>;
+
+/**
+ * Where the human is walking (09.2): the eye (at eye height above the feet), where it looks (`yaw` as the editor's:
+ * 0 looks north, counterclockwise seen from above; `pitch` up), and the horizontal field of view.
+ */
+export const WalkingSchema = z.object({
+  preset: WalkPresetSchema,
+  eye: z.object({ x: z.number(), y: z.number(), z: z.number() }),
+  yaw: z.number(),
+  pitch: z.number().min(-90).max(90),
+  fov: z.number().min(10).max(150),
+});
+export type Walking = z.infer<typeof WalkingSchema>;
+
 export const ViewSchema = z.object({
   focus: z.object({ x: z.number(), z: z.number() }),
   yaw: z.number(),
   bounds: z.object({ x: z.number(), z: z.number(), width: z.number().positive(), depth: z.number().positive() }),
   // The node the human has isolated (only it and what's in it show), if any.
   isolated: z.string().optional(),
+  // While the human walks through the level (09.2).
+  walking: WalkingSchema.optional(),
 });
+
+/**
+ * The player camera (plan 09 §3): the project's walk settings, shared by the human's walks and the agent's eye and
+ * walk renders. Meters, m/s and degrees (the field of view is horizontal, across the frame). A third-person camera
+ * sits `distance` behind the eye, `height` above it and `shoulder` to its right, and `avatar` draws the human.
+ */
+export const PlayerCameraSchema = z.object({
+  eyeHeight: z.number().min(0.2).max(10).default(1.65),
+  speed: z.number().min(0.5).max(20).default(4),
+  first: z.object({ fov: z.number().min(30).max(150).default(90) }).prefault({}),
+  third: z
+    .object({
+      fov: z.number().min(30).max(150).default(60),
+      distance: z.number().min(0).max(20).default(3),
+      height: z.number().min(-5).max(10).default(0.4),
+      shoulder: z.number().min(-5).max(5).default(0.5),
+      avatar: z.boolean().default(true),
+    })
+    .prefault({}),
+});
+export type PlayerCamera = z.infer<typeof PlayerCameraSchema>;
+export const DEFAULT_PLAYER: PlayerCamera = PlayerCameraSchema.parse({});
 
 /** A project or scene name: trimmed, not empty. */
 export const NameSchema = z.string().trim().min(1, "a name is required").max(80, "80 characters at most");
@@ -900,7 +942,7 @@ export const ShotCameraSchema = z.discriminatedUnion("kind", [
   CameraSchema.extend({ kind: z.literal("editor") }),
   z.object({
     kind: z.literal("walk"),
-    preset: z.enum(["first", "third"]),
+    preset: WalkPresetSchema,
     eye: z.object({ x: z.number(), y: z.number(), z: z.number() }),
     yaw: z.number(),
     pitch: z.number().min(-90).max(90),
@@ -981,6 +1023,8 @@ export const ClientMessageSchema = z.discriminatedUnion("type", [
   }),
   z.object({ type: z.literal("update_shot"), id: z.string(), caption: z.string().max(MAX_SHOT_CAPTION) }),
   z.object({ type: z.literal("remove_shot"), id: z.string() }),
+  // The pause menu's player camera (09.2), saved for the project.
+  z.object({ type: z.literal("set_player"), player: PlayerCameraSchema }),
 ]);
 export type ClientMessage = z.input<typeof ClientMessageSchema>;
 
@@ -996,4 +1040,6 @@ export type ServerMessage =
   // The open project's entity definitions, by ID (every one, as nodes around the pivot).
   | { type: "entities"; definitions: Record<string, SceneNode[]> }
   // The open document's shots (09.1), newest last: on open and after every change.
-  | { type: "shots"; shots: ShotView[] };
+  | { type: "shots"; shots: ShotView[] }
+  // The open project's player camera (09.2): on connect, when a project opens and after every change.
+  | { type: "player"; player: PlayerCamera };

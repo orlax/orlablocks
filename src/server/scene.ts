@@ -1181,12 +1181,23 @@ export function createSceneStore({
 
     /** What the editor currently shows (last reporting tab wins). Not an edit, so no broadcast. */
     setView(view: View): void {
-      const { focus, yaw, bounds, isolated } = view;
+      const { focus, yaw, bounds, isolated, walking } = view;
       scene.view = {
         focus: { x: round2(focus.x), z: round2(focus.z) },
         yaw: round2(yaw),
         bounds: { x: round2(bounds.x), z: round2(bounds.z), width: round2(bounds.width), depth: round2(bounds.depth) },
         ...(isolated !== undefined && scene.nodes.some((n) => n.id === isolated) ? { isolated } : {}),
+        ...(walking
+          ? {
+              walking: {
+                preset: walking.preset,
+                eye: { x: round2(walking.eye.x), y: round2(walking.eye.y), z: round2(walking.eye.z) },
+                yaw: round2(walking.yaw),
+                pitch: round2(walking.pitch),
+                fov: round2(walking.fov),
+              },
+            }
+          : {}),
       };
     },
 

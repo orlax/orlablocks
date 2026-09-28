@@ -1,7 +1,7 @@
 import { useMemo, useRef, type ReactNode, type RefObject } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
-import { cameraPosition, FOV_DEG, MAX_DISTANCE, type CameraState } from "./camera";
+import { cameraPosition, FOV_DEG, MAX_DISTANCE, type CameraState, type Vec3 } from "./camera";
 
 /**
  * Captures (plan 09 §4): the scene rendered to an image, for shots and (09.3) the agent's renders. Each capture
@@ -11,12 +11,23 @@ import { cameraPosition, FOV_DEG, MAX_DISTANCE, type CameraState } from "./camer
  */
 
 /**
+ * The camera a capture is taken with: where it is, what it looks at, and its vertical field of view. `light` is an
+ * editor camera the lighting follows (its sun and shadows cover the ground around the focus, as in the view).
+ */
+export type CaptureView = { position: Vec3; target: Vec3; vfov: number; light: CameraState };
+
+/** The capture view of an editor camera (the view's own). */
+export function editorView(cam: CameraState): CaptureView {
+  return { position: cameraPosition(cam), target: { x: cam.focus.x, y: 0, z: cam.focus.z }, vfov: FOV_DEG, light: cam };
+}
+
+/**
  * A capture to take: the camera, the image's size in pixels, the pixel ratio it's drawn at (so lines, notes and
  * arrowheads, sized in screen pixels, look as they do on screen), and where the PNG goes.
  */
 export type CaptureJob = {
   id: number;
-  camera: CameraState;
+  view: CaptureView;
   width: number;
   height: number;
   pixelRatio: number;
@@ -42,14 +53,14 @@ export function blobToBase64(blob: Blob): Promise<string> {
  * (the lighting follows its focus, as in the view). Unmounting it frees its WebGL context.
  */
 export function CaptureStage({ job, background, children }: { job: CaptureJob; background: string; children: (cam: RefObject<CameraState>) => ReactNode }) {
-  const cam = useRef<CameraState>(job.camera);
+  const cam = useRef<CameraState>(job.view.light);
   // The canvas's own camera, so what sizes itself from the camera (notes, arrowheads) does so for this picture.
   const camera = useMemo(() => {
-    const c = new THREE.PerspectiveCamera(FOV_DEG, job.width / job.height, 0.5, MAX_DISTANCE * 4);
-    const p = cameraPosition(job.camera);
+    const { position: p, target: t, vfov } = job.view;
+    const c = new THREE.PerspectiveCamera(vfov, job.width / job.height, 0.05, MAX_DISTANCE * 4);
     c.position.set(p.x, p.y, p.z);
     c.up.set(0, 1, 0);
-    c.lookAt(job.camera.focus.x, 0, job.camera.focus.z);
+    c.lookAt(t.x, t.y, t.z);
     c.updateMatrixWorld();
     return c;
   }, [job]);

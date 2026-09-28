@@ -14,6 +14,8 @@ type Props = {
   highlight?: "hover" | "selected";
   /** The holes that cut this shape (see `cutters`): its mesh is drawn minus them. */
   cuts?: ClosedShape[];
+  /** Whether the Walk tool's floor-follow can stand on it (09.2; not the walker's own avatar). Holes and drafts never. */
+  walkable?: boolean;
 };
 
 /** Room floors are a slightly darker shade of the room's color. */
@@ -161,7 +163,7 @@ function uvOffset(shape: Solid): [number, number] {
  * ceiling, so you see in from above. A volume is the footprint extruded to its height. Both cast and receive shadows
  * and have faint outlined edges. A hole is a translucent ghost with dashed edges.
  */
-export function ShapeMesh({ shape, draft = false, highlight, cuts }: Props) {
+export function ShapeMesh({ shape, draft = false, highlight, cuts, walkable = true }: Props) {
   const { kind, color } = shape;
   // A ramp's mesh is in world coordinates (its frame is the world's, at height 0).
   const { y, height } = shape.type === "ramp" ? { y: 0, height: 0 } : shape;
@@ -226,8 +228,17 @@ export function ShapeMesh({ shape, draft = false, highlight, cuts }: Props) {
   return (
     <group position={[frame.x, y + height / 2, frame.z]} rotation={turn}>
       <group position={[0, -height / 2, 0]}>
-        {solid && <mesh geometry={solid} material={bodyMaterial} castShadow={!draft && !hole} receiveShadow={!draft && !hole} renderOrder={hole ? 2 : 0} />}
-        {floor && <mesh geometry={floor} material={floorMaterial} receiveShadow={!draft} />}
+        {solid && (
+          <mesh
+            geometry={solid}
+            material={bodyMaterial}
+            castShadow={!draft && !hole}
+            receiveShadow={!draft && !hole}
+            renderOrder={hole ? 2 : 0}
+            userData={{ walkable: walkable && !draft && !hole }}
+          />
+        )}
+        {floor && <mesh geometry={floor} material={floorMaterial} receiveShadow={!draft} userData={{ walkable: walkable && !draft }} />}
         {edges && (
           <lineSegments
             key={hole ? "dashed" : "solid"}

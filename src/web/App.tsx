@@ -22,6 +22,9 @@ import {
   type ShapeInput,
   type SceneNode,
   type View,
+  type PlayerCamera,
+  type ShotCamera,
+  type WalkPreset,
 } from "../shared/scene.types";
 import { boundsOf, footprintBounds, isClosed, isTilted, polyline, rampStations, reversePoints, round2, wallOf } from "../shared/geometry";
 import { shapesUnder, childrenOf, countsText, isShape, isGroup, hiddenIds, lockedIds, subtreeIds, tagsOf } from "../shared/tree";
@@ -37,7 +40,7 @@ import { Inspector, type InspectorProps } from "./Inspector";
 import { highlightedText, typingInField } from "./keys";
 import { Outliner } from "./Outliner";
 import { ProjectPicker } from "./ProjectPicker";
-import { ContextualBar, EDIT_POINTS_HINT, HINTS, TOOLS, ToolBar, ViewBar } from "./ToolBar";
+import { ContextualBar, EDIT_POINTS_HINT, HINTS, TOOLS, ToolBar, ViewBar, WalkBar } from "./ToolBar";
 import { useScene } from "./useScene";
 import { Viewport, type KindFields, type LineStyle, type RampStyle, type Tool, type ViewportApi } from "./Viewport";
 import { blobToBase64 } from "./capture";
@@ -112,9 +115,13 @@ const details = (s: Shape, library: Library | null) => {
 const LIBRARY_OPEN_KEY = "dd.library.open";
 /** localStorage key: whether the Shots panel is open (09.1). */
 const SHOTS_OPEN_KEY = "dd.shots.open";
+/** localStorage key: the Walk tool's preset (09.2). */
+const WALK_PRESET_KEY = "dd.walk.preset";
+/** The player camera is saved this long after the pause menu's last change (a slider sends many). */
+const PLAYER_SAVE_MS = 400;
 
 export function App() {
-  const { scene, history, seq, shots, projects, open, restore, library: libraryState, connected, error, clearError, send } = useScene();
+  const { scene, history, seq, shots, player: savedPlayer, projects, open, restore, library: libraryState, connected, error, clearError, send } = useScene();
   const library = libraryState.library;
   // The Library panel, open or not, remembered per viewer.
   const [libraryOpen, setLibraryOpenState] = useState(() => {
@@ -224,6 +231,48 @@ export function App() {
   };
   const shutterRef = useRef(shutter);
   shutterRef.current = shutter;
+
+  // The Walk tool (09.2): the preset the next walk starts with (per viewer), whether a walk is under way (the
+  // panels hide), and the player camera: shown as changed at once, saved a moment after the last change.
+  const [walkPreset, setWalkPresetState] = useState<WalkPreset>(() => {
+    try {
+      return localStorage.getItem(WALK_PRESET_KEY) === "third" ? "third" : "first";
+    } catch {
+      return "first";
+    }
+  });
+  const setWalkPreset = (p: WalkPreset) => {
+    setWalkPresetState(p);
+    try {
+      localStorage.setItem(WALK_PRESET_KEY, p);
+    } catch {
+      // A convenience only.
+    }
+  };
+  const [walking, setWalking] = useState(false);
+  const [pendingPlayer, setPendingPlayer] = useState<PlayerCamera | null>(null);
+  const playerTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const player = pendingPlayer ?? savedPlayer;
+  const changePlayer = (next: PlayerCamera) => {
+    setPendingPlayer(next);
+    if (playerTimer.current) clearTimeout(playerTimer.current);
+    playerTimer.current = setTimeout(() => {
+      playerTimer.current = null;
+      send({ type: "set_player", player: next });
+    }, PLAYER_SAVE_MS);
+  };
+  // The server's copy caught up (or another tab changed it): show that.
+  useEffect(() => {
+    if (!playerTimer.current) setPendingPlayer(null);
+  }, [savedPlayer]);
+  const saveWalkShot = async (shot: { png: Blob; width: number; height: number; camera: ShotCamera }) => {
+    try {
+      send({ type: "add_shot", camera: shot.camera, width: shot.width, height: shot.height, image: await blobToBase64(shot.png) });
+    } catch (err) {
+      setNotice("The shot wasn't saved");
+      reportError("view", err);
+    }
+  };
 
   const nodes = scene?.nodes ?? [];
   const isolated = isolation?.id ?? null;
@@ -727,7 +776,7 @@ export function App() {
           : null;
 
   return (
-    <div className={libraryOpen && open && library ? "app library-open" : "app"}>
+    <div className={[libraryOpen && open && library ? "app library-open" : "app", walking ? "walking" : ""].join(" ").trim()}>
       <Viewport
         tool={activeTool}
         nodes={nodes}
@@ -796,6 +845,17 @@ export function App() {
         cameraRestore={restore}
         cameraFrame={cameraFrame}
         api={viewportApi}
+        walkPreset={walkPreset}
+        player={player}
+        onPlayer={changePlayer}
+        avatarEntity={library?.entities.find((e) => e.id === "human")?.id ?? library?.entities.find((e) => e.name === "human")?.id ?? null}
+        onWalkShot={(shot) => void saveWalkShot(shot)}
+        onWalkChange={(on) => {
+          setWalking(on);
+          if (!on) setTool("select");
+        }}
+        shots={shots}
+        onRemoveShot={(id) => send({ type: "remove_shot", id })}
       />
 
       <div className="left-dock">
@@ -832,7 +892,7 @@ export function App() {
           sceneName={editingEntity ? editingEntity.name : open.scene.name}
           onGoTo={(shot) => {
             if (shot.camera.kind === "editor") setCameraFrame({ camera: { focus: shot.camera.focus, yaw: shot.camera.yaw, distance: shot.camera.distance } });
-            else setNotice("Walk shots open in Walk mode, which comes next");
+            else viewportApi.current?.walkTo(shot.camera);
           }}
           onCaption={(id, caption) => send({ type: "update_shot", id, caption })}
           onRemove={(id) => send({ type: "remove_shot", id })}
@@ -938,6 +998,7 @@ export function App() {
       <div className="dock">
         {error && <div className="error">{error}</div>}
         {bar && <ContextualBar {...bar} />}
+        {activeTool === "walk" && <WalkBar preset={walkPreset} onPreset={setWalkPreset} />}
         <ToolBar
           tool={activeTool}
           onTool={chooseTool}

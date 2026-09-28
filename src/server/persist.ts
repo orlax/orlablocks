@@ -18,7 +18,7 @@ import {
   type SceneFile,
   type ShotsFile,
 } from "../shared/project.types";
-import { NodeSchema, type Actor, type NodePatch, type ProjectSummary } from "../shared/scene.types";
+import { DEFAULT_PLAYER, NodeSchema, PlayerCameraSchema, type Actor, type NodePatch, type PlayerCamera, type ProjectSummary } from "../shared/scene.types";
 import { LibraryOpSchema, type LibraryOp } from "../shared/library";
 import type { Op } from "./commands";
 
@@ -422,6 +422,16 @@ export function openDataDir(root: string) {
 
     writeEntityEditor(project: string, entity: string, file: EditorFile): void {
       writeJson(path.join(entitiesDir(project), entity, "editor.json"), file);
+    },
+
+    /** The project's `player.json` (09.2), or the defaults if it has none. Throws if it exists but doesn't load. */
+    readPlayer(project: string): PlayerCamera {
+      const file = path.join(projectDir(project), "player.json");
+      return fs.existsSync(file) ? readJson(file, PlayerCameraSchema) : DEFAULT_PLAYER;
+    },
+
+    writePlayer(project: string, player: PlayerCamera): void {
+      writeJson(path.join(projectDir(project), "player.json"), player);
     },
 
     /** A document's `shots/shots.json`, or null if it has no shots yet. Throws if it exists but doesn't load. */

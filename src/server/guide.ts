@@ -60,7 +60,8 @@ export const INSTRUCTIONS =
   'they say "this", they mean the `selection`. When `view.isolated` is set, the human is working inside that node: ' +
   "pass it as root, and put new shapes for it inside it. Use find_nodes to look nodes up by name, type, kind, group " +
   "or place, instead of reading the whole scene. `view.focus` is the ground point at the screen center: draw near it " +
-  "to be on screen. A node with `locked: true` (the human can't pick it) or `hidden: true` (not drawn, and a hidden " +
+  "to be on screen. `view.walking` (while the human walks through the level with the Walk tool) is their eye, where " +
+  "it looks (`yaw` as the view's, `pitch` up) and the field of view: what they see from there. A node with `locked: true` (the human can't pick it) or `hidden: true` (not drawn, and a hidden " +
   "hole cuts nothing) is the human's aid: leave those alone unless asked. " +
   "WAYS OF WORKING: describe groups (update_nodes description) so the outline tells what each part is. To repeat " +
   "things, copy them with move_nodes and copy: true (count for a row) instead of redrawing; for symmetry, copy then " +

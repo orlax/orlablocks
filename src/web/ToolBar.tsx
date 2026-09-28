@@ -10,6 +10,9 @@ import {
   Hand,
   MousePointer2,
   PenTool,
+  PersonStanding,
+  User,
+  UserRound,
   Redo2,
   Square,
   SquareDashed,
@@ -21,9 +24,9 @@ import {
   X,
   type LucideIcon,
 } from "lucide-react";
-import { PALETTE, SHAPE_COLORS, type HistorySummary, type ShapeColor, type ShapeKind } from "../shared/scene.types";
+import { PALETTE, SHAPE_COLORS, type HistorySummary, type ShapeColor, type ShapeKind, type WalkPreset } from "../shared/scene.types";
 import { Stairs } from "./icons";
-import type { Tool } from "./Viewport";
+import { WALK_DRAG, type Tool } from "./Viewport";
 
 export const MOD = /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl+";
 
@@ -36,6 +39,7 @@ export const TOOLS: { tool: Tool; label: string; key: string; icon: LucideIcon }
   { tool: "line", label: "Line", key: "l", icon: Waypoints },
   { tool: "ramp", label: "Ramp (and stairs)", key: "r", icon: Stairs },
   { tool: "note", label: "Note", key: "n", icon: StickyNote },
+  { tool: "walk", label: "Walk (drag onto the view, or click in it)", key: "w", icon: PersonStanding },
 ];
 
 /** What each tool does and its modifiers, shown in the info-label. */
@@ -48,6 +52,7 @@ export const HINTS: Record<Tool, string> = {
   line: `click to place a point on the surface under the cursor · drag for a curve · double-click or Enter to finish · ⌫ removes the last point · ${MOD} no snap · Esc to cancel`,
   ramp: `click on the floor, then on the top it climbs to (each point on the surface under the cursor) · drag for a curve · double-click or Enter to finish · ⌫ removes the last point · ${MOD} no snap · Esc to cancel`,
   note: "click to pin a note on the surface under the cursor, then write it in the inspector · a label (up to 3 letters) makes it a flag",
+  walk: "click on a floor to drop in · then the mouse looks, WASD walks, E/Q float, F lands, Shift is fast, the wheel sets the speed, a click takes a shot · Esc pauses, Esc again exits",
 };
 
 /** The hint while editing a free-form's points (the Select tool, after double-clicking it). */
@@ -87,6 +92,16 @@ export function ToolBar({
           className={t === tool ? "tool active" : "tool"}
           title={`${label} (${key.toUpperCase()})`}
           onClick={() => onTool(t)}
+          // The Walk button can be dropped onto the view: the walk starts where it lands.
+          draggable={t === "walk"}
+          onDragStart={
+            t === "walk"
+              ? (e) => {
+                  e.dataTransfer.setData(WALK_DRAG, "1");
+                  e.dataTransfer.effectAllowed = "copy";
+                }
+              : undefined
+          }
         >
           <Icon size={20} />
           <span className="key">{key.toUpperCase()}</span>
@@ -167,6 +182,22 @@ export function ContextualBar({
             onClick={() => onColor(c)}
           />
         ))}
+      </div>
+    </div>
+  );
+}
+
+/** The Walk tool's contextual bar: the preset the next walk starts with (09.2). */
+export function WalkBar({ preset, onPreset }: { preset: WalkPreset; onPreset: (preset: WalkPreset) => void }) {
+  return (
+    <div className="contextual-bar">
+      <div className="segmented labeled">
+        <button className={preset === "first" ? "active" : ""} title="First person: the camera is the eye" onClick={() => onPreset("first")}>
+          <User size={15} /> First person
+        </button>
+        <button className={preset === "third" ? "active" : ""} title="Third person: over the shoulder of the human" onClick={() => onPreset("third")}>
+          <UserRound size={15} /> Third person
+        </button>
       </div>
     </div>
   );

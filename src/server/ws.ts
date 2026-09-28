@@ -60,6 +60,7 @@ export function attachWebSocket(httpServer: Server, workspace: Workspace) {
   });
   workspace.onProjectsChanged((projects) => broadcast({ type: "projects", projects }));
   workspace.shots.onChange(() => broadcast({ type: "shots", shots: workspace.shots.list() }));
+  workspace.onPlayerChanged((player) => broadcast({ type: "player", player }));
 
   wss.on("connection", (ws) => {
     // The scene before `opened`, so the selection it restores is checked against this scene's nodes.
@@ -70,6 +71,7 @@ export function attachWebSocket(httpServer: Server, workspace: Workspace) {
     send(ws, { type: "entities", definitions: workspace.definitions() });
     send(ws, libraryMessage());
     send(ws, { type: "shots", shots: workspace.shots.list() });
+    send(ws, { type: "player", player: workspace.player() });
 
     ws.on("message", (raw) => {
       let data: unknown;
@@ -101,6 +103,7 @@ export function attachWebSocket(httpServer: Server, workspace: Workspace) {
         if (msg.type === "add_shot") return void workspace.addShot({ camera: msg.camera, caption: msg.caption, image: msg.image }, "human");
         if (msg.type === "update_shot") return workspace.shots.update(msg.id, msg.caption);
         if (msg.type === "remove_shot") return workspace.shots.remove(msg.id);
+        if (msg.type === "set_player") return workspace.setPlayer(msg.player);
         if (msg.type === "detach_instances") return void workspace.requireScene().detachInstances(msg.ids, "human");
         const scene = workspace.requireScene();
         if (msg.type === "add_shapes") scene.drawShapes(msg.shapes, "human");
