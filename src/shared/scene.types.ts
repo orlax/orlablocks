@@ -208,12 +208,78 @@ export type Instance = {
   createdBy: Actor;
 };
 
+/** One of an array's entities, and how often it's chosen among them (default 1). */
+export type ArrayEntity = { entity: string; weight?: number };
+
+/** How a path array spaces its items: every `spacing` meters (fitted), `count` evenly, on every point, or mid-edge. */
+export type ArrayPlace = "spacing" | "count" | "corners" | "midpoints";
+
+/**
+ * Where an array's items go (plan 10 §3). A path is a line's points (absolute world x/y/z, 3D handles), open or
+ * closed; a circle is a center, a radius and angles (from 0 = east, counterclockwise seen from above); a grid is a
+ * center and a turn, with columns along its local x, rows along its local z and layers up.
+ */
+export type PathLayout = {
+  type: "path";
+  points: LinePoint[];
+  closed?: true;
+  place: ArrayPlace;
+  spacing?: number; // place: spacing, meters (the real spacing is fitted to the path)
+  count?: number; // place: count
+};
+export type CircleLayout = { type: "circle"; x: number; y: number; z: number; radius: number; count: number; start?: number; sweep?: number };
+export type GridLayout = {
+  type: "grid";
+  x: number;
+  y: number;
+  z: number;
+  rotation?: number;
+  columns: number;
+  rows: number;
+  layers?: number;
+  spacing: { x: number; z: number; y?: number };
+  stagger?: true;
+};
+export type ArrayLayout = PathLayout | CircleLayout | GridLayout;
+export type ArrayLayoutType = ArrayLayout["type"];
+
+/**
+ * How an array turns each item (plan 10 §3): `fixed` as drawn, `along` its path, `tangent` / `out` / `in` on a
+ * circle, or `random`. Along and tangent turn the entity's local +x along the way; out turns it away from the
+ * circle's center, in toward it.
+ */
+export type ArrayFacing = "fixed" | "along" | "tangent" | "out" | "in" | "random";
+
+/**
+ * An array (from 10): a node that repeats entities on a layout, live. Its **items** are instances the layout places
+ * (virtual, `array_3/7`, drawn and cut like instances in the array's own place in the tree: the array adds no level
+ * for holes). `rotation` is added to every item's facing, then the seeded noise (`jitter` meters on the ground,
+ * `turnJitter` ± degrees). `skip` lists the item indices left out.
+ */
+export type ArrayNode = {
+  id: string; // "array_1", ...
+  type: "array";
+  name?: string;
+  parent?: string;
+  locked?: true;
+  hidden?: true;
+  entities: ArrayEntity[];
+  layout: ArrayLayout;
+  facing?: ArrayFacing;
+  rotation?: number;
+  jitter?: number;
+  turnJitter?: number;
+  seed?: number;
+  skip?: number[];
+  createdBy: Actor;
+};
+
 /** A closed shape: one with a footprint, a kind (room or volume), an elevation and a height. */
 export type ClosedShape = Box | Cylinder | Freeform;
 /** A solid: a shape with a kind and a mesh, that holes cut (a closed shape or a ramp; only closed shapes are holes). */
 export type Solid = ClosedShape | Ramp;
 /** Anything drawn: every node that isn't a group. */
-export type Shape = ClosedShape | Line | Ramp | Note | Instance;
+export type Shape = ClosedShape | Line | Ramp | Note | Instance | ArrayNode;
 export type ShapeType = Shape["type"];
 
 /**
@@ -254,6 +320,14 @@ export type ShapePatch = Partial<Pick<Footprinted, "name" | "kind" | "x" | "z" |
   label?: string;
   status?: NoteStatus;
   entity?: string;
+  // Arrays (from 10).
+  entities?: ArrayEntity[];
+  layout?: ArrayLayout;
+  facing?: ArrayFacing;
+  jitter?: number;
+  turnJitter?: number;
+  seed?: number;
+  skip?: number[];
 };
 /** What an update op can change on any node: shape fields (shapes only), `description` (groups only), `name` and `parent`. */
 export type NodePatch = ShapePatch & { parent?: string; description?: string; tags?: string[]; locked?: true; hidden?: true };
@@ -339,6 +413,13 @@ export const MAX_THICKNESS = 12;
 export const DEFAULT_THICKNESS = 3;
 export const DEFAULT_LINE_COLOR: ShapeColor = "black";
 export const LINE_ARROWS = ["none", "end", "both"] as const;
+/** Arrays (plan 10 §3): at most this many items and entities each, and at least this spacing along a path. */
+export const MAX_ARRAY_ITEMS = 500;
+export const MAX_ARRAY_ENTITIES = 8;
+export const MIN_ARRAY_SPACING = 0.1;
+export const ARRAY_PLACES = ["spacing", "count", "corners", "midpoints"] as const;
+export const ARRAY_FACINGS = ["fixed", "along", "tangent", "out", "in", "random"] as const;
+export const ARRAY_LAYOUTS = ["path", "circle", "grid"] as const;
 /** A ramp is this wide unless it says otherwise, and at least MIN_RAMP_WIDTH. */
 export const DEFAULT_RAMP_WIDTH = 1.5;
 export const MIN_RAMP_WIDTH = 0.2;
@@ -515,6 +596,60 @@ const InstanceSchema = z.object({
   createdBy: ActorSchema,
 });
 
+const count = z.number().int().min(1);
+const ArrayEntitySchema = z.object({ entity: z.string(), weight: z.number().positive().optional() });
+/** An array's layout as stored (see `ArrayLayout`). */
+export const ArrayLayoutSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("path"),
+    points: z.array(LinePointSchema).min(MIN_LINE_POINTS).max(MAX_POINTS),
+    closed: z.literal(true).optional(),
+    place: z.enum(ARRAY_PLACES),
+    spacing: z.number().min(MIN_ARRAY_SPACING).optional(),
+    count: count.optional(),
+  }),
+  z.object({
+    type: z.literal("circle"),
+    x: z.number(),
+    y: z.number(),
+    z: z.number(),
+    radius: z.number().positive(),
+    count,
+    start: z.number().optional(),
+    sweep: z.number().positive().max(360).optional(),
+  }),
+  z.object({
+    type: z.literal("grid"),
+    x: z.number(),
+    y: z.number(),
+    z: z.number(),
+    rotation: z.number().optional(),
+    columns: count,
+    rows: count,
+    layers: count.optional(),
+    spacing: z.object({ x: z.number().min(0), z: z.number().min(0), y: z.number().min(0).optional() }),
+    stagger: z.literal(true).optional(),
+  }),
+]);
+
+const ArraySchema = z.object({
+  id: z.string(),
+  type: z.literal("array"),
+  name: z.string().optional(),
+  parent: z.string().optional(),
+  locked: z.literal(true).optional(),
+  hidden: z.literal(true).optional(),
+  entities: z.array(ArrayEntitySchema).min(1).max(MAX_ARRAY_ENTITIES),
+  layout: ArrayLayoutSchema,
+  facing: z.enum(ARRAY_FACINGS).optional(),
+  rotation: z.number().optional(),
+  jitter: z.number().min(0).optional(),
+  turnJitter: z.number().min(0).max(180).optional(),
+  seed: z.number().int().optional(),
+  skip: z.array(z.number().int().min(0)).optional(),
+  createdBy: ActorSchema,
+});
+
 const GroupSchema = z.object({
   id: z.string(),
   type: z.literal("group"),
@@ -528,7 +663,7 @@ const GroupSchema = z.object({
 });
 
 /** A stored node, as in `scene.json` (and on the clipboard). */
-export const NodeSchema: z.ZodType<SceneNode> = z.discriminatedUnion("type", [BoxSchema, CylinderSchema, FreeformSchema, LineSchema, RampSchema, NoteSchema, InstanceSchema, GroupSchema]);
+export const NodeSchema: z.ZodType<SceneNode> = z.discriminatedUnion("type", [BoxSchema, CylinderSchema, FreeformSchema, LineSchema, RampSchema, NoteSchema, InstanceSchema, ArraySchema, GroupSchema]);
 
 export const BoxInputSchema = z.strictObject({
   kind: field.kind,
@@ -693,6 +828,81 @@ export const InstanceInputSchema = z.strictObject({
   parent: field.parent.optional().describe("ID of the group to put it in. Omit for the top level"),
 });
 
+const arrayCount = z.number().int().min(1).max(MAX_ARRAY_ITEMS);
+/** An array's layout for `draw_shapes` and `update_nodes` (see get_guide arrays). */
+export const ArrayLayoutInputSchema = z.discriminatedUnion("type", [
+  z.strictObject({
+    type: z.literal("path").describe("Items along a path: a line's points"),
+    points: z
+      .array(LinePointInputSchema)
+      .min(MIN_LINE_POINTS)
+      .max(MAX_POINTS)
+      .describe("The path, points in absolute world x/y/z as a line's (items stand at the path's height)"),
+    closed: z.boolean().optional().describe("The last point joins the first (a loop). Default false"),
+    place: z
+      .enum(ARRAY_PLACES)
+      .optional()
+      .describe("spacing (every `spacing` m, fitted so the items land evenly; the default), count (`count` items evenly), corners (one on every point) or midpoints (one mid-edge)"),
+    spacing: z.number().min(MIN_ARRAY_SPACING).optional().describe(`Meters between items (place: spacing), >= ${MIN_ARRAY_SPACING}; fitted to the path's length`),
+    count: arrayCount.optional().describe("How many items (place: count), evenly along the path, both ends included on an open path"),
+  }),
+  z.strictObject({
+    type: z.literal("circle").describe("Items on a circle (or an arc)"),
+    x: z.number().describe("The center's world x"),
+    z: z.number().describe("The center's world z"),
+    y: z.number().optional().describe("The height the items stand at. Default 0"),
+    radius: z.number().positive().describe("Meters from the center to each item's pivot"),
+    count: arrayCount.describe("How many items"),
+    start: z.number().optional().describe("The first item's angle in degrees: 0 = east (+x), 90 = north (-z). Default 0"),
+    sweep: z.number().positive().max(360).optional().describe("Degrees covered, counterclockwise from start. Default 360 (evenly around); less than 360 puts items at both ends of the arc"),
+  }),
+  z.strictObject({
+    type: z.literal("grid").describe("Items in rows and columns (and layers)"),
+    x: z.number().describe("The grid's center, world x"),
+    z: z.number().describe("The grid's center, world z"),
+    y: z.number().optional().describe("The bottom layer's height. Default 0"),
+    rotation: z.number().optional().describe("Degrees the grid turns, counterclockwise seen from above. Default 0"),
+    columns: arrayCount.describe("Along the grid's local x"),
+    rows: arrayCount.describe("Along the grid's local z"),
+    layers: arrayCount.optional().describe("Up, default 1"),
+    spacing: z
+      .strictObject({ x: z.number().min(0), z: z.number().min(0), y: z.number().min(0).optional() })
+      .describe("Meters between columns (x), rows (z) and layers (y)"),
+    stagger: z.boolean().optional().describe("Every other row offset by half a column (brick). Default false"),
+  }),
+]);
+const arrayField = {
+  entities: z
+    .array(z.strictObject({ entity: z.string(), weight: z.number().positive().optional().describe("How often it's chosen, default 1") }))
+    .min(1)
+    .max(MAX_ARRAY_ENTITIES)
+    .describe(`1..${MAX_ARRAY_ENTITIES} entities, each item one of them, chosen by weight (a forest: small 5, big 3, tall 1)`),
+  facing: z
+    .enum(ARRAY_FACINGS)
+    .describe("How each item turns: fixed (as drawn), along (a path's direction), tangent / out / in (a circle), random. Default: along on a path, tangent on a circle, fixed on a grid"),
+  rotation: z.number().describe("Degrees added to every item's facing, counterclockwise seen from above. Default 0"),
+  jitter: z.number().min(0).describe("Noise: each item moves up to this many meters on the ground. Default 0"),
+  turnJitter: z.number().min(0).max(180).describe("Noise: each item turns up to ± this many degrees. Default 0"),
+  seed: z.number().int().describe("The noise's and the entity choice's seed: the same seed, the same look. Default 1"),
+  skip: z.array(z.number().int().min(0)).describe("Item indices to leave out (0 = the first, in layout order)"),
+};
+
+/** An array for `draw_shapes`: its entity (or entities), its layout, and how its items turn and vary. */
+export const ArrayInputSchema = z.strictObject({
+  type: z.literal("array").describe("Repeats entities on a layout (a path, a circle or a grid), live: one node for many items"),
+  entity: z.string().optional().describe('The entity to repeat, e.g. "merlon" (or give entities)'),
+  entities: arrayField.entities.optional(),
+  layout: ArrayLayoutInputSchema,
+  facing: arrayField.facing.optional(),
+  rotation: arrayField.rotation.optional(),
+  jitter: arrayField.jitter.optional(),
+  turnJitter: arrayField.turnJitter.optional(),
+  seed: arrayField.seed.optional(),
+  skip: arrayField.skip.optional(),
+  name: field.name.optional(),
+  parent: field.parent.optional().describe("ID of the group to put it in (its items cut and are cut as instances there). Omit for the top level"),
+});
+
 export const ShapeInputSchema = z.discriminatedUnion("type", [
   BoxInputSchema.extend({
     type: z.enum(["box", "cylinder"]).optional().describe("box (the default) or cylinder (the ellipse inscribed in width × depth)"),
@@ -703,6 +913,7 @@ export const ShapeInputSchema = z.discriminatedUnion("type", [
   RampInputSchema,
   NoteInputSchema,
   InstanceInputSchema,
+  ArrayInputSchema,
 ]);
 export type ShapeInput = z.input<typeof ShapeInputSchema>;
 
@@ -759,6 +970,34 @@ export const NodeUpdateSchema = z.strictObject({
   label: noteField.label.nullable().optional().describe(`Notes only: up to ${MAX_NOTE_LABEL} characters on its flag; null or "" removes it`),
   status: noteField.status.optional().describe("Notes only: open or done (mark a note done when it's handled, rather than removing it)"),
   entity: z.string().optional().describe("Instances only: another entity's ID, to show it instead, in the same place"),
+  entities: arrayField.entities.optional().describe("Arrays only: the whole list of entities (with weights)"),
+  layout: z
+    .strictObject({
+      type: z.enum(ARRAY_LAYOUTS).optional(),
+      points: z.array(LinePointInputSchema).min(MIN_LINE_POINTS).max(MAX_POINTS).optional(),
+      closed: z.boolean().optional(),
+      place: z.enum(ARRAY_PLACES).optional(),
+      spacing: z.union([z.number(), z.strictObject({ x: z.number(), z: z.number(), y: z.number().optional() })]).optional(),
+      count: z.number().int().optional(),
+      x: z.number().optional(),
+      y: z.number().optional(),
+      z: z.number().optional(),
+      radius: z.number().optional(),
+      start: z.number().optional(),
+      sweep: z.number().optional(),
+      rotation: z.number().optional(),
+      columns: z.number().int().optional(),
+      rows: z.number().int().optional(),
+      layers: z.number().int().optional(),
+      stagger: z.boolean().optional(),
+    })
+    .optional()
+    .describe("Arrays only: layout fields to change (they merge into the layout); with another `type`, the whole new layout (as in draw_shapes)"),
+  facing: arrayField.facing.optional().describe("Arrays only: how each item turns"),
+  jitter: arrayField.jitter.optional().describe("Arrays only: position noise, meters"),
+  turnJitter: arrayField.turnJitter.optional().describe("Arrays only: turn noise, ± degrees"),
+  seed: arrayField.seed.optional().describe("Arrays only: the noise's seed (a new one rerolls)"),
+  skip: arrayField.skip.optional().describe("Arrays only: the whole list of item indices left out ([] restores them all)"),
   description: z
     .string()
     .max(MAX_DESCRIPTION)
@@ -1062,6 +1301,8 @@ export const ClientMessageSchema = z.discriminatedUnion("type", [
     tags: z.array(z.string()).optional(),
   }),
   z.object({ type: z.literal("detach_instances"), ids: IdsSchema }),
+  // The inspector's Array button (10.1): an instance becomes an array.
+  z.object({ type: z.literal("make_array"), id: z.string() }),
   z.object({ type: z.literal("open_entity"), entity: z.string() }),
   z.object({ type: z.literal("close_entity") }),
   // A shot (09.1): the image as base64 PNG, checked and saved by the server, which gives it its ID.

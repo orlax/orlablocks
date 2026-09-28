@@ -8,6 +8,11 @@ import {
   DEFAULT_VIEW,
   DEFAULT_RAMP_WIDTH,
   DEFAULT_WALL,
+  MAX_ARRAY_ITEMS,
+  MIN_ARRAY_SPACING,
+  type ArrayLayout,
+  type ArrayLayoutType,
+  type ArrayNode,
   type Box,
   type ClosedShape,
   type Cylinder,
@@ -28,7 +33,8 @@ import {
 } from "../shared/scene.types";
 import { boundsOf, footprintBounds, isClosed, isTilted, polyline, rampStations, reversePoints, round2, wallOf } from "../shared/geometry";
 import { shapesUnder, childrenOf, countsText, isShape, isGroup, hiddenIds, lockedIds, subtreeIds, tagsOf } from "../shared/tree";
-import { expandShapes } from "../shared/entities";
+import { definitionOf, expandShapes } from "../shared/entities";
+import { arrayItems, arrayLayout, describeLayout, facingOf, layoutAnchor } from "../shared/arrays";
 import type { Box3, CameraState, GroundPoint } from "./camera";
 import { clipboardText, readClipboard } from "./clipboard";
 import { ErrorPanel } from "./ErrorPanel";
@@ -65,6 +71,37 @@ const copiedRoots = (added: SceneNode[]) => {
   return added.filter((n) => n.parent === undefined || !ids.has(n.parent)).map((n) => n.id);
 };
 
+/** An entity's width (its definition's extent along x), or 1 with no shapes: a new layout's spacing comes from it. */
+const entityWidth = (id: string) => {
+  const shapes = (definitionOf(id) ?? []).filter(isShape);
+  if (shapes.length === 0) return 1;
+  const b = boundsOf(shapes);
+  return b.maxX - b.minX || 1;
+};
+
+/**
+ * A new layout of `type` for an array, around where its first item is (plan 10 §4), sized from its entity: a path
+ * of 4 items along the item's facing, a circle of 8 with the item on it (at start 0, east of the center), or a 3 × 3
+ * grid with the item at its first corner. With the facing that layout starts with.
+ */
+function layoutAround(a: ArrayNode, type: ArrayLayoutType): { layout: ArrayLayout; facing: ArrayNode["facing"] } {
+  const first = arrayItems(a)[0] ?? { ...layoutAnchor(a.layout), rotation: 0 };
+  const s = Math.max(MIN_ARRAY_SPACING, round2(entityWidth(a.entities[0].entity) * 1.5));
+  const { x, y, z } = first;
+  if (type === "path") {
+    const r = (first.rotation * Math.PI) / 180;
+    return {
+      layout: { type, points: [{ x, y, z }, { x: round2(x + Math.cos(r) * s * 3), y, z: round2(z - Math.sin(r) * s * 3) }], place: "spacing", spacing: s },
+      facing: "along",
+    };
+  }
+  if (type === "circle") {
+    const radius = Math.max(1, round2((8 * s) / (2 * Math.PI)));
+    return { layout: { type, x: round2(x - radius), y, z, radius, count: 8 }, facing: "tangent" };
+  }
+  return { layout: { type, x: round2(x + s), y, z: round2(z + s), columns: 3, rows: 3, spacing: { x: s, z: s } }, facing: "fixed" };
+}
+
 /** `lobby (group_1)` or just `box_3`. */
 const title = (n: SceneNode) => (n.name ? `${n.name} (${n.id})` : n.id);
 
@@ -76,6 +113,15 @@ const title = (n: SceneNode) => (n.name ? `${n.name} (${n.id})` : n.id);
  * `3 points · 14.2 m long · 3 px · dashed · arrow at the end`.
  */
 const details = (s: Shape, library: Library | null) => {
+  if (s.type === "array") {
+    const { items, total } = arrayLayout(s);
+    const names = s.entities.map((e) => (library ? entityMeta(library, e.entity)?.name : undefined) ?? `missing entity ${e.entity}`).join(", ");
+    const b = boundsOf([s]);
+    const size = `${round2(b.maxX - b.minX)} × ${round2(b.maxZ - b.minZ)} × ${round2(b.maxY - b.minY)} m`;
+    const skipped = s.skip?.length ? ` · ${s.skip.length} skipped` : "";
+    const capped = total > items.length + (s.skip?.length ?? 0) ? ` · ${total} placed, ${MAX_ARRAY_ITEMS} made` : "";
+    return `${items.length} × ${names}${skipped}${capped} · ${describeLayout(s.layout)} · ${size}`;
+  }
   if (s.type === "instance") {
     const meta = library ? entityMeta(library, s.entity) : undefined;
     const b = boundsOf([s]);
@@ -560,7 +606,7 @@ export function App() {
   const single = selectedNodes.length === 1 ? selectedNodes[0] : null;
   const singleShape = single && isShape(single) ? single : null;
   // Instances have no color of their own (their shapes are the entity's).
-  const colored = selectedShapes.filter((b): b is Exclude<Shape, Instance> => b.type !== "instance");
+  const colored = selectedShapes.filter((b): b is Exclude<Shape, Instance | ArrayNode> => b.type !== "instance" && b.type !== "array");
   const sharedColor = colored.length > 0 && colored.every((b) => b.color === colored[0].color) ? colored[0].color : null;
   const contextNode = context !== null ? nodes.find((n) => n.id === context) : undefined;
   const selectionTitle = single ? title(single) : `${selectedNodes.length} selected`;
@@ -589,7 +635,8 @@ export function App() {
     };
     send({ type: "convert_nodes", ids });
   };
-  const editable = singleShape?.type === "freeform" || singleShape?.type === "line" ? singleShape : null;
+  const editable =
+    singleShape?.type === "freeform" || singleShape?.type === "line" || (singleShape?.type === "array" && singleShape.layout.type === "path") ? singleShape : null;
   // Kind is for closed shapes: hidden when only lines are selected, disabled unless a single closed shape is.
   const singleClosed = singleShape && isClosed(singleShape) ? singleShape : null;
   const selectedLines = selectedShapes.filter((s): s is Line => s.type === "line");
@@ -727,10 +774,42 @@ export function App() {
                         pendingSelect.current = { before: new Set(nodes.map((n) => n.id)), pick: (added) => added.filter((n) => n.type === "group" && n.parent === single.parent).map((n) => n.id).slice(0, 1) };
                         send({ type: "detach_instances", ids: [single.id] });
                       },
+                      onArray: editingEntity
+                        ? undefined
+                        : () => {
+                            pendingSelect.current = { before: new Set(nodes.map((n) => n.id)), pick: (added) => added.filter((n) => n.type === "array").map((n) => n.id) };
+                            send({ type: "make_array", id: single.id });
+                          },
                     }
                   : undefined,
+              array:
+                single?.type === "array" && library
+                  ? (() => {
+                      const { items, total } = arrayLayout(single);
+                      const update = (change: Record<string, unknown>) => send({ type: "update_nodes", changes: [{ id: single.id, ...change }] });
+                      return {
+                        entities: single.entities,
+                        library: library.entities,
+                        layout: single.layout,
+                        facing: facingOf(single),
+                        rotation: single.rotation ?? 0,
+                        items: items.length,
+                        total,
+                        skipped: single.skip?.length ?? 0,
+                        onEntity: (entity: string) => update({ entities: [{ entity }] }),
+                        onLayoutType: (type: ArrayLayoutType) => update(layoutAround(single, type)),
+                        onLayout: (patch: Record<string, unknown>) => update({ layout: patch }),
+                        onChange: (patch: { facing?: ArrayNode["facing"]; rotation?: number }) => update(patch),
+                        onEdit: (entity: string) => send({ type: "open_entity", entity }),
+                        onDetach: () => {
+                          pendingSelect.current = { before: new Set(nodes.map((n) => n.id)), pick: (added) => added.filter((n) => n.type === "group" && n.parent === single.parent).map((n) => n.id).slice(0, 1) };
+                          send({ type: "detach_instances", ids: [single.id] });
+                        },
+                      };
+                    })()
+                  : undefined,
               makeEntity:
-                !editingEntity && selectedShapes.length > 0 && !selectedShapes.some((b) => b.type === "instance" || b.type === "note")
+                !editingEntity && selectedShapes.length > 0 && !selectedShapes.some((b) => b.type === "instance" || b.type === "array" || b.type === "note")
                   ? {
                       suggested: (single && isGroup(single) ? single.name : undefined) ?? "entity",
                       onMake: (name) => {
@@ -756,7 +835,7 @@ export function App() {
                   : undefined,
               tags:
                 // An instance's tags are its entity's (edited in the Entities panel), so it has no field of its own.
-                single && single.type !== "line" && single.type !== "note" && single.type !== "instance" && library
+                single && single.type !== "line" && single.type !== "note" && single.type !== "instance" && single.type !== "array" && library
                   ? {
                       value: currentTags(library, tagsOf(single)),
                       onChange: (tags) => send({ type: "update_nodes", changes: [{ id: single.id, tags }] }),

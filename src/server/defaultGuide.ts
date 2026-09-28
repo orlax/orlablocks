@@ -57,7 +57,7 @@ Fill these in. Until they're here, ask before relying on a number.
 
 - **A blockout decides the level, it doesn't decorate it.** Shapes are gameplay space: where the player walks, climbs, hides and looks.
 - **Detail where the player's attention is:** a landmark, a goal, the thing a room is about. Elsewhere, plain volumes.
-- **Decoration is one shape:** battlements as a band along the wall top, a roof as one cone. A detail repeated many times is an entity.
+- **Decoration is one shape or one array:** battlements as an array of a merlon entity along the wall top, a roof as one cone. A detail repeated many times is an entity, placed by an array.
 
 ## Review
 

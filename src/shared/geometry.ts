@@ -1,5 +1,6 @@
 import { differenceD, EndType, FillRule, inflatePathsD, JoinType, type PathD } from "@countertype/clipper2-ts";
-import { instanceShapes } from "./entities";
+import { arrayShapes, instanceShapes } from "./entities";
+import { layoutAnchor, layoutPoints, mirrorArray, moveArray, rotateArray } from "./arrays";
 import {
   CURVE_SEGMENTS,
   DEFAULT_WALL,
@@ -55,10 +56,14 @@ export const isFootprinted = (shape: Shape): shape is Box | Cylinder => shape.ty
 
 /** Boxes, cylinders and free-forms: a footprint, a kind, an elevation and a height (lines and ramps have none). */
 export const isClosed = (shape: Shape): shape is ClosedShape =>
-  shape.type !== "line" && shape.type !== "ramp" && shape.type !== "note" && shape.type !== "instance";
+  shape.type !== "line" && shape.type !== "ramp" && shape.type !== "note" && shape.type !== "instance" && shape.type !== "array";
 
 /** Closed shapes and ramps: a kind and a mesh, so holes cut them (only closed shapes can be holes). */
-export const isSolid = (shape: Shape): shape is Solid => shape.type !== "line" && shape.type !== "note" && shape.type !== "instance";
+export const isSolid = (shape: Shape): shape is Solid =>
+  shape.type !== "line" && shape.type !== "note" && shape.type !== "instance" && shape.type !== "array";
+
+/** Instances and arrays: nodes that show entities (their shapes are the entities', expanded). */
+export const showsEntities = (shape: Shape): shape is Extract<Shape, { type: "instance" | "array" }> => shape.type === "instance" || shape.type === "array";
 
 /** A shape's rotation (a free-form's or a line's is always 0: turning it turns its points). */
 export const rotationOf = (shape: Shape) => (isFootprinted(shape) ? shape.rotation : 0);
@@ -234,6 +239,8 @@ export const footprint = (shape: ClosedShape): Point[] => {
 export const groundPoints = (shape: Shape): Point[] =>
   shape.type === "instance"
     ? instanceShapes(shape).flatMap(groundPoints)
+    : shape.type === "array"
+      ? arrayGround(shape)
     : shape.type === "note"
     ? [{ x: shape.x, z: shape.z }]
     : shape.type === "line"
@@ -243,6 +250,12 @@ export const groundPoints = (shape: Shape): Point[] =>
       : isTilted(shape)
         ? tiltedPoints(shape)
         : footprint(shape);
+
+/** An array's ground points: its items' shapes, or its layout's when it has no items. */
+function arrayGround(array: Extract<Shape, { type: "array" }>): Point[] {
+  const shapes = arrayShapes(array);
+  return shapes.length > 0 ? shapes.flatMap(groundPoints) : layoutPoints(array.layout);
+}
 
 /** How many rings round a bevel's quarter circle. */
 export const BEVEL_SEGMENTS = 8;
@@ -607,9 +620,11 @@ export function verticalRange(shape: Shape): [number, number] {
   if (isClosed(shape)) return [shape.y, shape.y + shape.height];
   if (shape.type === "ramp") return rampRange(shape);
   if (shape.type === "note") return [shape.y, shape.y];
-  if (shape.type === "instance") {
-    const ranges = instanceShapes(shape).map(verticalRange);
-    return ranges.length > 0 ? [Math.min(...ranges.map((r) => r[0])), Math.max(...ranges.map((r) => r[1]))] : [shape.y, shape.y];
+  if (shape.type === "instance" || shape.type === "array") {
+    const ranges = (shape.type === "instance" ? instanceShapes(shape) : arrayShapes(shape)).map(verticalRange);
+    if (ranges.length > 0) return [Math.min(...ranges.map((r) => r[0])), Math.max(...ranges.map((r) => r[1]))];
+    const y = shape.type === "instance" ? shape.y : layoutAnchor(shape.layout).y;
+    return [y, y];
   }
   const ys = polyline(shape).map((p) => p.y);
   return [Math.min(...ys), Math.max(...ys)];
@@ -628,6 +643,7 @@ export function handleFrame(shape: Shape): Frame {
  */
 export const anchorOf = (shape: Shape) => {
   if (isFootprinted(shape) || shape.type === "note" || shape.type === "instance") return { x: shape.x, y: shape.y, z: shape.z };
+  if (shape.type === "array") return layoutAnchor(shape.layout);
   const p = shape.points[0];
   return { x: p.x, y: shape.type === "freeform" ? shape.y : shape.points[0].y, z: p.z };
 };
@@ -794,6 +810,7 @@ export function lineProblem(points: LinePoint[]): string | null {
  * and not also an elevation change.
  */
 export function moveShape(shape: Shape, dx: number, dy: number, dz: number): ShapePatch {
+  if (shape.type === "array") return moveArray(shape, dx, dy, dz);
   const patch: ShapePatch = {};
   if (shape.type === "note" || shape.type === "instance") {
     if (dx !== 0) patch.x = round2(shape.x + dx);
@@ -833,6 +850,7 @@ export function rotateShape(shape: Shape, pivot: Point, degrees: number): ShapeP
     const c = orbit(shape);
     return { x: round2(c.x), z: round2(c.z) };
   }
+  if (shape.type === "array") return rotateArray(shape, pivot, degrees);
   if (shape.type === "instance") {
     const c = orbit(shape);
     return { x: round2(c.x), z: round2(c.z), rotation: round2(normalizeDeg(shape.rotation + degrees)) % 360 };
@@ -853,7 +871,7 @@ export function rotateAround(shapes: Shape[], pivot: Point, degrees: number): Re
  */
 export function resizeShape(shape: Shape, from: Frame, to: { x: number; z: number; width: number; depth: number }): ShapePatch {
   if (isFootprinted(shape)) return { x: to.x, z: to.z, width: to.width, depth: to.depth };
-  if (shape.type === "line" || shape.type === "ramp" || shape.type === "note" || shape.type === "instance") return {}; // these have no scale handles
+  if (shape.type === "line" || shape.type === "ramp" || shape.type === "note" || shape.type === "instance" || shape.type === "array") return {}; // these have no scale handles
   const sx = from.width > 0 ? to.width / from.width : 1;
   const sz = from.depth > 0 ? to.depth / from.depth : 1;
   const target = { ...to, rotation: from.rotation };
@@ -900,6 +918,7 @@ function round2HalfEven(n: number): number {
  *   order (so their indices stay stable), which only reverses the outline's winding.
  */
 export function mirrorShape(shape: Shape, axis: MirrorAxis, sum: number): ShapePatch {
+  if (shape.type === "array") return mirrorArray(shape, axis, sum);
   if (shape.type === "note") return axis === "x" ? { x: round2(sum - shape.x) } : { z: round2(sum - shape.z) };
   // An instance moves to its mirrored point and turns to face the mirrored way; the entity itself isn't flipped.
   if (shape.type === "instance") {

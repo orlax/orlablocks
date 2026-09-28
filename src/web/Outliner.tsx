@@ -9,6 +9,7 @@ import {
   CircleDashed,
   Focus,
   Folder,
+  Grid3x3,
   Lock,
   LockOpen,
   Square,
@@ -20,6 +21,7 @@ import {
   TriangleAlert,
   Waypoints,
 } from "lucide-react";
+import { arrayItems } from "../shared/arrays";
 import { isHole } from "../shared/holes";
 import { Stairs } from "./icons";
 import type { SceneNode } from "../shared/scene.types";
@@ -43,12 +45,15 @@ const iconOf = (node: SceneNode) =>
           ? StickyNote
           : node.type === "instance"
             ? Package
-            : SHAPE_ICONS[node.type][node.kind];
+            : node.type === "array"
+              ? Grid3x3
+              : SHAPE_ICONS[node.type][node.kind];
 
 /** A row's label: the name, else an instance's entity's name, else a note's label and the start of its text, else the ID. */
 const labelOf = (node: SceneNode, entityNames: Record<string, string>) => {
   if (node.name) return node.name;
   if (node.type === "instance") return entityNames[node.entity] ?? `missing entity ${node.entity}`;
+  if (node.type === "array") return `array of ${node.entities.map((e) => entityNames[e.entity] ?? e.entity).join(", ")} (${arrayItems(node).length})`;
   if (node.type !== "note") return node.id;
   const text = node.text.split("\n")[0].trim();
   const start = text.length > 28 ? `${text.slice(0, 28)}…` : text;

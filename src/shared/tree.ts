@@ -1,3 +1,4 @@
+import { arrayItems } from "./arrays";
 import { isClosed, moveShape } from "./geometry";
 import type { Shape, Group, SceneNode } from "./scene.types";
 
@@ -8,8 +9,9 @@ import type { Shape, Group, SceneNode } from "./scene.types";
 
 export const isShape = (n: SceneNode): n is Shape => n.type !== "group";
 export const isGroup = (n: SceneNode): n is Group => n.type === "group";
-/** A node's own tags: groups, closed shapes and ramps have them; lines, notes and instances (whose tags are their entity's) don't. */
-export const tagsOf = (n: SceneNode): string[] | undefined => (n.type === "line" || n.type === "note" || n.type === "instance" ? undefined : n.tags);
+/** A node's own tags: groups, closed shapes and ramps have them; lines, notes, instances and arrays (whose tags are their entities') don't. */
+export const tagsOf = (n: SceneNode): string[] | undefined =>
+  n.type === "line" || n.type === "note" || n.type === "instance" || n.type === "array" ? undefined : n.tags;
 
 /** The nodes directly inside `parent` (undefined = the top level), in list order. */
 export const childrenOf = (nodes: SceneNode[], parent: string | undefined) => nodes.filter((n) => n.parent === parent);
@@ -119,16 +121,23 @@ export function countsText(nodes: SceneNode[]): string {
     ["line", 0],
     ["note", 0],
     ["instance", 0],
+    ["array", 0],
     ["group", 0],
   ];
+  let items = 0;
   const bump = (key: string) => counts.find(([k]) => k === key)![1]++;
   for (const n of nodes) {
     if (isGroup(n)) bump("group");
     else if (n.type === "note") {
       if (n.status === "open") bump("note");
     } else if (isClosed(n)) bump(n.kind);
-    else bump(n.type);
+    else {
+      bump(n.type);
+      if (n.type === "array") items += arrayItems(n).length;
+    }
   }
-  const parts = counts.filter(([, c]) => c > 0).map(([k, c]) => `${c} ${k}${c === 1 ? "" : "s"}`);
+  const parts = counts
+    .filter(([, c]) => c > 0)
+    .map(([k, c]) => `${c} ${k}${c === 1 ? "" : "s"}${k === "array" ? ` (${items} item${items === 1 ? "" : "s"})` : ""}`);
   return parts.length > 0 ? parts.join(" · ") : "empty";
 }

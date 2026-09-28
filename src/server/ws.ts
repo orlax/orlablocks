@@ -112,6 +112,7 @@ export function attachWebSocket(httpServer: Server, workspace: Workspace, render
         if (msg.type === "tab") return renders.report(tab, msg);
         if (msg.type === "rendered") return renders.answer(tab, msg.requestId, msg);
         if (msg.type === "detach_instances") return void workspace.requireScene().detachInstances(msg.ids, "human");
+        if (msg.type === "make_array") return void workspace.requireScene().makeArray(msg.id, "human");
         const scene = workspace.requireScene();
         if (msg.type === "add_shapes") scene.drawShapes(msg.shapes, "human");
         else if (msg.type === "update_nodes") scene.updateNodes(msg.changes, "human");

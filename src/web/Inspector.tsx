@@ -10,6 +10,7 @@ import {
   MoveHorizontal,
   MoveRight,
   Plus,
+  Grid3x3,
   Rotate3d,
   Spline,
   Package,
@@ -31,6 +32,12 @@ import {
   MAX_DESCRIPTION,
   MAX_NOTE_LABEL,
   MAX_NOTE_TEXT,
+  MAX_ARRAY_ITEMS,
+  MIN_ARRAY_SPACING,
+  type ArrayFacing,
+  type ArrayLayout,
+  type ArrayLayoutType,
+  type ArrayPlace,
   type LineArrow,
   type NoteStatus,
 } from "../shared/scene.types";
@@ -79,7 +86,11 @@ export type InspectorProps = {
     onDetach: () => void;
     /** Edit entity: open its definition (every instance follows the edits). */
     onEdit: () => void;
+    /** Array (10.1): the instance becomes an array of its entity, its first item where the instance is. */
+    onArray?: () => void;
   };
+  /** A single array (10.1): its entities, its layout's fields, how its items turn, Edit entity and Detach. */
+  array?: ArrayControls;
   /** Make entity (the selection has shapes, and no instances or notes): with the name to give it. */
   makeEntity?: { suggested: string; onMake: (name: string) => void };
   /** A single group's description: what that part of the level is, for people and the agent. */
@@ -111,7 +122,27 @@ export type InspectorProps = {
   editPoints?: { active: boolean; onToggle: () => void };
 };
 
-export function Inspector({ title, info, library = null, note, instance, makeEntity, description, tags, sides, wall, profile, tilt, line, ramp, onMirror, onConvert, editPoints }: InspectorProps) {
+/** What the inspector's array section shows and changes (see `ArraySection`). */
+export type ArrayControls = {
+  entities: { entity: string; weight?: number }[];
+  library: EntityMeta[];
+  layout: ArrayLayout;
+  /** The facing in effect (the layout's default when the array has none). */
+  facing: ArrayFacing;
+  rotation: number;
+  /** How many items it has, and how many its layout places in all. */
+  items: number;
+  total: number;
+  skipped: number;
+  onEntity: (entity: string) => void;
+  onLayoutType: (type: ArrayLayoutType) => void;
+  onLayout: (patch: Record<string, unknown>) => void;
+  onChange: (patch: { facing?: ArrayFacing; rotation?: number }) => void;
+  onEdit: (entity: string) => void;
+  onDetach: () => void;
+};
+
+export function Inspector({ title, info, library = null, note, instance, array, makeEntity, description, tags, sides, wall, profile, tilt, line, ramp, onMirror, onConvert, editPoints }: InspectorProps) {
   const { ref, header, style, collapsed, toggle } = useFloating("orlablocks.inspector", ".inspector-header");
   const actions = onMirror || onConvert || editPoints || makeEntity;
   return (
@@ -128,6 +159,7 @@ export function Inspector({ title, info, library = null, note, instance, makeEnt
           {info && <div className="inspector-info">{info}</div>}
           {note && <NoteSection {...note} library={library} />}
           {instance && <InstanceSection {...instance} library={library} />}
+          {array && <ArraySection {...array} />}
           {description && (
             <Section label="Description">
               <DescriptionField {...description} library={library} />
@@ -372,7 +404,7 @@ function MakeEntity({ suggested, onMake }: { suggested: string; onMake: (name: s
 }
 
 /** An instance: which entity it shows (swap it), what that entity is (its description and tags), and Detach. */
-function InstanceSection({ entity, entities, onSwap, onDetach, onEdit, library }: NonNullable<InspectorProps["instance"]> & { library: Library | null }) {
+function InstanceSection({ entity, entities, onSwap, onDetach, onEdit, onArray, library }: NonNullable<InspectorProps["instance"]> & { library: Library | null }) {
   const meta = entities.find((e) => e.id === entity);
   return (
     <Section label="Entity">
@@ -402,7 +434,223 @@ function InstanceSection({ entity, entities, onSwap, onDetach, onEdit, library }
             <PencilRuler size={16} /> Edit entity
           </button>
         )}
+        {onArray && (
+          <button className="labeled" title="Array: repeat it along a path, around a circle or in a grid (it becomes the first item)" onClick={onArray}>
+            <Grid3x3 size={16} /> Array
+          </button>
+        )}
         <button className="labeled" title="Detach: turn it into a plain group of shapes you can edit (it stops following the entity)" onClick={onDetach}>
+          <Unlink size={16} /> Detach
+        </button>
+      </div>
+    </Section>
+  );
+}
+
+const LAYOUTS: { type: ArrayLayoutType; label: string; title: string }[] = [
+  { type: "path", label: "path", title: "Along a path (edit its points)" },
+  { type: "circle", label: "circle", title: "Around a circle, or an arc" },
+  { type: "grid", label: "grid", title: "In rows and columns" },
+];
+const PLACES: { place: ArrayPlace; label: string }[] = [
+  { place: "spacing", label: "every … m" },
+  { place: "count", label: "a number of" },
+  { place: "corners", label: "on the corners" },
+  { place: "midpoints", label: "mid-edge" },
+];
+const FACINGS: Record<ArrayLayoutType, { facing: ArrayFacing; label: string }[]> = {
+  path: [
+    { facing: "along", label: "along the path" },
+    { facing: "fixed", label: "fixed" },
+    { facing: "random", label: "random" },
+  ],
+  circle: [
+    { facing: "tangent", label: "along the circle" },
+    { facing: "out", label: "out" },
+    { facing: "in", label: "in" },
+    { facing: "fixed", label: "fixed" },
+    { facing: "random", label: "random" },
+  ],
+  grid: [
+    { facing: "fixed", label: "with the grid" },
+    { facing: "random", label: "random" },
+  ],
+};
+
+/** A count field: whole numbers, 1 up to MAX_ARRAY_ITEMS. */
+function CountField({ title, value, onChange }: { title: string; value: number; onChange: (n: number) => void }) {
+  return <NumberField title={title} value={value} unit="" step={1} min={1} fallback={1} onChange={(n) => onChange(Math.min(MAX_ARRAY_ITEMS, Math.max(1, Math.round(n))))} />;
+}
+
+/**
+ * An array (10.1): which entity it repeats (several show as a list), its layout (path, circle or grid) and that
+ * layout's fields, how its items face and turn, and Edit entity and Detach. Each field sends one step.
+ */
+function ArraySection({ entities, library, layout, facing, rotation, items, total, skipped, onEntity, onLayoutType, onLayout, onChange, onEdit, onDetach }: ArrayControls) {
+  const first = entities[0].entity;
+  const meta = library.find((e) => e.id === first);
+  const facings = FACINGS[layout.type];
+  return (
+    <Section label="Array">
+      <Row label="repeats">
+        {entities.length === 1 ? (
+          <select className="entity-picker" value={first} title="The entity every item shows" onChange={(e) => onEntity(e.target.value)}>
+            {!meta && <option value={first}>missing: {first}</option>}
+            {library.map((e) => (
+              <option key={e.id} value={e.id}>
+                {e.name}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <span className="array-entities" title="Several entities, each item one of them by weight">
+            {entities.map((e) => `${library.find((m) => m.id === e.entity)?.name ?? e.entity}${e.weight ? ` ×${e.weight}` : ""}`).join(", ")}
+          </span>
+        )}
+      </Row>
+      <Row label="layout">
+        <div className="segmented">
+          {LAYOUTS.map((l) => (
+            <button key={l.type} className={layout.type === l.type ? "active labeled" : "labeled"} title={l.title} onClick={() => layout.type !== l.type && onLayoutType(l.type)}>
+              {l.label}
+            </button>
+          ))}
+        </div>
+      </Row>
+      {layout.type === "path" && (
+        <>
+          <Row label="items">
+            <select className="entity-picker" value={layout.place} title="How the items are placed along the path" onChange={(e) => onLayout({ place: e.target.value })}>
+              {PLACES.map((p) => (
+                <option key={p.place} value={p.place}>
+                  {p.label}
+                </option>
+              ))}
+            </select>
+          </Row>
+          {layout.place === "spacing" && (
+            <Row label="spacing">
+              <NumberField
+                title="Meters between items: fitted, so they land evenly along the path"
+                value={layout.spacing}
+                unit="m"
+                step={0.25}
+                min={MIN_ARRAY_SPACING}
+                fallback={1}
+                onChange={(spacing) => onLayout({ spacing })}
+              />
+            </Row>
+          )}
+          {layout.place === "count" && (
+            <Row label="count">
+              <CountField title="How many items, evenly along the path" value={layout.count ?? 1} onChange={(count) => onLayout({ count })} />
+            </Row>
+          )}
+          <Row label="closed">
+            <label className="note-done" title="Closed: the path loops back to its first point">
+              <input type="checkbox" checked={!!layout.closed} onChange={(e) => onLayout({ closed: e.target.checked })} />
+              loop
+            </label>
+          </Row>
+        </>
+      )}
+      {(layout.type === "circle" || layout.type === "grid") && (
+        <>
+          <Row label="center x">
+            <NumberField title="The center's x (east +)" value={layout.x} unit="m" step={0.5} fallback={0} onChange={(x) => onLayout({ x })} />
+          </Row>
+          <Row label="center z">
+            <NumberField title="The center's z (south +)" value={layout.z} unit="m" step={0.5} fallback={0} onChange={(z) => onLayout({ z })} />
+          </Row>
+          <Row label="y">
+            <NumberField title="The height the items stand at" value={layout.y} unit="m" step={0.25} fallback={0} onChange={(y) => onLayout({ y })} />
+          </Row>
+        </>
+      )}
+      {layout.type === "circle" && (
+        <>
+          <Row label="radius">
+            <NumberField title="From the center to each item's pivot" value={layout.radius} unit="m" step={0.25} min={0.05} fallback={5} onChange={(radius) => onLayout({ radius })} />
+          </Row>
+          <Row label="count">
+            <CountField title="How many items" value={layout.count} onChange={(count) => onLayout({ count })} />
+          </Row>
+          <Row label="start">
+            <NumberField title="The first item's angle: 0 = east, 90 = north" value={layout.start ?? 0} unit="°" step={15} fallback={0} onChange={(start) => onLayout({ start })} />
+          </Row>
+          <Row label="sweep">
+            <NumberField
+              title="Degrees covered, counterclockwise from the start (360 = all round; less is an arc with items at both ends)"
+              value={layout.sweep ?? 360}
+              unit="°"
+              step={15}
+              min={1}
+              fallback={360}
+              onChange={(sweep) => onLayout({ sweep: Math.min(360, sweep) })}
+            />
+          </Row>
+        </>
+      )}
+      {layout.type === "grid" && (
+        <>
+          <Row label="columns">
+            <CountField title="Along the grid's own x" value={layout.columns} onChange={(columns) => onLayout({ columns })} />
+          </Row>
+          <Row label="rows">
+            <CountField title="Along the grid's own z" value={layout.rows} onChange={(rows) => onLayout({ rows })} />
+          </Row>
+          <Row label="layers">
+            <CountField title="Up" value={layout.layers ?? 1} onChange={(layers) => onLayout({ layers, ...(layers > 1 && !layout.spacing.y ? { spacing: { ...layout.spacing, y: 3 } } : {}) })} />
+          </Row>
+          <Row label="spacing x">
+            <NumberField title="Meters between columns" value={layout.spacing.x} unit="m" step={0.25} min={0} fallback={1} onChange={(x) => onLayout({ spacing: { ...layout.spacing, x } })} />
+          </Row>
+          <Row label="spacing z">
+            <NumberField title="Meters between rows" value={layout.spacing.z} unit="m" step={0.25} min={0} fallback={1} onChange={(z) => onLayout({ spacing: { ...layout.spacing, z } })} />
+          </Row>
+          {(layout.layers ?? 1) > 1 && (
+            <Row label="spacing y">
+              <NumberField title="Meters between layers" value={layout.spacing.y} unit="m" step={0.25} min={0} fallback={3} onChange={(y) => onLayout({ spacing: { ...layout.spacing, y } })} />
+            </Row>
+          )}
+          <Row label="turn">
+            <NumberField title="The grid's turn, counterclockwise seen from above" value={layout.rotation ?? 0} unit="°" step={15} fallback={0} onChange={(r) => onLayout({ rotation: r })} />
+          </Row>
+          <Row label="stagger">
+            <label className="note-done" title="Every other row offset by half a column (brick)">
+              <input type="checkbox" checked={!!layout.stagger} onChange={(e) => onLayout({ stagger: e.target.checked })} />
+              brick
+            </label>
+          </Row>
+        </>
+      )}
+      <Row label="facing">
+        <select className="entity-picker" value={facing} title="How each item turns" onChange={(e) => onChange({ facing: e.target.value as ArrayFacing })}>
+          {facings.map((f) => (
+            <option key={f.facing} value={f.facing}>
+              {f.label}
+            </option>
+          ))}
+          {!facings.some((f) => f.facing === facing) && <option value={facing}>{facing}</option>}
+        </select>
+      </Row>
+      <Row label="item turn">
+        <NumberField title="Degrees added to every item's facing" value={rotation} unit="°" step={15} fallback={0} onChange={(r) => onChange({ rotation: r })} />
+      </Row>
+      <div className="inspector-info">
+        {items} item{items === 1 ? "" : "s"}
+        {skipped > 0 ? ` · ${skipped} skipped` : ""}
+        {total > items + skipped ? ` · ${total} placed, only ${MAX_ARRAY_ITEMS} made` : ""}
+      </div>
+      <div className="inspector-actions">
+        {entities.map(({ entity }) =>
+          library.some((e) => e.id === entity) ? (
+            <button key={entity} className="labeled" title="Edit entity: change its shapes; every item follows" onClick={() => onEdit(entity)}>
+              <PencilRuler size={16} /> Edit {entities.length > 1 ? (library.find((e) => e.id === entity)?.name ?? entity) : "entity"}
+            </button>
+          ) : null,
+        )}
+        <button className="labeled" title="Detach: turn it into a group of plain instances where its items are (they stop following the layout)" onClick={onDetach}>
           <Unlink size={16} /> Detach
         </button>
       </div>

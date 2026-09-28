@@ -1,0 +1,391 @@
+import { normalizeDeg, round2, roundPoints, sampleEdge3, shapeAxes, type MirrorAxis, type Point, type Point3 } from "./geometry";
+import { MAX_ARRAY_ITEMS, type ArrayFacing, type ArrayLayout, type ArrayNode, type LinePoint, type ShapePatch } from "./scene.types";
+
+/**
+ * Arrays (plan 10 §4): where an array's items go, as one pure function of the array, and how moving, turning and
+ * mirroring an array change its layout. An item is an instance's place: an entity, a point (its pivot, the entity's
+ * bottom center) and a turn (degrees, counterclockwise seen from above; at 0 the entity shows as drawn).
+ *
+ * Every item's randomness (its entity among several, its noise) comes from a hash of the seed, its index and a
+ * channel, not from a running sequence, so adding items to a path leaves the others as they were.
+ */
+
+export type ArrayItem = { index: number; entity: string; x: number; y: number; z: number; rotation: number };
+
+/** A pose on the layout, before the array's turn and noise: where, and the facing's turn there. */
+type Pose = { x: number; y: number; z: number; facing: number };
+
+/** The facing an array uses: its own, or its layout's default (along a path, tangent on a circle, fixed on a grid). */
+export function facingOf(array: Pick<ArrayNode, "facing" | "layout">): ArrayFacing {
+  if (array.facing) return array.facing;
+  return array.layout.type === "path" ? "along" : array.layout.type === "circle" ? "tangent" : "fixed";
+}
+
+/** A number in [0, 1) from the seed, an item's index and a channel (0 the entity, 1–2 the jitter, 3 the turn). */
+export function hash01(seed: number, index: number, channel: number): number {
+  let h = Math.imul(seed | 0, 0x9e3779b1) ^ Math.imul(index + 1, 0x85ebca6b) ^ Math.imul(channel + 1, 0xc2b2ae35);
+  h = Math.imul(h ^ (h >>> 16), 0x7feb352d);
+  h = Math.imul(h ^ (h >>> 15), 0x846ca68b);
+  h ^= h >>> 16;
+  return (h >>> 0) / 4294967296;
+}
+
+/** The turn (degrees) that points an entity's local +x along a ground direction. */
+const turnToward = (dx: number, dz: number) => (Math.atan2(-dz, dx) * 180) / Math.PI;
+
+/** A path as a 3D polyline: every edge sampled, then its last point (a closed path ends back at its first). */
+function samplePath(points: LinePoint[], closed: boolean) {
+  const pts: Point3[] = [];
+  const edge: number[] = [];
+  const edges = closed ? points.length : points.length - 1;
+  for (let i = 0; i < edges; i++) {
+    const samples = sampleEdge3(points[i], points[(i + 1) % points.length]);
+    pts.push(...samples);
+    edge.push(...samples.map(() => i));
+  }
+  const end = closed ? points[0] : points[points.length - 1];
+  pts.push({ x: end.x, y: end.y, z: end.z });
+  // The distance along the path to each vertex.
+  const at = [0];
+  for (let k = 1; k < pts.length; k++) at.push(at[k - 1] + Math.hypot(pts[k].x - pts[k - 1].x, pts[k].y - pts[k - 1].y, pts[k].z - pts[k - 1].z));
+  return { pts, edge, at, length: at[at.length - 1] };
+}
+
+/** The ground direction of the path's segment k, or of the nearest one that has one (a vertical stretch has none). */
+function directionAt(pts: Point3[], k: number): Point | null {
+  for (let d = 0; d < pts.length; d++) {
+    for (const j of [k + d, k - d]) {
+      if (j < 0 || j + 1 >= pts.length) continue;
+      const dx = pts[j + 1].x - pts[j].x;
+      const dz = pts[j + 1].z - pts[j].z;
+      const len = Math.hypot(dx, dz);
+      if (len > 1e-9) return { x: dx / len, z: dz / len };
+    }
+  }
+  return null;
+}
+
+/** How many items a path layout places, before the cap: from its length and how it places them. */
+function pathCount(layout: Extract<ArrayLayout, { type: "path" }>, length: number): number {
+  const closed = !!layout.closed;
+  const edges = closed ? layout.points.length : layout.points.length - 1;
+  switch (layout.place) {
+    case "corners":
+      return layout.points.length;
+    case "midpoints":
+      return edges;
+    case "count":
+      return layout.count ?? 1;
+    case "spacing": {
+      if (length < 1e-9) return 1;
+      const gaps = Math.max(1, Math.round(length / (layout.spacing ?? 1)));
+      return closed ? gaps : gaps + 1;
+    }
+  }
+}
+
+function pathPoses(layout: Extract<ArrayLayout, { type: "path" }>, limit: number): { poses: Pose[]; total: number } {
+  const closed = !!layout.closed;
+  const { pts, edge, at, length } = samplePath(layout.points, closed);
+  const total = pathCount(layout, length);
+  const n = Math.min(total, limit);
+  const poseAtDistance = (d: number): Pose => {
+    let k = 0;
+    while (k + 2 < pts.length && at[k + 1] < d) k++;
+    const span = at[k + 1] - at[k];
+    const t = span > 1e-9 ? Math.min(1, Math.max(0, (d - at[k]) / span)) : 0;
+    const [a, b] = [pts[k], pts[k + 1] ?? pts[k]];
+    const dir = directionAt(pts, k);
+    return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t, z: a.z + (b.z - a.z) * t, facing: dir ? turnToward(dir.x, dir.z) : 0 };
+  };
+  // Where each edge starts and ends along the path.
+  const edgeStart = (i: number) => at[edge.indexOf(i)];
+  const edgeEnd = (i: number) => (edge.lastIndexOf(i) + 1 < at.length ? at[edge.lastIndexOf(i) + 1] : length);
+  const poses: Pose[] = [];
+  if (layout.place === "corners") {
+    for (let i = 0; i < n; i++) {
+      const p = layout.points[i];
+      // Facing along the bisector of the edges in and out (an open path's ends have one of them).
+      const k = edge.indexOf(i);
+      const out = k >= 0 ? directionAt(pts, k) : null;
+      const kin = closed ? edge.lastIndexOf((i - 1 + layout.points.length) % layout.points.length) : edge.lastIndexOf(i - 1);
+      const inn = kin >= 0 ? directionAt(pts, kin) : null;
+      const dir = out && inn ? { x: out.x + inn.x, z: out.z + inn.z } : (out ?? inn);
+      const facing = dir && Math.hypot(dir.x, dir.z) > 1e-9 ? turnToward(dir.x, dir.z) : out ? turnToward(out.x, out.z) : 0;
+      poses.push({ x: p.x, y: p.y, z: p.z, facing });
+    }
+  } else if (layout.place === "midpoints") {
+    for (let i = 0; i < n; i++) poses.push(poseAtDistance((edgeStart(i) + edgeEnd(i)) / 2));
+  } else {
+    const gaps = closed ? total : total - 1;
+    for (let i = 0; i < n; i++) poses.push(poseAtDistance(gaps > 0 ? (length * i) / gaps : 0));
+  }
+  return { poses, total };
+}
+
+/** The angle of a circle's item i (degrees), and the angle the whole set spans. */
+export function circleAngles(layout: Extract<ArrayLayout, { type: "circle" }>) {
+  const sweep = layout.sweep ?? 360;
+  const start = layout.start ?? 0;
+  const step = layout.count <= 1 ? 0 : sweep >= 360 ? 360 / layout.count : sweep / (layout.count - 1);
+  return { start, step, span: step * (layout.count - 1) };
+}
+
+function layoutPoses(layout: ArrayLayout, limit: number): { poses: Pose[]; total: number } {
+  if (layout.type === "path") return pathPoses(layout, limit);
+  if (layout.type === "circle") {
+    const { start, step } = circleAngles(layout);
+    const n = Math.min(layout.count, limit);
+    const poses = Array.from({ length: n }, (_, i) => {
+      const a = start + step * i;
+      const r = (a * Math.PI) / 180;
+      // The facing here is the angle itself (out); tangent and in are turned from it below.
+      return { x: layout.x + Math.cos(r) * layout.radius, y: layout.y, z: layout.z - Math.sin(r) * layout.radius, facing: a };
+    });
+    return { poses, total: layout.count };
+  }
+  const { columns, rows } = layout;
+  const layers = layout.layers ?? 1;
+  const total = columns * rows * layers;
+  const g = layout.rotation ?? 0;
+  const { ex, ez } = shapeAxes({ rotation: g });
+  const poses: Pose[] = [];
+  for (let l = 0; l < layers && poses.length < limit; l++) {
+    for (let r = 0; r < rows && poses.length < limit; r++) {
+      for (let c = 0; c < columns && poses.length < limit; c++) {
+        const u = (c - (columns - 1) / 2) * layout.spacing.x + (layout.stagger && r % 2 === 1 ? layout.spacing.x / 2 : 0);
+        const v = (r - (rows - 1) / 2) * layout.spacing.z;
+        poses.push({ x: layout.x + u * ex.x + v * ez.x, y: layout.y + l * (layout.spacing.y ?? 0), z: layout.z + u * ex.z + v * ez.z, facing: g });
+      }
+    }
+  }
+  return { poses, total };
+}
+
+/** The facing's turn for a pose: what the layout gives, read for the array's facing. */
+function facingTurn(layout: ArrayLayout, facing: ArrayFacing, pose: Pose, random: () => number): number {
+  if (facing === "random") return random() * 360;
+  if (layout.type === "circle") {
+    if (facing === "tangent" || facing === "along") return pose.facing + 90;
+    if (facing === "out") return pose.facing;
+    if (facing === "in") return pose.facing + 180;
+    return 0;
+  }
+  if (layout.type === "path") return facing === "along" || facing === "tangent" ? pose.facing : 0;
+  // A grid's items turn with the grid.
+  return pose.facing;
+}
+
+/** Picks an entity by weight, from a number in [0, 1). */
+function pickEntity(entities: ArrayNode["entities"], u: number): string {
+  if (entities.length === 1) return entities[0].entity;
+  const total = entities.reduce((sum, e) => sum + (e.weight ?? 1), 0);
+  let at = u * total;
+  for (const e of entities) {
+    at -= e.weight ?? 1;
+    if (at < 0) return e.entity;
+  }
+  return entities[entities.length - 1].entity;
+}
+
+const itemsCache = new WeakMap<ArrayNode, { items: ArrayItem[]; total: number }>();
+
+/**
+ * An array's items, skipped ones left out, rounded to 2 decimals, and how many its layout places in all (`total`,
+ * which can be past MAX_ARRAY_ITEMS: only that many are made). Cached per array object.
+ */
+export function arrayLayout(array: ArrayNode): { items: ArrayItem[]; total: number } {
+  const hit = itemsCache.get(array);
+  if (hit) return hit;
+  const { poses, total } = layoutPoses(array.layout, MAX_ARRAY_ITEMS);
+  const facing = facingOf(array);
+  const seed = array.seed ?? 1;
+  const skip = new Set(array.skip ?? []);
+  const items: ArrayItem[] = [];
+  poses.forEach((pose, index) => {
+    if (skip.has(index)) return;
+    const u = (channel: number) => hash01(seed, index, channel);
+    let { x, z } = pose;
+    if (array.jitter) {
+      const r = array.jitter * Math.sqrt(u(1));
+      const a = u(2) * 2 * Math.PI;
+      x += Math.cos(a) * r;
+      z += Math.sin(a) * r;
+    }
+    const turn = facingTurn(array.layout, facing, pose, () => u(4)) + (array.rotation ?? 0) + (array.turnJitter ? (u(3) * 2 - 1) * array.turnJitter : 0);
+    items.push({
+      index,
+      entity: pickEntity(array.entities, u(0)),
+      x: round2(x),
+      y: round2(pose.y),
+      z: round2(z),
+      rotation: round2(normalizeDeg(turn)) % 360,
+    });
+  });
+  const result = { items, total };
+  itemsCache.set(array, result);
+  return result;
+}
+
+export const arrayItems = (array: ArrayNode): ArrayItem[] => arrayLayout(array).items;
+
+/** A layout in a few words: `path, every 1.2 m`, `loop, 5 evenly`, `circle r 9.4, arc 180°`, `grid 3 × 2 × 2`. */
+export function describeLayout(layout: ArrayLayout): string {
+  if (layout.type === "path") {
+    const how =
+      layout.place === "spacing" ? `every ${layout.spacing} m` : layout.place === "count" ? `${layout.count} evenly` : layout.place === "corners" ? "on its corners" : "mid-edge";
+    return `${layout.closed ? "loop" : "path"}, ${how}`;
+  }
+  if (layout.type === "circle") return `circle r ${layout.radius}${layout.sweep !== undefined ? `, arc ${layout.sweep}°` : ""}`;
+  return `grid ${layout.columns} × ${layout.rows}${layout.layers ? ` × ${layout.layers}` : ""}${layout.stagger ? ", staggered" : ""}`;
+}
+
+/** The ground points a layout covers (its path, its circle's points, its grid's corners): an empty array's bounds. */
+export function layoutPoints(layout: ArrayLayout): Point3[] {
+  if (layout.type === "path") return samplePath(layout.points, !!layout.closed).pts;
+  if (layout.type === "circle") {
+    return Array.from({ length: 16 }, (_, i) => {
+      const a = (i / 16) * 2 * Math.PI;
+      return { x: layout.x + Math.cos(a) * layout.radius, y: layout.y, z: layout.z - Math.sin(a) * layout.radius };
+    });
+  }
+  return layoutPoses({ ...layout, layers: 1 }, MAX_ARRAY_ITEMS).poses.map((p) => ({ x: p.x, y: p.y, z: p.z }));
+}
+
+/**
+ * A selected array's layout as a guide to draw (a thin dashed line): its path (closed back to its first point), its
+ * circle or arc, or its grid's outline through the outer items.
+ */
+export function layoutGuide(layout: ArrayLayout): LinePoint[] {
+  if (layout.type === "path") return layout.closed ? [...layout.points, { ...layout.points[0] }] : layout.points;
+  if (layout.type === "circle") {
+    const { start } = circleAngles(layout);
+    const sweep = layout.sweep ?? 360;
+    const n = Math.max(8, Math.ceil(sweep / 7.5));
+    return Array.from({ length: n + 1 }, (_, i) => {
+      const a = ((start + (sweep * i) / n) * Math.PI) / 180;
+      return { x: round2(layout.x + Math.cos(a) * layout.radius), y: layout.y, z: round2(layout.z - Math.sin(a) * layout.radius) };
+    });
+  }
+  const { ex, ez } = shapeAxes({ rotation: layout.rotation ?? 0 });
+  // The outer items' pivots, in the grid's own axes (a staggered row reaches half a column further).
+  const u0 = -((layout.columns - 1) / 2) * layout.spacing.x;
+  const u1 = -u0 + (layout.stagger && layout.rows > 1 ? layout.spacing.x / 2 : 0);
+  const hv = ((layout.rows - 1) / 2) * layout.spacing.z;
+  const at = (u: number, v: number) => ({ x: round2(layout.x + u * ex.x + v * ez.x), y: layout.y, z: round2(layout.z + u * ex.z + v * ez.z) });
+  const corners = [at(u0, -hv), at(u1, -hv), at(u1, hv), at(u0, hv)];
+  return [...corners, corners[0]];
+}
+
+/** A point that moves with the array (its path's first point, its circle's or grid's center). */
+export function layoutAnchor(layout: ArrayLayout): Point3 {
+  if (layout.type === "path") {
+    const p = layout.points[0];
+    return { x: p.x, y: p.y, z: p.z };
+  }
+  return { x: layout.x, y: layout.y, z: layout.z };
+}
+
+/** A line's points through `f` (a ground position) and `h` (a ground offset), y shifted by `dy`, rounded. */
+const mapLinePoints = (points: LinePoint[], f: (p: Point) => Point, h: (o: Point) => Point, dy = 0): LinePoint[] =>
+  roundPoints(
+    points.map((p) => ({
+      ...p,
+      ...f(p),
+      y: p.y + dy,
+      ...(p.in ? { in: { ...p.in, ...h(p.in) } } : {}),
+      ...(p.out ? { out: { ...p.out, ...h(p.out) } } : {}),
+    })),
+  );
+
+/** The array moved by an offset: its layout (a path's points, a circle's or grid's center). */
+export function moveArray(array: ArrayNode, dx: number, dy: number, dz: number): ShapePatch {
+  if (dx === 0 && dy === 0 && dz === 0) return {};
+  const l = array.layout;
+  if (l.type === "path") return { layout: { ...l, points: mapLinePoints(l.points, (p) => ({ x: p.x + dx, z: p.z + dz }), (o) => o, dy) } };
+  return { layout: { ...l, x: round2(l.x + dx), y: round2(l.y + dy), z: round2(l.z + dz) } };
+}
+
+/**
+ * Degrees in 0..360, 2 decimals. A 0 stays 0 (not undefined): these patches travel as JSON to `update_nodes`, which
+ * would drop an undefined and keep the old value; the store leaves a 0 out when it stores it.
+ */
+const turnValue = (deg: number) => round2(normalizeDeg(deg)) % 360;
+
+/** An array patch as the store keeps it: a turn of 0 (the array's, a circle's start, a grid's) left out. */
+export function tidyArrayPatch(patch: ShapePatch): ShapePatch {
+  const out: ShapePatch = { ...patch };
+  if (out.rotation === 0) out.rotation = undefined;
+  if (out.layout) {
+    const { ...layout } = out.layout as ArrayLayout & { start?: number; rotation?: number };
+    if (layout.start === 0) delete layout.start;
+    if (layout.rotation === 0) delete layout.rotation;
+    out.layout = layout;
+  }
+  return out;
+}
+
+/**
+ * The array turned by `degrees` around the vertical axis through `pivot`: its layout orbits the pivot, and its items
+ * turn with it (a circle's start and a grid's rotation grow by the angle; a path's items follow its direction, and
+ * fixed ones turn by the array's own rotation).
+ */
+export function rotateArray(array: ArrayNode, pivot: Point, degrees: number): ShapePatch {
+  const a = (degrees * Math.PI) / 180;
+  const [cos, sin] = [Math.cos(a), Math.sin(a)];
+  const turn = (o: Point) => ({ x: o.x * cos + o.z * sin, z: -o.x * sin + o.z * cos });
+  const orbit = (p: Point) => {
+    const t = turn({ x: p.x - pivot.x, z: p.z - pivot.z });
+    return { x: pivot.x + t.x, z: pivot.z + t.z };
+  };
+  const l = array.layout;
+  if (l.type === "path") {
+    const follows = facingOf(array) === "along" || facingOf(array) === "tangent";
+    return {
+      layout: { ...l, points: mapLinePoints(l.points, orbit, turn) },
+      ...(follows ? {} : { rotation: turnValue((array.rotation ?? 0) + degrees) }),
+    };
+  }
+  const c = orbit(l);
+  const center = { x: round2(c.x), z: round2(c.z) };
+  if (l.type === "circle") {
+    const fixed = facingOf(array) === "fixed";
+    return {
+      layout: { ...l, ...center, start: turnValue((l.start ?? 0) + degrees) },
+      ...(fixed ? { rotation: turnValue((array.rotation ?? 0) + degrees) } : {}),
+    };
+  }
+  return { layout: { ...l, ...center, rotation: turnValue((l.rotation ?? 0) + degrees) } };
+}
+
+/**
+ * The array mirrored across the plane where `axis` = sum / 2: its layout reflects, and each item goes to its
+ * mirrored place turned to face the mirrored way, as an instance does (the entity itself isn't flipped). A circle's
+ * items run the other way round after it, so its skipped indices are renumbered. Mirroring twice restores it.
+ */
+export function mirrorArray(array: ArrayNode, axis: MirrorAxis, sum: number): ShapePatch {
+  const l = array.layout;
+  const r = array.rotation ?? 0;
+  const facing = facingOf(array);
+  const reflect = (p: Point) => (axis === "x" ? { x: sum - p.x, z: p.z } : { x: p.x, z: sum - p.z });
+  const flip = (o: Point) => (axis === "x" ? { x: -o.x, z: o.z } : { x: o.x, z: -o.z });
+  // A turn that isn't the layout's own mirrors as an instance's does: 180 - r on X, -r on Z.
+  const fixedTurn = turnValue(axis === "x" ? 180 - r : -r);
+  if (l.type === "path") {
+    const follows = facing === "along" || facing === "tangent";
+    return { layout: { ...l, points: mapLinePoints(l.points, reflect, flip) }, rotation: follows ? turnValue(-r) : fixedTurn };
+  }
+  const c = reflect(l);
+  const center = { x: round2(c.x), z: round2(c.z) };
+  if (l.type === "circle") {
+    const { start, span } = circleAngles(l);
+    const mirrored = axis === "x" ? 180 - start - span : -start - span;
+    const rotation = facing === "tangent" || facing === "along" ? turnValue(180 - r) : facing === "out" || facing === "in" ? turnValue(-r) : fixedTurn;
+    return {
+      layout: { ...l, ...center, start: turnValue(mirrored) },
+      rotation,
+      ...(array.skip ? { skip: array.skip.map((i) => l.count - 1 - i).sort((a, b) => a - b) } : {}),
+    };
+  }
+  return { layout: { ...l, ...center, rotation: turnValue(-(l.rotation ?? 0)) }, rotation: axis === "x" ? turnValue(180 - r) : turnValue(-r) };
+}

@@ -19,7 +19,7 @@ import { FULL_SCENE_MAX } from "./outline";
  * topic, which `get_guide` returns on demand, so a session only pays for the topics it uses.
  */
 
-export const GUIDE_TOPICS = ["design", "review", "shapes", "volumes", "holes", "ramps", "lines", "notes", "groups", "library", "entities"] as const;
+export const GUIDE_TOPICS = ["design", "review", "shapes", "volumes", "holes", "ramps", "lines", "notes", "groups", "library", "entities", "arrays"] as const;
 export type GuideTopic = (typeof GUIDE_TOPICS)[number];
 
 /** One line per topic, for the core and for get_guide's description. */
@@ -35,6 +35,7 @@ const TOPIC_SUMMARIES: Record<GuideTopic, string> = {
   groups: "groups, copying, mirroring and turning things as a unit",
   library: "the project's tags (#name) and skills (@name): what they mean, tagging nodes, referring to them",
   entities: "entities (prefabs): making them, placing instances, swapping, detaching; holes in and around them",
+  arrays: "arrays: one node repeating entities along a path, around a circle or in a grid (battlements, windows, pillars, rows)",
 };
 
 export const INSTRUCTIONS =
@@ -73,7 +74,9 @@ export const INSTRUCTIONS =
   "ENTITIES are the project's prefabs (a tree, a door, a poison pit): an instance (type: instance, e.g. instance_4) " +
   "shows its entity's shapes at its x, y, z and rotation, and carries its description and tags; the outline shows " +
   "one line per instance, and the glossary what each entity is and its size. Place and repeat entities instead of " +
-  "redrawing a thing twice. When get_scene has `editing`, the human is editing an entity: the nodes are its shapes " +
+  "redrawing a thing twice. To repeat an entity many times (battlements, windows round a tower, pillars in a hall, a " +
+  "row of torches), use one ARRAY (type: array; get_guide arrays), not copies: it stays one node and draws cheaply. " +
+  "When get_scene has `editing`, the human is editing an entity: the nodes are its shapes " +
   "around its pivot, and your changes reach every instance. " +
   "NOTES (type: note) are post-its pinned in the scene: the human's intents and work items. The outline always lists " +
   "the open ones (`notes`); treat them as intent, act on them when asked, and mark one done (update_nodes status: " +
@@ -113,9 +116,10 @@ const GUIDE: Record<Exclude<GuideTopic, "design">, string> = {
     "Say what you checked and what you found, in a line each; don't describe every image. " +
     "HOW MUCH DETAIL. A blockout decides the level: shapes are gameplay space (where the player walks, climbs, hides " +
     "and looks). Put detail where the player's attention is (a landmark, a goal), in as few shapes as read clearly. " +
-    "Decoration is one volume, not many: battlements as a band along the wall top, a roof as one cone, a railing as one " +
-    "thin box. A detail repeated many times is an entity, placed as instances. Every extra shape makes the next change " +
-    "slower, for you and for the editor. The design guide may set its own budget: follow it.",
+    "Decoration is one shape or one array, not many shapes: a roof as one cone, a railing as one thin box, battlements " +
+    "as one array of a merlon entity along the wall top (get_guide arrays). A detail repeated many times is an entity " +
+    "placed by an array. Every extra shape makes the next change slower, for you and for the editor. The design guide " +
+    "may set its own budget: follow it.",
   entities:
     "An ENTITY is a prefab in the project library: a name, a description (what it is and does in the game), tags, " +
     "and a DEFINITION, its shapes around a PIVOT at the origin (its bottom center). Its ID is a slug of its first " +
@@ -136,7 +140,37 @@ const GUIDE: Record<Exclude<GuideTopic, "design">, string> = {
     "an entity's shapes in Edit entity mode: then get_scene has `editing`, the nodes are the definition (around the " +
     "pivot: keep its bottom at y = 0), the tools change it (as its own undo steps), and every instance follows. A hole in the " +
     "scene cuts an instance's shapes as it cuts a sibling group's. An instance whose entity is missing shows as a red " +
-    "block (results warn about it).",
+    "block (results warn about it). To place many of one entity on a path, a circle or a grid, use an array (get_guide arrays).",
+  arrays:
+    "An ARRAY (type: array, array_1, ...) repeats entities on a LAYOUT, live: one node whose ITEMS are instances the " +
+    "layout places, so change the layout and every item follows. draw_shapes { type: \"array\", entity (or entities: " +
+    "[{ entity, weight? }] to mix several, chosen by weight), layout, facing?, rotation?, jitter?, turnJitter?, seed?, " +
+    "skip?, name?, parent? }. The outline shows it as one line with `items` (how many) and its bounds. LAYOUTS: " +
+    "{ type: \"path\", points (a line's: absolute world x/y/z, with 3D handles; items stand at the path's height), " +
+    "closed?, place?, spacing? | count? }: place spacing (the default) puts an item every `spacing` m, FITTED so they " +
+    "land evenly (every 1.2 m on a 45.5 m wall is 38 gaps of 1.197 m), with one at each end of an open path and none " +
+    "repeated on a closed one; count puts `count` evenly; corners one on every point (a pillar on each corner); " +
+    "midpoints one mid-edge (a window on every face). A vertical path stacks (floors of a tower, a pile). " +
+    "{ type: \"circle\", x, z, y?, radius, count, start?, sweep? }: angles in degrees from 0 = east (+x), 90 = north " +
+    "(-z), counterclockwise; sweep under 360 is an arc with items at both ends. { type: \"grid\", x, z, y?, rotation?, " +
+    "columns, rows, layers?, spacing: { x, z, y? }, stagger? }: centered on x, z, columns along its local x, rows along " +
+    "its local z, layers up (spacing.y), stagger offsets every other row by half (brick). FACING turns each item: an " +
+    "entity at 0 shows as drawn; along (a path's default) and tangent (a circle's) turn its local +x along the way, so " +
+    "draw a window or a merlon with its width along x and it lies along the wall; out turns its +x away from a " +
+    "circle's center, in toward it; fixed keeps it as drawn (a grid's items turn with the grid); random turns each " +
+    "anyhow. `rotation` is added to every item's facing. NOISE: jitter (meters on the ground) and turnJitter (± " +
+    "degrees), both from `seed` (an integer: the same seed, the same look; another seed rerolls). SKIP lists item " +
+    "indices (0 = the first, in layout order) to leave out, like the merlons over a gate: skip last, since changing " +
+    "the count or the path's length can move which item an index is. HOLES: an array adds no level of its own, so its " +
+    "items cut and are cut as instances placed where the array is: a window array in the tower's group cuts the " +
+    "tower's walls. Windows round a 10-sided tower 20 m across: a circle at the tower's center, count 10, facing " +
+    "tangent, radius = the distance to the middle of a face (10 × cos 18° = 9.51) minus half the wall (9.41), start 0 " +
+    "(a sided cylinder's flat edge faces its local +x). update_nodes on an array takes entities, layout (the fields " +
+    "given merge into it: { count: 12 } or { radius: 9 }; a different type is a whole new layout), facing, rotation, " +
+    "jitter, turnJitter, seed, skip, name and parent. move_nodes, rotate_nodes and mirror_nodes act on its layout (a " +
+    "mirrored array's items face the mirrored way; the entities aren't flipped), and copy copies it as one node. An " +
+    "array makes at most 500 items. detach_instances turns an array into a group of plain instances, only when one " +
+    "item must differ. Arrays can't go in an entity's definition.",
   library:
     "The project library holds TAGS and SKILLS, shared by every scene of the project. A tag (#climbable, #light) is a " +
     "property of things, with an optional description. A skill (@telekinesis, @fireball) is something the player can " +

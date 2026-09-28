@@ -12,10 +12,10 @@ import { CameraSchema, NodeSchema, ShotRecordSchema } from "./scene.types";
  * history can hold removed nodes. Types added later default to 1, so older scenes load unchanged.
  */
 const counter = z.number().int().min(1);
-export const NextIdSchema = z.object({ box: counter, group: counter, cylinder: counter.default(1), freeform: counter.default(1), line: counter.default(1), ramp: counter.default(1), note: counter.default(1), instance: counter.default(1) });
+export const NextIdSchema = z.object({ box: counter, group: counter, cylinder: counter.default(1), freeform: counter.default(1), line: counter.default(1), ramp: counter.default(1), note: counter.default(1), instance: counter.default(1), array: counter.default(1) });
 export type NextId = z.infer<typeof NextIdSchema>;
 /** A new scene's counters. */
-export const firstIds = (): NextId => ({ box: 1, group: 1, cylinder: 1, freeform: 1, line: 1, ramp: 1, note: 1, instance: 1 });
+export const firstIds = (): NextId => ({ box: 1, group: 1, cylinder: 1, freeform: 1, line: 1, ramp: 1, note: 1, instance: 1, array: 1 });
 
 /** `project.json` */
 export const ProjectFileSchema = z.object({

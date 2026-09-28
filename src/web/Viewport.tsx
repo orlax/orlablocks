@@ -100,6 +100,7 @@ import { typingInField } from "./keys";
 import { Lighting } from "./Lighting";
 import { marqueeHits, rectFrom, type ScreenPoint } from "./marquee";
 import { LineMesh } from "./LineMesh";
+import { layoutGuide } from "../shared/arrays";
 import { pickHit, pickLine, pickNote, surfaceUnder, type Surface } from "./pick";
 import { NoteMesh } from "./NoteMesh";
 import { expandNodes, expandShapes, ownerOf } from "../shared/entities";
@@ -182,6 +183,15 @@ const rampPoints = (points: EditPoint[]): RampPoint[] =>
 
 type YawKey = "left" | "right";
 const YAW_KEYS: Record<string, YawKey> = { a: "left", arrowleft: "left", d: "right", arrowright: "right" };
+
+/** The points point editing edits: a free-form's outline, a line's or a ramp's path, a path array's path; else null. */
+const editablePoints = (s: Shape): EditPoint[] | null =>
+  s.type === "freeform" || s.type === "line" || s.type === "ramp" ? s.points : s.type === "array" && s.layout.type === "path" ? s.layout.points : null;
+/** The shape with its edited points (an array's go in its layout's path). */
+const withEditedPoints = (s: Shape, points: EditPoint[]): Shape =>
+  s.type === "array" && s.layout.type === "path"
+    ? { ...s, layout: { ...s.layout, points: points as LinePoint[] } }
+    : ({ ...s, points } as Shape);
 
 /** An entity's definition as its instances hold it: the top level in a group, so its top-level holes cut there. */
 const ENTITY_ROOT = "entity:root";
@@ -282,7 +292,9 @@ const footprintKey = (shapes: Shape[]) =>
           ? [s.x, s.z]
           : s.type === "instance"
             ? [s.x, s.z, s.rotation, s.entity]
-            : s.points,
+            : s.type === "array"
+              ? [s.layout, s.rotation]
+              : s.points,
     ),
   );
 
@@ -918,7 +930,7 @@ export function Viewport({
   const pointPreview = pointDrag && (pointDrag.active || pointDrag.inserted) ? pointDrag : null;
   const previewed = preview ? boxes.map((b) => (preview[b.id] ? ({ ...b, ...preview[b.id] } as Shape) : b)) : boxes;
   const shown = (override && !override.copy ? previewed.map(moved) : previewed).map((b) =>
-    pointPreview && !pointPreview.problem && b.id === editing ? ({ ...b, points: roundPoints(pointPreview.points) } as Shape) : b,
+    pointPreview && !pointPreview.problem && b.id === editing ? withEditedPoints(b, roundPoints(pointPreview.points)) : b,
   );
   const ghosts = override?.copy ? override.origin.map((b) => ({ ...moved(b), id: `${b.id}:copy` }) as Shape) : [];
   // Hidden holes (Show holes off) can't be clicked or marquee-selected, unless they're selected.
@@ -950,15 +962,14 @@ export function Viewport({
   entityModeRef.current = entityMode;
   // The free-form or line in point editing, as shown. A free-form's points sit on its top face (`editTop`); a
   // line's carry their own y, and its path is open.
-  const editShape =
-    editing !== null ? shown.find((b) => b.id === editing && (b.type === "freeform" || b.type === "line" || b.type === "ramp")) : undefined;
-  const editPoints: EditPoint[] | null =
-    editShape?.type === "freeform" || editShape?.type === "line" || editShape?.type === "ramp" ? (pointPreview?.points ?? editShape.points) : null;
+  // A path array's points are its path's (10.1).
+  const editShape = editing !== null ? shown.find((b) => b.id === editing && editablePoints(b) !== null) : undefined;
+  const editPoints: EditPoint[] | null = editShape ? (pointPreview?.points ?? editablePoints(editShape)) : null;
   const editTop = editShape?.type === "freeform" ? editShape.y + editShape.height : 0;
-  const editClosed = editShape?.type === "freeform";
+  const editClosed = editShape?.type === "freeform" || (editShape?.type === "array" && editShape.layout.type === "path" && !!editShape.layout.closed);
   // A line's selected point has a y arrow to raise or lower it (and the other selected points with it).
   const yArrow =
-    tool === "select" && (editShape?.type === "line" || editShape?.type === "ramp") && editPoints && pointSel.length > 0 && editPoints[pointSel[0]]
+    tool === "select" && (editShape?.type === "line" || editShape?.type === "ramp" || editShape?.type === "array") && editPoints && pointSel.length > 0 && editPoints[pointSel[0]]
       ? { x: editPoints[pointSel[0]].x, y: pointY(editPoints[pointSel[0]], 0), z: editPoints[pointSel[0]].z }
       : null;
   /** The boxes (as shown) in or under the given nodes. */
@@ -1233,7 +1244,7 @@ export function Viewport({
   const pointsProblem = (points: EditPoint[]) =>
     editShape?.type === "ramp"
       ? rampProblem({ ...editShape, points: rampPoints(points) })
-      : editClosed
+      : editShape?.type === "freeform"
         ? outlineProblem(roundPoints(points))
         : lineProblem(roundPoints(points as LinePoint[]));
 
@@ -1243,16 +1254,18 @@ export function Viewport({
    */
   const commitPoints = (points: EditPoint[], verb: string): boolean => {
     const original = boxesRef.current.find((b) => b.id === editing);
-    if (original?.type !== "freeform" && original?.type !== "line" && original?.type !== "ramp") return false;
+    if (!original || editablePoints(original) === null) return false;
     const rounded = original.type === "ramp" ? rampPoints(points) : roundPoints(points);
     const problem = original.type === "ramp" ? rampProblem({ ...original, points: rampPoints(points) }) : pointsProblem(points);
     if (problem) {
       onNotice(`Can't ${verb}: ${problem}`);
       return false;
     }
-    if (sameValue(rounded, original.points)) return true;
-    onUpdate([{ id: original.id, points: rounded }]);
-    setPending({ origin: [original], patches: { [original.id]: { points: rounded } }, copy: false });
+    if (sameValue(rounded, editablePoints(original))) return true;
+    const patch = { ...withEditedPoints(original, rounded as EditPoint[]) } as ShapePatch;
+    // An array's path is in its layout.
+    onUpdate([original.type === "array" ? { id: original.id, layout: { points: rounded as LinePoint[] } } : { id: original.id, points: rounded }]);
+    setPending({ origin: [original], patches: { [original.id]: original.type === "array" ? { layout: patch.layout } : { points: patch.points } }, copy: false });
     return true;
   };
 
@@ -1601,8 +1614,7 @@ export function Viewport({
         onOpenEntity(hitNode.entity);
         return;
       }
-      const type = hitNode?.type;
-      if (type === "freeform" || type === "line" || type === "ramp") {
+      if (hitNode && editablePoints(hitNode) !== null) {
         onSelect([id]);
         onEditing(id);
       }
@@ -1631,7 +1643,7 @@ export function Viewport({
       if (k.pointSel.length === 0 || !k.editPoints || k.pointDrag) return;
       const left = removePoints(k.editPoints, k.pointSel, k.editClosed ? MIN_POINTS : MIN_LINE_POINTS);
       if (!left) {
-        k.onNotice(k.editClosed ? `A free-form needs at least ${MIN_POINTS} points` : `A line needs at least ${MIN_LINE_POINTS} points`);
+        k.onNotice(k.editClosed ? `A closed outline needs at least ${MIN_POINTS} points` : `A path needs at least ${MIN_LINE_POINTS} points`);
         return;
       }
       if (k.commitPoints(left, k.pointSel.length === 1 ? "delete that point" : "delete those points")) setPointSel([]);
@@ -1826,6 +1838,17 @@ export function Viewport({
         />
         {walk && <Avatar shapes={avatar} group={avatarGroup} />}
         {pen.points.length > 0 && <PenPreview pen={pen} kind={nextKind} fields={nextFields} line={nextLine} ramp={nextRamp} />}
+        {!walk &&
+          selectedBoxes.flatMap((b) =>
+            b.type === "array"
+              ? [
+                  <LineMesh
+                    key={`${b.id}:guide`}
+                    line={{ id: `${b.id}:guide`, type: "line", color: "black", points: layoutGuide(b.layout), thickness: 1, dashed: true, arrow: "none", createdBy: "human" }}
+                  />,
+                ]
+              : [],
+          )}
         {editPoints && !walk && (
           <PointOverlay points={editPoints} y={editTop} closed={editClosed} selected={pointSel} bad={!!pointPreview?.problem} />
         )}
@@ -1981,8 +2004,8 @@ function Boxes({
         const highlight = selected.has(b.id) || selected.has(owner) ? "selected" : hovered.has(b.id) || hovered.has(owner) ? "hover" : undefined;
         if (b.type === "line") return <LineMesh key={b.id} line={b} highlight={highlight} />;
         if (b.type === "note") return <NoteMesh key={b.id} note={b} highlight={highlight} />;
-        // Instances arrive expanded; one here would be a bug upstream.
-        if (b.type === "instance") return null;
+        // Instances and arrays arrive expanded; one here would be a bug upstream.
+        if (b.type === "instance" || b.type === "array") return null;
         if (isHole(b) && !showHoles && !highlight) return null;
         return (
           <group key={b.id}>

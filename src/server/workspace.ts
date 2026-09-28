@@ -15,6 +15,7 @@ import {
   type ProjectSummary,
   type View,
 } from "../shared/scene.types";
+import { arrayItems } from "../shared/arrays";
 import { round2 } from "../shared/geometry";
 import { applyLibraryOp, entityMeta, findRefs, resolveRef, type EntityMeta, type Library, type LibraryEdit, type Uses } from "../shared/library";
 import { allDefinitions, setDefinition, setDefinitions } from "../shared/entities";
@@ -160,7 +161,15 @@ export function countUses(library: Library, nodes: SceneNode[]): { tags: Map<str
   for (const n of nodes) {
     const used = { tag: new Set<string>(), skill: new Set<string>() };
     if (n.type === "instance") entities.set(n.entity, (entities.get(n.entity) ?? 0) + 1);
-    const carried = n.type === "instance" ? entityMeta(library, n.entity)?.tags : tagsOf(n);
+    // An array places its entities once per item.
+    if (n.type === "array") {
+      const items = arrayItems(n);
+      for (const item of items) entities.set(item.entity, (entities.get(item.entity) ?? 0) + 1);
+      // An entity the array lists but no item shows yet still counts as used (it can't be deleted from under it).
+      for (const { entity } of n.entities) if (!items.some((i) => i.entity === entity)) entities.set(entity, (entities.get(entity) ?? 0) + 1);
+    }
+    const carried =
+      n.type === "instance" ? entityMeta(library, n.entity)?.tags : n.type === "array" ? n.entities.flatMap((e) => entityMeta(library, e.entity)?.tags ?? []) : tagsOf(n);
     for (const t of carried ?? []) {
       const tag = resolveRef(library, "tag", t);
       if (tag) used.tag.add(tag.name);

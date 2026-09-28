@@ -1,5 +1,6 @@
 import { boundsOf, isTilted, round2 } from "../shared/geometry";
 import { currentTags, EMPTY_LIBRARY, entityMeta, findRefs, resolveRef, type EntityMeta, type Library, type Skill, type Tag } from "../shared/library";
+import { arrayLayout } from "../shared/arrays";
 import { definitionOf } from "../shared/entities";
 import { COMPASS, type OpenScene, type Scene, type SceneNode, type Shape } from "../shared/scene.types";
 import { ancestry, childrenOf, countsText, isGroup, isShape, shapesUnder, subtreeIds, tagsOf } from "../shared/tree";
@@ -27,7 +28,7 @@ export type Glossary = {
 };
 export type AgentBounds = { x: number; z: number; y: number; width: number; depth: number; height: number };
 /** A node as the agent reads it: stored fields plus what the outline derives. */
-export type AgentNode = SceneNode & { bounds?: AgentBounds; contains?: string; collapsed?: true; path?: string };
+export type AgentNode = SceneNode & { bounds?: AgentBounds; contains?: string; collapsed?: true; path?: string; items?: number; placed?: string };
 export type SceneOutline = OpenScene & {
   compass: typeof COMPASS;
   view: Scene["view"];
@@ -78,8 +79,8 @@ export function glossaryFor(library: Library, shown: AgentNode[]): Glossary | un
     }
     if (n.type === "group") addText(n.description);
     if (n.type === "note") addText(n.text);
-    if (n.type === "instance") {
-      const meta = entityMeta(library, n.entity);
+    for (const entity of n.type === "instance" ? [n.entity] : n.type === "array" ? n.entities.map((e) => e.entity) : []) {
+      const meta = entityMeta(library, entity);
       if (meta) {
         entities.set(meta.id, meta);
         for (const t of currentTags(library, meta.tags)) tags.set(t, resolveRef(library, "tag", t)!);
@@ -120,6 +121,9 @@ export function glossaryFor(library: Library, shown: AgentNode[]): Glossary | un
   };
 }
 
+/** The entities a node shows: an instance's, an array's (each once). */
+export const entitiesOf = (n: SceneNode): string[] => (n.type === "instance" ? [n.entity] : n.type === "array" ? [...new Set(n.entities.map((e) => e.entity))] : []);
+
 /** Axis-aligned bounds for the agent: center x/z, bottom y, sizes. */
 export function boundsFor(shapes: Shape[]): AgentBounds {
   const b = boundsOf(shapes);
@@ -156,6 +160,11 @@ function describeNodeIn(nodes: SceneNode[], n: SceneNode, library: Library): Age
     n = (tags.length > 0 ? { ...rest, tags } : rest) as SceneNode;
   }
   if (n.type === "instance") return { ...n, bounds: boundsFor([n]) };
+  // An array in full, with how many items it has (and how many its layout would place past the cap).
+  if (n.type === "array") {
+    const { items, total } = arrayLayout(n);
+    return { ...n, items: items.length, ...(total > items.length + (n.skip?.length ?? 0) ? { placed: `${total} by its layout, only ${items.length + (n.skip?.length ?? 0)} made` } : {}), bounds: boundsFor([n]) };
+  }
   if (!isGroup(n)) return isTilted(n) ? { ...n, bounds: boundsFor([n]) } : n;
   const inside = subtreeIds(nodes, n.id);
   inside.delete(n.id);
@@ -260,7 +269,8 @@ export type FindQuery = {
  */
 export function findNodes(nodes: SceneNode[], query: FindQuery, library: Library = EMPTY_LIBRARY) {
   const { name, tag, entity, status, type, kind, under, near } = query;
-  const tagsOfNode = (n: SceneNode) => currentTags(library, n.type === "instance" ? entityMeta(library, n.entity)?.tags : tagsOf(n));
+  const tagsOfNode = (n: SceneNode) =>
+    currentTags(library, n.type === "instance" || n.type === "array" ? [...new Set(entitiesOf(n).flatMap((e) => entityMeta(library, e)?.tags ?? []))] : tagsOf(n));
   const wanted = tag !== undefined ? resolveRef(library, "tag", tag) : undefined;
   if (tag !== undefined && !wanted) throw new SceneError(`tag: no tag #${tag.replace(/^#/, "")} in the project library. Nothing was found.`);
   if (under !== undefined) {
@@ -287,11 +297,11 @@ export function findNodes(nodes: SceneNode[], query: FindQuery, library: Library
     if (inside && !inside.has(n.id)) return false;
     if (type !== undefined && n.type !== type) return false;
     if (kind !== undefined && !(isShape(n) && "kind" in n && n.kind === kind)) return false;
-    const also = n.type === "note" ? n.text : n.type === "instance" ? (entityMeta(library, n.entity)?.name ?? n.entity) : "";
+    const also = n.type === "note" ? n.text : entitiesOf(n).map((e) => entityMeta(library, e)?.name ?? e).join(" ");
     if (needle && !(n.name ?? "").toLowerCase().includes(needle) && !also.toLowerCase().includes(needle)) return false;
     if (status !== undefined && !(n.type === "note" && n.status === status)) return false;
     if (wanted && !tagsOfNode(n).includes(wanted.name)) return false;
-    if (entity !== undefined && !(n.type === "instance" && n.entity === entity)) return false;
+    if (entity !== undefined && !entitiesOf(n).includes(entity)) return false;
     return true;
   });
   const found: ReturnType<typeof line>[] = [];
@@ -304,6 +314,7 @@ export function findNodes(nodes: SceneNode[], query: FindQuery, library: Library
       ...(n.name !== undefined ? { name: n.name } : {}),
       ...(n.type === "note" ? { text: n.text.length > 120 ? `${n.text.slice(0, 120)}…` : n.text, status: n.status, ...(n.label ? { label: n.label } : {}) } : {}),
       ...(n.type === "instance" ? { entity: n.entity } : {}),
+      ...(n.type === "array" ? { entities: entitiesOf(n), items: arrayLayout(n).items.length } : {}),
       ...(tagsOfNode(n).length > 0 ? { tags: tagsOfNode(n) } : {}),
       ...(n.parent !== undefined ? { parent: n.parent, path: pathOf(nodes, n.id) } : {}),
       ...(bounds ? { bounds } : {}),

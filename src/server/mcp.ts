@@ -4,7 +4,9 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { z } from "zod";
 import { isClosed } from "../shared/geometry";
 import { holeWarnings } from "../shared/holes";
+import { arrayLayout } from "../shared/arrays";
 import {
+  MAX_ARRAY_ITEMS,
   DEFAULT_COLOR,
   DEFAULT_LINE_COLOR,
   DEFAULT_THICKNESS,
@@ -34,7 +36,8 @@ import type { Workspace } from "./workspace";
 const json = (value: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(value) }] });
 
 /** Which guide topic helps with a warning, named at its end. */
-const withTopic = (warning: string) => (/\bhole\b/.test(warning) ? `${warning} (see get_guide holes)` : warning);
+const withTopic = (warning: string) =>
+  /\bhole\b/.test(warning) ? `${warning} (see get_guide holes)` : /\barray\b/.test(warning) ? `${warning} (see get_guide arrays)` : warning;
 
 /**
  * Runs an edit, and when it's refused, points at the guide: the refusal names the field, and the topic has the rules
@@ -45,7 +48,7 @@ function guided<T>(run: () => T): T {
     return run();
   } catch (err) {
     if (err instanceof SceneError) {
-      throw new SceneError(`${err.message}\nThe rules for each type and field: get_guide shapes, volumes, holes, ramps or lines.`);
+      throw new SceneError(`${err.message}\nThe rules for each type and field: get_guide shapes, volumes, holes, ramps, lines, entities or arrays.`);
     }
     throw err;
   }
@@ -79,17 +82,25 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
   const warned = <T extends object>(result: T) => {
     const own = (result as { warnings?: string[] }).warnings ?? [];
     const nodes = store().getScene().nodes;
+    const known = (entity: string) => !!definitionOf(entity) && library().entities.some((e) => e.id === entity);
     const missing = nodes.flatMap((n) =>
-      n.type === "instance" && !(definitionOf(n.entity) && library().entities.some((e) => e.id === n.entity))
+      n.type === "instance" && !known(n.entity)
         ? [`${n.id} shows entity "${n.entity}", which isn't in the library (it shows as a red block): swap its entity or remove it`]
-        : [],
+        : n.type === "array"
+          ? [
+              ...n.entities
+                .filter((e) => !known(e.entity))
+                .map((e) => `${n.id} repeats entity "${e.entity}", which isn't in the library (its items show as red blocks): change its entities or remove it`),
+              ...(arrayLayout(n).total > MAX_ARRAY_ITEMS ? [`${n.id}'s layout places ${arrayLayout(n).total} items, but an array makes at most ${MAX_ARRAY_ITEMS}: widen its spacing or shrink it`] : []),
+            ]
+          : [],
     );
     // In an entity's definition a top-level hole is fine: every instance puts it in a group.
     const holes = store().getDocument() === "entity" ? [] : holeWarnings(nodes).map(withTopic);
     const warnings = [...own, ...holes, ...missing];
     return warnings.length > 0 ? { ...result, warnings } : result;
   };
-  const server = new McpServer({ name: "orlablocks", version: "0.0.20" }, { instructions: INSTRUCTIONS });
+  const server = new McpServer({ name: "orlablocks", version: "0.0.21" }, { instructions: INSTRUCTIONS });
   // Every tool reads or edits the open scene, and fails with a clear message while nothing is open.
   const store = () => workspace.requireScene();
   const library = (): Library => (workspace.getOpen() ? workspace.library.get() : EMPTY_LIBRARY);
@@ -159,10 +170,10 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
         `(id, type, kind, name, parent, path of group names, bounds), at most ${MAX_MATCHES}. Use it to resolve a name to an ` +
         `ID ("entry_window"), or to find what's in or near an area.`,
       inputSchema: {
-        name: z.string().optional().describe("Part of the name (or of a note's text, or an instance's entity's name), any case"),
+        name: z.string().optional().describe("Part of the name (or of a note's text, or an instance's or array's entity's name), any case"),
         tag: z.string().optional().describe("A library tag (without #): only nodes carrying it"),
-        type: z.enum(["box", "cylinder", "freeform", "line", "ramp", "note", "instance", "group"]).optional(),
-        entity: z.string().optional().describe("An entity's ID: only its instances"),
+        type: z.enum(["box", "cylinder", "freeform", "line", "ramp", "note", "instance", "array", "group"]).optional(),
+        entity: z.string().optional().describe("An entity's ID: only its instances and the arrays that repeat it"),
         status: z.enum(["open", "done"]).optional().describe("Notes only: open (the default outline lists these anyway) or done"),
         kind: z.enum(["room", "volume", "hole"]).optional().describe("Closed shapes and ramps only"),
         under: z.string().optional().describe("ID of a group: only nodes inside it, at any depth"),
@@ -216,10 +227,11 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
     {
       title: "Detach instances",
       description:
-        "Turn instances back into plain groups of shapes (world copies of their entity's shapes, with new IDs), each " +
-        "where its instance was, as one step. The group is named after the instance (else the entity). Do this only to " +
-        "make one copy different: a detached group no longer changes with its entity.",
-      inputSchema: { ids: z.array(z.string()).min(1).describe("IDs of instances") },
+        "Turn instances back into plain groups of shapes (world copies of their entity's shapes, with new IDs), and " +
+        "arrays into groups of plain instances (one where each item was), each where it was, as one step. The group is " +
+        "named after the instance or array (else the entity). Do this only to make one copy different: a detached group " +
+        "no longer changes with its entity, or its layout.",
+      inputSchema: { ids: z.array(z.string()).min(1).describe("IDs of instances and/or arrays") },
     },
     async ({ ids }) => json({ groups: store().detachInstances(ids, "agent") }),
   );
@@ -279,8 +291,9 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
       title: "Draw shapes",
       description:
         `Add one or more shapes to the scene in a single batch; they appear live in the editor. Each has a \`type\` ` +
-        `(box, the default, cylinder, freeform, line, ramp, note or instance) and that type's fields. For a box or cylinder (a room, a volume or a hole) only ` +
-        `kind, x, z, width and depth are required; for a free-form, kind and points; for a line, points; for a ramp, points or spiral; for a note, x, z and text; for an instance of an entity, entity, x and z. The rest have defaults (the kind's ` +
+        `(box, the default, cylinder, freeform, line, ramp, note, instance or array) and that type's fields. For a box or cylinder (a room, a volume or a hole) only ` +
+        `kind, x, z, width and depth are required; for a free-form, kind and points; for a line, points; for a ramp, points or spiral; for a note, x, z and text; for an instance of an entity, entity, x and z; ` +
+        `for an array (get_guide arrays), entity (or entities) and layout. The rest have defaults (the kind's ` +
         `height, y 0, rotation 0, color ${DEFAULT_COLOR} (${DEFAULT_LINE_COLOR} for a line), ${DEFAULT_WALL} m room walls, no taper or bevel, no name, top level, a smooth cylinder, ` +
         `and a solid ${DEFAULT_THICKNESS} px line with no arrow). ` +
         `Set \`parent\` to a group's ID to draw straight into that group. ` +
@@ -301,6 +314,7 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
         lines: all.filter((n) => n.type === "line").length,
         notes: all.filter((n) => n.type === "note" && n.status === "open").length,
         instances: all.filter((n) => n.type === "instance").length,
+        arrays: all.filter((n) => n.type === "array").length,
         groups: all.filter(isGroup).length,
       };
       return json(warned({ created, totals, ...(refs.length > 0 ? { warnings: refs } : {}) }));
@@ -317,7 +331,8 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
         `taper and bevel (a volume's; 0 clears them), pitch and roll (a box or cylinder volume's; 0 levels it); ` +
         `a cylinder those and sides; a free-form name, parent, kind, y, height, color, wall, taper, bevel and points (the whole outline); a line name, parent, color, ` +
         `points (the whole path, with y), thickness, dashed and arrow; a ramp name, parent, color, ` +
-        `points (with y), width, step (null = smooth) and base; a note name, parent, x, y, z, color, text, label (null removes it) and status (open or done); an instance name, parent, x, y, z, rotation and entity (another entity's ID, to swap it). ` +
+        `points (with y), width, step (null = smooth) and base; a note name, parent, x, y, z, color, text, label (null removes it) and status (open or done); an instance name, parent, x, y, z, rotation and entity (another entity's ID, to swap it); ` +
+        `an array name, parent, entities, layout (fields merge into it; another type replaces it), facing, rotation, jitter, turnJitter, seed and skip. ` +
         `A group takes only name, description (what that part of the level is; null removes it), parent, locked and hidden (any node takes those two). ` +
         `{ id, type: "freeform" } alone converts a box or cylinder into a free-form with a new ID; a call that converts ` +
         `only converts (edit the new free-form in a second call). ` +

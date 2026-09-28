@@ -18,6 +18,11 @@ import {
   toFreeformPoints,
 } from "../shared/geometry";
 import {
+  ArrayLayoutInputSchema,
+  MIN_ARRAY_SPACING,
+  type ArrayEntity,
+  type ArrayLayout,
+  type ArrayNode,
   ConvertNodesSchema,
   DEFAULT_COLOR,
   DEFAULT_WALL,
@@ -67,6 +72,7 @@ import {
   type View,
 } from "../shared/scene.types";
 import { firstIds, type NextId } from "../shared/project.types";
+import { arrayItems, tidyArrayPatch } from "../shared/arrays";
 import { definitionOf, expandInstance } from "../shared/entities";
 import { shapesUnder, commonParent, copyNodes, isShape, isGroup, subtreeIds, topmost } from "../shared/tree";
 import { applyOp, createHistory, invertOp, runOps, type History, type HistoryEntry, type Op } from "./commands";
@@ -142,7 +148,19 @@ const FIELD_VERBS: Record<keyof NodePatch, string> = {
   label: "label",
   status: "change status of",
   entity: "swap",
+  entities: "change entities of",
+  layout: "change layout of",
+  facing: "turn items of",
+  jitter: "jitter",
+  turnJitter: "jitter",
+  seed: "reroll",
+  skip: "skip items of",
 };
+
+/** What an array's update can change (plan 10 §9): its items come from these. */
+const ARRAY_FIELDS: readonly string[] = ["name", "parent", "locked", "hidden", "entities", "layout", "facing", "rotation", "jitter", "turnJitter", "seed", "skip"];
+/** The fields only an array has. */
+const ARRAY_ONLY = ["entities", "layout", "facing", "jitter", "turnJitter", "seed", "skip"] as const;
 
 /** What a kind-specific field is called in errors ("only a room has walls"). */
 const KIND_FIELD_NOUNS: Record<KindField, string> = { wall: "walls", taper: "a taper", bevel: "a bevel", pitch: "a pitch", roll: "a roll" };
@@ -196,8 +214,8 @@ export function createSceneStore({
   // What the store holds: a scene, or an entity's definition (08.5), which can't hold notes or instances.
   let document: "scene" | "entity" = "scene";
   const entityProblem = (n: { type?: string }) =>
-    document === "entity" && (n.type === "note" || n.type === "instance")
-      ? `an entity can't hold ${n.type === "note" ? "notes (put them in the scene)" : "instances (no nested entities)"}`
+    document === "entity" && (n.type === "note" || n.type === "instance" || n.type === "array")
+      ? `an entity can't hold ${n.type === "note" ? "notes (put them in the scene)" : n.type === "array" ? "arrays (no nested entities)" : "instances (no nested entities)"}`
       : null;
 
   /** The next ID for a new node of `type`. */
@@ -388,10 +406,118 @@ export function createSceneStore({
     return rounded;
   };
 
+  /** An entity's width (its definition's extent along x), or 1 when it has no shapes. */
+  const entityWidth = (id: string) => {
+    const shapes = (definitionOf(id) ?? []).filter(isShape);
+    if (shapes.length === 0) return 1;
+    const b = boundsOf(shapes);
+    return b.maxX - b.minX || 1;
+  };
+
+  /** An array's default spacing along a path: 1.5 × its first entity's width, at least MIN_ARRAY_SPACING. */
+  const defaultSpacing = (entity: string) => Math.max(MIN_ARRAY_SPACING, round2(entityWidth(entity) * 1.5));
+
+  /**
+   * An array's layout as stored (plan 10 §3), from its input: rounded to 2 decimals, angles in 0..360, defaults left
+   * out (a full sweep, one layer, no stagger), a path's `place` from what's given (count → count, else spacing), and
+   * only the number its place uses. Errors go in `errors` as `prefix: ...`.
+   */
+  const arrayLayoutFrom = (prefix: string, d: z.output<typeof ArrayLayoutInputSchema>, spacingFallback: number, errors: string[]): ArrayLayout => {
+    const turn = (v: number | undefined) => (v === undefined || normalizeRotation(v) === 0 ? {} : { value: normalizeRotation(v) });
+    if (d.type === "path") {
+      const points = checkLinePoints(prefix, d.points, errors);
+      if (d.closed && points.length < 3) errors.push(`${prefix}.closed: a closed path needs at least 3 points`);
+      const place = d.place ?? (d.count !== undefined && d.spacing === undefined ? "count" : "spacing");
+      if (place === "count" && d.count === undefined) errors.push(`${prefix}.count: place: count needs a count`);
+      const spacing = round2(d.spacing ?? spacingFallback);
+      if (place === "spacing" && spacing < MIN_ARRAY_SPACING) errors.push(`${prefix}.spacing: ${d.spacing} rounds below ${MIN_ARRAY_SPACING} at 2 decimals`);
+      return {
+        type: "path",
+        points,
+        ...(d.closed ? { closed: true as const } : {}),
+        place,
+        ...(place === "spacing" ? { spacing } : {}),
+        ...(place === "count" ? { count: d.count ?? 1 } : {}),
+      };
+    }
+    if (d.type === "circle") {
+      const radius = round2(d.radius);
+      if (radius <= 0) errors.push(`${prefix}.radius: ${d.radius} rounds to 0 at 2 decimals`);
+      const start = turn(d.start);
+      const sweep = d.sweep === undefined || round2(d.sweep) >= 360 ? undefined : round2(d.sweep);
+      if (sweep !== undefined && sweep <= 0) errors.push(`${prefix}.sweep: ${d.sweep} rounds to 0 at 2 decimals`);
+      return {
+        type: "circle",
+        x: round2(d.x),
+        y: round2(d.y ?? 0),
+        z: round2(d.z),
+        radius,
+        count: d.count,
+        ...("value" in start ? { start: start.value } : {}),
+        ...(sweep !== undefined ? { sweep } : {}),
+      };
+    }
+    const rotation = turn(d.rotation);
+    const spacingY = d.spacing.y === undefined || round2(d.spacing.y) === 0 ? undefined : round2(d.spacing.y);
+    if ((d.layers ?? 1) > 1 && spacingY === undefined) errors.push(`${prefix}.spacing.y: a grid with layers needs a spacing.y (meters between layers)`);
+    return {
+      type: "grid",
+      x: round2(d.x),
+      y: round2(d.y ?? 0),
+      z: round2(d.z),
+      ...("value" in rotation ? { rotation: rotation.value } : {}),
+      columns: d.columns,
+      rows: d.rows,
+      ...((d.layers ?? 1) > 1 ? { layers: d.layers } : {}),
+      spacing: { x: round2(d.spacing.x), z: round2(d.spacing.z), ...(spacingY !== undefined ? { y: spacingY } : {}) },
+      ...(d.stagger ? { stagger: true as const } : {}),
+    };
+  };
+
+  /** An array's entities as stored: each must exist, weights rounded (1, the default, left out). */
+  const arrayEntitiesFrom = (prefix: string, entities: { entity: string; weight?: number }[], errors: string[]): ArrayEntity[] =>
+    entities.map((e, i) => {
+      if (!entityName(e.entity)) errors.push(`${prefix}[${i}].entity: no entity "${e.entity}" in the project library (get_library lists them)`);
+      const weight = e.weight === undefined ? 1 : round2(e.weight);
+      if (weight <= 0) errors.push(`${prefix}[${i}].weight: ${e.weight} rounds to 0 at 2 decimals`);
+      return { entity: e.entity, ...(weight !== 1 ? { weight } : {}) };
+    });
+
+  /** An array's noise and skip list as stored: rounded, none (undefined) for 0 or empty. */
+  const arrayNoise = (d: { jitter?: number; turnJitter?: number; seed?: number; skip?: number[] }) => ({
+    ...(d.jitter !== undefined ? { jitter: round2(d.jitter) || undefined } : {}),
+    ...(d.turnJitter !== undefined ? { turnJitter: round2(d.turnJitter) || undefined } : {}),
+    ...(d.seed !== undefined ? { seed: d.seed } : {}),
+    ...(d.skip !== undefined ? { skip: d.skip.length > 0 ? [...new Set(d.skip)].sort((a, b) => a - b) : undefined } : {}),
+  });
+
+  /**
+   * An array's layout after an update: the fields given merge into its layout (a path given `count` alone switches
+   * to place: count, `spacing` alone to place: spacing); with another `type`, they're the whole new layout.
+   */
+  const mergeLayout = (prefix: string, node: ArrayNode, change: NonNullable<NodeUpdate["layout"]>, errors: string[]): ArrayLayout => {
+    const { type, ...rest } = change;
+    const same = type === undefined || type === node.layout.type;
+    const input: Record<string, unknown> = same ? { ...node.layout, ...rest } : { type, ...rest };
+    if (same && node.layout.type === "path" && rest.place === undefined) {
+      if (rest.count !== undefined) input.place = "count";
+      else if (typeof rest.spacing === "number") input.place = "spacing";
+    }
+    const parsed = ArrayLayoutInputSchema.safeParse(input);
+    if (!parsed.success) {
+      errors.push(...issueLines(prefix, parsed.error.issues));
+      return node.layout;
+    }
+    return arrayLayoutFrom(prefix, parsed.data, defaultSpacing(node.entities[0].entity), errors);
+  };
+
+  /** Drops the keys whose value is undefined (so a stored node doesn't carry them). */
+  const defined = <T extends object>(o: T): T => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined)) as T;
+
   /** Shape patches that change something, as update changes. */
   const effectiveShapeChanges = (boxes: Shape[], patches: Record<string, ShapePatch>) =>
     boxes.flatMap((box) => {
-      const patch = patches[box.id];
+      const patch = box.type === "array" && patches[box.id] ? tidyArrayPatch(patches[box.id]) : patches[box.id];
       const changed = patch && (Object.keys(patch) as (keyof ShapePatch)[]).some((k) => !sameValue(patch[k], (box as ShapePatch)[k]));
       return changed ? [{ id: box.id, patch }] : [];
     });
@@ -473,6 +599,21 @@ export function createSceneStore({
             z: round2(d.z),
             rotation: normalizeRotation(d.rotation ?? 0),
           };
+        }
+        if (d.type === "array") {
+          if ((d.entity === undefined) === (d.entities === undefined)) errors.push(`${prefix}: give an array either entity or entities (one of them)`);
+          const entities = arrayEntitiesFrom(`${prefix}.entities`, d.entities ?? (d.entity !== undefined ? [{ entity: d.entity }] : []), errors);
+          const layout = arrayLayoutFrom(`${prefix}.layout`, d.layout, defaultSpacing(entities[0]?.entity ?? ""), errors);
+          return defined({
+            type: "array" as const,
+            ...(name ? { name } : {}),
+            ...(d.parent !== undefined ? { parent: d.parent } : {}),
+            entities,
+            layout,
+            facing: d.facing,
+            rotation: d.rotation === undefined ? undefined : normalizeRotation(d.rotation) || undefined,
+            ...arrayNoise(d),
+          });
         }
         if (d.type === "note") {
           return {
@@ -615,6 +756,17 @@ export function createSceneStore({
             }
             if (fields.entity !== undefined && !entityName(fields.entity)) errors.push(`changes[${i}].entity: no entity "${fields.entity}" in the project library`);
           }
+          const arrayOnly = ARRAY_ONLY.filter((k) => fields[k] !== undefined);
+          if (node.type !== "array" && arrayOnly.length > 0) errors.push(`changes[${i}]: only an array has ${arrayOnly.join(", ")} ("${id}" is a ${node.type})`);
+          if (node.type === "array") {
+            const notArray = Object.keys(fields).filter((k) => !ARRAY_FIELDS.includes(k) && k !== "entity" && fields[k as keyof typeof fields] !== undefined);
+            if (notArray.length > 0) {
+              errors.push(
+                `changes[${i}]: "${id}" is an array, with no ${notArray.join(", ")} of its own: it has entities, layout, facing, rotation, jitter, ` +
+                  `turnJitter, seed, skip, name and parent (its items are its entities' instances: detach_instances turns it into a group of instances)`,
+              );
+            }
+          }
           if (node.type === "note") {
             const notNote = (
               ["kind", "width", "depth", "height", "rotation", "sides", "wall", "taper", "bevel", "pitch", "roll", "points", "tags", "thickness", "dashed", "arrow", "step", "base"] as const
@@ -660,7 +812,7 @@ export function createSceneStore({
               );
             }
           }
-          if (node.type !== "line" && node.type !== "ramp" && node.type !== "note" && node.type !== "instance") {
+          if (node.type !== "line" && node.type !== "ramp" && node.type !== "note" && node.type !== "instance" && node.type !== "array") {
             const kind = fields.kind ?? node.kind;
             for (const f of Object.keys(KIND_FIELDS) as KindField[]) {
               if (fields[f] !== undefined && fields[f] !== null && !kindAllows(f, kind)) {
@@ -751,6 +903,13 @@ export function createSceneStore({
         if (fields.label !== undefined) patch.label = fields.label?.trim() || undefined;
         if (fields.status !== undefined) patch.status = fields.status;
         if (fields.entity !== undefined) patch.entity = fields.entity;
+        if (node.type === "array") {
+          if (fields.entities !== undefined) patch.entities = arrayEntitiesFrom(`changes[${i}].entities`, fields.entities, errors);
+          if (fields.layout !== undefined) patch.layout = mergeLayout(`changes[${i}].layout`, node, fields.layout, errors);
+          if (fields.facing !== undefined) patch.facing = fields.facing;
+          if (fields.rotation !== undefined) patch.rotation = normalizeRotation(fields.rotation) || undefined;
+          Object.assign(patch, arrayNoise(fields));
+        }
         if (fields.parent !== undefined) patch.parent = parent;
         if (fields.locked !== undefined) patch.locked = fields.locked || undefined;
         if (fields.hidden !== undefined) patch.hidden = fields.hidden || undefined;
@@ -911,6 +1070,7 @@ export function createSceneStore({
         if (n.type === "ramp") return { ...(rest as typeof n), ...kept, ...checkRamp(`nodes[${i}]`, n, errors) };
         if (n.type === "note") return { ...(rest as typeof n), ...kept, x: round2(n.x), y: round2(n.y), z: round2(n.z) };
         if (n.type === "instance") return { ...(rest as typeof n), ...kept, x: round2(n.x), y: round2(n.y), z: round2(n.z), rotation: normalizeRotation(n.rotation) };
+        if (n.type === "array") return { ...(rest as typeof n), ...kept };
         const shape = { ...(rest as ClosedShape), ...kept, height: round2(n.height) } as ClosedShape;
         if (shape.type === "freeform") return { ...shape, points: checkPoints(`nodes[${i}]`, shape.points, errors) };
         return { ...shape, width: round2(shape.width), depth: round2(shape.depth), rotation: normalizeRotation(shape.rotation) };
@@ -1006,11 +1166,10 @@ export function createSceneStore({
       const roots = topmost(scene.nodes, ids);
       const inside = new Set(roots.flatMap((id) => [...subtreeIds(scene.nodes, id)]));
       const taken = scene.nodes.filter((n) => inside.has(n.id));
-      const bad = taken.filter((n) => n.type === "instance" || n.type === "note");
+      const bad = taken.filter((n) => n.type === "instance" || n.type === "array" || n.type === "note");
       if (bad.length > 0) {
-        throw new SceneError(
-          `An entity can't hold ${bad.some((n) => n.type === "instance") ? "instances (no nested entities)" : "notes"}: ${listIds(bad.map((n) => n.id))}. No entity was made.`,
-        );
+        const what = bad.some((n) => n.type === "instance") ? "instances (no nested entities)" : bad.some((n) => n.type === "array") ? "arrays (no nested entities)" : "notes";
+        throw new SceneError(`An entity can't hold ${what}: ${listIds(bad.map((n) => n.id))}. No entity was made.`);
       }
       const shapes = taken.filter(isShape);
       if (shapes.length === 0) throw new SceneError("There are no shapes in it. No entity was made.");
@@ -1063,8 +1222,49 @@ export function createSceneStore({
     },
 
     /**
-     * Turns instances into plain groups holding world copies of their entity's shapes (new IDs), each where its
-     * instance was, as one step. The group is named after the instance, else the entity. Returns the groups.
+     * The inspector's Array button (plan 10 §4), as one step: an instance becomes an array of its entity, where it
+     * was in the list and the tree, with its name. The array starts as a path from the instance's point along its
+     * local +x, 4 items 1.5 × the entity's width apart, facing along it, so its first item is the instance.
+     */
+    makeArray(id: string, actor: Actor): ArrayNode {
+      const node = byId().get(id);
+      if (!node) throw new SceneError(`id: no node "${id}". No array was made.`);
+      if (node.type !== "instance") throw new SceneError(`id: "${id}" is a ${node.type}; an array is made from an instance. No array was made.`);
+      if (document === "entity") throw new SceneError("An entity can't hold arrays (no nested entities). No array was made.");
+      const spacing = defaultSpacing(node.entity);
+      const a = (node.rotation * Math.PI) / 180;
+      const length = spacing * 3;
+      const array: ArrayNode = {
+        id: newId("array"),
+        type: "array",
+        ...(node.name !== undefined ? { name: node.name } : {}),
+        ...(node.parent !== undefined ? { parent: node.parent } : {}),
+        ...(node.locked ? { locked: true as const } : {}),
+        ...(node.hidden ? { hidden: true as const } : {}),
+        entities: [{ entity: node.entity }],
+        layout: {
+          type: "path",
+          points: [
+            { x: node.x, y: node.y, z: node.z },
+            { x: round2(node.x + Math.cos(a) * length), y: node.y, z: round2(node.z - Math.sin(a) * length) },
+          ],
+          place: "spacing",
+          spacing,
+        },
+        createdBy: actor,
+      };
+      const index = scene.nodes.findIndex((n) => n.id === id);
+      commit(label("array", id, actor), actor, [
+        { op: "remove", ids: [id] },
+        { op: "add", nodes: [array], indices: [index] },
+      ]);
+      return array;
+    },
+
+    /**
+     * Turns instances into plain groups holding world copies of their entity's shapes (new IDs), and arrays into
+     * groups of plain instances where their items were (plan 10 §4), each where it was, as one step. The group is
+     * named after the instance or array, else the entity. Returns the groups.
      */
     detachInstances(ids: string[], actor: Actor): Group[] {
       if (ids.length === 0) throw new SceneError("ids: at least one ID is required. Nothing was detached.");
@@ -1073,15 +1273,48 @@ export function createSceneStore({
       const nodes = byId();
       ids.forEach((id, i) => {
         const n = nodes.get(id);
-        if (n && n.type !== "instance") errors.push(`ids[${i}]: "${id}" is a ${n.type}, not an instance`);
-        else if (n && !definitionOf(n.entity)) errors.push(`ids[${i}]: "${id}"'s entity "${n.entity}" is missing, so there's nothing to detach`);
+        if (n && n.type !== "instance" && n.type !== "array") errors.push(`ids[${i}]: "${id}" is a ${n.type}, not an instance or an array`);
+        else if (n?.type === "instance" && !definitionOf(n.entity)) errors.push(`ids[${i}]: "${id}"'s entity "${n.entity}" is missing, so there's nothing to detach`);
+        else if (n?.type === "array" && arrayItems(n).length === 0) errors.push(`ids[${i}]: "${id}" has no items (every one is skipped), so there's nothing to detach`);
       });
       failIf(errors, "Nothing was detached.");
       const ops: Op[] = [];
       const groups: Group[] = [];
       let current = scene.nodes;
       for (const id of ids) {
-        const inst = current.find((n) => n.id === id) as Instance;
+        const found = current.find((n) => n.id === id)!;
+        if (found.type === "array") {
+          const group: Group = {
+            id: newId("group"),
+            type: "group",
+            name: found.name ?? `array of ${entityName(found.entities[0].entity) ?? found.entities[0].entity}`,
+            ...(found.parent !== undefined ? { parent: found.parent } : {}),
+            createdBy: actor,
+          };
+          const instances = arrayItems(found).map(
+            (item): Instance => ({
+              id: newId("instance"),
+              type: "instance",
+              entity: item.entity,
+              parent: group.id,
+              x: item.x,
+              y: item.y,
+              z: item.z,
+              rotation: item.rotation,
+              createdBy: actor,
+            }),
+          );
+          const index = current.findIndex((n) => n.id === id);
+          const step: Op[] = [
+            { op: "remove", ids: [id] },
+            { op: "add", nodes: [group, ...instances], indices: [group, ...instances].map((_, k) => index + k) },
+          ];
+          current = runOps(current, step).nodes;
+          ops.push(...step);
+          groups.push(group);
+          continue;
+        }
+        const inst = found as Instance;
         const [, ...inner] = expandInstance(inst);
         const group: Group = {
           id: newId("group"),
