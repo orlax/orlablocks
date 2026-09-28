@@ -148,13 +148,26 @@ body {
 .contextual-bar button.swatch:hover { transform: scale(1.12); }
 .contextual-bar button.swatch.active { outline: 2px solid #8fb4f2; outline-offset: 2px; }
 
-/* The outliner: a collapsible tree panel on the left, below the project bar. */
-.outliner {
+/* The left column, below the project bar: the outliner, and the Entities panel under it (from 08.4). Each takes the
+   height it needs, and they share the column when both are long. */
+.left-dock {
   position: fixed;
   top: 52px;
   left: 12px;
+  bottom: calc(var(--status-h) + 118px);
   width: 240px;
-  max-height: calc(100vh - 170px - var(--status-h));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+.left-dock > * { pointer-events: auto; }
+/* The outliner: a collapsible tree panel on the left, below the project bar. */
+.outliner {
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: 100%;
+  width: 240px;
   display: flex;
   flex-direction: column;
   border-radius: 10px;
@@ -164,7 +177,30 @@ body {
   backdrop-filter: blur(6px);
   user-select: none;
 }
-.outliner.closed { width: auto; }
+.outliner.closed { width: auto; align-self: flex-start; }
+.entities-panel { flex-shrink: 2; }
+.entities-panel .outliner-row { cursor: grab; }
+.entities-panel .outliner-row .outliner-action { margin-left: 4px; padding: 2px; }
+.entities-panel .outliner-row .outliner-action.on { color: #8fb4f2; background: rgba(143, 180, 242, 0.2); }
+.entities-panel .outliner-empty b { color: var(--bar-text); }
+.entity-editor { padding: 2px 4px 8px 18px; font-size: 12px; }
+.entity-editor .record-editor { padding: 2px 0 4px; }
+.entity-editor .record-editor label > span { width: 36px; }
+.entity-editor .entity-size { color: var(--muted); font-size: 11px; }
+.entities-panel button.labeled {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.entities-panel button.labeled.danger:hover { background: rgba(200, 70, 70, 0.3); }
 .outliner-header { display: flex; align-items: center; padding-right: 6px; }
 .outliner-toggle {
   flex: 1;
@@ -887,3 +923,60 @@ body {
 .draft-label.note-hover { max-width: 320px; white-space: normal; }
 .draft-label.note-hover.done { opacity: 0.7; }
 .outliner .label.done { text-decoration: line-through; opacity: 0.6; }
+
+/* Entities (from 08.4): the inspector's entity section, Make entity's name field, and the Library's rows. */
+.inspector select.entity-picker {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 6px;
+  background: #2a2c33;
+  color: var(--bar-text);
+  font: 12px/1 system-ui, sans-serif;
+}
+.inspector .entity-description { margin: 2px 2px 6px; color: var(--bar-text); opacity: 0.85; font-size: 12px; white-space: pre-wrap; }
+.inspector .entity-tags { display: flex; flex-wrap: wrap; gap: 4px; margin: 0 2px 6px; }
+.inspector .entity-tags .chip, .library-panel .chip {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 10px;
+  background: rgba(127, 200, 169, 0.22);
+  color: #bfe6d4;
+  font: 600 11px/1 system-ui, sans-serif;
+}
+.inspector .make-entity { display: flex; gap: 4px; width: 100%; }
+.inspector .make-entity input {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  padding: 0 7px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--bar-text);
+  font: 12px/1 system-ui, sans-serif;
+  user-select: text;
+}
+.inspector button.labeled.primary { background: rgba(143, 180, 242, 0.25); border-color: rgba(143, 180, 242, 0.5); }
+.record-editor .size { color: var(--muted); font-size: 11px; }
+.placing-banner {
+  position: fixed;
+  top: 52px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 25;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--bar-bg);
+  color: var(--bar-text);
+  font: 12px/1.3 system-ui, sans-serif;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.25);
+}
+.placing-banner button { border: 0; background: rgba(255, 255, 255, 0.1); color: inherit; border-radius: 5px; padding: 2px 8px; font: inherit; cursor: pointer; }
+.sigil.entity { color: #9fb7f0; flex: none; align-self: center; }

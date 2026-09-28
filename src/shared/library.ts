@@ -10,10 +10,18 @@ import { z } from "zod";
 export type LibraryKind = "tag" | "skill";
 export type Tag = { name: string; description?: string; aliases?: string[] };
 export type Skill = { name: string; description: string; tags?: string[]; aliases?: string[] };
-export type Library = { tags: Tag[]; skills: Skill[]; guide: string };
+/**
+ * An entity (a prefab, from 08.4): its ID (a slug of its first name, never changed, so instances never break), its
+ * name, description and tags. Its shapes are its definition, in `entities/<id>/`.
+ */
+export type EntityMeta = { id: string; name: string; description?: string; tags?: string[] };
+export type Library = { tags: Tag[]; skills: Skill[]; entities: EntityMeta[]; guide: string };
 
-export const EMPTY_LIBRARY: Library = { tags: [], skills: [], guide: "" };
+export const EMPTY_LIBRARY: Library = { tags: [], skills: [], entities: [], guide: "" };
 export const SIGIL: Record<LibraryKind, "#" | "@"> = { tag: "#", skill: "@" };
+
+/** An entity's record by its ID. */
+export const entityMeta = (lib: Library, id: string) => lib.entities.find((e) => e.id === id);
 export const MAX_NAME = 40;
 export const MAX_LIBRARY_DESCRIPTION = 2000;
 /** The design guide's longest text, in characters. */
@@ -31,6 +39,12 @@ export const TagSchema = z.object({
   description: z.string().max(MAX_LIBRARY_DESCRIPTION).optional(),
   aliases: z.array(z.string()).optional(),
 });
+export const EntityMetaSchema = z.object({
+  id: z.string(),
+  name: z.string().min(1).max(80),
+  description: z.string().max(MAX_LIBRARY_DESCRIPTION).optional(),
+  tags: z.array(z.string()).optional(),
+});
 export const SkillSchema = z.object({
   name: NameSchema,
   description: z.string().max(MAX_LIBRARY_DESCRIPTION),
@@ -45,11 +59,13 @@ export const SkillSchema = z.object({
 export type LibraryOp =
   | { op: "tag"; name: string; value: Tag | null }
   | { op: "skill"; name: string; value: Skill | null }
+  | { op: "entity"; name: string; value: EntityMeta | null } // `name` is the entity's ID
   | { op: "guide"; text: string };
 
 export const LibraryOpSchema = z.discriminatedUnion("op", [
   z.object({ op: z.literal("tag"), name: z.string(), value: TagSchema.nullable() }),
   z.object({ op: z.literal("skill"), name: z.string(), value: SkillSchema.nullable() }),
+  z.object({ op: z.literal("entity"), name: z.string(), value: EntityMetaSchema.nullable() }),
   z.object({ op: z.literal("guide"), text: z.string() }),
 ]);
 
@@ -58,6 +74,11 @@ const byName = <T extends { name: string }>(a: T, b: T) => a.name.localeCompare(
 /** The library with `op` applied (tags and skills stay sorted by name). Never mutates `lib`. */
 export function applyLibraryOp(lib: Library, op: LibraryOp): Library {
   if (op.op === "guide") return { ...lib, guide: op.text };
+  if (op.op === "entity") {
+    const next = lib.entities.filter((e) => e.id !== op.name);
+    if (op.value) next.push(op.value);
+    return { ...lib, entities: next.sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id)) };
+  }
   const list = op.op === "tag" ? lib.tags : lib.skills;
   const next = list.filter((r) => r.name !== op.name);
   if (op.value) next.push(op.value as Tag & Skill);
@@ -68,6 +89,7 @@ export function applyLibraryOp(lib: Library, op: LibraryOp): Library {
 /** The op that undoes `op`, computed against the library before `op` is applied. */
 export function invertLibraryOp(lib: Library, op: LibraryOp): LibraryOp {
   if (op.op === "guide") return { op: "guide", text: lib.guide };
+  if (op.op === "entity") return { op: "entity", name: op.name, value: lib.entities.find((e) => e.id === op.name) ?? null };
   if (op.op === "tag") return { op: "tag", name: op.name, value: lib.tags.find((t) => t.name === op.name) ?? null };
   return { op: "skill", name: op.name, value: lib.skills.find((s) => s.name === op.name) ?? null };
 }
@@ -114,8 +136,13 @@ export function currentTags(lib: Library, tags: string[] | undefined): string[] 
   return [...new Set(tags.flatMap((t) => resolveRef(lib, "tag", t)?.name ?? []))];
 }
 
-/** How many nodes use a tag or skill, and in how many scenes: carrying the tag, or naming it in a description. */
-export type Uses = { tags: Record<string, { nodes: number; scenes: number }>; skills: Record<string, { nodes: number; scenes: number }> };
+/**
+ * How many nodes use a tag or skill (carrying the tag, or naming it in a description or a note) and an entity (its
+ * instances), and in how many scenes.
+ */
+export type Use = { nodes: number; scenes: number };
+export type Uses = { tags: Record<string, Use>; skills: Record<string, Use>; entities: Record<string, Use & { sceneNames: string[] }> };
+export const NO_USES: Uses = { tags: {}, skills: {}, entities: {} };
 
 /** The library's edits, as `update_library` and the editor send them: applied together, as one step. */
 export const LibraryEditSchema = z.strictObject({
@@ -134,10 +161,21 @@ export const LibraryEditSchema = z.strictObject({
     )
     .optional()
     .describe("Tags and skills to add, or to change (only the fields given change)"),
-  remove: z
-    .array(z.strictObject({ kind: z.enum(["tag", "skill"]), name: z.string() }))
+  entities: z
+    .array(
+      z.strictObject({
+        id: z.string().describe('The entity\'s ID, e.g. "tree-tall"'),
+        name: z.string().min(1).max(80).optional().describe("Its new name (its ID doesn't change)"),
+        description: z.string().max(MAX_LIBRARY_DESCRIPTION).optional().describe("What it is and does in the game; it can refer to @skills and #tags"),
+        tags: z.array(z.string()).optional().describe("Its tags (the whole list): every instance carries them"),
+      }),
+    )
     .optional()
-    .describe("Tags and skills to delete. What refers to them stays, unresolved"),
+    .describe("Entities to change: only the fields given change. (Make one with make_entity)"),
+  remove: z
+    .array(z.strictObject({ kind: z.enum(["tag", "skill", "entity"]), name: z.string().describe("The name, or an entity's ID") }))
+    .optional()
+    .describe("Tags, skills and entities to delete. What refers to a tag or skill stays, unresolved; an entity that's placed anywhere can't be deleted"),
   rename: z
     .array(z.strictObject({ kind: z.enum(["tag", "skill"]), from: z.string(), to: z.string() }))
     .optional()

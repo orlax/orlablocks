@@ -1,5 +1,6 @@
 import { boundsOf, isTilted, round2 } from "../shared/geometry";
-import { currentTags, EMPTY_LIBRARY, findRefs, resolveRef, type Library, type Skill, type Tag } from "../shared/library";
+import { currentTags, EMPTY_LIBRARY, entityMeta, findRefs, resolveRef, type EntityMeta, type Library, type Skill, type Tag } from "../shared/library";
+import { definitionOf } from "../shared/entities";
 import { COMPASS, type OpenScene, type Scene, type SceneNode, type Shape } from "../shared/scene.types";
 import { ancestry, childrenOf, countsText, isGroup, isShape, shapesUnder, subtreeIds, tagsOf } from "../shared/tree";
 import { SceneError } from "./scene";
@@ -19,7 +20,11 @@ export type SceneQuery = { root?: string; depth?: number; full?: boolean };
 /** What the outline adds from the project: its library, and a line about the design guide. */
 export type SceneContext = { library: Library; guide?: string };
 /** The tags and skills a result names, each with its description (a skill with its tags). */
-export type Glossary = { skills?: Record<string, { description: string; tags?: string[] }>; tags?: Record<string, string> };
+export type Glossary = {
+  skills?: Record<string, { description: string; tags?: string[] }>;
+  tags?: Record<string, string>;
+  entities?: Record<string, { name: string; description?: string; tags?: string[]; size: [number, number, number] }>;
+};
 export type AgentBounds = { x: number; z: number; y: number; width: number; depth: number; height: number };
 /** A node as the agent reads it: stored fields plus what the outline derives. */
 export type AgentNode = SceneNode & { bounds?: AgentBounds; contains?: string; collapsed?: true; path?: string };
@@ -38,6 +43,14 @@ export type SceneOutline = OpenScene & {
   glossary?: Glossary;
 };
 
+/** An entity's size: its definition's width, depth and height (0s for one with no shapes or no definition). */
+export function entitySize(id: string): [number, number, number] {
+  const shapes = (definitionOf(id) ?? []).filter(isShape);
+  if (shapes.length === 0) return [0, 0, 0];
+  const b = boundsFor(shapes);
+  return [b.width, b.depth, b.height];
+}
+
 /**
  * The glossary for what a result shows: the tags its nodes carry and the tags and skills their descriptions name,
  * plus one level more (a listed skill's tags, and what the listed tags' and skills' descriptions name), so a skill
@@ -46,6 +59,7 @@ export type SceneOutline = OpenScene & {
 export function glossaryFor(library: Library, shown: AgentNode[]): Glossary | undefined {
   const tags = new Map<string, Tag>();
   const skills = new Map<string, Skill>();
+  const entities = new Map<string, EntityMeta>();
   const addText = (text: string | undefined) => {
     for (const r of findRefs(text ?? "")) {
       if (r.kind === "tag") {
@@ -64,6 +78,14 @@ export function glossaryFor(library: Library, shown: AgentNode[]): Glossary | un
     }
     if (n.type === "group") addText(n.description);
     if (n.type === "note") addText(n.text);
+    if (n.type === "instance") {
+      const meta = entityMeta(library, n.entity);
+      if (meta) {
+        entities.set(meta.id, meta);
+        for (const t of currentTags(library, meta.tags)) tags.set(t, resolveRef(library, "tag", t)!);
+        addText(meta.description);
+      }
+    }
   }
   // One level more.
   for (const k of [...skills.values()]) {
@@ -71,7 +93,7 @@ export function glossaryFor(library: Library, shown: AgentNode[]): Glossary | un
     addText(k.description);
   }
   for (const t of [...tags.values()]) addText(t.description);
-  if (tags.size === 0 && skills.size === 0) return undefined;
+  if (tags.size === 0 && skills.size === 0 && entities.size === 0) return undefined;
   const sorted = <T>(m: Map<string, T>) => [...m.entries()].sort(([a], [b]) => a.localeCompare(b));
   return {
     ...(skills.size > 0
@@ -85,6 +107,16 @@ export function glossaryFor(library: Library, shown: AgentNode[]): Glossary | un
         }
       : {}),
     ...(tags.size > 0 ? { tags: Object.fromEntries(sorted(tags).map(([name, t]) => [name, t.description ?? ""])) } : {}),
+    ...(entities.size > 0
+      ? {
+          entities: Object.fromEntries(
+            sorted(entities).map(([id, e]) => {
+              const eTags = currentTags(library, e.tags);
+              return [id, { name: e.name, ...(e.description ? { description: e.description } : {}), ...(eTags.length > 0 ? { tags: eTags } : {}), size: entitySize(id) }];
+            }),
+          ),
+        }
+      : {}),
   };
 }
 
@@ -123,6 +155,7 @@ function describeNodeIn(nodes: SceneNode[], n: SceneNode, library: Library): Age
     const tags = currentTags(library, stored);
     n = (tags.length > 0 ? { ...rest, tags } : rest) as SceneNode;
   }
+  if (n.type === "instance") return { ...n, bounds: boundsFor([n]) };
   if (!isGroup(n)) return isTilted(n) ? { ...n, bounds: boundsFor([n]) } : n;
   const inside = subtreeIds(nodes, n.id);
   inside.delete(n.id);
@@ -212,6 +245,7 @@ export function describeScene(open: OpenScene, scene: Scene, query: SceneQuery =
 export type FindQuery = {
   name?: string;
   tag?: string;
+  entity?: string;
   status?: "open" | "done";
   type?: SceneNode["type"];
   kind?: "room" | "volume" | "hole";
@@ -225,7 +259,8 @@ export type FindQuery = {
  * whose bounds come within `radius` of the point (on the ground). At most MAX_MATCHES, with the count of the rest.
  */
 export function findNodes(nodes: SceneNode[], query: FindQuery, library: Library = EMPTY_LIBRARY) {
-  const { name, tag, status, type, kind, under, near } = query;
+  const { name, tag, entity, status, type, kind, under, near } = query;
+  const tagsOfNode = (n: SceneNode) => currentTags(library, n.type === "instance" ? entityMeta(library, n.entity)?.tags : tagsOf(n));
   const wanted = tag !== undefined ? resolveRef(library, "tag", tag) : undefined;
   if (tag !== undefined && !wanted) throw new SceneError(`tag: no tag #${tag.replace(/^#/, "")} in the project library. Nothing was found.`);
   if (under !== undefined) {
@@ -252,9 +287,11 @@ export function findNodes(nodes: SceneNode[], query: FindQuery, library: Library
     if (inside && !inside.has(n.id)) return false;
     if (type !== undefined && n.type !== type) return false;
     if (kind !== undefined && !(isShape(n) && "kind" in n && n.kind === kind)) return false;
-    if (needle && !(n.name ?? "").toLowerCase().includes(needle) && !(n.type === "note" && n.text.toLowerCase().includes(needle))) return false;
+    const also = n.type === "note" ? n.text : n.type === "instance" ? (entityMeta(library, n.entity)?.name ?? n.entity) : "";
+    if (needle && !(n.name ?? "").toLowerCase().includes(needle) && !also.toLowerCase().includes(needle)) return false;
     if (status !== undefined && !(n.type === "note" && n.status === status)) return false;
-    if (wanted && !currentTags(library, tagsOf(n)).includes(wanted.name)) return false;
+    if (wanted && !tagsOfNode(n).includes(wanted.name)) return false;
+    if (entity !== undefined && !(n.type === "instance" && n.entity === entity)) return false;
     return true;
   });
   const found: ReturnType<typeof line>[] = [];
@@ -266,7 +303,8 @@ export function findNodes(nodes: SceneNode[], query: FindQuery, library: Library
       ...(isShape(n) && "kind" in n ? { kind: n.kind } : {}),
       ...(n.name !== undefined ? { name: n.name } : {}),
       ...(n.type === "note" ? { text: n.text.length > 120 ? `${n.text.slice(0, 120)}…` : n.text, status: n.status, ...(n.label ? { label: n.label } : {}) } : {}),
-      ...(currentTags(library, tagsOf(n)).length > 0 ? { tags: currentTags(library, tagsOf(n)) } : {}),
+      ...(n.type === "instance" ? { entity: n.entity } : {}),
+      ...(tagsOfNode(n).length > 0 ? { tags: tagsOfNode(n) } : {}),
       ...(n.parent !== undefined ? { parent: n.parent, path: pathOf(nodes, n.id) } : {}),
       ...(bounds ? { bounds } : {}),
     };

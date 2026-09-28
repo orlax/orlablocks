@@ -343,7 +343,7 @@ The MCP instructions and `get_guide`'s other topics say how the tools work. The 
   - **The scene step** is `Make entity poison`. Undoing it puts the nodes back, and the definition stays in the library.
   - Refused for a selection with instances or notes in it.
 - **Placing:**
-  - drag an entity from the Library panel's **Entities** tab onto the view. It lands on the surface under the cursor and goes into the entered group;
+  - drag an entity from the **Entities panel** (under the outliner) onto the view. It lands on the surface under the cursor and goes into the entered group;
   - or press **Place** on a row, then click.
   - Alt-drag, copy and paste work on instances as on any node.
   - The agent uses `draw_shapes { type: "instance", entity, x, z, y?, rotation?, name? }`.
@@ -729,6 +729,81 @@ The instructions went from 10,342 to 3,642 characters. The topics range from 0.7
 5. Tick **done**: the flag goes gray and faint, the outliner row is struck through, and the counts in the bottom bar drop by one. Untick it.
 6. The view bar's **notes** toggle hides every note (a selected one stays). Marquee over a note: it's selected.
 7. Ask the agent: *"act on the open notes"*. It should read the note from the outline, build something for it, mark it done, and perhaps leave a note of its own (with a "?" flag).
+
+### 08.4 — Entities: definitions and instances (done; checked in the browser by Orlando)
+
+**Built:**
+- **The data:**
+  - `Instance` (`instance_N`): `entity`, `x, y, z`, `rotation`, `name?`, `parent?`, `locked?`, `hidden?`. It's a `Shape`, like notes, so move, rotate, mirror, copy, paste and group bounds go through the shared geometry;
+  - `EntityMeta` in the library (`{ id, name, description?, tags? }`) with an `entity` op;
+  - `entities/<id>/entity.json` (createdAt, seq, nextId, nodes around the pivot);
+  - `nextId` gains `instance`.
+- **`src/shared/entities.ts`:**
+  - a registry of the open project's definitions (the server sets it when a project's library loads, the editor from an `entities` message);
+  - `expandInstance`, cached per instance object: a virtual group with the instance's ID and place, holding the definition's nodes turned around the pivot and moved, with IDs like `instance_4/box_2`;
+  - a missing entity shows as a small red block;
+  - `expandNodes`, `expandShapes` and `ownerOf`.
+- **Geometry:** an instance's ground points and vertical range are its shapes'. Move, rotate and mirror patch its point and rotation (on x it becomes 180 − rotation, on z −rotation). It has no scale handles.
+- **The store:**
+  - `draw_shapes { type: "instance", entity, x, z, y?, rotation?, name?, parent? }`, refused for an unknown entity;
+  - `update_nodes` takes x, y, z, rotation, name, parent and `entity` (swap, labelled `Swap instance_3`), and refuses the rest with a hint to detach;
+  - paste;
+  - `prepareEntity` (the definition around the bottom center; a single group unwrapped, offering its name, description and tags; refused for instances and notes) and `commitEntity` (one step, `Make entity poison`, where the first node was);
+  - `detachInstances` (world copies with new IDs in a group named after the instance, else the entity).
+- **The workspace:**
+  - it loads every entity folder with the library;
+  - `makeEntity` writes the folder, adds the library record quietly (not a library step: undoing Make entity puts the shapes back and the entity stays), registers the definition, and commits the scene step;
+  - deleting an entity that's placed is refused, naming the scenes. A deleted entity keeps its folder, so undoing the delete brings it back whole;
+  - uses count instances per entity (with scene names), and an instance carries its entity's tags for tag uses.
+- **The agent** (server version 0.0.15):
+  - an instance is one line in the outline, with `bounds`;
+  - the glossary has `entities` (name, description, tags, size), and an entity's tags and references join it;
+  - `find_nodes` takes `entity`, finds instances by their entity's tags, and its `name` matches an instance's entity name;
+  - the new tools `make_entity` and `detach_instances`;
+  - `get_library` lists entities (size, uses) and returns a definition with `entity`;
+  - `update_library` takes `entities` (name, description, tags) and removes an entity (`remove: [{ kind: "entity", name: id }]`);
+  - a guide topic `entities` (holes around instances included), and a line in the core (5.2 kB);
+  - results warn about instances of missing entities.
+- **The editor:**
+  - the Viewport keeps instances as nodes for selection, the gizmo and drags, and expands them for drawing, picking, the marquee, surface snapping, elevation snapping and holes; a hit on a part selects the instance, and parts light up with it;
+  - the gizmo on an instance has move and the yaw ring;
+  - the inspector's **Entity** section: a picker to swap, the entity's description and tags (read-only), and **Detach**. **Make entity** in Actions asks for the name in place;
+  - the **Entities panel**, under the outliner and collapsible like it (moved out of the Library after Orlando's first look): rows with uses and size; drag one into the view, or its place button and click (a banner, `Esc` stops); click one to edit its name, description and tags, or Delete it;
+  - the outliner shows an instance with a package icon, by its name or its entity's;
+  - the color swatches skip instances.
+- There are 14 new tests (`entities.test.ts`), 344 in all. Typecheck is clean, and the editor builds.
+
+**Scripted check** (port 5171, scratch `DATA_DIR`, 21 checks, all passed):
+- the human makes `poison` from a group in the editor, and the editor gets the definition and one instance;
+- the agent makes `tree tall` from shapes it drew, copies the instance into a row, and turns and names one;
+- a window entity placed in the tower's group;
+- the glossary's entities (size 4 × 4 × 10) and descriptions;
+- `find_nodes` by the entity's tag (5 instances) and by name (`entry_window`, path `tower`);
+- `get_library` with and without `entity`;
+- swap;
+- an instance refuses a color;
+- an entity can't hold an instance;
+- deleting a placed entity is refused, naming the scene;
+- detach;
+- mirror;
+- `get_guide entities`.
+
+**Changed from the plan:**
+- **An entity's name, description and tags are library records, edited in the Library panel now** (the plan had this in 08.5, through `update_library`). They're edited with `update_library { entities }`.
+- **Making an entity isn't a library step.** An undo of "add entity" in the library would otherwise break the instances placed since.
+- **The definitions are a registry** in the shared code, one project at a time, rather than being passed to every geometry call.
+- **Place puts one instance, then goes back to Select.**
+- **After Orlando's first look:** the entities moved from a Library tab to their own **Entities panel** under the outliner, and an instance has no tags field in the inspector (its tags are the entity's).
+
+**Browser checklist for Orlando** (restart the server, then reconnect with `/mcp`):
+1. Draw a few tapered boxes (spikes) and group them. In the inspector's Actions, press **Make entity**, name it `poison`, and press Enter. The spikes become one instance (a package icon in the outliner) and look the same. `⌘Z` puts the group back; `⇧⌘Z` makes it an instance again.
+2. The **Entities** panel under the outliner lists `poison`, "1 placed". Click it and give it the description "poisonous goo that hurts the player; @fish cleans it" and a tag.
+3. Drag `poison` from the Entities panel into the view onto a platform: an instance lands on its top. Press its place button and click somewhere: another one. `Esc` while placing stops it.
+4. Click a spike of an instance: the whole instance is selected. Move it, turn it with the ring, Alt-drag a copy, and mirror it with ⇧X.
+5. Make a round window entity from a lying cylinder hole. Put an instance of it into a room's group (outliner) and slide it into the wall: it cuts the wall.
+6. With an instance selected, the inspector's **Entity** section shows its description and tags. Swap it to another entity in the picker. **Detach** it: it becomes a plain group you can edit.
+7. Try to delete a placed entity in the Library: it's refused, with the error naming the scene.
+8. Ask the agent: *"make a tree entity and plant a row of five"*, then *"what's in this scene?"*. It should use `make_entity` and instances, and describe the scene from the outline's entity glossary.
 
 ---
 

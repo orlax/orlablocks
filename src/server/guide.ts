@@ -19,7 +19,7 @@ import { FULL_SCENE_MAX } from "./outline";
  * topic, which `get_guide` returns on demand, so a session only pays for the topics it uses.
  */
 
-export const GUIDE_TOPICS = ["design", "shapes", "volumes", "holes", "ramps", "lines", "notes", "groups", "library"] as const;
+export const GUIDE_TOPICS = ["design", "shapes", "volumes", "holes", "ramps", "lines", "notes", "groups", "library", "entities"] as const;
 export type GuideTopic = (typeof GUIDE_TOPICS)[number];
 
 /** One line per topic, for the core and for get_guide's description. */
@@ -33,6 +33,7 @@ const TOPIC_SUMMARIES: Record<GuideTopic, string> = {
   notes: "notes: post-its pinned in the scene, the human's intents and work items (and yours)",
   groups: "groups, copying, mirroring and turning things as a unit",
   library: "the project's tags (#name) and skills (@name): what they mean, tagging nodes, referring to them",
+  entities: "entities (prefabs): making them, placing instances, swapping, detaching; holes in and around them",
 };
 
 export const INSTRUCTIONS =
@@ -65,6 +66,10 @@ export const INSTRUCTIONS =
   "things, copy them with move_nodes and copy: true (count for a row) instead of redrawing; for symmetry, copy then " +
   "mirror_nodes. A door or window is a hole shape in the room's group: cut it, don't build walls around the opening. " +
   "Draw lines for paths, routes, jumps and ideas. " +
+  "ENTITIES are the project's prefabs (a tree, a door, a poison pit): an instance (type: instance, e.g. instance_4) " +
+  "shows its entity's shapes at its x, y, z and rotation, and carries its description and tags; the outline shows " +
+  "one line per instance, and the glossary what each entity is and its size. Place and repeat entities instead of " +
+  "redrawing a thing twice. " +
   "NOTES (type: note) are post-its pinned in the scene: the human's intents and work items. The outline always lists " +
   "the open ones (`notes`); treat them as intent, act on them when asked, and mark one done (update_nodes status: " +
   "done) once it's handled. Leave a note of your own for an assumption or a question. " +
@@ -78,6 +83,25 @@ export const INSTRUCTIONS =
   ". Errors and warnings name the topic to read when one helps.";
 
 const GUIDE: Record<Exclude<GuideTopic, "design">, string> = {
+  entities:
+    "An ENTITY is a prefab in the project library: a name, a description (what it is and does in the game), tags, " +
+    "and a DEFINITION, its shapes around a PIVOT at the origin (its bottom center). Its ID is a slug of its first " +
+    "name (\"tree-tall\") and never changes. An INSTANCE (type: instance) places one: { entity, x, z, y?, rotation?, " +
+    "name? } in draw_shapes, where x, y, z is where the pivot goes (y the surface it stands on) and rotation turns it " +
+    "around the pivot (degrees, counterclockwise seen from above). An instance has nothing else of its own: its shapes, " +
+    "description and tags are its entity's (find_nodes { tag } finds instances through their entity's tags), and " +
+    "editing the entity changes every instance. update_nodes on an instance takes x, y, z, rotation, name, parent and " +
+    "`entity` (swap: a small tree becomes a tall one in place). move_nodes, rotate_nodes and copy work on instances as " +
+    "on shapes; mirror_nodes moves one to its mirrored place and turns it to face the mirrored way, but doesn't flip " +
+    "the entity (a left-handed door stays left-handed). To repeat a thing, make it an entity once and place instances " +
+    "(a forest: a few tree entities, many instances) rather than copying shapes. make_entity { ids, name, description, " +
+    "tags } turns shapes or a group into a new entity and puts an instance in their place (a single group's contents " +
+    "become the entity). detach_instances turns an instance back into a plain group of shapes, only when one copy must " +
+    "differ. get_library { entity } returns a definition's nodes. For HOLES an instance is a group: its shapes are " +
+    "directly in it. So an entity that is a hole (a window) cuts what's directly in the instance's parent group and in " +
+    "the groups beside it: place a window instance in the room's group and it cuts that room's walls. A hole in the " +
+    "scene cuts an instance's shapes as it cuts a sibling group's. An instance whose entity is missing shows as a red " +
+    "block (results warn about it).",
   library:
     "The project library holds TAGS and SKILLS, shared by every scene of the project. A tag (#climbable, #light) is a " +
     "property of things, with an optional description. A skill (@telekinesis, @fireball) is something the player can " +

@@ -110,6 +110,8 @@ export function marqueeHits(cam: CameraState, size: Size, boxes: Shape[], rect: 
   return boxes
     .filter((b) => {
       if (isSolid(b)) return shapeTouches(cam, size, b, rect);
+      // Instances come expanded into their shapes.
+      if (b.type === "instance") return false;
       if (b.type === "note") {
         // A note's pin overlapping the rectangle.
         const at = worldToScreen(cam, size, b);

@@ -22,7 +22,8 @@ import {
 import { EMPTY_LIBRARY, LibraryEditSchema, unknownRefs, type Library } from "../shared/library";
 import { isGroup, isShape } from "../shared/tree";
 import { GUIDE_TOPICS, guideTopic, INSTRUCTIONS, topicList } from "./guide";
-import { describeScene, findNodes, FULL_SCENE_MAX, MAX_MATCHES } from "./outline";
+import { describeScene, entitySize, findNodes, FULL_SCENE_MAX, MAX_MATCHES } from "./outline";
+import { definitionOf } from "../shared/entities";
 import { SceneError } from "./scene";
 import type { Workspace } from "./workspace";
 
@@ -50,10 +51,16 @@ function buildServer(workspace: Workspace) {
   /** A result with the scene's hole warnings added (holes that cut nothing), when there are any. */
   const warned = <T extends object>(result: T) => {
     const own = (result as { warnings?: string[] }).warnings ?? [];
-    const warnings = [...own, ...holeWarnings(store().getScene().nodes).map(withTopic)];
+    const nodes = store().getScene().nodes;
+    const missing = nodes.flatMap((n) =>
+      n.type === "instance" && !(definitionOf(n.entity) && library().entities.some((e) => e.id === n.entity))
+        ? [`${n.id} shows entity "${n.entity}", which isn't in the library (it shows as a red block): swap its entity or remove it`]
+        : [],
+    );
+    const warnings = [...own, ...holeWarnings(nodes).map(withTopic), ...missing];
     return warnings.length > 0 ? { ...result, warnings } : result;
   };
-  const server = new McpServer({ name: "dungeon-designer", version: "0.0.14" }, { instructions: INSTRUCTIONS });
+  const server = new McpServer({ name: "dungeon-designer", version: "0.0.15" }, { instructions: INSTRUCTIONS });
   // Every tool reads or edits the open scene, and fails with a clear message while nothing is open.
   const store = () => workspace.requireScene();
   const library = (): Library => (workspace.getOpen() ? workspace.library.get() : EMPTY_LIBRARY);
@@ -101,9 +108,10 @@ function buildServer(workspace: Workspace) {
         `(id, type, kind, name, parent, path of group names, bounds), at most ${MAX_MATCHES}. Use it to resolve a name to an ` +
         `ID ("entry_window"), or to find what's in or near an area.`,
       inputSchema: {
-        name: z.string().optional().describe("Part of the name (or of a note's text), any case"),
+        name: z.string().optional().describe("Part of the name (or of a note's text, or an instance's entity's name), any case"),
         tag: z.string().optional().describe("A library tag (without #): only nodes carrying it"),
-        type: z.enum(["box", "cylinder", "freeform", "line", "ramp", "note", "group"]).optional(),
+        type: z.enum(["box", "cylinder", "freeform", "line", "ramp", "note", "instance", "group"]).optional(),
+        entity: z.string().optional().describe("An entity's ID: only its instances"),
         status: z.enum(["open", "done"]).optional().describe("Notes only: open (the default outline lists these anyway) or done"),
         kind: z.enum(["room", "volume", "hole"]).optional().describe("Closed shapes and ramps only"),
         under: z.string().optional().describe("ID of a group: only nodes inside it, at any depth"),
@@ -130,21 +138,70 @@ function buildServer(workspace: Workspace) {
   );
 
   server.registerTool(
+    "make_entity",
+    {
+      title: "Make entity",
+      description:
+        "Turn shapes and/or groups into a new ENTITY (a prefab in the project library) and put one instance of it in " +
+        "their place, as one scene step (undo puts the shapes back; the entity stays in the library). Its pivot is the " +
+        "bottom center of their bounds. A single group is unwrapped: its contents become the entity, and its name, " +
+        "description and tags are the entity's unless given. Instances and notes can't go in an entity. Returns the " +
+        "entity (its ID, for draw_shapes' type: instance) and the instance.",
+      inputSchema: {
+        ids: z.array(z.string()).min(1).describe("IDs of the shapes and/or groups (with what's in them)"),
+        name: z.string().max(80).optional().describe('What it is, e.g. "tree tall" (its ID is a slug of this: tree-tall)'),
+        description: z.string().optional().describe("What it is and does in the game, for the human and you; it can refer to @skills and #tags"),
+        tags: z.array(z.string()).optional().describe("Library tags every instance carries (without #), e.g. [\"climbable\"]"),
+      },
+    },
+    async (input) => {
+      const made = workspace.makeEntity(input, "agent");
+      return json(warned({ ...made, ...(made.entity.description ? { warnings: refWarnings([{ id: made.entity.id, description: made.entity.description }]) } : {}) }));
+    },
+  );
+
+  server.registerTool(
+    "detach_instances",
+    {
+      title: "Detach instances",
+      description:
+        "Turn instances back into plain groups of shapes (world copies of their entity's shapes, with new IDs), each " +
+        "where its instance was, as one step. The group is named after the instance (else the entity). Do this only to " +
+        "make one copy different: a detached group no longer changes with its entity.",
+      inputSchema: { ids: z.array(z.string()).min(1).describe("IDs of instances") },
+    },
+    async ({ ids }) => json({ groups: store().detachInstances(ids, "agent") }),
+  );
+
+  server.registerTool(
     "get_library",
     {
       title: "Get library",
       description:
         "Return the open project's library: every tag and skill with its description (a skill with its tags), their " +
-        "aliases (old names), how many nodes use each and in how many scenes, and the design guide's line (read the " +
-        "guide itself with get_guide design). The outline's glossary already explains the tags and skills it shows.",
+        "aliases (old names), every entity (its ID, name, description, tags and size), how many nodes use each and in " +
+        "how many scenes, and the design guide's line (read the guide itself with get_guide design). With `entity`, " +
+        "return that entity's definition: its nodes around its pivot (the origin, at its bottom center). The outline's " +
+        "glossary already explains the tags, skills and entities it shows.",
+      inputSchema: { entity: z.string().optional().describe("An entity's ID, for its definition's nodes") },
     },
-    async () => {
+    async ({ entity }) => {
       store();
       const lib = library();
+      if (entity !== undefined) {
+        const meta = lib.entities.find((e) => e.id === entity);
+        const nodes = definitionOf(entity);
+        if (!meta || !nodes) throw new SceneError(`entity: no entity "${entity}" (get_library lists them)`);
+        return json({ ...meta, size: entitySize(entity), nodes });
+      }
       const uses = workspace.uses();
       return json({
         tags: lib.tags.map((t) => ({ ...t, ...(uses.tags[t.name] ? { used: uses.tags[t.name] } : {}) })),
         skills: lib.skills.map((k) => ({ ...k, ...(uses.skills[k.name] ? { used: uses.skills[k.name] } : {}) })),
+        entities: lib.entities.map((e) => {
+          const u = uses.entities[e.id];
+          return { ...e, size: entitySize(e.id), ...(u ? { used: { nodes: u.nodes, scenes: u.scenes } } : {}) };
+        }),
         guide: guideLine(),
       });
     },
@@ -157,7 +214,8 @@ function buildServer(workspace: Workspace) {
       description:
         "Change the open project's library, as one step in the library's own undo history (not the scene's): add or " +
         "change tags and skills (`upsert`: only the fields given change), `rename` them (the old name stays as an alias), " +
-        "`remove` them, or replace the design guide's text (`guide`, only when the human asks). All-or-nothing. " +
+        "change an entity's name, description or tags (`entities`), `remove` tags, skills or unplaced entities, or " +
+        "replace the design guide's text (`guide`, only when the human asks). All-or-nothing. " +
         "Returns what changed, and warnings for references in the descriptions to nothing in the library.",
       inputSchema: LibraryEditSchema.shape,
     },
@@ -170,8 +228,8 @@ function buildServer(workspace: Workspace) {
       title: "Draw shapes",
       description:
         `Add one or more shapes to the scene in a single batch; they appear live in the editor. Each has a \`type\` ` +
-        `(box, the default, cylinder, freeform, line, ramp or note) and that type's fields. For a box or cylinder (a room, a volume or a hole) only ` +
-        `kind, x, z, width and depth are required; for a free-form, kind and points; for a line, points; for a ramp, points or spiral; for a note, x, z and text. The rest have defaults (the kind's ` +
+        `(box, the default, cylinder, freeform, line, ramp, note or instance) and that type's fields. For a box or cylinder (a room, a volume or a hole) only ` +
+        `kind, x, z, width and depth are required; for a free-form, kind and points; for a line, points; for a ramp, points or spiral; for a note, x, z and text; for an instance of an entity, entity, x and z. The rest have defaults (the kind's ` +
         `height, y 0, rotation 0, color ${DEFAULT_COLOR} (${DEFAULT_LINE_COLOR} for a line), ${DEFAULT_WALL} m room walls, no taper or bevel, no name, top level, a smooth cylinder, ` +
         `and a solid ${DEFAULT_THICKNESS} px line with no arrow). ` +
         `Set \`parent\` to a group's ID to draw straight into that group. ` +
@@ -191,6 +249,7 @@ function buildServer(workspace: Workspace) {
         ramps: all.filter((n) => n.type === "ramp").length,
         lines: all.filter((n) => n.type === "line").length,
         notes: all.filter((n) => n.type === "note" && n.status === "open").length,
+        instances: all.filter((n) => n.type === "instance").length,
         groups: all.filter(isGroup).length,
       };
       return json(warned({ created, totals, ...(refs.length > 0 ? { warnings: refs } : {}) }));
@@ -207,7 +266,7 @@ function buildServer(workspace: Workspace) {
         `taper and bevel (a volume's; 0 clears them), pitch and roll (a box or cylinder volume's; 0 levels it); ` +
         `a cylinder those and sides; a free-form name, parent, kind, y, height, color, wall, taper, bevel and points (the whole outline); a line name, parent, color, ` +
         `points (the whole path, with y), thickness, dashed and arrow; a ramp name, parent, color, ` +
-        `points (with y), width, step (null = smooth) and base; a note name, parent, x, y, z, color, text, label (null removes it) and status (open or done). ` +
+        `points (with y), width, step (null = smooth) and base; a note name, parent, x, y, z, color, text, label (null removes it) and status (open or done); an instance name, parent, x, y, z, rotation and entity (another entity's ID, to swap it). ` +
         `A group takes only name, description (what that part of the level is; null removes it), parent, locked and hidden (any node takes those two). ` +
         `{ id, type: "freeform" } alone converts a box or cylinder into a free-form with a new ID; a call that converts ` +
         `only converts (edit the new free-form in a second call). ` +

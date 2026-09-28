@@ -8,8 +8,8 @@ import type { Shape, Group, SceneNode } from "./scene.types";
 
 export const isShape = (n: SceneNode): n is Shape => n.type !== "group";
 export const isGroup = (n: SceneNode): n is Group => n.type === "group";
-/** A node's tags: groups, closed shapes and ramps have them; lines and notes don't. */
-export const tagsOf = (n: SceneNode): string[] | undefined => (n.type === "line" || n.type === "note" ? undefined : n.tags);
+/** A node's own tags: groups, closed shapes and ramps have them; lines, notes and instances (whose tags are their entity's) don't. */
+export const tagsOf = (n: SceneNode): string[] | undefined => (n.type === "line" || n.type === "note" || n.type === "instance" ? undefined : n.tags);
 
 /** The nodes directly inside `parent` (undefined = the top level), in list order. */
 export const childrenOf = (nodes: SceneNode[], parent: string | undefined) => nodes.filter((n) => n.parent === parent);
@@ -118,6 +118,7 @@ export function countsText(nodes: SceneNode[]): string {
     ["ramp", 0],
     ["line", 0],
     ["note", 0],
+    ["instance", 0],
     ["group", 0],
   ];
   const bump = (key: string) => counts.find(([k]) => k === key)![1]++;

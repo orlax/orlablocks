@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { BookOpen, Plus, Redo2, Trash2, Undo2, X } from "lucide-react";
-import { NAME_PATTERN, SIGIL, type Library, type LibraryEdit, type LibraryKind, type Skill, type Tag, type Uses } from "../shared/library";
+import { NAME_PATTERN, SIGIL, type EntityMeta, type Library, type LibraryEdit, type LibraryKind, type Skill, type Tag, type Uses } from "../shared/library";
 import type { ClientMessage, HistorySummary } from "../shared/scene.types";
 import { typingInField } from "./keys";
 import { RefTextArea, TagsField } from "./RefText";
 
 /**
  * The Library panel (plan 08 §5), docked on the right: the project's skills, tags and design guide, shared by every
- * scene. It has its own undo history, with Undo / Redo in its header and ⌘Z / ⇧⌘Z while focus is in it (outside a
+ * scene (its entities have their own panel, under the outliner). It has its own undo history, with Undo / Redo in its header and ⌘Z / ⇧⌘Z while focus is in it (outside a
  * text field). Edits are sent as `update_library`, one step each.
  */
 
@@ -130,8 +130,60 @@ function RecordList({ kind, library, uses, edit }: { kind: LibraryKind; library:
   );
 }
 
+/** An entity's name, description and tags, and Delete (the Entities panel's open row). */
+export function EntityEditor({ meta, library, edit }: { meta: EntityMeta; library: Library; edit: (e: LibraryEdit) => void }) {
+  const [name, setName] = useState(meta.name);
+  useEffect(() => setName(meta.name), [meta.name]);
+  return (
+    <div className="record-editor">
+      <label>
+        <span>name</span>
+        <input
+          value={name}
+          title={`Its name (its ID, ${meta.id}, stays)`}
+          onChange={(e) => setName(e.target.value)}
+          onBlur={() => (name.trim() && name.trim() !== meta.name ? edit({ entities: [{ id: meta.id, name: name.trim() }] }) : setName(meta.name))}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") e.currentTarget.blur();
+            if (e.key === "Escape") {
+              setName(meta.name);
+              e.currentTarget.blur();
+            }
+          }}
+        />
+      </label>
+      <DescriptionEditor
+        library={library}
+        value={meta.description ?? ""}
+        placeholder="What it is and does in the game: poisonous goo that hurts the player; @fish can clean it up…"
+        onSave={(description) => edit({ entities: [{ id: meta.id, description }] })}
+      />
+      <label className="stacked">
+        <span>tags</span>
+        <TagsField
+          library={library}
+          tags={meta.tags ?? []}
+          onChange={(tags) => edit({ entities: [{ id: meta.id, tags }] })}
+          onCreate={(tag) => edit({ upsert: [{ kind: "tag", name: tag }], entities: [{ id: meta.id, tags: [...(meta.tags ?? []), tag] }] })}
+        />
+      </label>
+      <div className="record-actions">
+        <span className="aliases">ID {meta.id}</span>
+        <button
+          type="button"
+          className="labeled danger"
+          title="Delete the entity (only when it isn't placed anywhere; undo brings it back)"
+          onClick={() => edit({ remove: [{ kind: "entity", name: meta.id }] })}
+        >
+          <Trash2 size={13} /> Delete
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /** A text area that sends on leaving it (or ⌘Enter); Esc puts the saved text back. */
-function DescriptionEditor({ library, value, onSave, placeholder }: { library: Library; value: string; onSave: (text: string) => void; placeholder: string }) {
+export function DescriptionEditor({ library, value, onSave, placeholder }: { library: Library; value: string; onSave: (text: string) => void; placeholder: string }) {
   const [text, setText] = useState<string | null>(null);
   const cancelled = useRef(false);
   return (

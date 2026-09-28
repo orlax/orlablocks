@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Library, Uses } from "../shared/library";
+import { NO_USES, type Library, type Uses } from "../shared/library";
+import { setDefinitions } from "../shared/entities";
 import type { ClientMessage, EditorRestore, HistorySummary, OpenScene, ProjectSummary, Scene, ServerMessage } from "../shared/scene.types";
 
 const NO_HISTORY: HistorySummary = { canUndo: false, canRedo: false };
@@ -17,8 +18,10 @@ export function useScene() {
   const [library, setLibrary] = useState<{ library: Library | null; history: HistorySummary; uses: Uses }>({
     library: null,
     history: NO_HISTORY,
-    uses: { tags: {}, skills: {} },
+    uses: NO_USES,
   });
+  // Bumped when the definitions change, so what depends on them redraws.
+  const [definitionsVersion, setDefinitionsVersion] = useState(0);
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -47,6 +50,10 @@ export function useScene() {
           setOpen(msg.open);
           if (msg.restore) setRestore({ ...msg.restore });
           setError(null);
+        } else if (msg.type === "entities") {
+          // Before the next render, so every instance draws from these.
+          setDefinitions(msg.definitions);
+          setDefinitionsVersion((v) => v + 1);
         } else if (msg.type === "library") {
           setLibrary({ library: msg.library, history: msg.history, uses: msg.uses });
         } else if (msg.type === "error") {
@@ -70,5 +77,5 @@ export function useScene() {
     if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
   }, []);
 
-  return { scene, history, projects, open, restore, library, connected, error, clearError, send };
+  return { scene, history, projects, open, restore, library, definitionsVersion, connected, error, clearError, send };
 }

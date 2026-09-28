@@ -11,6 +11,7 @@ import {
   type Box,
   type ClosedShape,
   type Cylinder,
+  type Instance,
   type Line,
   type LinePoint,
   type Ramp,
@@ -18,16 +19,18 @@ import {
   type ShapeColor,
   type ShapeKind,
   type ShapePatch,
+  type ShapeInput,
   type SceneNode,
   type View,
 } from "../shared/scene.types";
-import { footprintBounds, isClosed, isTilted, polyline, rampStations, reversePoints, round2, wallOf } from "../shared/geometry";
+import { boundsOf, footprintBounds, isClosed, isTilted, polyline, rampStations, reversePoints, round2, wallOf } from "../shared/geometry";
 import { shapesUnder, childrenOf, countsText, isShape, isGroup, hiddenIds, lockedIds, subtreeIds, tagsOf } from "../shared/tree";
 import type { CameraState, GroundPoint } from "./camera";
 import { clipboardText, readClipboard } from "./clipboard";
 import { ErrorPanel } from "./ErrorPanel";
 import { LibraryPanel } from "./Library";
-import { currentTags } from "../shared/library";
+import { EntitiesPanel } from "./EntitiesPanel";
+import { currentTags, entityMeta, type Library } from "../shared/library";
 import { reportError } from "./errors";
 import { Inspector, type InspectorProps } from "./Inspector";
 import { highlightedText, typingInField } from "./keys";
@@ -66,7 +69,14 @@ const title = (n: SceneNode) => (n.name ? `${n.name} (${n.id})` : n.id);
  * `7 points · 12.3 × 8 × 3 m · y 0`, and a line's points, length and style:
  * `3 points · 14.2 m long · 3 px · dashed · arrow at the end`.
  */
-const details = (s: Shape) => {
+const details = (s: Shape, library: Library | null) => {
+  if (s.type === "instance") {
+    const meta = library ? entityMeta(library, s.entity) : undefined;
+    const b = boundsOf([s]);
+    const tags = library && meta ? currentTags(library, meta.tags).map((t) => ` · #${t}`).join("") : "";
+    const size = `${round2(b.maxX - b.minX)} × ${round2(b.maxZ - b.minZ)} × ${round2(b.maxY - b.minY)} m`;
+    return `${meta ? meta.name : `missing entity ${s.entity}`} · ${size} · y ${s.y} · ${s.rotation}°${tags}`;
+  }
   if (s.type === "note") return `note${s.label ? ` · ${s.label}` : ""} · ${s.status} · by ${s.createdBy} · y ${s.y}`;
   if (s.type === "line") {
     const path = polyline(s);
@@ -150,6 +160,8 @@ export function App() {
   // The view bar: whether holes show as ghosts (off: only what they cut away shows), and the grid.
   const [showHoles, setShowHoles] = useState(true);
   const [showNotes, setShowNotes] = useState(true);
+  // An entity being placed from the Library: the next click in the view puts an instance there.
+  const [placing, setPlacing] = useState<string | null>(null);
   // The Note tool's next color, and the note it just placed (its text field takes the focus once it's selected).
   const [nextNoteColor, setNextNoteColor] = useState<ShapeColor>(DEFAULT_NOTE_COLOR);
   const [freshNote, setFreshNote] = useState<string | null>(null);
@@ -175,8 +187,8 @@ export function App() {
     return new Set(nodes.filter((n) => !hidden.has(n.id) && isolatedIn(n.id)).map((n) => n.id));
   }, [nodes, isolation]);
   // The key handler is installed once; it reads the current state from here.
-  const state = useRef({ nodes, selection, context, open, pickerOpen, view, visible, isolated });
-  state.current = { nodes, selection, context, open, pickerOpen, view, visible, isolated };
+  const state = useRef({ nodes, selection, context, open, pickerOpen, view, visible, isolated, placing });
+  state.current = { nodes, selection, context, open, pickerOpen, view, visible, isolated, placing };
 
   /** Isolates a node (null ends it). Isolating a group enters it, so what's drawn next goes in it. */
   const isolate = useCallback(
@@ -350,6 +362,10 @@ export function App() {
         if (selection.length > 0) send({ type: "mirror_nodes", ids: selection, axis: key });
         return;
       }
+      if (e.key === "Escape" && state.current.placing) {
+        setPlacing(null);
+        return;
+      }
       if (e.key === "Escape") {
         // While isolated, Esc deselects first (staying in the isolated group), then ends the isolation.
         if (isolated && selection.length > 0) setSelection([]);
@@ -425,13 +441,14 @@ export function App() {
   // Kind and sides are for a single shape; color applies to every shape in the selection (groups included).
   const single = selectedNodes.length === 1 ? selectedNodes[0] : null;
   const singleShape = single && isShape(single) ? single : null;
-  const sharedColor =
-    selectedShapes.length > 0 && selectedShapes.every((b) => b.color === selectedShapes[0].color) ? selectedShapes[0].color : null;
+  // Instances have no color of their own (their shapes are the entity's).
+  const colored = selectedShapes.filter((b): b is Exclude<Shape, Instance> => b.type !== "instance");
+  const sharedColor = colored.length > 0 && colored.every((b) => b.color === colored[0].color) ? colored[0].color : null;
   const contextNode = context !== null ? nodes.find((n) => n.id === context) : undefined;
   const selectionTitle = single ? title(single) : `${selectedNodes.length} selected`;
   // A single group shows what's in it, like the agent's outline.
   const selectionInfo = singleShape
-    ? details(singleShape)
+    ? details(singleShape, library)
     : single
       ? countsText(nodes.filter((n) => n.id !== single.id && subtreeIds(nodes, single.id).has(n.id)))
       : `${selectedShapes.length} shape${selectedShapes.length === 1 ? "" : "s"}`;
@@ -560,7 +577,7 @@ export function App() {
                 ? undefined
                 : (kind) => singleClosed && send({ type: "update_nodes", changes: [{ id: singleClosed.id, kind }] }),
               color: sharedColor,
-              onColor: (color) => send({ type: "update_nodes", changes: selectedShapes.map((b) => ({ id: b.id, color })) }),
+              onColor: (color) => colored.length > 0 && send({ type: "update_nodes", changes: colored.map((b) => ({ id: b.id, color })) }),
             }
           : null;
   const inspector: InspectorProps | null = closedTool
@@ -581,6 +598,28 @@ export function App() {
               title: contextNode ? `${contextNode.name ?? contextNode.id} › ${selectionTitle}` : selectionTitle,
               info: editing && editable ? `editing points · ${selectionInfo}` : selectionInfo,
               library,
+              instance:
+                single?.type === "instance" && library
+                  ? {
+                      entity: single.entity,
+                      entities: library.entities,
+                      onSwap: (entity) => send({ type: "update_nodes", changes: [{ id: single.id, entity }] }),
+                      onDetach: () => {
+                        pendingSelect.current = { before: new Set(nodes.map((n) => n.id)), pick: (added) => added.filter((n) => n.type === "group" && n.parent === single.parent).map((n) => n.id).slice(0, 1) };
+                        send({ type: "detach_instances", ids: [single.id] });
+                      },
+                    }
+                  : undefined,
+              makeEntity:
+                selectedShapes.length > 0 && !selectedShapes.some((b) => b.type === "instance" || b.type === "note")
+                  ? {
+                      suggested: (single && isGroup(single) ? single.name : undefined) ?? "entity",
+                      onMake: (name) => {
+                        pendingSelect.current = { before: new Set(nodes.map((n) => n.id)), pick: (added) => added.filter((n) => n.type === "instance").map((n) => n.id) };
+                        send({ type: "make_entity", ids: selection, name });
+                      },
+                    }
+                  : undefined,
               note:
                 single?.type === "note"
                   ? {
@@ -597,7 +636,8 @@ export function App() {
                   ? { value: single.description ?? "", onChange: (text) => send({ type: "update_nodes", changes: [{ id: single.id, description: text || null }] }) }
                   : undefined,
               tags:
-                single && single.type !== "line" && single.type !== "note" && library
+                // An instance's tags are its entity's (edited in the Entities panel), so it has no field of its own.
+                single && single.type !== "line" && single.type !== "note" && single.type !== "instance" && library
                   ? {
                       value: currentTags(library, tagsOf(single)),
                       onChange: (tags) => send({ type: "update_nodes", changes: [{ id: single.id, tags }] }),
@@ -644,6 +684,13 @@ export function App() {
         preview={preview}
         onSelect={setSelection}
         showNotes={showNotes}
+        placing={placing}
+        onPlaceInstance={(entity, at) => {
+          pendingSelect.current = { before: new Set(nodes.map((n) => n.id)), pick: (added) => added.filter((n) => n.type === "instance").map((n) => n.id) };
+          send({ type: "add_shapes", shapes: [{ type: "instance", entity, ...at, ...(context !== null ? { parent: context } : {}) }] });
+          setPlacing(null);
+          setTool("select");
+        }}
         onPlaceNote={(at) => {
           pendingSelect.current = {
             before: new Set(nodes.map((n) => n.id)),
@@ -665,7 +712,7 @@ export function App() {
                 ...shape,
                 ...(context !== null ? { parent: context } : {}),
                 color: shape.type === "line" ? nextLine.color : shape.type === "ramp" ? nextRamp.color : nextColor,
-              },
+              } as ShapeInput,
             ],
           })
         }
@@ -683,23 +730,35 @@ export function App() {
         cameraRestore={restore}
       />
 
-      <Outliner
-        key={sceneKey}
-        nodes={nodes}
-        selection={selection}
-        onSelect={(ids, ctx) => {
-          setSelection(ids);
-          setContext(ctx);
-        }}
-        onHover={setOutlinerHover}
-        onRename={(id, name) => send({ type: "update_nodes", changes: [{ id, name }] })}
-        onPlace={(ids, parent, before) => send({ type: "place_nodes", ids, parent, before })}
-        isolated={isolated}
-        visible={visible}
-        onIsolate={isolate}
-        onLock={(id, locked) => send({ type: "update_nodes", changes: [{ id, locked }] })}
-        onHide={(id, hidden) => send({ type: "update_nodes", changes: [{ id, hidden }] })}
-      />
+      <div className="left-dock">
+        <Outliner
+          key={sceneKey}
+          nodes={nodes}
+          selection={selection}
+          onSelect={(ids, ctx) => {
+            setSelection(ids);
+            setContext(ctx);
+          }}
+          onHover={setOutlinerHover}
+          onRename={(id, name) => send({ type: "update_nodes", changes: [{ id, name }] })}
+          onPlace={(ids, parent, before) => send({ type: "place_nodes", ids, parent, before })}
+          isolated={isolated}
+          visible={visible}
+          onIsolate={isolate}
+          onLock={(id, locked) => send({ type: "update_nodes", changes: [{ id, locked }] })}
+          onHide={(id, hidden) => send({ type: "update_nodes", changes: [{ id, hidden }] })}
+          entityNames={Object.fromEntries((library?.entities ?? []).map((e) => [e.id, e.name]))}
+        />
+        {open && library && (
+          <EntitiesPanel
+            library={library}
+            uses={libraryState.uses}
+            edit={(e) => send({ type: "update_library", ...e })}
+            placing={placing}
+            onPlace={(id) => setPlacing(placing === id ? null : id)}
+          />
+        )}
+      </div>
 
       {open && (
         <div className="top-left">
@@ -730,7 +789,21 @@ export function App() {
       )}
 
       {open && library && libraryOpen && (
-        <LibraryPanel library={library} history={libraryState.history} uses={libraryState.uses} send={send} onClose={() => setLibraryOpen(false)} />
+        <LibraryPanel
+          library={library}
+          history={libraryState.history}
+          uses={libraryState.uses}
+          send={send}
+          onClose={() => setLibraryOpen(false)}
+        />
+      )}
+      {placing && library && (
+        <div className="placing-banner">
+          Placing <b>{entityMeta(library, placing)?.name ?? placing}</b>: click on a surface in the view
+          <button type="button" onClick={() => setPlacing(null)}>
+            Esc
+          </button>
+        </div>
       )}
 
       <div className="info-label">

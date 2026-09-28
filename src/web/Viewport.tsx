@@ -91,6 +91,7 @@ import { marqueeHits, rectFrom, type ScreenPoint } from "./marquee";
 import { LineMesh } from "./LineMesh";
 import { pickHit, pickLine, pickNote, surfaceUnder, type Surface } from "./pick";
 import { NoteMesh } from "./NoteMesh";
+import { expandNodes, expandShapes, ownerOf } from "../shared/entities";
 import {
   handleEnd,
   hitPoints,
@@ -143,6 +144,9 @@ const rampPoints = (points: EditPoint[]): RampPoint[] =>
 
 type YawKey = "left" | "right";
 const YAW_KEYS: Record<string, YawKey> = { a: "left", arrowleft: "left", d: "right", arrowright: "right" };
+
+/** The drag-and-drop type of an entity dragged from the Library (its ID). */
+export const ENTITY_DRAG = "application/x-dungeon-entity";
 
 export type Tool = "select" | "hand" | "box" | "cylinder" | "pen" | "line" | "ramp" | "note";
 /** The tools that drag a footprint on the ground, and the shape type each draws. */
@@ -226,7 +230,15 @@ type Turn = { key: string; angle: number; expect: string };
 /** The selected shapes' footprints, for telling whether something other than our own drags changed them. */
 const footprintKey = (shapes: Shape[]) =>
   JSON.stringify(
-    shapes.map((s) => (isFootprinted(s) ? [s.x, s.z, s.width, s.depth, s.rotation, s.type === "cylinder" ? s.sides : 0] : s.type === "note" ? [s.x, s.z] : s.points)),
+    shapes.map((s) =>
+      isFootprinted(s)
+        ? [s.x, s.z, s.width, s.depth, s.rotation, s.type === "cylinder" ? s.sides : 0]
+        : s.type === "note"
+          ? [s.x, s.z]
+          : s.type === "instance"
+            ? [s.x, s.z, s.rotation, s.entity]
+            : s.points,
+    ),
   );
 
 const snap = (n: number) => Math.round(n / SNAP) * SNAP;
@@ -281,6 +293,10 @@ type Props = {
   showNotes: boolean;
   /** A note was placed with the Note tool (at this point, on the surface under the click). */
   onPlaceNote: (at: { x: number; y: number; z: number }) => void;
+  /** An entity being placed from the Library (its ID): the next click puts an instance there. */
+  placing: string | null;
+  /** An instance of `entity` goes here (a click while placing, or an entity dropped from the Library). */
+  onPlaceInstance: (entity: string, at: { x: number; y: number; z: number }) => void;
   /**
    * The nodes that show (null = everything): not the hidden ones, and while a node is isolated only it (and what's
    * new since). The rest can't be seen, picked or snapped to.
@@ -325,6 +341,8 @@ export function Viewport({
   showGrid,
   showNotes,
   onPlaceNote,
+  placing,
+  onPlaceInstance,
   visible,
   preview,
   onSelect,
@@ -412,15 +430,18 @@ export function Viewport({
   const onView = (visible ? shown.filter((b) => visible.has(b.id)) : shown).filter((b) => showNotes || b.type !== "note" || selectedIds.has(b.id));
   const onViewRef = useRef(onView);
   onViewRef.current = onView;
-  const pickable = showHoles ? onView : onView.filter((b) => !isHole(b) || selectedIds.has(b.id));
+  // What's drawn: each instance as its entity's shapes (IDs like `instance_4/box_2`; `ownerOf` maps a hit back).
+  const drawn = expandShapes(onView);
+  const pickable = showHoles ? drawn : drawn.filter((b) => !isHole(b) || selectedIds.has(b.id) || selectedIds.has(ownerOf(b.id)));
   // Locked nodes (and what's in them) can't be clicked, hovered or marquee-selected, unless selected from the
   // outliner; they still count as surfaces to draw on and snap to.
   const locked = lockedIds(nodes);
-  const selectable = pickable.filter((b) => !locked.has(b.id) || selectedIds.has(b.id));
+  const selectable = pickable.filter((b) => !locked.has(ownerOf(b.id)) || selectedIds.has(ownerOf(b.id)));
   // Which holes cut which shapes, as shown (so a drag cuts live).
   // A hidden hole cuts nothing; holes outside the isolation still cut what shows (the cut follows the data).
   const hidden = hiddenIds(nodes);
-  const cuts = cutters([...nodes.filter(isGroup), ...shown.filter((b) => !(isHole(b) && hidden.has(b.id))), ...ghosts]);
+  // Instances cut and are cut as groups of their shapes.
+  const cuts = cutters(expandNodes([...nodes.filter(isGroup), ...shown.filter((b) => !(isHole(b) && hidden.has(b.id))), ...ghosts]));
   // The free-form or line in point editing, as shown. A free-form's points sit on its top face (`editTop`); a
   // line's carry their own y, and its path is open.
   const editShape =
@@ -488,7 +509,7 @@ export function Viewport({
   /** Where a new shape lands, for the labels: `on hall's floor · y 3`, or null for the ground. */
   const surfaceText = (surface: Surface | null) => {
     if (!surface) return null;
-    const n = nodes.find((b) => b.id === surface.id);
+    const n = nodes.find((b) => b.id === ownerOf(surface.id));
     return `on ${n?.name ?? surface.id}'s ${surface.what} · y ${round2(surface.y)}`;
   };
   /** While hovering in a drawing tool: shows where a press would start a shape, when that's not the ground. */
@@ -509,10 +530,14 @@ export function Viewport({
    * The shape under the cursor and the point where it's hit: a line first (they're drawn over everything, picked
    * within a few px of their path on screen), else the first closed shape the ray hits.
    */
-  const hitAt = (sx: number, sy: number, size: Size) =>
-    pickNote(cam.current, size, sx, sy, selectable) ??
-    pickLine(cam.current, size, sx, sy, selectable) ??
-    pickHit(screenRay(cam.current, size, sx, sy), selectable);
+  const hitAt = (sx: number, sy: number, size: Size) => {
+    const hit =
+      pickNote(cam.current, size, sx, sy, selectable) ??
+      pickLine(cam.current, size, sx, sy, selectable) ??
+      pickHit(screenRay(cam.current, size, sx, sy), selectable);
+    // A part of an instance picks the instance.
+    return hit && { ...hit, id: ownerOf(hit.id) };
+  };
   const pickAt = (sx: number, sy: number, size: Size) => {
     const id = hitAt(sx, sy, size)?.id;
     return id === undefined ? null : resolve(id).id;
@@ -578,7 +603,7 @@ export function Viewport({
    */
   const dragTo = (d: Drag, sx: number, sy: number, keys: { shiftKey: boolean; altKey: boolean; metaKey: boolean; ctrlKey: boolean }): Drag => {
     const copy = keys.altKey && canCopy(d.part);
-    const others = copy ? onViewRef.current : onViewRef.current.filter((b) => !d.ids.includes(b.id));
+    const others = expandShapes(copy ? onViewRef.current : onViewRef.current.filter((b) => !d.ids.includes(b.id)));
     const mods = { shift: keys.shiftKey, alt: keys.altKey, snap: !noSnap(keys) };
     const size = { width: wrap.current!.clientWidth, height: wrap.current!.clientHeight };
     const { patches, label, turn } = dragUpdate(d, cam.current, size, sx, sy, mods, others);
@@ -593,7 +618,7 @@ export function Viewport({
    * The Line tool's point under the cursor: on the surface there (a volume's top, a room's floor or wall top; lines
    * don't count), else on the ground. x and z snap to 0.5 m unless Cmd/Ctrl; y comes from the surface.
    */
-  const surfaceAt = (e: PointerEvent): LinePoint => {
+  const surfaceAt = (e: { clientX: number; clientY: number; metaKey: boolean; ctrlKey: boolean }): LinePoint => {
     const { sx, sy, size } = local(e);
     const hit = pickHit(screenRay(cam.current, size, sx, sy), pickable);
     const p = hit ? hit.point : { ...screenToGround(cam.current, size, sx, sy), y: 0 };
@@ -773,7 +798,7 @@ export function Viewport({
       const from = pointY(q, 0);
       const raw = from + paramOnLine(cam.current, size, sx, sy, { x: q.x, y: from, z: q.z }, AXES.y) - d.grabY!;
       const near = { minX: q.x - 0.01, maxX: q.x + 0.01, minY: from, maxY: from, minZ: q.z - 0.01, maxZ: q.z + 0.01 };
-      const y = snapElevation(raw, elevationTargets(near, onViewRef.current), !noSnap(e));
+      const y = snapElevation(raw, elevationTargets(near, expandShapes(onViewRef.current)), !noSnap(e));
       const points = movePoints(d.start, d.indices, 0, 0, y - from);
       setPointDrag({ ...d, points, problem: pointsProblem(points), sx, sy, label: `y ${y.toFixed(2)} m` });
       return;
@@ -802,6 +827,12 @@ export function Viewport({
     const { sx, sy, size } = local(e);
     // Working in the view drops any highlighted page text, so Cmd/Ctrl+C copies the shapes again, not stale text.
     window.getSelection()?.removeAllRanges();
+    // Placing an entity: a click puts an instance on the surface under it.
+    if (e.button === 0 && placing) {
+      const p = surfaceAt(e);
+      onPlaceInstance(placing, { x: round2(p.x), y: round2(p.y), z: round2(p.z) });
+      return;
+    }
     // The Note tool: a click pins a note on the surface under it.
     if (e.button === 0 && tool === "note") {
       const p = surfaceAt(e);
@@ -910,7 +941,7 @@ export function Viewport({
         // Boxes resolve to the nodes at the current level; inside a group, boxes outside it don't count.
         const hits: string[] = [];
         for (const id of marqueeHits(cam.current, size, selectable, rectFrom(marquee.start, end))) {
-          const r = resolve(id);
+          const r = resolve(ownerOf(id));
           if (!r.leaves && !hits.includes(r.id)) hits.push(r.id);
         }
         onSelect(marquee.additive ? [...marquee.base, ...hits.filter((id) => !marquee.base.includes(id))] : hits);
@@ -1203,6 +1234,20 @@ export function Viewport({
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerUp}
       onDoubleClick={onDoubleClick}
+      // An entity dragged from the Library lands on the surface under the drop.
+      onDragOver={(e) => {
+        if (e.dataTransfer.types.includes(ENTITY_DRAG)) {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "copy";
+        }
+      }}
+      onDrop={(e) => {
+        const entity = e.dataTransfer.getData(ENTITY_DRAG);
+        if (!entity) return;
+        e.preventDefault();
+        const p = surfaceAt(e);
+        onPlaceInstance(entity, { x: round2(p.x), y: round2(p.y), z: round2(p.z) });
+      }}
       // Ctrl+click on a Mac opens the context menu; Ctrl is the no-snap modifier here.
       onContextMenu={(e) => e.preventDefault()}
       onPointerLeave={() => {
@@ -1231,7 +1276,7 @@ export function Viewport({
         {showGrid && <Grid cam={cam} />}
         <OriginAxes />
         <Boxes
-          boxes={[...onView, ...ghosts]}
+          boxes={[...drawn, ...expandShapes(ghosts)]}
           cuts={cuts}
           showHoles={showHoles}
           draft={draft}
@@ -1365,9 +1410,13 @@ function Boxes({
   return (
     <>
       {boxes.map((b) => {
-        const highlight = selected.has(b.id) ? "selected" : hovered.has(b.id) ? "hover" : undefined;
+        // A part of an instance lights up with it.
+        const owner = ownerOf(b.id);
+        const highlight = selected.has(b.id) || selected.has(owner) ? "selected" : hovered.has(b.id) || hovered.has(owner) ? "hover" : undefined;
         if (b.type === "line") return <LineMesh key={b.id} line={b} highlight={highlight} />;
         if (b.type === "note") return <NoteMesh key={b.id} note={b} highlight={highlight} />;
+        // Instances arrive expanded; one here would be a bug upstream.
+        if (b.type === "instance") return null;
         if (isHole(b) && !showHoles && !highlight) return null;
         return (
           <group key={b.id}>

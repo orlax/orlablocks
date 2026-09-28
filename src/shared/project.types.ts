@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { SkillSchema, TagSchema } from "./library";
+import { EntityMetaSchema, SkillSchema, TagSchema } from "./library";
 import { CameraSchema, NodeSchema } from "./scene.types";
 
 /**
@@ -12,10 +12,10 @@ import { CameraSchema, NodeSchema } from "./scene.types";
  * history can hold removed nodes. Types added later default to 1, so older scenes load unchanged.
  */
 const counter = z.number().int().min(1);
-export const NextIdSchema = z.object({ box: counter, group: counter, cylinder: counter.default(1), freeform: counter.default(1), line: counter.default(1), ramp: counter.default(1), note: counter.default(1) });
+export const NextIdSchema = z.object({ box: counter, group: counter, cylinder: counter.default(1), freeform: counter.default(1), line: counter.default(1), ramp: counter.default(1), note: counter.default(1), instance: counter.default(1) });
 export type NextId = z.infer<typeof NextIdSchema>;
 /** A new scene's counters. */
-export const firstIds = (): NextId => ({ box: 1, group: 1, cylinder: 1, freeform: 1, line: 1, ramp: 1, note: 1 });
+export const firstIds = (): NextId => ({ box: 1, group: 1, cylinder: 1, freeform: 1, line: 1, ramp: 1, note: 1, instance: 1 });
 
 /** `project.json` */
 export const ProjectFileSchema = z.object({
@@ -34,9 +34,23 @@ export const LibraryFileSchema = z.object({
   seq: z.number().int().min(0),
   tags: z.array(TagSchema).default([]),
   skills: z.array(SkillSchema).default([]),
+  entities: z.array(EntityMetaSchema).default([]),
   seeded: z.array(z.string()).default([]),
 });
 export type LibraryFile = z.infer<typeof LibraryFileSchema>;
+
+/**
+ * `entities/<id>/entity.json`: an entity's definition (plan 08 §7), laid out like a scene: its nodes around the pivot
+ * (the origin, at its bottom center), its ID counters, and the step its history is at. Its name, description and
+ * tags are in the library.
+ */
+export const EntityFileSchema = z.object({
+  createdAt: z.string(),
+  seq: z.number().int().min(0),
+  nextId: NextIdSchema,
+  nodes: z.array(NodeSchema),
+});
+export type EntityFile = z.infer<typeof EntityFileSchema>;
 
 /** `scenes/<id>/scene.json`: written in full after every change to the nodes. */
 export const SceneFileSchema = z.object({

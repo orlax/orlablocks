@@ -11,6 +11,7 @@ import {
   type LibraryEdit,
   type LibraryKind,
   type LibraryOp,
+  type EntityMeta,
   type Skill,
   type Tag,
 } from "../shared/library";
@@ -67,7 +68,7 @@ export function createLibraryStore() {
         const lines = parsed.error.issues.map((i) => `${i.path.map(String).join(".") || "(edit)"}: ${i.message}`);
         throw new SceneError(`The library wasn't changed.\n${lines.join("\n")}`);
       }
-      const { upsert = [], remove = [], rename = [], guide } = parsed.data;
+      const { upsert = [], remove = [], rename = [], entities = [], guide } = parsed.data;
       const errors: string[] = [];
       const ops: LibraryOp[] = [];
       const labels: string[] = [];
@@ -133,7 +134,42 @@ export function createLibraryStore() {
         changed.push(ref(u.kind, u.name));
       });
 
+      entities.forEach((e, i) => {
+        const at = `entities[${i}]`;
+        const meta = draft.entities.find((m) => m.id === e.id);
+        if (!meta) return void errors.push(`${at}.id: no entity "${e.id}" (get_library lists them)`);
+        const next: EntityMeta = { ...meta };
+        if (e.name !== undefined) {
+          if (!e.name.trim()) return void errors.push(`${at}.name: an entity needs a name`);
+          next.name = e.name.trim();
+        }
+        if (e.description !== undefined) {
+          const d = e.description.trim();
+          if (d) next.description = d;
+          else delete next.description;
+          if (d) described.push(d);
+        }
+        if (e.tags !== undefined) {
+          const missing = e.tags.filter((t) => !resolveRef(draft, "tag", t));
+          if (missing.length > 0) return void errors.push(`${at}.tags: no tag ${missing.map((t) => ref("tag", t)).join(", ")} (add it first)`);
+          const tags = [...new Set(e.tags.map((t) => resolveRef(draft, "tag", t)!.name))];
+          if (tags.length > 0) next.tags = tags;
+          else delete next.tags;
+        }
+        push({ op: "entity", name: meta.id, value: next });
+        labels.push(`edit entity ${next.name}`);
+        changed.push(`entity ${meta.id}`);
+      });
+
       remove.forEach(({ kind, name }, i) => {
+        if (kind === "entity") {
+          const meta = draft.entities.find((m) => m.id === name);
+          if (!meta) return void errors.push(`remove[${i}]: no entity "${name}"`);
+          push({ op: "entity", name, value: null });
+          labels.push(`delete entity ${meta.name}`);
+          changed.push(`entity ${name}`);
+          return;
+        }
         const record = resolveRef(draft, kind, name);
         if (!record) return void errors.push(`remove[${i}]: no ${kind} ${ref(kind, name)}`);
         push({ op: kind, name: record.name, value: null } as LibraryOp);
@@ -165,6 +201,15 @@ export function createLibraryStore() {
       apply(entry, "commit");
       const warnings = [...new Set(described.flatMap((d) => unknownRefs(library, d)))].map((r) => `${r} names nothing in the library`);
       return { changed, warnings };
+    },
+
+    /**
+     * Adds an entity's record without a history step (Make entity: the entity is created like a scene is, and only
+     * deleting it is undoable). The workspace saves it.
+     */
+    addEntityQuietly(meta: EntityMeta): void {
+      library = applyLibraryOp(library, { op: "entity", name: meta.id, value: meta });
+      emit();
     },
 
     /** Reverts the library's latest step. Returns it, or null if there was nothing to undo. */

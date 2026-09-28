@@ -58,6 +58,7 @@ import {
   type ShapePatch,
   type Group,
   type HistorySummary,
+  type Instance,
   type NodePatch,
   type NodeUpdate,
   type Scene,
@@ -66,6 +67,7 @@ import {
   type View,
 } from "../shared/scene.types";
 import { firstIds, type NextId } from "../shared/project.types";
+import { definitionOf, expandInstance } from "../shared/entities";
 import { shapesUnder, commonParent, copyNodes, isShape, isGroup, subtreeIds, topmost } from "../shared/tree";
 import { applyOp, createHistory, invertOp, runOps, type History, type HistoryEntry, type Op } from "./commands";
 
@@ -73,6 +75,16 @@ export class SceneError extends Error {}
 
 /** A change to the nodes that the history records: a new step, or moving through the existing ones. */
 export type Step = { type: "commit"; entry: HistoryEntry } | { type: "undo"; entry: HistoryEntry } | { type: "redo"; entry: HistoryEntry };
+
+/** What Make entity prepares (see the store's `prepareEntity`). */
+export type PreparedEntity = {
+  nodes: SceneNode[];
+  pivot: { x: number; y: number; z: number };
+  remove: string[];
+  parent?: string;
+  index: number;
+  from?: { name?: string; description?: string; tags?: string[] };
+};
 
 /** `{ tags }` when there are any, for spreading into a node. */
 const withTags = (tags: string[] | undefined) => (tags && tags.length > 0 ? { tags } : {});
@@ -129,6 +141,7 @@ const FIELD_VERBS: Record<keyof NodePatch, string> = {
   text: "edit",
   label: "label",
   status: "change status of",
+  entity: "swap",
 };
 
 /** What a kind-specific field is called in errors ("only a room has walls"). */
@@ -165,7 +178,14 @@ function parse<T extends z.ZodType>(schema: T, input: unknown, failure: string):
  * `resolveTag` finds a tag in the project library by its name or an alias and returns its current name, or
  * undefined for no such tag (the default: no library, so no tags).
  */
-export function createSceneStore({ resolveTag = () => undefined }: { resolveTag?: (name: string) => string | undefined } = {}) {
+export function createSceneStore({
+  resolveTag = () => undefined,
+  entityName = (id) => (definitionOf(id) ? id : undefined),
+}: {
+  resolveTag?: (name: string) => string | undefined;
+  /** An entity's name by its ID, or undefined for no such entity (the default: any entity with a definition). */
+  entityName?: (id: string) => string | undefined;
+} = {}) {
   const scene: Scene = { view: { ...DEFAULT_VIEW }, selection: [], nodes: [] };
   const listeners = new Set<(scene: Scene) => void>();
   const stepListeners = new Set<(step: Step) => void>();
@@ -429,6 +449,19 @@ export function createSceneStore({ resolveTag = () => undefined }: { resolveTag?
             arrow: d.arrow ?? "none",
           };
         }
+        if (d.type === "instance") {
+          if (!entityName(d.entity)) errors.push(`${prefix}.entity: no entity "${d.entity}" in the project library (get_library lists them)`);
+          return {
+            type: "instance" as const,
+            entity: d.entity,
+            ...(name ? { name } : {}),
+            ...(d.parent !== undefined ? { parent: d.parent } : {}),
+            x: round2(d.x),
+            y: round2(d.y ?? 0),
+            z: round2(d.z),
+            rotation: normalizeRotation(d.rotation ?? 0),
+          };
+        }
         if (d.type === "note") {
           return {
             type: "note" as const,
@@ -557,6 +590,19 @@ export function createSceneStore({ resolveTag = () => undefined }: { resolveTag?
           if (fields.tags !== undefined && node.type === "line") errors.push(`changes[${i}].tags: a line has no tags (it's an annotation)`);
           const noteOnly = (["text", "label", "status"] as const).filter((k) => fields[k] !== undefined);
           if (node.type !== "note" && noteOnly.length > 0) errors.push(`changes[${i}]: only a note has ${noteOnly.join(", ")} ("${id}" is a ${node.type})`);
+          if (fields.entity !== undefined && node.type !== "instance") errors.push(`changes[${i}].entity: only an instance shows an entity ("${id}" is a ${node.type})`);
+          if (node.type === "instance") {
+            const notInstance = (
+              ["kind", "width", "depth", "height", "sides", "wall", "taper", "bevel", "pitch", "roll", "points", "tags", "thickness", "dashed", "arrow", "step", "base", "color", "text", "label", "status"] as const
+            ).filter((k) => fields[k] !== undefined);
+            if (notInstance.length > 0) {
+              errors.push(
+                `changes[${i}]: "${id}" is an instance, with no ${notInstance.join(", ")} of its own: it has x, y, z, rotation, name and entity ` +
+                  `(its shapes, description and tags are the entity's: detach_instances turns it into a group you can edit)`,
+              );
+            }
+            if (fields.entity !== undefined && !entityName(fields.entity)) errors.push(`changes[${i}].entity: no entity "${fields.entity}" in the project library`);
+          }
           if (node.type === "note") {
             const notNote = (
               ["kind", "width", "depth", "height", "rotation", "sides", "wall", "taper", "bevel", "pitch", "roll", "points", "tags", "thickness", "dashed", "arrow", "step", "base"] as const
@@ -602,7 +648,7 @@ export function createSceneStore({ resolveTag = () => undefined }: { resolveTag?
               );
             }
           }
-          if (node.type !== "line" && node.type !== "ramp" && node.type !== "note") {
+          if (node.type !== "line" && node.type !== "ramp" && node.type !== "note" && node.type !== "instance") {
             const kind = fields.kind ?? node.kind;
             for (const f of Object.keys(KIND_FIELDS) as KindField[]) {
               if (fields[f] !== undefined && fields[f] !== null && !kindAllows(f, kind)) {
@@ -692,6 +738,7 @@ export function createSceneStore({ resolveTag = () => undefined }: { resolveTag?
         if (fields.text !== undefined) patch.text = fields.text.trim();
         if (fields.label !== undefined) patch.label = fields.label?.trim() || undefined;
         if (fields.status !== undefined) patch.status = fields.status;
+        if (fields.entity !== undefined) patch.entity = fields.entity;
         if (fields.parent !== undefined) patch.parent = parent;
         if (fields.locked !== undefined) patch.locked = fields.locked || undefined;
         if (fields.hidden !== undefined) patch.hidden = fields.hidden || undefined;
@@ -849,6 +896,7 @@ export function createSceneStore({ resolveTag = () => undefined }: { resolveTag?
         }
         if (n.type === "ramp") return { ...(rest as typeof n), ...kept, ...checkRamp(`nodes[${i}]`, n, errors) };
         if (n.type === "note") return { ...(rest as typeof n), ...kept, x: round2(n.x), y: round2(n.y), z: round2(n.z) };
+        if (n.type === "instance") return { ...(rest as typeof n), ...kept, x: round2(n.x), y: round2(n.y), z: round2(n.z), rotation: normalizeRotation(n.rotation) };
         const shape = { ...(rest as ClosedShape), ...kept, height: round2(n.height) } as ClosedShape;
         if (shape.type === "freeform") return { ...shape, points: checkPoints(`nodes[${i}]`, shape.points, errors) };
         return { ...shape, width: round2(shape.width), depth: round2(shape.depth), rotation: normalizeRotation(shape.rotation) };
@@ -927,6 +975,120 @@ export function createSceneStore({ resolveTag = () => undefined }: { resolveTag?
         { op: "update", changes: members.map((id) => ({ id, patch: { parent: group.id } })) },
       ]);
       return group;
+    },
+
+    /**
+     * What Make entity would turn into a definition (plan 08 §7), without changing anything: the nodes (whole
+     * subtrees) moved so the pivot, the bottom center of their bounds, is at the origin. A single group is unwrapped:
+     * its contents are the definition, and its name, description and tags are offered for the entity (the instance
+     * takes the group's place, and behaves like it). Refused for instances and notes. Keeps the nodes' IDs.
+     */
+    prepareEntity(ids: string[]): PreparedEntity {
+      if (ids.length === 0) throw new SceneError("ids: at least one ID is required. No entity was made.");
+      const errors: string[] = [];
+      checkIds("ids", ids, errors);
+      failIf(errors, "No entity was made.");
+      const roots = topmost(scene.nodes, ids);
+      const inside = new Set(roots.flatMap((id) => [...subtreeIds(scene.nodes, id)]));
+      const taken = scene.nodes.filter((n) => inside.has(n.id));
+      const bad = taken.filter((n) => n.type === "instance" || n.type === "note");
+      if (bad.length > 0) {
+        throw new SceneError(
+          `An entity can't hold ${bad.some((n) => n.type === "instance") ? "instances (no nested entities)" : "notes"}: ${listIds(bad.map((n) => n.id))}. No entity was made.`,
+        );
+      }
+      const shapes = taken.filter(isShape);
+      if (shapes.length === 0) throw new SceneError("There are no shapes in it. No entity was made.");
+      const single = roots.length === 1 ? scene.nodes.find((n) => n.id === roots[0]) : undefined;
+      const wrapper = single && isGroup(single) ? single : undefined;
+      const b = boundsOf(shapes);
+      const pivot = { x: round2((b.minX + b.maxX) / 2), y: round2(b.minY), z: round2((b.minZ + b.maxZ) / 2) };
+      const top = new Set(wrapper ? scene.nodes.filter((n) => n.parent === wrapper.id).map((n) => n.id) : roots);
+      const nodes = taken
+        .filter((n) => n.id !== wrapper?.id)
+        .map((n) => {
+          const moved = isShape(n) ? ({ ...n, ...moveShape(n, -pivot.x, -pivot.y, -pivot.z) } as SceneNode) : n;
+          if (!top.has(n.id)) return moved;
+          const { parent: _parent, ...rest } = moved;
+          return rest as SceneNode;
+        });
+      return {
+        nodes,
+        pivot,
+        remove: taken.map((n) => n.id),
+        parent: commonParent(scene.nodes, roots),
+        index: Math.min(...roots.map((id) => scene.nodes.findIndex((n) => n.id === id))),
+        ...(wrapper ? { from: { name: wrapper.name, description: wrapper.description, tags: wrapper.tags } } : {}),
+      };
+    },
+
+    /**
+     * The scene half of Make entity, as one step: the prepared nodes are replaced by one instance of `entity` at
+     * their pivot, unturned, where the first of them was. The definition must exist by now. Undo puts the nodes back.
+     */
+    commitEntity(prepared: PreparedEntity, entity: string, label_: string, actor: Actor): Instance {
+      const removing = new Set(prepared.remove);
+      const instance: Instance = {
+        id: newId("instance"),
+        type: "instance",
+        entity,
+        ...(prepared.parent !== undefined ? { parent: prepared.parent } : {}),
+        x: prepared.pivot.x,
+        y: prepared.pivot.y,
+        z: prepared.pivot.z,
+        rotation: 0,
+        createdBy: actor,
+      };
+      const index = scene.nodes.slice(0, prepared.index).filter((n) => !removing.has(n.id)).length;
+      commit(label("make entity", label_, actor), actor, [
+        { op: "remove", ids: prepared.remove },
+        { op: "add", nodes: [instance], indices: [index] },
+      ]);
+      return instance;
+    },
+
+    /**
+     * Turns instances into plain groups holding world copies of their entity's shapes (new IDs), each where its
+     * instance was, as one step. The group is named after the instance, else the entity. Returns the groups.
+     */
+    detachInstances(ids: string[], actor: Actor): Group[] {
+      if (ids.length === 0) throw new SceneError("ids: at least one ID is required. Nothing was detached.");
+      const errors: string[] = [];
+      checkIds("ids", ids, errors);
+      const nodes = byId();
+      ids.forEach((id, i) => {
+        const n = nodes.get(id);
+        if (n && n.type !== "instance") errors.push(`ids[${i}]: "${id}" is a ${n.type}, not an instance`);
+        else if (n && !definitionOf(n.entity)) errors.push(`ids[${i}]: "${id}"'s entity "${n.entity}" is missing, so there's nothing to detach`);
+      });
+      failIf(errors, "Nothing was detached.");
+      const ops: Op[] = [];
+      const groups: Group[] = [];
+      let current = scene.nodes;
+      for (const id of ids) {
+        const inst = current.find((n) => n.id === id) as Instance;
+        const [, ...inner] = expandInstance(inst);
+        const group: Group = {
+          id: newId("group"),
+          type: "group",
+          name: inst.name ?? entityName(inst.entity) ?? inst.entity,
+          ...(inst.parent !== undefined ? { parent: inst.parent } : {}),
+          createdBy: actor,
+        };
+        const idMap = new Map<string, string>([[inst.id, group.id]]);
+        for (const n of inner) idMap.set(n.id, newId(n.type));
+        const copies = inner.map((n) => ({ ...n, id: idMap.get(n.id)!, parent: idMap.get(n.parent!)!, createdBy: actor }) as SceneNode);
+        const index = current.findIndex((n) => n.id === id);
+        const step: Op[] = [
+          { op: "remove", ids: [id] },
+          { op: "add", nodes: [group, ...copies], indices: [group, ...copies].map((_, k) => index + k) },
+        ];
+        current = runOps(current, step).nodes;
+        ops.push(...step);
+        groups.push(group);
+      }
+      commit(label("detach", listIds(ids), actor), actor, ops);
+      return groups;
     },
 
     /** Dissolves groups, as one step: their contents move up to the group's parent. Returns the freed node IDs. */

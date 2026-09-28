@@ -4,12 +4,14 @@ import { z } from "zod";
 import {
   AppFileSchema,
   EditorFileSchema,
+  EntityFileSchema,
   firstIds,
   LibraryFileSchema,
   ProjectFileSchema,
   SceneFileSchema,
   type AppFile,
   type EditorFile,
+  type EntityFile,
   type LibraryFile,
   type ProjectFile,
   type SceneFile,
@@ -200,6 +202,8 @@ export function openDataDir(root: string) {
   const libraryFile = (project: string) => path.join(projectDir(project), "library.json");
   const libraryHistoryFile = (project: string) => path.join(projectDir(project), "library-history.jsonl");
   const guideFile = (project: string) => path.join(projectDir(project), "rules", "design-guide.md");
+  const entitiesDir = (project: string) => path.join(projectDir(project), "entities");
+  const entityFile = (project: string, entity: string) => path.join(entitiesDir(project), entity, "entity.json");
   const appFile = path.join(root, "app.json");
 
   return {
@@ -353,6 +357,37 @@ export function openDataDir(root: string) {
         fs.renameSync(tmp, guideFile(project));
       }
       writeJson(libraryFile(project), file);
+    },
+
+    /**
+     * Every entity definition in the project, by its ID (its folder), including ones the library no longer lists (a
+     * deleted entity keeps its folder, so undoing the delete brings it back). Ones that don't load are reported.
+     */
+    readEntities(project: string): { entities: Record<string, EntityFile>; errors: string[] } {
+      const entities: Record<string, EntityFile> = {};
+      const errors: string[] = [];
+      for (const id of subfolders(entitiesDir(project))) {
+        if (!fs.existsSync(entityFile(project, id))) continue;
+        try {
+          entities[id] = readJson(entityFile(project, id), EntityFileSchema);
+        } catch (err) {
+          errors.push((err as Error).message);
+        }
+      }
+      return { entities, errors };
+    },
+
+    /** Makes an entity's folder and `entity.json`; its ID is a free slug of `name`. Returns the ID. */
+    createEntity(project: string, name: string, file: EntityFile): string {
+      fs.mkdirSync(entitiesDir(project), { recursive: true });
+      const id = freeSlug(entitiesDir(project), slugify(name, "entity"));
+      fs.mkdirSync(path.join(entitiesDir(project), id));
+      writeJson(entityFile(project, id), file);
+      return id;
+    },
+
+    writeEntity(project: string, entity: string, file: EntityFile): void {
+      writeJson(entityFile(project, entity), file);
     },
 
     /** When the design guide last changed on disk, or null if the project has none. */

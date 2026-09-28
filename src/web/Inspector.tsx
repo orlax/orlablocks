@@ -12,6 +12,8 @@ import {
   Plus,
   Rotate3d,
   Spline,
+  Package,
+  Unlink,
   type LucideIcon,
 } from "lucide-react";
 import type { MirrorAxis } from "../shared/geometry";
@@ -31,7 +33,7 @@ import {
   type LineArrow,
   type NoteStatus,
 } from "../shared/scene.types";
-import type { Library } from "../shared/library";
+import { currentTags, type EntityMeta, type Library } from "../shared/library";
 import { RefTextArea, TagsField } from "./RefText";
 import type { LineStyle, RampStyle } from "./Viewport";
 
@@ -64,6 +66,18 @@ export type InspectorProps = {
     onFocused: () => void;
     onChange: (patch: { text?: string; label?: string | null; status?: NoteStatus }) => void;
   };
+  /**
+   * A single instance: its entity (a picker over every entity, to swap it), that entity's description and tags
+   * (the entity's, not the instance's), and Detach.
+   */
+  instance?: {
+    entity: string;
+    entities: EntityMeta[];
+    onSwap: (entity: string) => void;
+    onDetach: () => void;
+  };
+  /** Make entity (the selection has shapes, and no instances or notes): with the name to give it. */
+  makeEntity?: { suggested: string; onMake: (name: string) => void };
   /** A single group's description: what that part of the level is, for people and the agent. */
   description?: { value: string; onChange: (text: string) => void };
   /** A single group's or shape's tags (not a line's), and adding a new tag to the library and to it. */
@@ -93,9 +107,9 @@ export type InspectorProps = {
   editPoints?: { active: boolean; onToggle: () => void };
 };
 
-export function Inspector({ title, info, library = null, note, description, tags, sides, wall, profile, tilt, line, ramp, onMirror, onConvert, editPoints }: InspectorProps) {
+export function Inspector({ title, info, library = null, note, instance, makeEntity, description, tags, sides, wall, profile, tilt, line, ramp, onMirror, onConvert, editPoints }: InspectorProps) {
   const { ref, header, style, collapsed, toggle } = useFloating();
-  const actions = onMirror || onConvert || editPoints;
+  const actions = onMirror || onConvert || editPoints || makeEntity;
   return (
     <div className={collapsed ? "inspector collapsed" : "inspector"} ref={ref} style={style}>
       <div className="inspector-header" {...header} title="Drag to move the inspector · double-click to put it back">
@@ -109,6 +123,7 @@ export function Inspector({ title, info, library = null, note, description, tags
         <div className="inspector-body">
           {info && <div className="inspector-info">{info}</div>}
           {note && <NoteSection {...note} library={library} />}
+          {instance && <InstanceSection {...instance} library={library} />}
           {description && (
             <Section label="Description">
               <DescriptionField {...description} library={library} />
@@ -188,6 +203,7 @@ export function Inspector({ title, info, library = null, note, description, tags
                     <Spline size={16} /> {editPoints.active ? "Done" : "Edit points"}
                   </button>
                 )}
+                {makeEntity && <MakeEntity {...makeEntity} />}
               </div>
             </Section>
           )}
@@ -386,6 +402,80 @@ function DescriptionField({ value, onChange, library }: { value: string; onChang
         if (e.key === "Escape" || (e.key === "Enter" && (e.metaKey || e.ctrlKey))) e.currentTarget.blur();
       }}
     />
+  );
+}
+
+/** Make entity: a button that asks for the entity's name in place, then makes it (Enter) or doesn't (Esc). */
+function MakeEntity({ suggested, onMake }: { suggested: string; onMake: (name: string) => void }) {
+  const [name, setName] = useState<string | null>(null);
+  if (name === null) {
+    return (
+      <button
+        className="labeled"
+        title="Make entity: these become a prefab in the project library, and one instance of it takes their place"
+        onClick={() => setName(suggested)}
+      >
+        <Package size={16} /> Make entity
+      </button>
+    );
+  }
+  const make = () => {
+    if (name.trim()) onMake(name.trim());
+    setName(null);
+  };
+  return (
+    <div className="make-entity">
+      <input
+        autoFocus
+        value={name}
+        placeholder="entity name"
+        title="The entity's name (Enter makes it, Esc cancels)"
+        onFocus={(e) => e.currentTarget.select()}
+        onChange={(e) => setName(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") make();
+          if (e.key === "Escape") setName(null);
+        }}
+        onBlur={() => setName(null)}
+      />
+      <button className="labeled primary" onMouseDown={(e) => e.preventDefault()} onClick={make}>
+        Make
+      </button>
+    </div>
+  );
+}
+
+/** An instance: which entity it shows (swap it), what that entity is (its description and tags), and Detach. */
+function InstanceSection({ entity, entities, onSwap, onDetach, library }: NonNullable<InspectorProps["instance"]> & { library: Library | null }) {
+  const meta = entities.find((e) => e.id === entity);
+  return (
+    <Section label="Entity">
+      <Row label="shows">
+        <select className="entity-picker" value={entity} title="Swap: show another entity in the same place" onChange={(e) => onSwap(e.target.value)}>
+          {!meta && <option value={entity}>missing: {entity}</option>}
+          {entities.map((e) => (
+            <option key={e.id} value={e.id}>
+              {e.name}
+            </option>
+          ))}
+        </select>
+      </Row>
+      {meta?.description && <p className="entity-description">{meta.description}</p>}
+      {meta?.tags && meta.tags.length > 0 && (
+        <div className="entity-tags" title="The entity's tags: every instance carries them (edit them in the Library)">
+          {currentTags(library ?? { tags: [], skills: [], entities: [], guide: "" }, meta.tags).map((t) => (
+            <span key={t} className="chip">
+              #{t}
+            </span>
+          ))}
+        </div>
+      )}
+      <div className="inspector-actions">
+        <button className="labeled" title="Detach: turn it into a plain group of shapes you can edit (it stops following the entity)" onClick={onDetach}>
+          <Unlink size={16} /> Detach
+        </button>
+      </div>
+    </Section>
   );
 }
 

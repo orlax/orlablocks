@@ -14,9 +14,10 @@ import {
   type View,
 } from "../shared/scene.types";
 import { round2 } from "../shared/geometry";
-import { applyLibraryOp, findRefs, resolveRef, type Library, type LibraryEdit, type Uses } from "../shared/library";
-import type { LibraryFile, NextId, SceneFile } from "../shared/project.types";
-import { isGroup } from "../shared/tree";
+import { applyLibraryOp, entityMeta, findRefs, resolveRef, type EntityMeta, type Library, type LibraryEdit, type Uses } from "../shared/library";
+import { allDefinitions, setDefinition, setDefinitions } from "../shared/entities";
+import { firstIds, type LibraryFile, type NextId, type SceneFile } from "../shared/project.types";
+import { isGroup, tagsOf } from "../shared/tree";
 import type { SceneNode } from "../shared/scene.types";
 import { applyOp, createHistory, type HistoryEntry } from "./commands";
 import { DEFAULT_GUIDE } from "./defaultGuide";
@@ -113,7 +114,7 @@ export function restoreScene(file: SceneFile, lines: HistoryLine[] | null) {
  */
 export function restoreLibrary(file: LibraryFile | null, guide: string | null, lines: LibraryHistoryLine[] | null) {
   const history = newLibraryHistory();
-  let library: Library = { tags: file?.tags ?? [], skills: file?.skills ?? [], guide: guide ?? "" };
+  let library: Library = { tags: file?.tags ?? [], skills: file?.skills ?? [], entities: file?.entities ?? [], guide: guide ?? "" };
   let seq = file?.seq ?? 0;
   const start = seq;
   if (!lines || lines.length === 0) return { library, seq, history, caughtUp: false };
@@ -141,13 +142,19 @@ export function restoreLibrary(file: LibraryFile | null, guide: string | null, l
   return { library, seq, history, caughtUp: seq !== start };
 }
 
-/** How many nodes in `nodes` use each tag and skill: carrying the tag, or naming it in a group's description or a note. */
-export function countUses(library: Library, nodes: SceneNode[]): { tags: Map<string, number>; skills: Map<string, number> } {
+/**
+ * How many nodes in `nodes` use each tag and skill (carrying the tag, an instance through its entity's, or naming it
+ * in a group's description or a note), and each entity (its instances).
+ */
+export function countUses(library: Library, nodes: SceneNode[]): { tags: Map<string, number>; skills: Map<string, number>; entities: Map<string, number> } {
   const tags = new Map<string, number>();
   const skills = new Map<string, number>();
+  const entities = new Map<string, number>();
   for (const n of nodes) {
     const used = { tag: new Set<string>(), skill: new Set<string>() };
-    for (const t of ("tags" in n ? n.tags : undefined) ?? []) {
+    if (n.type === "instance") entities.set(n.entity, (entities.get(n.entity) ?? 0) + 1);
+    const carried = n.type === "instance" ? entityMeta(library, n.entity)?.tags : tagsOf(n);
+    for (const t of carried ?? []) {
       const tag = resolveRef(library, "tag", t);
       if (tag) used.tag.add(tag.name);
     }
@@ -161,7 +168,7 @@ export function countUses(library: Library, nodes: SceneNode[]): { tags: Map<str
     used.tag.forEach((t) => tags.set(t, (tags.get(t) ?? 0) + 1));
     used.skill.forEach((k) => skills.set(k, (skills.get(k) ?? 0) + 1));
   }
-  return { tags, skills };
+  return { tags, skills, entities };
 }
 
 /**
@@ -170,11 +177,16 @@ export function countUses(library: Library, nodes: SceneNode[]): { tags: Map<str
  */
 export function createWorkspace(data: DataDir) {
   const library: LibraryStore = createLibraryStore();
-  const store = createSceneStore({ resolveTag: (name) => resolveRef(library.get(), "tag", name)?.name });
+  const store = createSceneStore({
+    resolveTag: (name) => resolveRef(library.get(), "tag", name)?.name,
+    entityName: (id) => entityMeta(library.get(), id)?.name,
+  });
+  const entitiesListeners = new Set<(definitions: Record<string, SceneNode[]>) => void>();
+  const entitiesChanged = () => entitiesListeners.forEach((l) => l(allDefinitions()));
   // The library open with the scene: its project, the step it's saved at, and the defaults it was given.
   let openLibrary: { project: string; seq: number; seeded: string[] } | null = null;
   // Each other scene's nodes in the open project, for counting uses (read when the library loads or changes).
-  let otherScenes: SceneNode[][] = [];
+  let otherScenes: { name: string; nodes: SceneNode[] }[] = [];
   let open: (OpenScene & { createdAt: string; seq: number; camera: Camera | null }) | null = null;
   const openedListeners = new Set<(open: OpenScene | null, restore?: EditorRestore) => void>();
   const projectsListeners = new Set<(projects: ProjectSummary[]) => void>();
@@ -205,7 +217,13 @@ export function createWorkspace(data: DataDir) {
     }
   });
 
-  const libraryFile = (): LibraryFile => ({ seq: openLibrary!.seq, tags: library.get().tags, skills: library.get().skills, seeded: openLibrary!.seeded });
+  const libraryFile = (): LibraryFile => ({
+    seq: openLibrary!.seq,
+    tags: library.get().tags,
+    skills: library.get().skills,
+    entities: library.get().entities,
+    seeded: openLibrary!.seeded,
+  });
 
   const readOtherScenes = () => {
     if (!open) return void (otherScenes = []);
@@ -214,7 +232,7 @@ export function createWorkspace(data: DataDir) {
       .filter((sc) => sc.id !== open!.scene.id && !sc.error)
       .flatMap((sc) => {
         try {
-          return [data.readScene(open!.project.id, sc.id).nodes];
+          return [{ name: sc.name, nodes: data.readScene(open!.project.id, sc.id).nodes }];
         } catch {
           return [];
         }
@@ -255,10 +273,39 @@ export function createWorkspace(data: DataDir) {
       if (!loaded.guide) loaded = { ...loaded, guide: DEFAULT_GUIDE };
       seeded.push("guide");
     }
+    // The definitions, for every instance in the project's scenes (a folder that doesn't load shows as missing).
+    const { entities, errors } = data.readEntities(project);
+    errors.forEach((e) => console.warn(`Skipping an entity that didn't load: ${e}`));
+    setDefinitions(Object.fromEntries(Object.entries(entities).map(([id, f]) => [id, f.nodes])));
     openLibrary = { project, seq: restored.seq, seeded };
     library.load({ library: loaded, history: restored.history });
+    entitiesChanged();
     if (seed || restored.caughtUp || !file) data.writeLibrary(project, libraryFile(), seed || restored.caughtUp ? loaded.guide : undefined);
   };
+
+  /** How many nodes use each tag, skill and entity, and in which of the project's scenes (the open one live). */
+  const usesNow = (): Uses => {
+    const lib = library.get();
+    const result: Uses = { tags: {}, skills: {}, entities: {} };
+    const scenes = open ? [{ name: open.scene.name, nodes: store.getScene().nodes }, ...otherScenes] : [];
+    for (const { name: sceneName, nodes } of scenes) {
+      const counts = countUses(lib, nodes);
+      for (const kind of ["tags", "skills"] as const) {
+        for (const [name, n] of counts[kind]) {
+          const u = (result[kind][name] ??= { nodes: 0, scenes: 0 });
+          u.nodes += n;
+          u.scenes += 1;
+        }
+      }
+      for (const [id, n] of counts.entities) {
+        const u = (result.entities[id] ??= { nodes: 0, scenes: 0, sceneNames: [] });
+        u.nodes += n;
+        u.scenes += 1;
+        u.sceneNames.push(sceneName);
+      }
+    }
+    return result;
+    };
 
   const projectsChanged = () => {
     const projects = data.listProjects();
@@ -350,10 +397,59 @@ export function createWorkspace(data: DataDir) {
       return library;
     },
 
-    /** Edits the open project's library as one step (see the library store's `edit`). */
+    /**
+     * Edits the open project's library as one step (see the library store's `edit`). An entity that's placed in any
+     * of the project's scenes can't be deleted: the error names the scenes.
+     */
     editLibrary(input: LibraryEdit, actor: "human" | "agent") {
       if (!open) throw new SceneError(NO_SCENE_OPEN);
+      const uses = usesNow().entities;
+      const placed = (input.remove ?? []).filter((r) => r.kind === "entity" && uses[r.name]);
+      if (placed.length > 0) {
+        const lines = placed.map((r) => {
+          const u = uses[r.name];
+          return `${entityMeta(library.get(), r.name)?.name ?? r.name} is placed ${u.nodes} time${u.nodes === 1 ? "" : "s"}, in ${u.sceneNames.join(", ")}`;
+        });
+        throw new SceneError(`The library wasn't changed: remove or detach an entity's instances before deleting it.\n${lines.join("\n")}`);
+      }
       return library.edit(input, actor);
+    },
+
+    /**
+     * Make entity (plan 08 §7): the nodes become a new entity's definition (moved so its pivot, their bottom center,
+     * is at the origin), and one instance of it takes their place in the scene, as one scene step. The entity itself
+     * is created like a scene is (not an undo step): undoing puts the nodes back, and the entity stays in the
+     * library. A single group gives the entity its name, description and tags unless they're given.
+     */
+    makeEntity(input: { ids: string[]; name?: string; description?: string; tags?: string[] }, actor: "human" | "agent") {
+      if (!open) throw new SceneError(NO_SCENE_OPEN);
+      const prepared = store.prepareEntity(input.ids);
+      const name = (input.name ?? prepared.from?.name ?? "").trim() || "entity";
+      const description = (input.description ?? prepared.from?.description ?? "").trim();
+      const tagNames = input.tags ?? prepared.from?.tags ?? [];
+      const missing = tagNames.filter((t) => !resolveRef(library.get(), "tag", t));
+      if (missing.length > 0) throw new SceneError(`tags: no tag ${missing.map((t) => `#${t}`).join(", ")} in the project library. No entity was made.`);
+      const tags = [...new Set(tagNames.map((t) => resolveRef(library.get(), "tag", t)!.name))];
+      const nextId = raisedNextId(firstIds(), { label: "", actor, at: 0, ops: [{ op: "add", nodes: prepared.nodes }], inverse: [] });
+      const id = fileOp("No entity was made.", () =>
+        data.createEntity(open!.project.id, name, { createdAt: new Date().toISOString(), seq: 0, nextId, nodes: prepared.nodes }),
+      );
+      const meta: EntityMeta = { id, name, ...(description ? { description } : {}), ...(tags.length > 0 ? { tags } : {}) };
+      setDefinition(id, prepared.nodes);
+      library.addEntityQuietly(meta);
+      data.writeLibrary(open.project.id, libraryFile());
+      entitiesChanged();
+      const instance = store.commitEntity(prepared, id, name, actor);
+      return { entity: meta, instance };
+    },
+
+    /** Every definition in the open project (for the editor). */
+    definitions: () => allDefinitions(),
+
+    /** When a definition is added or the project changes. */
+    onEntitiesChanged(listener: (definitions: Record<string, SceneNode[]>) => void): () => void {
+      entitiesListeners.add(listener);
+      return () => entitiesListeners.delete(listener);
     },
 
     /** When the open project's design guide last changed, or null if it has none. */
@@ -361,22 +457,8 @@ export function createWorkspace(data: DataDir) {
       return open ? data.guideChangedAt(open.project.id) : null;
     },
 
-    /** How many nodes use each tag and skill, and in how many of the project's scenes (the open one live). */
-    uses(): Uses {
-      const lib = library.get();
-      const result: Uses = { tags: {}, skills: {} };
-      for (const nodes of [store.getScene().nodes, ...otherScenes]) {
-        const counts = countUses(lib, nodes);
-        for (const kind of ["tags", "skills"] as const) {
-          for (const [name, n] of counts[kind]) {
-            const u = (result[kind][name] ??= { nodes: 0, scenes: 0 });
-            u.nodes += n;
-            u.scenes += 1;
-          }
-        }
-      }
-      return result;
-    },
+    /** How many nodes use each tag, skill and entity, and in how many of the project's scenes (the open one live). */
+    uses: (): Uses => usesNow(),
 
     getOpen: publicOpen,
 

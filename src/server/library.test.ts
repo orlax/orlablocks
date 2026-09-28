@@ -291,7 +291,7 @@ describe("the library in the data folder", () => {
     store.groupNodes({ ids: [crate.id], description: "a @telekinesis puzzle" }, "human");
     workspace.createScene({ project: "castle", name: "Tower" });
     workspace.requireScene().drawShapes([{ kind: "volume", x: 0, z: 0, width: 1, depth: 1, tags: ["light"] }], "human");
-    expect(workspace.uses()).toEqual({ tags: { light: { nodes: 2, scenes: 2 } }, skills: { telekinesis: { nodes: 1, scenes: 1 } } });
+    expect(workspace.uses()).toEqual({ tags: { light: { nodes: 2, scenes: 2 } }, skills: { telekinesis: { nodes: 1, scenes: 1 } }, entities: {} });
     // Undoing in the scene doesn't touch the library.
     workspace.requireScene().undo();
     expect(workspace.library.get().skills).toHaveLength(1);

@@ -187,12 +187,33 @@ export type Note = {
   createdBy: Actor;
 };
 
+/**
+ * An instance of an entity (from 08): a placed copy of a definition, a small scene of its own shapes around a pivot
+ * (its bottom center, at the origin). It shows those shapes turned by `rotation` (degrees, counterclockwise seen
+ * from above) around the pivot, then moved to `x, y, z`. Its description and tags are the entity's; it has only a
+ * place, a turn and a name of its own. For holes it's a group: its shapes are "directly in" it.
+ */
+export type Instance = {
+  id: string; // "instance_1", ...
+  type: "instance";
+  entity: string; // the entity's ID ("tree-tall")
+  name?: string;
+  parent?: string;
+  locked?: true;
+  hidden?: true;
+  x: number;
+  y: number;
+  z: number;
+  rotation: number;
+  createdBy: Actor;
+};
+
 /** A closed shape: one with a footprint, a kind (room or volume), an elevation and a height. */
 export type ClosedShape = Box | Cylinder | Freeform;
 /** A solid: a shape with a kind and a mesh, that holes cut (a closed shape or a ramp; only closed shapes are holes). */
 export type Solid = ClosedShape | Ramp;
 /** Anything drawn: every node that isn't a group. */
-export type Shape = ClosedShape | Line | Ramp | Note;
+export type Shape = ClosedShape | Line | Ramp | Note | Instance;
 export type ShapeType = Shape["type"];
 
 /**
@@ -232,6 +253,7 @@ export type ShapePatch = Partial<Pick<Footprinted, "name" | "kind" | "x" | "z" |
   text?: string;
   label?: string;
   status?: NoteStatus;
+  entity?: string;
 };
 /** What an update op can change on any node: shape fields (shapes only), `description` (groups only), `name` and `parent`. */
 export type NodePatch = ShapePatch & { parent?: string; description?: string; tags?: string[]; locked?: true; hidden?: true };
@@ -477,6 +499,21 @@ const NoteSchema = z.object({
   createdBy: ActorSchema,
 });
 
+const InstanceSchema = z.object({
+  id: z.string(),
+  type: z.literal("instance"),
+  entity: z.string(),
+  name: z.string().optional(),
+  parent: z.string().optional(),
+  locked: z.literal(true).optional(),
+  hidden: z.literal(true).optional(),
+  x: z.number(),
+  y: z.number(),
+  z: z.number(),
+  rotation: z.number(),
+  createdBy: ActorSchema,
+});
+
 const GroupSchema = z.object({
   id: z.string(),
   type: z.literal("group"),
@@ -490,7 +527,7 @@ const GroupSchema = z.object({
 });
 
 /** A stored node, as in `scene.json` (and on the clipboard). */
-export const NodeSchema: z.ZodType<SceneNode> = z.discriminatedUnion("type", [BoxSchema, CylinderSchema, FreeformSchema, LineSchema, RampSchema, NoteSchema, GroupSchema]);
+export const NodeSchema: z.ZodType<SceneNode> = z.discriminatedUnion("type", [BoxSchema, CylinderSchema, FreeformSchema, LineSchema, RampSchema, NoteSchema, InstanceSchema, GroupSchema]);
 
 export const BoxInputSchema = z.strictObject({
   kind: field.kind,
@@ -643,6 +680,18 @@ export const NoteInputSchema = z.strictObject({
   parent: field.parent.optional().describe("ID of the group to put it in (it moves with the group). Omit for the top level"),
 });
 
+/** An instance for `draw_shapes`: which entity, and where. */
+export const InstanceInputSchema = z.strictObject({
+  type: z.literal("instance").describe("A placed copy of a library entity (a prefab): it shows the entity's shapes"),
+  entity: z.string().describe('The entity\'s ID, e.g. "tree-tall" (get_library lists them)'),
+  x: z.number().describe("Where its pivot (the entity's bottom center) goes: world x, meters"),
+  z: z.number().describe("World z, meters"),
+  y: z.number().optional().describe("The height its bottom stands at (a floor's y, a platform's top). Defaults to 0"),
+  rotation: z.number().optional().describe("Degrees, counterclockwise seen from above, around its pivot. Defaults to 0"),
+  name: field.name.optional().describe('A name for this one, e.g. "entry_window". Not unique'),
+  parent: field.parent.optional().describe("ID of the group to put it in. Omit for the top level"),
+});
+
 export const ShapeInputSchema = z.discriminatedUnion("type", [
   BoxInputSchema.extend({
     type: z.enum(["box", "cylinder"]).optional().describe("box (the default) or cylinder (the ellipse inscribed in width × depth)"),
@@ -652,6 +701,7 @@ export const ShapeInputSchema = z.discriminatedUnion("type", [
   LineInputSchema,
   RampInputSchema,
   NoteInputSchema,
+  InstanceInputSchema,
 ]);
 export type ShapeInput = z.input<typeof ShapeInputSchema>;
 
@@ -707,6 +757,7 @@ export const NodeUpdateSchema = z.strictObject({
   text: noteField.text.optional().describe("Notes only: the whole new text"),
   label: noteField.label.nullable().optional().describe(`Notes only: up to ${MAX_NOTE_LABEL} characters on its flag; null or "" removes it`),
   status: noteField.status.optional().describe("Notes only: open or done (mark a note done when it's handled, rather than removing it)"),
+  entity: z.string().optional().describe("Instances only: another entity's ID, to show it instead, in the same place"),
   description: z
     .string()
     .max(MAX_DESCRIPTION)
@@ -865,6 +916,14 @@ export const ClientMessageSchema = z.discriminatedUnion("type", [
   LibraryEditSchema.extend({ type: z.literal("update_library") }),
   z.object({ type: z.literal("library_undo") }),
   z.object({ type: z.literal("library_redo") }),
+  z.object({
+    type: z.literal("make_entity"),
+    ids: IdsSchema,
+    name: z.string().max(80).optional(),
+    description: z.string().max(MAX_DESCRIPTION).optional(),
+    tags: z.array(z.string()).optional(),
+  }),
+  z.object({ type: z.literal("detach_instances"), ids: IdsSchema }),
 ]);
 export type ClientMessage = z.input<typeof ClientMessageSchema>;
 
@@ -875,4 +934,6 @@ export type ServerMessage =
   | { type: "opened"; open: OpenScene | null; restore?: EditorRestore }
   | { type: "error"; message: string }
   // The open project's library (null with nothing open), its own undo state, and where its tags and skills are used.
-  | { type: "library"; library: Library | null; history: HistorySummary; uses: Uses };
+  | { type: "library"; library: Library | null; history: HistorySummary; uses: Uses }
+  // The open project's entity definitions, by ID (every one, as nodes around the pivot).
+  | { type: "entities"; definitions: Record<string, SceneNode[]> };

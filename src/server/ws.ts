@@ -1,6 +1,7 @@
 import type { Server } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
 import { z } from "zod";
+import { NO_USES } from "../shared/library";
 import { ClientMessageSchema, type ServerMessage } from "../shared/scene.types";
 import { SceneError } from "./scene";
 import type { Workspace } from "./workspace";
@@ -24,7 +25,7 @@ export function attachWebSocket(httpServer: Server, workspace: Workspace) {
   const libraryMessage = (): ServerMessage =>
     workspace.getOpen()
       ? { type: "library", library: workspace.library.get(), history: workspace.library.getHistory(), uses: workspace.uses() }
-      : { type: "library", library: null, history: { canUndo: false, canRedo: false }, uses: { tags: {}, skills: {} } };
+      : { type: "library", library: null, history: { canUndo: false, canRedo: false }, uses: NO_USES };
 
   const broadcast = (msg: ServerMessage) => {
     for (const client of wss.clients) send(client, msg);
@@ -52,6 +53,7 @@ export function attachWebSocket(httpServer: Server, workspace: Workspace) {
     usesChanged();
   });
   workspace.library.onChange(() => broadcastLibrary());
+  workspace.onEntitiesChanged((definitions) => broadcast({ type: "entities", definitions }));
   workspace.onOpened((open, restore) => {
     broadcast({ type: "opened", open, ...(restore ? { restore } : {}) });
     broadcastLibrary();
@@ -64,6 +66,7 @@ export function attachWebSocket(httpServer: Server, workspace: Workspace) {
     send(ws, sceneMessage());
     const restore = workspace.getRestore();
     send(ws, { type: "opened", open: workspace.getOpen(), ...(restore ? { restore } : {}) });
+    send(ws, { type: "entities", definitions: workspace.definitions() });
     send(ws, libraryMessage());
 
     ws.on("message", (raw) => {
@@ -90,6 +93,8 @@ export function attachWebSocket(httpServer: Server, workspace: Workspace) {
         if (msg.type === "update_library") return void workspace.editLibrary(withoutType(msg), "human");
         if (msg.type === "library_undo") return void workspace.requireLibrary().undo();
         if (msg.type === "library_redo") return void workspace.requireLibrary().redo();
+        if (msg.type === "make_entity") return void workspace.makeEntity(withoutType(msg), "human");
+        if (msg.type === "detach_instances") return void workspace.requireScene().detachInstances(msg.ids, "human");
         const scene = workspace.requireScene();
         if (msg.type === "add_shapes") scene.drawShapes(msg.shapes, "human");
         else if (msg.type === "update_nodes") scene.updateNodes(msg.changes, "human");
