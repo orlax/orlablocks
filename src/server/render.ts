@@ -1,6 +1,7 @@
 import type { EntityMeta } from "../shared/library";
 import { MAX_MODEL_SHEET, MAX_RECHECKED_SHOTS, type RenderJob, type RenderRequest, type RenderResult, type SceneNode, type ShotRecord, type ShotView, type View } from "../shared/scene.types";
 import { SceneError } from "./scene";
+import { sectionAt } from "../shared/slice";
 
 /**
  * `render_view`'s go-between (plan 09 §6): the renderer is the editor in a browser, so the server asks one of the
@@ -47,8 +48,13 @@ export function prepareRender(
   if ((request.hide || request.clip !== undefined) && (request.view === "shots" || request.view === "entities")) {
     fail(`hide and clip apply to views of the document; a ${request.view} view shows ${request.view === "shots" ? "shots as taken and now" : "entities"}.`);
   }
+  if (request.slice !== undefined && request.view !== "plan") fail(`slice: only a plan is cut at a height (this is a ${request.view}): view: "plan", slice: y.`);
   if (request.save && !SAVABLE.has(request.view)) fail(`save: only a node, eye or shot view can be kept as a shot (it has one camera); this is a ${request.view}.`);
   const job: RenderJob = { ...request };
+  if (request.slice !== undefined) {
+    const heights = Array.isArray(request.slice) ? request.slice : [request.slice];
+    job.sections = heights.map((y) => sectionAt(doc.nodes, y, { hide: request.hide, gap: request.gap }));
+  }
   switch (request.view) {
     case "node":
       if (!request.ids) fail("A node view needs ids: what to frame.");

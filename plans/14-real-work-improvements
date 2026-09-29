@@ -490,3 +490,12 @@ Proposed in this plan, to confirm:
   - **MCP:** `get_changes`, and `get_scene`'s `changes` line.
   - **Changed while building:** undo and redo count as the human's in memory (only the editor undoes). The log's undo lines still have no actor, rather than recording one as §9 said.
   - MCP version 0.0.34. Tests: `changes.test.ts` (3), 1 in `workspace.test.ts` (516 in all). `check-14.mjs 14.6`: the human's height and outline change over the WebSocket (200 → 143, 3 → 4 points) and a library edit, read back by the agent.
+- **2026-09-29:** **14.7 built.**
+  - **`check_enclosure`** (`src/shared/enclosure.ts`) is a voxel flood fill.
+    - Each solid's closed world meshes (a room's walls and floor slab) are read with one vertical ray per column: each triangle is binned to the columns it covers, so the cost is about the triangle count. The crossings pair into solid spans, minus the cells inside a hole that cuts that solid.
+    - The grid is the solids' bounds plus two cells of margin, the band from the lowest solid by default, and cells grow until it fits 2 million.
+    - Escaping means reaching the margin (or the top with `open_top`). The route out is traced back, and its narrowest point across four ground directions is the gap: where, its height range in that column, its width, and the owners either side (items as `array_1/3`). It's plugged and the fill runs again, up to 6 gaps.
+    - Sealed gives the volume and bounds of the air.
+  - **Slices** (`src/shared/slice.ts`): mesh sections at a height chained into loops by owner, holes kept apart. Gaps are pairs of outlines within `gap` (2 m by default) that neither cross nor contain each other, at their closest points.
+  - **`render_view`:** `slice` (1–4 heights) and `gap` on plans. `prepareRender` works out the sections into the job, and `slicePlan` draws each panel: the plan clipped at the height, a pale wash, bold outlines, dashed holes, gaps ringed with their widths, and the text lists them.
+  - MCP version 0.0.35. Tests: `enclosure.test.ts` (4: a sealed room, a door leak with its width and room, a ring of cones sealed low and leaking high, a start inside a solid) and `slice.test.ts` (3; 523 in all). `check-14.mjs 14.7`: an array of peaks sealed below 4 m and leaking between two items at 30 m in 0.4 s, and a slice job with no gaps at 2 m and 8 at 20 m. The slice images themselves draw in a browser: §15 item 9.

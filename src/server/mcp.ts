@@ -33,6 +33,7 @@ import { definitionOf } from "../shared/entities";
 import { prepareRender, type RenderBroker } from "./render";
 import { compactNodes } from "./results";
 import { checkSight } from "../shared/sight";
+import { checkEnclosure } from "../shared/enclosure";
 import { expandShapes } from "../shared/entities";
 import { surfaceAt, topOf } from "../shared/surfaces";
 import { SceneError } from "./scene";
@@ -105,6 +106,10 @@ const RENDER_INPUT = {
     "for this render only, leave these nodes out (with what's in them; a hidden hole cuts nothing): an enclosed room's walls, to see inside from outside. The scene's own hidden flags are the human's: this never changes them",
   ),
   clip: R.clip.describe("for this render only, cut away everything above this height (a section): the walls cut, the floors and what's on them in view"),
+  slice: R.slice.describe(
+    "plan only: cut at this height (or up to 4 heights, one panel each) and draw each solid's outline there, holes dashed, and the GAPS between solids ringed with their widths (the text lists them): is the boundary sealed at 110 m?",
+  ),
+  gap: R.gap.describe("slice: how wide a gap between two solids is still reported, in meters (default 2)"),
 };
 
 function buildServer(workspace: Workspace, renders: RenderBroker) {
@@ -143,7 +148,7 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
   /** Runs an edit tool's body for real, or as a dry run (14.2): the same result, marked, with nothing changed. */
   const edit = <T extends object>(dryRun: boolean | undefined, run: () => T) =>
     dryRun ? { dryRun: "nothing was changed: this is what the call would do", ...store().dryRun(run) } : run();
-  const server = new McpServer({ name: "orlablocks", version: "0.0.34" }, { instructions: INSTRUCTIONS });
+  const server = new McpServer({ name: "orlablocks", version: "0.0.35" }, { instructions: INSTRUCTIONS });
   // Every tool reads or edits the open scene, and fails with a clear message while nothing is open.
   // The agent's scene (14.5): its own while the human is in another one, else the human's open document.
   const store = () => workspace.requireAgentScene();
@@ -711,6 +716,36 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
         (p) => `${p.from} → ${p.to}: ${Math.round(p.visible * 100)}%${p.blockers.length > 0 ? ` · blocked by ${p.blockers.join(", then ")}` : ""}`,
       );
       return json({ eyeHeight, sight: lines });
+    },
+  );
+
+  server.registerTool(
+    "check_enclosure",
+    {
+      title: "Check enclosure",
+      description:
+        "Is the air around a point SEALED in, in text: a flood fill of the air from `from` over a voxel grid (2 m cells by " +
+        "default), up to the top of `band` (a lid; open_top: true lets the air out there too). A cell is solid when it's " +
+        "inside a solid and not in a hole that cuts it. Sealed: the air's volume and bounds. Escaping: each gap it leaks " +
+        "through, nearest first, with where it is, its height range, how wide it is and the solids on either side " +
+        "(`between instance_3 and instance_4 at x 120, z -40, y 96–110, 6 m wide`), each plugged in turn to find the " +
+        "next. Use it for a level that must be closed (a valley, an arena, a flight course) after every change to its " +
+        "boundary, then a slice render (render_view plan with slice) at the height of a gap to see it.",
+      inputSchema: {
+        from: z.strictObject({ x: z.number(), y: z.number(), z: z.number() }).describe("A point in the air inside (the player's space)"),
+        band: z.tuple([z.number(), z.number()]).optional().describe("[bottom, top] heights to seal over; default from the lowest solid to the highest top"),
+        cell: z.number().min(0.25).max(20).optional().describe("The grid's cell size in meters (default 2; finer finds thinner gaps, and grows if the grid would be too large)"),
+        open_top: z.boolean().optional().describe("The air escapes at the band's top too (without: the top is a lid)"),
+        ignore: z.array(z.string()).optional().describe("Nodes that don't seal anything (decor, light), with what's in them"),
+      },
+    },
+    async ({ from, band, cell, open_top, ignore }) => {
+      const nodes = store().getScene().nodes;
+      try {
+        return json(checkEnclosure(nodes, { from, band, cell, openTop: open_top, ignore }));
+      } catch (err) {
+        throw new SceneError(`${(err as Error).message}. Nothing was checked.`);
+      }
     },
   );
 

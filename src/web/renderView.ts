@@ -5,6 +5,7 @@ import {
   DEFAULT_RENDER_SIZE,
   type PlayerCamera,
   type RenderJob,
+  type RenderSection,
   type RenderResult,
   type SceneNode,
   type Shape,
@@ -52,7 +53,7 @@ export type RenderContext = {
   /** The height of the highest floor or top at a point (for points given without y), else 0. */
   surfaceY: (x: number, z: number) => number;
   /** A clean capture (no notes; lines as asked) at 1 × pixel ratio, with extra shapes (an avatar). */
-  capture: (view: CaptureView, width: number, height: number, options: { notes: boolean; lines: boolean }, extra?: Shape[]) => Promise<Blob>;
+  capture: (view: CaptureView, width: number, height: number, options: { notes: boolean; lines: boolean; clip?: number }, extra?: Shape[]) => Promise<Blob>;
   /** A capture of other nodes than the document's: an entity's definition (its holes cut as in an instance), plus extra shapes. */
   captureNodes: (view: CaptureView, width: number, height: number, nodes: SceneNode[], extra?: Shape[]) => Promise<Blob>;
 };
@@ -83,6 +84,7 @@ export async function renderJob(job: RenderJob, ctx: RenderContext): Promise<Ren
   switch (job.view) {
     case "plan": {
       const b = needShapes();
+      if (job.sections) return slicePlan(job, job.sections, b, size, ctx, notes, scopeText);
       const { width, height } = planSize(b, size);
       const cell = { x: 0, y: 0, width, height };
       const { view, frame } = planView(b, width / height);
@@ -241,6 +243,36 @@ export async function renderJob(job: RenderJob, ctx: RenderContext): Promise<Ren
       );
     }
   }
+}
+
+/**
+ * A slice render (14.7): a plan cut at each height (the capture clipped there), washed pale, with each solid's
+ * section drawn bold, holes dashed, and the gaps between solids ringed in red with their widths. Several heights
+ * come as a small multiple, one panel each.
+ */
+async function slicePlan(job: RenderJob, sections: RenderSection[], b: Box3, size: number, ctx: RenderContext, notes: string[], scopeText: string): Promise<RenderResult> {
+  const lines = { notes: false, lines: false };
+  const single = sections.length === 1;
+  const layout = single ? null : sheetLayout(size);
+  const { width, height } = single ? planSize(b, size) : layout!;
+  const cells = single ? [{ x: 0, y: 0, width, height }] : layout!.cells.slice(0, sections.length);
+  const img = compose(width, height);
+  const text: string[] = [];
+  for (const [i, section] of sections.entries()) {
+    const cell = cells[i];
+    const { view, frame } = planView(b, cell.width / cell.height);
+    await img.draw(await ctx.capture(view, cell.width, cell.height, { ...lines, clip: section.y }), cell);
+    img.planOverlay(frame, cell);
+    img.section(section, frame, cell);
+    img.caption(`y ${round(section.y)}`, cell);
+    const solids = section.outlines.filter((o) => !o.hole).length;
+    const gaps = section.gaps.map((g) => `${g.between.join(" – ")} ${g.width} m apart at (${round(g.at.x)}, ${round(g.at.z)})`);
+    text.push(`At y ${round(section.y)}: ${solids} solid${solids === 1 ? "" : "s"} cut; ${gaps.length > 0 ? `gaps: ${gaps.join("; ")}` : `no gaps up to ${job.gap ?? 2} m`}.`);
+  }
+  if (!single) img.dividers(cells);
+  return img.result(
+    [`Slice plan of ${scopeText}, top-down, north up: each solid cut at the height (bold), holes dashed, gaps ringed in red.`, ...text, ...notes].join("\n"),
+  );
 }
 
 /** Every model sheet cell looks from the southeast, a little turned, so fronts (south) and sides both show. */
@@ -429,6 +461,45 @@ function compose(width: number, height: number) {
       g.fillText("N ↑", cell.x + cell.width - px * 0.7, cell.y + px * 0.6);
       g.restore();
       return step;
+    },
+
+    /** A section's outlines over a plan cell (14.7): a pale wash, then the solids bold, holes dashed and gaps in red. */
+    section(section: RenderSection, frame: { x: number; z: number; width: number; height: number }, cell: Cell) {
+      const left = frame.x - frame.width / 2;
+      const top = frame.z - frame.height / 2;
+      const sx = (x: number) => cell.x + ((x - left) / frame.width) * cell.width;
+      const sy = (z: number) => cell.y + ((z - top) / frame.height) * cell.height;
+      g.save();
+      g.beginPath();
+      g.rect(cell.x, cell.y, cell.width, cell.height);
+      g.clip();
+      g.fillStyle = "rgba(255, 255, 255, 0.55)";
+      g.fillRect(cell.x, cell.y, cell.width, cell.height);
+      for (const o of section.outlines) {
+        g.strokeStyle = o.hole ? "rgba(40, 90, 200, 0.9)" : "rgba(20, 22, 28, 0.95)";
+        g.lineWidth = o.hole ? 1.5 : 2.5;
+        g.setLineDash(o.hole ? [5, 4] : []);
+        g.fillStyle = "rgba(20, 22, 28, 0.12)";
+        g.beginPath();
+        for (const loop of o.loops) {
+          loop.forEach((p, k) => (k === 0 ? g.moveTo(sx(p.x), sy(p.z)) : g.lineTo(sx(p.x), sy(p.z))));
+        }
+        if (!o.hole) g.fill("evenodd");
+        g.stroke();
+      }
+      g.setLineDash([]);
+      const px = Math.max(11, Math.round(cell.width / 45));
+      for (const gap of section.gaps) {
+        const [x, y] = [sx(gap.at.x), sy(gap.at.z)];
+        const r = Math.max(px * 0.9, (gap.width / frame.width) * cell.width);
+        g.strokeStyle = "#e0342b";
+        g.lineWidth = 3;
+        g.beginPath();
+        g.arc(x, y, r, 0, 2 * Math.PI);
+        g.stroke();
+        pill(`${gap.width} m`, x + r + 3, y - px * 0.75, px, "#e0342b", "#fff");
+      }
+      g.restore();
     },
 
     async result(text: string, camera?: ShotCamera): Promise<RenderResult> {

@@ -137,6 +137,24 @@ const CHECKS = {
     check(peak.fields.height === "200 → 143" && /3 → 4/.test(peak.fields.points), "get_changes gives the height and the points that changed");
     check((changes.elsewhere ?? []).some((e) => /library/.test(e)), "and the human's library edit");
   },
+
+  // Sealing: a ring of peaks that leaks above where they overlap, found in text and in a slice.
+  async "14.7"({ human, call }) {
+    await call("define_entity", { name: "peak", shapes: [{ type: "cylinder", kind: "volume", x: 0, z: 0, width: 18, depth: 18, height: 40, taper: 1 }] });
+    await call("draw_shapes", { shapes: [{ type: "array", entity: "peak", layout: { type: "circle", x: 0, y: 0, z: 0, radius: 20, count: 8 } }] });
+    const low = await call("check_enclosure", { from: { x: 0, y: 1, z: 0 }, band: [0, 4], cell: 1 });
+    check(low.sealed === true, "sealed below 4 m, where the peaks overlap");
+    const high = await call("check_enclosure", { from: { x: 0, y: 1, z: 0 }, band: [0, 30], cell: 1 });
+    check(high.sealed === false && high.escapes.length >= 2 && /array_1\/\d/.test(high.escapes[0].between[0] ?? ""), "leaking higher up, between two of the ring's items");
+    human.send({ type: "tab", visible: true, focused: true });
+    await new Promise((r) => setTimeout(r, 100));
+    const rendering = call("render_view", { view: "plan", slice: [2, 20], gap: 10 });
+    const asked = await human.wait((m) => m.type === "render");
+    check(asked.job.sections?.length === 2 && asked.job.sections[0].gaps.length === 0 && asked.job.sections[1].gaps.length === 8, "a slice render's job has the sections, gaps only at 20 m");
+    const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+    human.send({ type: "rendered", requestId: asked.requestId, result: { image: png, width: 1, height: 1, text: "slice" } });
+    await rendering;
+  },
 };
 
 for (const [name, run] of Object.entries(CHECKS)) {

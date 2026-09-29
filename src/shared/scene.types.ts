@@ -1487,6 +1487,9 @@ export const RenderRequestSchema = z.object({
   // everything above is cut away at.
   hide: z.array(z.string()).min(1).optional(),
   clip: z.number().optional(),
+  // A plan cut at heights (14.7): each solid's outline there, and the gaps between them (up to `gap` m wide).
+  slice: z.union([z.number(), z.array(z.number()).min(1).max(4)]).optional(),
+  gap: z.number().positive().optional(),
 });
 export type RenderRequest = z.infer<typeof RenderRequestSchema>;
 /** A shot to take again beside its image as taken (`view: "shots"`), with the steps since it was taken. */
@@ -1495,7 +1498,16 @@ export type RecheckedShot = { id: string; caption?: string; url: string; camera:
  * What the editor renders: the request, with what only the server knows (where the human walks, a shot's camera, the
  * shots to re-check, the entities of a model sheet).
  */
+/** A section at a height, for a slice render (14.7): outlines on the ground by owner, and the gaps between them. */
+export type RenderSection = {
+  y: number;
+  outlines: { owner: string; hole: boolean; loops: { x: number; z: number }[][] }[];
+  gaps: { between: [string, string]; width: number; at: { x: number; z: number } }[];
+};
+
 export type RenderJob = RenderRequest & {
+  /** A slice render's sections (14.7), worked out by the server. */
+  sections?: RenderSection[];
   /** The document to draw, when no tab shows it (14.5: the agent's own scene); else the tab draws its own. */
   nodes?: SceneNode[];
   human?: Walking;
