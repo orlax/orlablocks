@@ -29,6 +29,7 @@ import { createLibraryStore, newLibraryHistory, type LibraryEntry, type LibraryS
 import type { DataDir, HistoryLine, LibraryHistoryLine } from "./persist";
 import { createSceneStore, SceneError, type SceneStore, type Step } from "./scene";
 import { createShotStore, type NewShot, type ShotStore } from "./shots";
+import { createChangeLog, diffNodes, type ChangeLog, type LoggedStep } from "./changes";
 
 /** Parses with a zod schema or throws a SceneError starting with `failure`. */
 function parse<T extends z.ZodType>(schema: T, input: unknown, failure: string): z.output<T> {
@@ -278,6 +279,22 @@ export function createWorkspace(data: DataDir) {
     });
   };
 
+  // What changed, step by step (14.6: get_changes): the open document's, and the project's other edits by the human
+  // (the library, entities' definitions) with their time.
+  const humanLog: ChangeLog = createChangeLog();
+  const projectLog: { at: number; what: string; label: string }[] = [];
+  const logProject = (what: string, label: string) => {
+    projectLog.push({ at: Date.now(), what, label });
+    if (projectLog.length > 200) projectLog.shift();
+  };
+  const loggedStep = (seq: number, step: Step): LoggedStep => ({
+    seq,
+    actor: step.type === "commit" ? step.entry.actor : "human",
+    label: step.type === "commit" ? step.entry.label : `${step.type === "undo" ? "Undo" : "Redo"}: ${step.entry.label}`,
+    at: Date.now(),
+    kind: step.type,
+  });
+
   // The log first, then the state: a crash in between leaves the log one step ahead, which opening repairs.
   store.onStep((step) => {
     if (!open) return;
@@ -285,9 +302,12 @@ export function createWorkspace(data: DataDir) {
       if (open.entity) {
         open.entity.seq += 1;
         data.appendEntityHistory(open.project.id, open.entity.id, lineOf(open.entity.seq, step));
+        humanLog.record(loggedStep(open.entity.seq, step), store.getScene().nodes);
+        if (loggedStep(0, step).actor === "human") logProject(`the entity ${open.entity.id}`, loggedStep(0, step).label);
       } else {
         open.seq += 1;
         data.appendHistory(open.project.id, open.scene.id, lineOf(open.seq, step));
+        humanLog.record(loggedStep(open.seq, step), store.getScene().nodes);
       }
       writeScene();
     } catch (err) {
@@ -343,6 +363,7 @@ export function createWorkspace(data: DataDir) {
   library.onStep((step: LibraryStep) => {
     if (!openLibrary) return;
     openLibrary.seq += 1;
+    if (step.type !== "commit" || step.entry.actor === "human") logProject("the library", step.type === "commit" ? step.entry.label : `${step.type} in the library`);
     const line: LibraryHistoryLine = step.type === "commit" ? { seq: openLibrary.seq, type: "commit", ...step.entry } : { seq: openLibrary.seq, type: step.type, at: Date.now() };
     const touchesGuide = step.entry.ops.some((op) => op.op === "guide");
     try {
@@ -474,6 +495,7 @@ export function createWorkspace(data: DataDir) {
     seq: number;
     store: SceneStore;
     shots: ShotStore;
+    log: ChangeLog;
     stop: () => void;
   };
   let agentDoc: AgentDoc | null = null;
@@ -509,12 +531,15 @@ export function createWorkspace(data: DataDir) {
       seq: restored.seq,
       store: own,
       shots: docShots,
+      log: createChangeLog(),
       stop: () => {},
     };
+    doc.log.reset(restored.seq, own.getScene().nodes);
     doc.stop = own.onStep((step) => {
       try {
         doc.seq += 1;
         data.appendHistory(project, scene, lineOf(doc.seq, step));
+        doc.log.record(loggedStep(doc.seq, step), own.getScene().nodes);
         writeAgentScene(doc);
       } catch (err) {
         console.error("Saving the agent's scene failed", err);
@@ -582,6 +607,7 @@ export function createWorkspace(data: DataDir) {
       camera: editor?.camera ?? null,
     };
     store.load({ nodes: loaded.nodes, nextId: loaded.nextId, history: loaded.history });
+    humanLog.reset(loaded.seq, store.getScene().nodes);
     store.setSelection(editor?.selection ?? []);
     shots.load(project, { kind: "scene", id: scene });
     if (loaded.caughtUp) {
@@ -744,6 +770,7 @@ export function createWorkspace(data: DataDir) {
       }
       open = { ...open, entity: { id: entity, createdAt: loaded.file.createdAt, seq: loaded.seq, camera: editor?.camera ?? ENTITY_CAMERA } };
       store.load({ nodes: loaded.nodes, nextId: loaded.nextId, history: loaded.history, document: "entity" });
+      humanLog.reset(loaded.seq, store.getScene().nodes);
       store.setSelection(editor?.selection ?? []);
       shots.load(open.project.id, { kind: "entity", id: entity });
       if (loaded.caughtUp) writeScene();
@@ -848,6 +875,33 @@ export function createWorkspace(data: DataDir) {
       if (agentDoc) return agentDoc.shots.add(shot, actor, agentDoc.seq);
       if (!open) throw new SceneError(NO_SCENE_OPEN);
       return shots.add(shot, actor, open.entity ? open.entity.seq : open.seq);
+    },
+
+    /**
+     * What changed in the agent's document since step `since` (14.6), by default since the agent's own last step
+     * there: the steps (who, what, when), the net diff by node, and the human's edits to the library and to entities
+     * since then. Undefined `since` with no step of the agent's kept: since the document was opened.
+     */
+    agentChanges(since?: number) {
+      const log = agentDoc?.log ?? humanLog;
+      const from = since ?? log.lastBy("agent") ?? log.oldest();
+      const { steps, before, from: readFrom } = log.since(from);
+      const nodes = (agentDoc?.store ?? store).getScene().nodes;
+      const startAt = log.atOf(from);
+      const elsewhere = projectLog.filter((e) => e.at > startAt);
+      return {
+        since: from,
+        steps: steps.map((s) => ({ seq: s.seq, actor: s.actor, label: s.label, at: new Date(s.at).toISOString().slice(11, 19) })),
+        ...(before ? { diff: diffNodes(before, nodes) } : { note: `step ${from} is further back than the ${log.oldest()} kept: the steps since ${readFrom} are listed, with no diff` }),
+        ...(elsewhere.length > 0 ? { elsewhere: elsewhere.map((e) => `${e.what}: ${e.label}`) } : {}),
+      };
+    },
+
+    /** How many of the human's steps came after the agent's last one in its document (14.6), or 0 with none of its own. */
+    humanStepsSinceAgent(): number {
+      const log = agentDoc?.log ?? humanLog;
+      const last = log.lastBy("agent");
+      return last === null ? 0 : log.since(last).steps.filter((s) => s.actor === "human").length;
     },
 
     /** Work with agent (14.5): the open scene becomes the agent's, wherever the human goes in the project. */

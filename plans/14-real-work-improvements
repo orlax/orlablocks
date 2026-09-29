@@ -484,3 +484,9 @@ Proposed in this plan, to confirm:
   - **Editor:** `AgentChip` in the top bar (the button, then **agent here** or **agent: name**, which opens it, and ✕), and a badge in the project picker.
   - **Not done:** an entity edited by the human reaches the agent's instances (the registry is shared), but the agent's scene gets no automatic refollow step for what stands on them.
   - MCP version 0.0.33. Tests: 3 in `workspace.test.ts` (512 in all). `check-14.mjs 14.5`: apart and rejoined over the WebSocket and MCP, the render job carrying the agent's scene to a tab showing another, and the ended invitation told once. `check-client.mjs` now returns the project it opened (a new connection's greeting could be mistaken for it). Not checked in a browser: §15 item 8.
+- **2026-09-29:** **14.6 built** (the ceiling was dropped, so this is only `get_changes`).
+  - **Change log:** `src/server/changes.ts` (`createChangeLog`: the last 500 steps per document with who, what and when, and the nodes after each, as references to the immutable nodes; `diffNodes`: the net diff, where added then removed is nothing, several updates merge, and point lists and objects are summarized).
+  - **Workspace:** the human's document (reset on every open) and the agent's own each have one, and there's a project log of the human's library and entity edits. `agentChanges(since?)` defaults to the agent's last step; `humanStepsSinceAgent()` feeds the header hint.
+  - **MCP:** `get_changes`, and `get_scene`'s `changes` line.
+  - **Changed while building:** undo and redo count as the human's in memory (only the editor undoes). The log's undo lines still have no actor, rather than recording one as §9 said.
+  - MCP version 0.0.34. Tests: `changes.test.ts` (3), 1 in `workspace.test.ts` (516 in all). `check-14.mjs 14.6`: the human's height and outline change over the WebSocket (200 → 143, 3 → 4 points) and a library edit, read back by the agent.

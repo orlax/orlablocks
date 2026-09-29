@@ -75,6 +75,8 @@ export const INSTRUCTIONS =
   "it looks (`yaw` as the view's, `pitch` up) and the field of view: what they see from there. `view.pointer` is where " +
   "the human's pointer last rested (on a node, with its `id`, or on the ground): \"here\" means there. A node with `locked: true` (the human can't pick it) or `hidden: true` (not drawn, and a hidden " +
   "hole cuts nothing) is the human's aid: leave those alone unless asked. " +
+  "CHANGES: when get_scene's `changes` says the human made steps since your last, read get_changes first: it says " +
+  "what they added, removed and reshaped (field by field), so you never build on a height or an outline they've changed. " +
   "WAYS OF WORKING: describe groups (update_nodes description) so the outline tells what each part is. To repeat " +
   "things, copy them with move_nodes and copy: true (count for a row) instead of redrawing; for symmetry, copy then " +
   "mirror_nodes. When the human SKETCHES something small and asks for it at scale, the sketch is the brief: make it " +

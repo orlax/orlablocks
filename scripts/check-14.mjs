@@ -121,6 +121,22 @@ const CHECKS = {
     const told = await call("get_scene", {}, { allowError: true });
     check(/stopped working with you/.test(told.error ?? ""), "the agent is told once that the invitation ended");
   },
+
+  // What the human changed: a hint in get_scene, then the net diff in get_changes.
+  async "14.6"({ human, call }) {
+    const drawn = await call("draw_shapes", { shapes: [{ type: "freeform", kind: "volume", name: "valley peak", height: 200, points: [{ x: 0, z: 0 }, { x: 40, z: 0 }, { x: 20, z: 30 }] }] });
+    const id = drawn.created[0].id;
+    human.send({ type: "update_nodes", changes: [{ id, height: 143, points: [{ x: 0, z: 0 }, { x: 50, z: 0 }, { x: 25, z: 30 }, { x: 10, z: 20 }] }] });
+    await human.wait((m) => m.type === "scene" && m.scene.nodes.some((n) => n.id === id && n.height === 143));
+    human.send({ type: "update_library", upsert: [{ kind: "tag", name: "boundary", description: "seals the level" }] });
+    await new Promise((r) => setTimeout(r, 200));
+    const scene = await call("get_scene");
+    check(/1 human step since your last/.test(scene.changes ?? ""), "get_scene says the human made a step since the agent's last");
+    const changes = await call("get_changes");
+    const peak = changes.diff.changed.find((c) => c.id === id);
+    check(peak.fields.height === "200 → 143" && /3 → 4/.test(peak.fields.points), "get_changes gives the height and the points that changed");
+    check((changes.elsewhere ?? []).some((e) => /library/.test(e)), "and the human's library edit");
+  },
 };
 
 for (const [name, run] of Object.entries(CHECKS)) {

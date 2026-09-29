@@ -143,7 +143,7 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
   /** Runs an edit tool's body for real, or as a dry run (14.2): the same result, marked, with nothing changed. */
   const edit = <T extends object>(dryRun: boolean | undefined, run: () => T) =>
     dryRun ? { dryRun: "nothing was changed: this is what the call would do", ...store().dryRun(run) } : run();
-  const server = new McpServer({ name: "orlablocks", version: "0.0.33" }, { instructions: INSTRUCTIONS });
+  const server = new McpServer({ name: "orlablocks", version: "0.0.34" }, { instructions: INSTRUCTIONS });
   // Every tool reads or edits the open scene, and fails with a clear message while nothing is open.
   // The agent's scene (14.5): its own while the human is in another one, else the human's open document.
   const store = () => workspace.requireAgentScene();
@@ -187,7 +187,10 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
     async (query) => {
       const scene = store().getScene();
       const open = workspace.agentOpen()!;
-      const outline = describeScene(open, scene, query, { library: library(), guide: guideLine() });
+      const described = describeScene(open, scene, query, { library: library(), guide: guideLine() });
+      // What the human did since the agent's last step (14.6): a hint to read it before building on stale assumptions.
+      const humanSteps = workspace.humanStepsSinceAgent();
+      const outline = humanSteps > 0 ? { ...described, changes: `${humanSteps} human step${humanSteps === 1 ? "" : "s"} since your last: get_changes says what` } : described;
       // Working apart (14.5): this scene is the agent's own, and the human's view and selection are elsewhere.
       const apart = workspace.agentApart();
       if (apart) {
@@ -221,6 +224,24 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
           ...outline,
         }),
       );
+    },
+  );
+
+  server.registerTool(
+    "get_changes",
+    {
+      title: "Get changes",
+      description:
+        "What changed in the scene since a step (by default since your own last step): the steps in order (their number, " +
+        "who made them, what and when), then the NET difference by node: added (compact lines), removed, and changed, " +
+        "field by field (`height: 200 → 143`, `points: 12 → 14 (changed)`), plus the human's edits to the library and to " +
+        "entities in that time (`elsewhere`). Read it at the start of a turn when get_scene's `changes` says the human " +
+        "made changes, so you never build on what they've since reshaped.",
+      inputSchema: { since: z.number().int().min(0).optional().describe("A step number (the steps' `seq`); default: your own last step here") },
+    },
+    async ({ since }) => {
+      store();
+      return json(workspace.agentChanges(since));
     },
   );
 

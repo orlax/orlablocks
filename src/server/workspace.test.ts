@@ -494,3 +494,22 @@ describe("work with agent (14.5)", () => {
     expect(workspace.getAgent()).toMatchObject({ apart: false });
   });
 });
+
+describe("get_changes (14.6)", () => {
+  it("says what the human changed since the agent's last step, and edits to entities elsewhere", () => {
+    const { workspace } = startWithScene(tempRoot());
+    const [hall] = workspace.requireAgentScene().drawShapes([{ kind: "volume" as const, x: 0, z: 0, width: 4, depth: 4, height: 200, name: "valley peak" }], "agent");
+    expect(workspace.humanStepsSinceAgent()).toBe(0);
+    workspace.requireScene().updateNodes([{ id: hall.id, height: 143 }], "human");
+    workspace.requireScene().drawShapes([{ kind: "room" as const, x: 10, z: 0, width: 4, depth: 4 }], "human");
+    expect(workspace.humanStepsSinceAgent()).toBe(2);
+    const changes = workspace.agentChanges();
+    expect(changes.steps.map((s) => s.actor)).toEqual(["human", "human"]);
+    if (!("diff" in changes)) throw new Error("no diff");
+    expect(changes.diff.changed).toEqual([{ id: hall.id, type: "box", name: "valley peak", fields: { height: "200 → 143" } }]);
+    expect(changes.diff.added.map((n) => n.id)).toEqual(["box_2"]);
+    // An undo is the human's too.
+    workspace.requireScene().undo();
+    expect(workspace.agentChanges().steps.at(-1)).toMatchObject({ actor: "human", label: expect.stringMatching(/^Undo: /) });
+  });
+});
