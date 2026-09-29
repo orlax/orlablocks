@@ -32,7 +32,7 @@ export function InstancedEntity({ group, highlight }: { group: InstancedGroup; h
   return (
     <>
       {parts.map((p) => (
-        <InstancedPart key={p.id} part={p} cuts={cuts.get(p.id)} items={group.items} highlight={highlight} />
+        <InstancedPart key={p.id} part={p} cuts={cuts.get(p.id)} items={group.items} scale={group.scale ?? 1} highlight={highlight} />
       ))}
     </>
   );
@@ -44,21 +44,36 @@ export function InstancedEntity({ group, highlight }: { group: InstancedGroup; h
  */
 const placed = new WeakMap<THREE.InstancedMesh, { matrices: THREE.Matrix4[]; geometry: THREE.BufferGeometry }>();
 
-/** An item's place: moved to its pivot and turned around it (as an instance's shapes are, see `expandInstance`). */
-const itemMatrix = (item: ArrayItem) =>
+/**
+ * An item's place: scaled about its pivot (the array's scale, 14.3), turned around it and moved there (as an
+ * instance's shapes are, see `expandInstance`).
+ */
+const itemMatrix = (item: ArrayItem, scale: number) =>
   new THREE.Matrix4().compose(
     new THREE.Vector3(item.x, item.y, item.z),
     new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), (item.rotation * Math.PI) / 180),
-    new THREE.Vector3(1, 1, 1),
+    new THREE.Vector3(scale, scale, scale),
   );
 
 /** One part of an entity at every item: its body and a room's floor instanced, its edges merged into one set. */
-function InstancedPart({ part, cuts, items, highlight }: { part: Solid; cuts?: ClosedShape[]; items: ArrayItem[]; highlight?: "hover" | "selected" }) {
+function InstancedPart({
+  part,
+  cuts,
+  items,
+  scale,
+  highlight,
+}: {
+  part: Solid;
+  cuts?: ClosedShape[];
+  items: ArrayItem[];
+  scale: number;
+  highlight?: "hover" | "selected";
+}) {
   const { solid, floor, edges } = useShapeGeometry(part, cuts);
-  const itemsKey = JSON.stringify(items.map((i) => [i.x, i.y, i.z, i.rotation]));
+  const itemsKey = JSON.stringify([scale, items.map((i) => [i.x, i.y, i.z, i.rotation])]);
   const matrices = useMemo(() => {
     const local = shapeMatrix(part);
-    return items.map((i) => itemMatrix(i).multiply(local));
+    return items.map((i) => itemMatrix(i, scale).multiply(local));
   }, [itemsKey, part]);
   // Every item's edges in world space, as one set of segments.
   const lines = useMemo(() => {

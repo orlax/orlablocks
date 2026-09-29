@@ -1,5 +1,5 @@
 import { arrayItems } from "./arrays";
-import { moveShape, rotateShape } from "./geometry";
+import { moveShape, rotateShape, scaleShape } from "./geometry";
 import type { ArrayNode, Group, Instance, SceneNode, Shape } from "./scene.types";
 
 /**
@@ -70,7 +70,9 @@ export function expandInstance(inst: Instance): SceneNode[] {
     ? def.map((n) => {
         const parent = n.parent !== undefined ? ns(n.parent) : inst.id;
         if (n.type === "group") return { ...n, id: ns(n.id), parent };
-        const turned = inst.rotation ? ({ ...n, ...rotateShape(n, { x: 0, z: 0 }, inst.rotation) } as Shape) : n;
+        // Scaled about the pivot (14.3), turned around it, then moved to the instance's place.
+        const scaled = inst.scale && inst.scale !== 1 ? ({ ...n, ...scaleShape(n, inst.scale, { x: 0, y: 0, z: 0 }) } as Shape) : n;
+        const turned = inst.rotation ? ({ ...scaled, ...rotateShape(scaled, { x: 0, z: 0 }, inst.rotation) } as Shape) : scaled;
         const placed = { ...turned, ...moveShape(turned, inst.x, inst.y, inst.z) } as Shape;
         return { ...placed, id: ns(n.id), parent };
       })
@@ -84,9 +86,9 @@ export function expandInstance(inst: Instance): SceneNode[] {
           x: inst.x,
           z: inst.z,
           y: inst.y,
-          width: MISSING_SIZE,
-          depth: MISSING_SIZE,
-          height: MISSING_SIZE,
+          width: MISSING_SIZE * (inst.scale ?? 1),
+          depth: MISSING_SIZE * (inst.scale ?? 1),
+          height: MISSING_SIZE * (inst.scale ?? 1),
           rotation: inst.rotation,
           color: "red",
           createdBy: inst.createdBy,
@@ -115,6 +117,7 @@ const itemInstance = (array: ArrayNode, item: ReturnType<typeof arrayItems>[numb
   y: item.y,
   z: item.z,
   rotation: item.rotation,
+  ...(array.scale && array.scale !== 1 ? { scale: array.scale } : {}),
   createdBy: array.createdBy,
 });
 

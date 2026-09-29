@@ -800,6 +800,18 @@ export function App() {
           onChange: (patch: { pitch?: number; roll?: number }) => send({ type: "update_nodes", changes: tiltable.map((v) => ({ id: v.id, ...patch })) }),
         }
       : undefined;
+  // Instances and arrays selected directly (14.3): their uniform scale.
+  const scaled = selection.flatMap((id) => {
+    const n = nodes.find((m) => m.id === id);
+    return n && (n.type === "instance" || n.type === "array") ? [n] : [];
+  });
+  const scaleControl =
+    scaled.length > 0
+      ? {
+          value: scaled.every((n) => (n.scale ?? 1) === (scaled[0].scale ?? 1)) ? (scaled[0].scale ?? 1) : undefined,
+          onChange: (scale: number) => send({ type: "update_nodes", changes: scaled.map((n) => ({ id: n.id, scale })) }),
+        }
+      : undefined;
   // The drawing tools' next shape: its wall control for a room, its taper and bevel for a volume.
   const setNext = (patch: KindFields) => setNextFields({ ...nextFields, ...patch });
   const nextWallControl =
@@ -979,6 +991,13 @@ export function App() {
               wall: wallControl,
               profile: profileControl,
               tilt: tiltControl,
+              scale: scaleControl,
+              onScaleBy: selectedShapes.some((s) => s.type !== "note")
+                ? (factor) => {
+                    const b = boundsOf(selectedShapes);
+                    send({ type: "transform_nodes", ids: selection, scale: factor, pivot: { x: round2((b.minX + b.maxX) / 2), y: round2(b.minY), z: round2((b.minZ + b.maxZ) / 2) } });
+                  }
+                : undefined,
               line: lineControls,
               ramp: rampControls,
               onMirror: (axis) => send({ type: "mirror_nodes", ids: selection, axis }),
@@ -1057,6 +1076,7 @@ export function App() {
           })
         }
         onUpdate={(changes) => send({ type: "update_nodes", changes })}
+        onTransform={(t) => send({ type: "transform_nodes", ...t })}
         onDuplicate={({ ids, ...offset }) => {
           lastCopy.current = offset;
           duplicate(ids, offset);

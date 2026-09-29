@@ -90,7 +90,7 @@ export function compactNode(nodes: SceneNode[], n: SceneNode, opts: CompactOptio
     case "note":
       return { ...base, text: n.text.length > 120 ? `${n.text.slice(0, 120)}…` : n.text, status: n.status, ...(n.label ? { label: n.label } : {}), bounds };
     case "instance":
-      return { ...base, entity: n.entity, x: n.x, y: n.y, z: n.z, rotation: n.rotation ?? 0, ...(n.on ? { on: n.on.id } : {}), bounds };
+      return { ...base, entity: n.entity, x: n.x, y: n.y, z: n.z, rotation: n.rotation ?? 0, ...(n.scale ? { scale: n.scale } : {}), ...(n.on ? { on: n.on.id } : {}), bounds };
     case "array": {
       const placed = arrayLayout(n).items;
       const tops = placed.map((item) => itemTop(n, item));
@@ -99,6 +99,7 @@ export function compactNode(nodes: SceneNode[], n: SceneNode, opts: CompactOptio
         entities: entitiesOf(n),
         layout: layoutSummary(n.layout),
         ...(n.skip && n.skip.length > 0 ? { skip: n.skip } : {}),
+        ...(n.scale ? { scale: n.scale } : {}),
         ...(n.on ? { on: n.on.id } : {}),
         items: placed.length,
         bounds,

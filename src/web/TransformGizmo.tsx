@@ -20,6 +20,8 @@ import {
   scaleHandlePoint,
   TILT_RADIUS,
   tiltRing,
+  UNIFORM_HANDLE,
+  uniformHandlePoint,
   type GizmoPart,
   type ProfilePart,
   type ScalePart,
@@ -121,6 +123,7 @@ export function TransformGizmo({
   return (
     <>
       {parts.includes("rotate") && <RotateHandle boxes={boxes} frame={frame} hot={hot === "rotate"} cam={cam} />}
+      {parts.includes("uniform") && <UniformHandle boxes={boxes} frame={frame} hot={hot === "uniform"} cam={cam} />}
       {box &&
         (["pitch", "roll"] as const)
           .filter((part) => parts.includes(part))
@@ -153,6 +156,34 @@ export function TransformGizmo({
         )}
       </group>
     </>
+  );
+}
+
+// The uniform scale handle (14.3): a gold cube with a dark rim, standing on its corner so it reads as "scale all".
+const uniformGeometry = new THREE.BoxGeometry(UNIFORM_HANDLE, UNIFORM_HANDLE, UNIFORM_HANDLE);
+const uniformRimGeometry = new THREE.BoxGeometry(UNIFORM_HANDLE + 2 * RIM, UNIFORM_HANDLE + 2 * RIM, UNIFORM_HANDLE + 2 * RIM);
+const UNIFORM_COLOR = { base: "#e8b923", hot: "#f7d768" };
+
+/** The uniform scale handle, just outside the top corner opposite the rotate handle. */
+function UniformHandle({ boxes, frame, hot, cam }: { boxes: Shape[]; frame: Frame; hot: boolean; cam: RefObject<CameraState> }) {
+  const group = useRef<THREE.Group>(null);
+  useFrame(() => {
+    const g = group.current;
+    if (!g) return;
+    const scale = gizmoScale(cam.current);
+    const p = uniformHandlePoint(boxes, scale, frame);
+    g.position.set(p.x, p.y, p.z);
+    g.scale.setScalar(scale);
+  });
+  return (
+    <group ref={group} rotation={[Math.PI / 4, (frame.rotation * Math.PI) / 180 + Math.PI / 4, 0]}>
+      <mesh geometry={uniformRimGeometry} renderOrder={12}>
+        <meshBasicMaterial color={SCALE_COLORS.rim} depthTest={false} transparent />
+      </mesh>
+      <mesh geometry={uniformGeometry} renderOrder={13}>
+        <meshBasicMaterial color={hot ? UNIFORM_COLOR.hot : UNIFORM_COLOR.base} depthTest={false} transparent />
+      </mesh>
+    </group>
   );
 }
 

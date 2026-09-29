@@ -75,7 +75,10 @@ export const INSTRUCTIONS =
   "hole cuts nothing) is the human's aid: leave those alone unless asked. " +
   "WAYS OF WORKING: describe groups (update_nodes description) so the outline tells what each part is. To repeat " +
   "things, copy them with move_nodes and copy: true (count for a row) instead of redrawing; for symmetry, copy then " +
-  "mirror_nodes. A door or window is a hole shape in the room's group: cut it, don't build walls around the opening. " +
+  "mirror_nodes. When the human SKETCHES something small and asks for it at scale, the sketch is the brief: make it " +
+  "again with transform_nodes { ids, copy: true, scale, rotate?, mirror?, to } in one call (everything grows, walls " +
+  "and heights too), never by re-deriving its points; scale an instance or array with its `scale`. " +
+  "A door or window is a hole shape in the room's group: cut it, don't build walls around the opening. " +
   "Draw lines for paths, routes, jumps and ideas. " +
   "REVIEWING (get_guide review): the human's captioned shots are requirements: after a change that may touch one, " +
   "re-check it (render_view view: shots) and say whether its caption holds. To know whether a landmark is in view, " +

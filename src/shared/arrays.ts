@@ -21,7 +21,9 @@ import {
   toFreeformPoints,
   volumeRings,
   wallOf,
+  scaledPoints3,
   type MirrorAxis,
+  type Pivot3,
   type Point,
   type Point3,
 } from "./geometry";
@@ -457,6 +459,37 @@ export function moveArray(array: ArrayNode, dx: number, dy: number, dz: number):
     return { layout: { ...l, y, x: round2((l.x ?? 0) + dx), z: round2((l.z ?? 0) + dz) } };
   }
   return { layout: { ...l, x: round2(l.x + dx), y: round2(l.y + dy), z: round2(l.z + dz) } };
+}
+
+/**
+ * The array scaled uniformly by `f` about `pivot` (14.3): its layout's places move away from the pivot and its
+ * lengths grow (spacing, radius, rise, a scatter's area and minimum distance, the jitter), and every item's entity
+ * grows through the array's `scale`.
+ */
+export function scaleArray(array: ArrayNode, f: number, pivot: Pivot3): ShapePatch {
+  const px = (x: number) => round2(pivot.x + (x - pivot.x) * f);
+  const py = (y: number) => round2(pivot.y + (y - pivot.y) * f);
+  const pz = (z: number) => round2(pivot.z + (z - pivot.z) * f);
+  const len = (n: number) => round2(n * f);
+  const l = array.layout;
+  let layout: ArrayLayout;
+  if (l.type === "path") layout = { ...l, points: scaledPoints3(l.points, f, pivot), ...(l.spacing !== undefined ? { spacing: len(l.spacing) } : {}) };
+  else if (l.type === "circle") layout = { ...l, x: px(l.x), y: py(l.y), z: pz(l.z), radius: len(l.radius), ...(l.rise !== undefined ? { rise: len(l.rise) } : {}) };
+  else if (l.type === "grid") {
+    const spacing = { x: len(l.spacing.x), z: len(l.spacing.z), ...(l.spacing.y !== undefined ? { y: len(l.spacing.y) } : {}) };
+    layout = { ...l, x: px(l.x), y: py(l.y), z: pz(l.z), spacing };
+  } else {
+    layout = {
+      ...l,
+      y: py(l.y),
+      ...(l.x !== undefined ? { x: px(l.x) } : {}),
+      ...(l.z !== undefined ? { z: pz(l.z) } : {}),
+      ...(l.radius !== undefined ? { radius: len(l.radius) } : {}),
+      ...(l.area ? { area: mapFootPoints(l.area, (p) => ({ x: pivot.x + (p.x - pivot.x) * f, z: pivot.z + (p.z - pivot.z) * f }), (o) => ({ x: o.x * f, z: o.z * f })) } : {}),
+      ...(l.minDistance !== undefined ? { minDistance: len(l.minDistance) } : {}),
+    };
+  }
+  return { layout, scale: round2((array.scale ?? 1) * f), ...(array.jitter !== undefined ? { jitter: len(array.jitter) } : {}) };
 }
 
 /** A free-form's points through `f` (a position) and `h` (a handle's offset), rounded. */

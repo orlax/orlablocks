@@ -221,9 +221,14 @@ export type Instance = {
   y: number;
   z: number;
   rotation: number;
+  scale?: number; // uniform, around its pivot (14.3); none = 1
   on?: StandOn; // standing on another node: y is its top under the pivot (13.4)
   createdBy: Actor;
 };
+
+/** The smallest and largest uniform scale an instance or array can have (14.3). */
+export const MIN_SCALE = 0.01;
+export const MAX_SCALE = 100;
 
 /** One of an array's entities, and how often it's chosen among them (default 1). */
 export type ArrayEntity = { entity: string; weight?: number };
@@ -312,6 +317,7 @@ export type ArrayNode = {
   turnJitter?: number;
   seed?: number;
   skip?: number[];
+  scale?: number; // every item's uniform scale, around its pivot (14.3); none = 1
   on?: StandOn; // standing on another node (13.4): each item on its top; on another array, on its item i
   stand?: (StandPose | null)[]; // derived from `on`, by layout index (null: where the layout puts it)
   createdBy: Actor;
@@ -371,6 +377,8 @@ export type ShapePatch = Partial<Pick<Footprinted, "name" | "kind" | "x" | "z" |
   turnJitter?: number;
   seed?: number;
   skip?: number[];
+  // An instance's or array's uniform scale (from 14.3).
+  scale?: number;
   // Standing on and lines through (from 13.4).
   on?: StandOn;
   stand?: (StandPose | null)[];
@@ -642,6 +650,7 @@ const InstanceSchema = z.object({
   y: z.number(),
   z: z.number(),
   rotation: z.number(),
+  scale: z.number().min(MIN_SCALE).max(MAX_SCALE).optional(),
   on: z.object({ id: z.string() }).optional(),
   createdBy: ActorSchema,
 });
@@ -711,6 +720,7 @@ const ArraySchema = z.object({
   turnJitter: z.number().min(0).max(180).optional(),
   seed: z.number().int().optional(),
   skip: z.array(z.number().int().min(0)).optional(),
+  scale: z.number().min(MIN_SCALE).max(MAX_SCALE).optional(),
   on: z.object({ id: z.string() }).optional(),
   stand: z.array(z.object({ x: z.number(), y: z.number(), z: z.number(), rotation: z.number().optional() }).nullable()).optional(),
   createdBy: ActorSchema,
@@ -928,6 +938,7 @@ export const InstanceInputSchema = z.strictObject({
   rotation: FacingInputSchema.optional().describe(
     "Degrees, counterclockwise seen from above, around its pivot (default 0); or where it faces (its local +x), worked out once: { toward: {x, z} or an ID }, { away: ... } or { along: a line or ramp }",
   ),
+  scale: z.number().min(MIN_SCALE).max(MAX_SCALE).optional().describe("Its entity's shapes scaled uniformly around the pivot (walls and heights too). Default 1"),
   on: StandOnInputSchema.optional(),
   name: field.name.optional().describe('A name for this one, e.g. "entry_window". Not unique'),
   parent: field.parent.optional().describe("ID of the group to put it in. Omit for the top level"),
@@ -1030,6 +1041,7 @@ export const ArrayInputSchema = z.strictObject({
   turnJitter: arrayField.turnJitter.optional(),
   seed: arrayField.seed.optional(),
   skip: arrayField.skip.optional(),
+  scale: z.number().min(MIN_SCALE).max(MAX_SCALE).optional().describe("Every item's entity scaled uniformly around its pivot. Default 1"),
   on: StandOnInputSchema.optional(),
   name: field.name.optional(),
   parent: field.parent.optional().describe("ID of the group to put it in (its items cut and are cut as instances there). Omit for the top level"),
@@ -1128,6 +1140,7 @@ export const NodeUpdateSchema = z.strictObject({
   text: noteField.text.optional().describe("Notes only: the whole new text"),
   label: noteField.label.nullable().optional().describe(`Notes only: up to ${MAX_NOTE_LABEL} characters on its flag; null or "" removes it`),
   status: noteField.status.optional().describe("Notes only: open or done (mark a note done when it's handled, rather than removing it)"),
+  scale: z.number().min(MIN_SCALE).max(MAX_SCALE).optional().describe("Instances and arrays only: the uniform scale of its entity's shapes (1 = as defined)"),
   entity: z.string().optional().describe("Instances only: another entity's ID, to show it instead, in the same place"),
   entities: arrayField.entities.optional().describe("Arrays only: the whole list of entities (with weights)"),
   on: z
@@ -1226,6 +1239,33 @@ export const RotateNodesSchema = z.strictObject({
     .optional()
     .describe("The ground point to turn around. Defaults to the center of the nodes' combined bounds"),
 });
+/**
+ * One transform of nodes about one pivot (plan 14 §6), as one step: optionally copied first, then scaled, turned and
+ * mirrored about the pivot, then moved so the pivot lands on `to` (or by `move`).
+ */
+export const TransformNodesSchema = z.strictObject({
+  ids: IdsSchema.describe("IDs of shapes and/or groups; a group transforms everything in it as a unit"),
+  copy: z.boolean().optional().describe("Leave the originals and transform copies of them (new IDs), e.g. the human's sketch made again at scale"),
+  scale: z
+    .number()
+    .min(MIN_SCALE)
+    .max(MAX_SCALE)
+    .optional()
+    .describe("Uniform factor about the pivot: every position and length grows, walls, heights and steps too (2 = twice as big, 0.5 = half)"),
+  rotate: z.number().optional().describe("Degrees around the vertical axis through the pivot, counterclockwise seen from above"),
+  mirror: z.enum(["x", "z"]).optional().describe("Mirror across the pivot on a world axis: x swaps east and west, z swaps north and south"),
+  pivot: z
+    .strictObject({ x: z.number(), y: z.number().optional(), z: z.number() })
+    .optional()
+    .describe("The point it all happens about. Default: the bottom center of the nodes' combined bounds"),
+  to: z
+    .strictObject({ x: z.number(), y: z.number().optional(), z: z.number() })
+    .optional()
+    .describe("Then move so the pivot lands here (y left out: stays at its height)"),
+  move: z.strictObject({ dx: z.number().optional(), dy: z.number().optional(), dz: z.number().optional() }).optional().describe("Then move by this offset (instead of to)"),
+});
+export type TransformInput = z.input<typeof TransformNodesSchema>;
+
 /** Converts boxes and cylinders into free-forms with the same outline (new IDs, same place in the list), as one step. */
 export const ConvertNodesSchema = z.strictObject({ ids: IdsSchema.describe("IDs of boxes and cylinders") });
 export const MirrorNodesSchema = z.strictObject({
@@ -1461,6 +1501,7 @@ export const ClientMessageSchema = z.discriminatedUnion("type", [
   DuplicateNodesSchema.extend({ type: z.literal("duplicate_nodes") }),
   RotateNodesSchema.extend({ type: z.literal("rotate_nodes") }),
   MirrorNodesSchema.extend({ type: z.literal("mirror_nodes") }),
+  TransformNodesSchema.extend({ type: z.literal("transform_nodes") }),
   ConvertNodesSchema.extend({ type: z.literal("convert_nodes") }),
   PasteNodesSchema.extend({ type: z.literal("paste_nodes") }),
   GroupNodesSchema.extend({ type: z.literal("group_nodes") }),

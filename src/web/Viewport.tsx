@@ -83,6 +83,7 @@ import {
   AXES,
   canCopy,
   dragOffset,
+  uniformPivot,
   dragUpdate,
   effectiveChanges,
   elevationTargets,
@@ -262,6 +263,8 @@ type Drag = GizmoDrag & {
   label: string;
   /** A rotate drag: the selection frame's angle now. */
   turn?: number;
+  /** A uniform scale drag (14.3): the factor now. */
+  scale?: number;
   sx: number;
   sy: number;
 };
@@ -402,6 +405,8 @@ type Props = {
   onUpdate: (changes: NodeUpdate[]) => void;
   /** A short message for the status bar (the Pen's "the outline crosses itself"). */
   onNotice: (message: string) => void;
+  /** One transform (14.3: the uniform scale handle): scale about a pivot, one undo step. */
+  onTransform: (t: { ids: string[]; scale: number; pivot: { x: number; y: number; z: number } }) => void;
   /** One Alt-drag: copies the nodes by the drag's offset, one undo step. */
   onDuplicate: (copy: { ids: string[]; dx: number; dy: number; dz: number }) => void;
   /** Where the pointer meets the scene (a shape's surface, with its id, or the ground), or null off the view. */
@@ -497,6 +502,7 @@ export function Viewport({
   onDuplicate,
   onNotice,
   onCursor,
+  onTransform,
   onViewChange,
   cameraRestore,
   cameraFrame,
@@ -1102,6 +1108,8 @@ export function Viewport({
               : selectedBoxes.every((b) => b.type === "note")
                 ? ["x", "y", "z"]
                 : ["x", "y", "z", "rotate"]),
+            // Uniform scale (14.3): any selection with something that has a size.
+            ...(selectedBoxes.some((b) => b.type !== "note") ? ["uniform"] : []),
             ...(tiltable ? ["pitch", "roll"] : []),
           ] as GizmoPart[],
           boxes: selectedBoxes,
@@ -1223,8 +1231,8 @@ export function Viewport({
     const others = expandShapes(copy ? onViewRef.current : onViewRef.current.filter((b) => !d.ids.includes(b.id)));
     const mods = { shift: keys.shiftKey, alt: keys.altKey, snap: !noSnap(keys) };
     const size = { width: wrap.current!.clientWidth, height: wrap.current!.clientHeight };
-    const { patches, label, turn } = dragUpdate(d, cam.current, size, sx, sy, mods, others);
-    return { ...d, active: true, copy, patches, label, turn, sx, sy };
+    const { patches, label, turn, scale } = dragUpdate(d, cam.current, size, sx, sy, mods, others);
+    return { ...d, active: true, copy, patches, label, turn, scale, sx, sy };
   };
 
   /** A point's position on screen (a free-form's at ground level, a line's at its own y). */
@@ -1710,6 +1718,12 @@ export function Viewport({
           onDuplicate({ ids: drag.nodeIds, ...offset });
           setPending({ origin: drag.origin, patches: drag.patches, copy: true });
         }
+      } else if (drag.active && drag.part === "uniform") {
+        // One transform on the server (14.3), so links and instances scale as they should; the preview shows meanwhile.
+        if (drag.scale !== undefined && drag.scale !== 1) {
+          onTransform({ ids: drag.nodeIds, scale: drag.scale, pivot: uniformPivot(drag.bounds) });
+          setPending({ origin: drag.origin, patches: drag.patches, copy: false });
+        }
       } else if (drag.active) {
         const changes = effectiveChanges(drag.origin, drag.patches);
         if (changes.length > 0) {
@@ -1949,7 +1963,7 @@ export function Viewport({
     }
     if (drag?.active && drag.copy) return "copying";
     if (activePart === "rotate" || activePart === "pitch" || activePart === "roll") return "rotating";
-    if (activePart === "y" || activePart === "height") return "resizing";
+    if (activePart === "y" || activePart === "height" || activePart === "uniform") return "resizing";
     if (activePart && isProfilePart(activePart)) return "shaping";
     if (activePart) return "moving";
     if (panning) return "panning";

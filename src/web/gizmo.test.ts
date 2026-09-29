@@ -24,6 +24,7 @@ import {
   TILT_RADIUS,
   tiltRing,
   tiltValue,
+  uniformHandlePoint,
 } from "./gizmo";
 
 const size = { width: 1200, height: 800 };
@@ -467,3 +468,21 @@ describe("handles on a tilted shape", () => {
   });
 });
 
+
+describe("the uniform scale handle (14.3)", () => {
+  it("scales the whole selection about the bottom center of its bounds, twice as far out = ×2", () => {
+    const a = box({ id: "box_1", x: 2, z: 0, kind: "room", height: 3 });
+    const b = box({ id: "box_2", x: -2, z: 0 });
+    const handle = uniformHandlePoint([a, b], gizmoScale(cam));
+    const start = worldToScreen(cam, size, handle)!;
+    expect(hitGizmo(cam, size, start.sx, start.sy, gizmoAnchor(boundsOf([a, b])), ["x", "y", "z", "rotate", "uniform"], [a, b])).toBe("uniform");
+    const drag = startHandleDrag(cam, size, start.sx, start.sy, "uniform", [a, b]);
+    // Twice as far from the pivot (0, 0) on the top's plane.
+    const twice = worldToScreen(cam, size, { x: handle.x * 2, y: handle.y, z: handle.z * 2 })!;
+    const { patches, label, scale } = dragUpdate(drag, cam, size, twice.sx, twice.sy, { shift: false, alt: false, snap: true }, []);
+    expect(scale).toBe(2);
+    expect(label).toBe("×2.00");
+    expect(patches.box_1).toMatchObject({ x: 4, width: 4, height: 6, wall: 0.4 });
+    expect(patches.box_2).toMatchObject({ x: -4, width: 4, height: 2 });
+  });
+});

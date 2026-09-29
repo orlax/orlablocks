@@ -9,7 +9,7 @@ import type { ArrayNode, ClosedShape, Shape } from "../shared/scene.types";
  */
 
 /** Items of one entity in one array, drawn instanced. */
-export type InstancedGroup = { key: string; array: string; entity: string; items: ArrayItem[] };
+export type InstancedGroup = { key: string; array: string; entity: string; items: ArrayItem[]; scale?: number };
 
 /**
  * Splits what's drawn: the shapes to draw one by one, and the array items to draw instanced (their shapes left out
@@ -39,7 +39,7 @@ export function splitInstanced(boxes: Shape[], arrays: ArrayNode[], cuts: Map<st
       if (solids.some((s) => (cuts.get(s.id) ?? []).some((h) => !h.id.startsWith(own)))) continue;
       solids.forEach((s) => taken.add(s.id));
       const gk = `${array.id}:${item.entity}`;
-      if (!groups.has(gk)) groups.set(gk, { key: gk, array: array.id, entity: item.entity, items: [] });
+      if (!groups.has(gk)) groups.set(gk, { key: gk, array: array.id, entity: item.entity, items: [], ...(array.scale ? { scale: array.scale } : {}) });
       groups.get(gk)!.items.push(item);
     }
   }

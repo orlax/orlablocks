@@ -18,6 +18,8 @@ import {
   spiralPoints,
   sameValue,
   toFreeformPoints,
+  transformShape,
+  type Transform,
 } from "../shared/geometry";
 import {
   ArrayLayoutInputSchema,
@@ -48,6 +50,7 @@ import {
   PasteNodesSchema,
   PlaceNodesSchema,
   RotateNodesSchema,
+  TransformNodesSchema,
   ShapeInputSchema,
   SNAP,
   UngroupSchema,
@@ -148,6 +151,9 @@ function describeIds(nodes: SceneNode[], ids: string[]): string {
   return name ? `${name} (${ids[0]})` : listIds(ids);
 }
 
+/** An instance's or array's scale as stored (14.3): 2 decimals, and 1 (the default) left out. */
+const scaleField = (scale: number | undefined) => (scale !== undefined && round2(scale) !== 1 ? { scale: round2(scale) } : {});
+
 /** What a group's update can change: it has no shape fields. */
 const GROUP_FIELDS: readonly string[] = ["name", "description", "tags", "parent", "locked", "hidden"];
 
@@ -193,10 +199,11 @@ const FIELD_VERBS: Record<keyof NodePatch, string> = {
   on: "stand",
   stand: "stand",
   through: "route",
+  scale: "scale",
 };
 
 /** What an array's update can change (plan 10 §9): its items come from these. */
-const ARRAY_FIELDS: readonly string[] = ["name", "parent", "locked", "hidden", "entities", "layout", "facing", "rotation", "jitter", "turnJitter", "seed", "skip", "on"];
+const ARRAY_FIELDS: readonly string[] = ["name", "parent", "locked", "hidden", "entities", "layout", "facing", "rotation", "jitter", "turnJitter", "seed", "skip", "on", "scale"];
 /** The fields only an array has. */
 const ARRAY_ONLY = ["entities", "layout", "facing", "jitter", "turnJitter", "seed", "skip"] as const;
 
@@ -965,6 +972,7 @@ export function createSceneStore({
             y: round2(d.y ?? 0),
             z: round2(d.z),
             rotation: normalizeRotation(facingOf(prefix, d, errors)),
+            ...scaleField(d.scale),
             ...standOnFrom(`${prefix}.on`, d.on, predicted[i], errors),
           };
         }
@@ -993,6 +1001,7 @@ export function createSceneStore({
             layout,
             facing: d.facing,
             rotation: d.rotation === undefined ? undefined : normalizeRotation(d.rotation) || undefined,
+            ...scaleField(d.scale),
             ...arrayNoise(d),
             ...standOnFrom(`${prefix}.on`, d.on, predicted[i], errors),
           });
@@ -1158,7 +1167,7 @@ export function createSceneStore({
             ).filter((k) => fields[k] !== undefined);
             if (notInstance.length > 0) {
               errors.push(
-                `changes[${i}]: "${id}" is an instance, with no ${notInstance.join(", ")} of its own: it has x, y, z, rotation, name and entity ` +
+                `changes[${i}]: "${id}" is an instance, with no ${notInstance.join(", ")} of its own: it has x, y, z, rotation, scale, name and entity ` +
                   `(its shapes, description and tags are the entity's: detach_instances turns it into a group you can edit)`,
               );
             }
@@ -1311,6 +1320,12 @@ export function createSceneStore({
         if (fields.label !== undefined) patch.label = fields.label?.trim() || undefined;
         if (fields.status !== undefined) patch.status = fields.status;
         if (fields.entity !== undefined) patch.entity = fields.entity;
+        // An instance's or array's uniform scale (14.3); 1 isn't stored.
+        if (fields.scale !== undefined) {
+          if (node.type !== "instance" && node.type !== "array") {
+            errors.push(`changes[${i}].scale: only an instance or an array has a scale ("${id}" is a ${node.type}: transform_nodes scales anything)`);
+          } else patch.scale = round2(fields.scale) === 1 ? undefined : round2(fields.scale);
+        }
         if (node.type === "array") {
           if (fields.entities !== undefined) patch.entities = arrayEntitiesFrom(`changes[${i}].entities`, fields.entities, errors);
           if (fields.layout !== undefined) patch.layout = mergeLayout(`changes[${i}].layout`, node, fields.layout, errors);
@@ -1551,6 +1566,102 @@ export function createSceneStore({
       if (changes.length > 0) commit(label("mirror", `${listIds(ids)} on ${axis.toUpperCase()}`, actor), actor, [{ op: "update", changes }]);
       const mirrored = new Set(boxes.map((b) => b.id));
       return scene.nodes.filter((n): n is Shape => mirrored.has(n.id));
+    },
+
+    /**
+     * Transforms nodes about one pivot, as one step (plan 14 §6): optionally copies them first (the copies are what
+     * changes, placed right after the originals), then scales, turns and mirrors about the pivot (the bottom center
+     * of their bounds by default), then moves the pivot to `to` (or by `move`). Scaling grows every length, walls
+     * and steps too, and an instance's or array's entity through its `scale`. What stands on, or goes through,
+     * something that isn't transformed with it is unlinked, as a move does. Returns the shapes after, the pivot, and
+     * with `copy` which copy is which.
+     */
+    transformNodes(input: z.input<typeof TransformNodesSchema>, actor: Actor): { shapes: Shape[]; pivot: { x: number; y: number; z: number }; copies?: Record<string, string>; roots?: string[] } {
+      const t = parse(TransformNodesSchema, input, "Nothing was transformed.");
+      const errors: string[] = [];
+      checkIds("ids", t.ids, errors);
+      failIf(errors, "Nothing was transformed.");
+      if (t.scale === undefined && !t.rotate && !t.mirror && !t.to && !t.move && !t.copy) {
+        throw new SceneError("Give at least one of scale, rotate, mirror, to, move or copy. Nothing was transformed.");
+      }
+      if (t.to && t.move) throw new SceneError("Give to or move, not both. Nothing was transformed.");
+
+      const all = shapesUnder(scene.nodes, t.ids);
+      const b = boundsOf(all);
+      const pivot = { x: t.pivot?.x ?? round2((b.minX + b.maxX) / 2), y: t.pivot?.y ?? round2(b.minY), z: t.pivot?.z ?? round2((b.minZ + b.maxZ) / 2) };
+      const move = t.to
+        ? { dx: round2(t.to.x - pivot.x), dy: t.to.y === undefined ? 0 : round2(t.to.y - pivot.y), dz: round2(t.to.z - pivot.z) }
+        : { dx: t.move?.dx ?? 0, dy: t.move?.dy ?? 0, dz: t.move?.dz ?? 0 };
+      const transform: Transform = { pivot, ...(t.scale !== undefined ? { scale: t.scale } : {}), ...(t.rotate ? { rotate: t.rotate } : {}), ...(t.mirror ? { mirror: t.mirror } : {}), move };
+      const vertical = (t.scale !== undefined && t.scale !== 1) || move.dy !== 0;
+      const what = [
+        ...(t.scale !== undefined && t.scale !== 1 ? [`×${t.scale}`] : []),
+        ...(t.rotate ? [`${t.rotate}°`] : []),
+        ...(t.mirror ? [`mirrored on ${t.mirror.toUpperCase()}`] : []),
+        ...(move.dx || move.dy || move.dz ? ["moved"] : []),
+      ].join(", ");
+      /** What a transformed shape would be, with its sizes checked. */
+      const transformed = (s: Shape, i: number) => {
+        const patch = s.type === "array" ? tidyArrayPatch(transformShape(s, transform)) : transformShape(s, transform);
+        const next = { ...s, ...patch } as Shape;
+        const prefix = `ids[${i}] › ${s.id}`;
+        if (isClosed(next)) {
+          checkSizes(prefix, next, errors);
+          if (next.kind === "room" && next.wall !== undefined) patch.wall = wallValue(`${prefix}.wall`, next.wall, errors);
+        }
+        if (next.type === "ramp") {
+          if (next.width < MIN_RAMP_WIDTH) errors.push(`${prefix}.width: ${next.width} m is below ${MIN_RAMP_WIDTH}`);
+          if (next.step !== undefined && next.step < MIN_STEP) errors.push(`${prefix}.step: ${next.step} m is below ${MIN_STEP}`);
+        }
+        if ((next.type === "instance" || next.type === "array") && next.scale !== undefined && next.scale === 1) patch.scale = undefined;
+        return patch;
+      };
+
+      if (!t.copy) {
+        const boxes = withoutFollowers(t.ids, all, "transform");
+        const patches = Object.fromEntries(boxes.map((s, i) => [s.id, transformed(s, i)]));
+        failIf(errors, "Nothing was transformed.");
+        const changes = withUnlinks(boxes, effectiveShapeChanges(boxes, patches), vertical);
+        if (changes.length > 0) commit(label("transform", `${listIds(t.ids)}${what ? ` (${what})` : ""}`, actor), actor, [{ op: "update", changes }]);
+        const done = new Set(boxes.map((s) => s.id));
+        return { shapes: scene.nodes.filter((n): n is Shape => done.has(n.id)), pivot };
+      }
+
+      // Copies: each root's subtree copied, transformed, and placed right after the original's subtree.
+      const roots = topmost(scene.nodes, t.ids);
+      const copiesAfter = new Map<string, SceneNode[]>();
+      const pairs: [string, string][] = [];
+      for (const id of roots) {
+        const inside = subtreeIds(scene.nodes, id);
+        const nodes = scene.nodes.filter((n) => inside.has(n.id));
+        const copies = relinkCopies(nodes, copyNodes(nodes, newId)).map((n, i) => {
+          pairs.push([nodes[i].id, n.id]);
+          if (!isShape(n)) return { ...n, createdBy: actor };
+          // A following array's path comes from what it follows, which is copied too (or it was unlinked).
+          const patch = isFollowing(n) ? {} : transformed(n as Shape, i);
+          return { ...n, ...patch, createdBy: actor } as SceneNode;
+        });
+        copiesAfter.set(nodes.at(-1)!.id, copies);
+      }
+      failIf(errors, "Nothing was transformed.");
+      const next = scene.nodes.flatMap((n) => [n, ...(copiesAfter.get(n.id) ?? [])]);
+      const added = new Set([...copiesAfter.values()].flat().map((n) => n.id));
+      const indices: number[] = [];
+      const nodes = next.filter((n, index) => added.has(n.id) && indices.push(index));
+      // Copies standing on something outside the copy keep the height they're given, unlinked, when it changes.
+      const copied = nodes.filter(isShape);
+      const unlinks = withUnlinks(copied, [], vertical);
+      // New nodes carry no undefined fields (a patch's undefined means "removed").
+      const cleaned = nodes.map((n) => {
+        const u = unlinks.find((c) => c.id === n.id);
+        const merged = { ...n, ...(u?.patch ?? {}) } as Record<string, unknown>;
+        for (const k of Object.keys(merged)) if (merged[k] === undefined) delete merged[k];
+        return merged as SceneNode;
+      });
+      commit(label("copy", `${describeIds(scene.nodes, roots)}${what ? ` (${what})` : ""}`, actor), actor, [{ op: "add", nodes: cleaned, indices }]);
+      const made = new Set(nodes.map((n) => n.id));
+      const copyOf = Object.fromEntries(pairs);
+      return { shapes: scene.nodes.filter((n): n is Shape => made.has(n.id) && isShape(n)), pivot, copies: copyOf, roots: roots.map((id) => copyOf[id]) };
     },
 
     /**

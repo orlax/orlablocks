@@ -1,6 +1,6 @@
 import { differenceD, EndType, FillRule, inflatePathsD, JoinType, type PathD } from "@countertype/clipper2-ts";
 import { arrayShapes, instanceShapes } from "./entities";
-import { layoutAnchor, layoutPoints, mirrorArray, moveArray, rotateArray } from "./arrays";
+import { layoutAnchor, layoutPoints, mirrorArray, moveArray, rotateArray, scaleArray } from "./arrays";
 import {
   CURVE_SEGMENTS,
   DEFAULT_WALL,
@@ -923,6 +923,83 @@ export function resizeShape(shape: Shape, from: Frame, to: { x: number; z: numbe
       stretch,
     ),
   };
+}
+
+/** A point in the world, for scaling about (14.3). */
+export type Pivot3 = { x: number; y: number; z: number };
+
+/**
+ * A shape scaled uniformly by `factor` about `pivot` (14.3): every position moves away from (or toward) the pivot and
+ * every length in meters grows with it, walls, heights and steps included. What isn't in meters keeps: angles, the
+ * taper and bevel fractions, a line's thickness (screen px). An instance's or array's entity grows through its
+ * `scale`. Two decimals.
+ */
+export function scaleShape(shape: Shape, factor: number, pivot: Pivot3): ShapePatch {
+  const f = factor;
+  const px = (x: number) => round2(pivot.x + (x - pivot.x) * f);
+  const py = (y: number) => round2(pivot.y + (y - pivot.y) * f);
+  const pz = (z: number) => round2(pivot.z + (z - pivot.z) * f);
+  const len = (n: number) => round2(n * f);
+  const scaleOf = (s: number | undefined) => round2((s ?? 1) * f);
+  if (shape.type === "array") return scaleArray(shape, f, pivot);
+  if (shape.type === "note") return { x: px(shape.x), y: py(shape.y), z: pz(shape.z) };
+  if (shape.type === "instance") return { x: px(shape.x), y: py(shape.y), z: pz(shape.z), scale: scaleOf(shape.scale) };
+  if (shape.type === "line") return { points: scaledPoints3(shape.points, f, pivot) };
+  if (shape.type === "ramp") {
+    return { points: scaledPoints3(shape.points, f, pivot) as RampPoint[], width: len(shape.width), ...(shape.step !== undefined ? { step: len(shape.step) } : {}) };
+  }
+  const wall = shape.kind === "room" ? { wall: len(wallOf(shape)) } : {};
+  const vertical = { y: py(shape.y), height: len(shape.height), ...wall };
+  if (!isFootprinted(shape)) {
+    return {
+      ...vertical,
+      points: roundPoints(
+        shape.points.map((p) => ({
+          ...p,
+          x: pivot.x + (p.x - pivot.x) * f,
+          z: pivot.z + (p.z - pivot.z) * f,
+          ...(p.in ? { in: { x: p.in.x * f, z: p.in.z * f } } : {}),
+          ...(p.out ? { out: { x: p.out.x * f, z: p.out.z * f } } : {}),
+        })),
+      ),
+    };
+  }
+  return { ...vertical, x: px(shape.x), z: pz(shape.z), width: len(shape.width), depth: len(shape.depth) };
+}
+
+/** A transform about one pivot (14.3): scale, then turn, then mirror, all about the pivot, then move. */
+export type Transform = { pivot: Pivot3; scale?: number; rotate?: number; mirror?: MirrorAxis; move?: { dx: number; dy: number; dz: number } };
+
+/** A shape with a transform applied (see `Transform`): the whole patch, from the shape as it is. */
+export function transformShape(shape: Shape, t: Transform): ShapePatch {
+  let s = shape;
+  const apply = (patch: ShapePatch) => {
+    s = { ...s, ...patch } as Shape;
+  };
+  if (t.scale !== undefined && t.scale !== 1) apply(scaleShape(s, t.scale, t.pivot));
+  if (t.rotate) apply(rotateShape(s, t.pivot, t.rotate));
+  if (t.mirror) apply(mirrorShape(s, t.mirror, round2(2 * (t.mirror === "x" ? t.pivot.x : t.pivot.z))));
+  if (t.move && (t.move.dx || t.move.dy || t.move.dz)) apply(moveShape(s, t.move.dx, t.move.dy, t.move.dz));
+  const patch: ShapePatch = {};
+  for (const k of Object.keys(s) as (keyof ShapePatch)[]) {
+    if ((s as ShapePatch)[k] !== (shape as ShapePatch)[k]) (patch as Record<string, unknown>)[k] = (s as ShapePatch)[k];
+  }
+  return patch;
+}
+
+/** 3D points (a line's, a ramp's, a path layout's) and their handles scaled about a pivot, rounded. */
+export function scaledPoints3<P extends LinePoint | RampPoint>(points: P[], f: number, pivot: Pivot3): P[] {
+  const h = (o: { x: number; y?: number; z: number }) => ({ x: o.x * f, ...(o.y !== undefined ? { y: o.y * f } : {}), z: o.z * f });
+  return roundPoints(
+    points.map((p) => ({
+      ...p,
+      x: pivot.x + (p.x - pivot.x) * f,
+      y: pivot.y + (p.y - pivot.y) * f,
+      z: pivot.z + (p.z - pivot.z) * f,
+      ...(p.in ? { in: h(p.in) } : {}),
+      ...(p.out ? { out: h(p.out) } : {}),
+    })),
+  ) as P[];
 }
 
 /** A world axis on the ground, for mirroring. */

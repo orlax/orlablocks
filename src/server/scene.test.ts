@@ -1380,3 +1380,45 @@ describe("validation and facing (14.2)", () => {
     expect(() => store.drawShapes([{ type: "instance", entity: "block", x: 0, z: 0, rotation: { along: "box_99" } }], "agent")).toThrow(/along: no node "box_99"/);
   });
 });
+
+describe("transformNodes (14.3)", () => {
+  const sketch = () => {
+    const store = createSceneStore();
+    const [group] = store.drawShapes(
+      [
+        { type: "group", ref: "g", name: "sketch" },
+        { kind: "room", x: 1, z: 1, width: 2, depth: 2, height: 1, parent: "$g" },
+        { kind: "volume", ref: "hill", x: 4, z: 1, width: 1, depth: 1, height: 1, parent: "$g" },
+        { type: "line", through: { stops: ["$hill", "box_1"] }, parent: "$g" },
+      ],
+      "agent",
+    );
+    return { store, group };
+  };
+
+  it("copies a sketch at scale, placed by its pivot, as one step, with its links between copies kept", () => {
+    const { store, group } = sketch();
+    const before = store.getScene().nodes.length;
+    const { roots, copies, pivot } = store.transformNodes({ ids: [group.id], copy: true, scale: 4, to: { x: 100, z: 0 } }, "agent");
+    expect(pivot).toEqual({ x: 2.25, y: 0, z: 1 });
+    expect(store.getScene().nodes).toHaveLength(before * 2);
+    const byId = new Map(store.getScene().nodes.map((n) => [n.id, n]));
+    const room = byId.get(copies!["box_1"]) as Box;
+    // x 1 is 1.25 west of the pivot: 5 west of x 100 at ×4; walls 0.8 thick, 4 high.
+    expect(room).toMatchObject({ x: 95, z: 0, width: 8, depth: 8, height: 4, wall: 0.8, parent: roots![0] });
+    const line = byId.get(copies!["line_1"]) as Line;
+    expect(line.through!.stops).toEqual([copies!["box_2"], copies!["box_1"]]);
+    // The originals are untouched, and one undo removes the copy.
+    expect(byId.get("box_1")).toMatchObject({ x: 1, width: 2 });
+    store.undo();
+    expect(store.getScene().nodes).toHaveLength(before);
+  });
+
+  it("scales in place, and refuses what gets too small", () => {
+    const { store } = sketch();
+    store.transformNodes({ ids: ["box_2"], scale: 0.5 }, "agent");
+    expect(store.getScene().nodes.find((n) => n.id === "box_2")).toMatchObject({ width: 0.5, height: 0.5, y: 0 });
+    expect(() => store.transformNodes({ ids: ["box_1"], scale: 0.01 }, "agent")).toThrow(/Nothing was transformed/);
+    expect(() => store.transformNodes({ ids: ["box_1"] }, "agent")).toThrow(/at least one of/);
+  });
+});

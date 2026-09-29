@@ -21,6 +21,7 @@ import {
   RenderRequestSchema,
   RotateNodesSchema,
   ShapeInputSchema,
+  TransformNodesSchema,
   UngroupSchema,
   type SceneNode,
 } from "../shared/scene.types";
@@ -139,7 +140,7 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
   /** Runs an edit tool's body for real, or as a dry run (14.2): the same result, marked, with nothing changed. */
   const edit = <T extends object>(dryRun: boolean | undefined, run: () => T) =>
     dryRun ? { dryRun: "nothing was changed: this is what the call would do", ...store().dryRun(run) } : run();
-  const server = new McpServer({ name: "orlablocks", version: "0.0.30" }, { instructions: INSTRUCTIONS });
+  const server = new McpServer({ name: "orlablocks", version: "0.0.31" }, { instructions: INSTRUCTIONS });
   // Every tool reads or edits the open scene, and fails with a clear message while nothing is open.
   const store = () => workspace.requireScene();
   const library = (): Library => (workspace.getOpen() ? workspace.library.get() : EMPTY_LIBRARY);
@@ -424,8 +425,8 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
         `taper and bevel (a volume's; 0 clears them), pitch and roll (a box or cylinder volume's; 0 levels it); ` +
         `a cylinder those and sides; a free-form name, parent, kind, y, height, color, wall, taper, bevel and points (the whole outline); a line name, parent, color, ` +
         `points (the whole path, with y), thickness, dashed and arrow; a ramp name, parent, color, ` +
-        `points (with y), width, step (null = smooth) and base; a note name, parent, x, y, z, color, text, label (null removes it) and status (open or done); an instance name, parent, x, y, z, rotation and entity (another entity's ID, to swap it); ` +
-        `an array name, parent, entities, layout (fields merge into it; another type replaces it), facing, rotation, jitter, turnJitter, seed and skip. ` +
+        `points (with y), width, step (null = smooth) and base; a note name, parent, x, y, z, color, text, label (null removes it) and status (open or done); an instance name, parent, x, y, z, rotation (degrees, or where it faces), scale and entity (another entity's ID, to swap it); ` +
+        `an array name, parent, entities, layout (fields merge into it; another type replaces it), facing, rotation, jitter, turnJitter, seed, skip and scale. ` +
         `An instance or array takes on ({ id } to stand on a node, null to stop), a line through (new stops, or null to unlink it). ` +
         `Giving a through line points, or something standing a height (y, or an array's layout y), unlinks it. ` +
         `A group takes only name, description (what that part of the level is; null removes it), parent, locked and hidden (any node takes those two). ` +
@@ -528,6 +529,31 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
       const mirrored = store().mirrorNodes(input, "agent");
       return { mirrored: verbose ? mirrored : compactNodes(store().getScene().nodes, mirrored.map((n) => n.id), { items }) };
     })),
+  );
+
+  server.registerTool(
+    "transform_nodes",
+    {
+      title: "Transform nodes",
+      description:
+        `Scale, turn, mirror and move shapes and/or whole groups about ONE pivot, as one step (one undo), optionally on ` +
+        `copies: the way to make the human's small SKETCH again at the required scale (copy: true, scale: 4.5, to: where ` +
+        `it goes), instead of re-deriving it point by point. In order: copy (the originals stay; copies get new IDs, ` +
+        `their links between each other kept), scale (uniform: every position moves away from the pivot and every length ` +
+        `grows, walls, heights and steps too; instances and arrays grow through their scale), rotate (degrees around the ` +
+        `vertical, counterclockwise seen from above), mirror (x or z, across the pivot), then move (to: the pivot lands ` +
+        `there; or move: an offset). The pivot defaults to the bottom center of their combined bounds. Returns the pivot, ` +
+        `the result (compact unless verbose), and with copy which copy is which (\`copies\`: { original: copy }).`,
+      inputSchema: TransformNodesSchema.extend({ verbose: VERBOSE, items: ITEMS, dry_run: DRY_RUN }).shape,
+    },
+    async ({ verbose, items, dry_run, ...input }) =>
+      json(
+        edit(dry_run, () => {
+          const { shapes, pivot, copies, roots } = guided(() => store().transformNodes(input, "agent"));
+          const result = verbose ? shapes : compactNodes(store().getScene().nodes, roots ?? shapes.map((n) => n.id), { items });
+          return warned({ [input.copy ? "copies" : "transformed"]: result, pivot, ...(copies ? { copies } : {}) });
+        }),
+      ),
   );
 
   server.registerTool(

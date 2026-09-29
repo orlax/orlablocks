@@ -1,4 +1,4 @@
-import { DEFAULT_WALL, HEIGHT_SNAP, MIN_HEIGHT, MIN_WALL, SNAP, type ClosedShape, type Shape, type ShapePatch } from "../shared/scene.types";
+import { DEFAULT_WALL, HEIGHT_SNAP, MAX_SCALE, MIN_HEIGHT, MIN_WALL, SNAP, type ClosedShape, type Shape, type ShapePatch } from "../shared/scene.types";
 import {
   anchorOf,
   boundsOf,
@@ -22,6 +22,7 @@ import {
   toLocal3,
   toShapeLocal,
   toWorld3,
+  transformShape,
   wallOf,
   verticalRange,
   type Bounds,
@@ -42,7 +43,8 @@ export type ScalePart = `scale:${Sign}:${Sign}`;
 export type TiltPart = "pitch" | "roll";
 /** `wall` is a single room's wall thickness knob, `taper` and `bevel` a single volume's or hole's profile knobs. */
 export type ProfilePart = "wall" | "taper" | "bevel";
-export type GizmoPart = "x" | "y" | "z" | "height" | "rotate" | TiltPart | ScalePart | ProfilePart;
+/** `uniform` is the uniform scale handle (14.3): any selection, about the bottom center of its bounds. */
+export type GizmoPart = "x" | "y" | "z" | "height" | "rotate" | "uniform" | TiltPart | ScalePart | ProfilePart;
 export type DragPart = GizmoPart | "body";
 
 /** The gizmo keeps a roughly constant size on screen: its world size grows with the camera distance. */
@@ -261,6 +263,29 @@ export function rotateHandlePlacement(
   return { point: { x: corner.x + out.x * offset, y, z: corner.z + out.z * offset }, inward: { x: -out.x, z: -out.z } };
 }
 
+/** The smallest factor a uniform scale drag goes to (a tenth). */
+const MIN_SCALE_DRAG = 0.1;
+
+/** The uniform scale handle's size (a cube), in gizmo units, and how it snaps: 0.05 steps, 0.25 with Shift (14.3). */
+export const UNIFORM_HANDLE = 0.3;
+export const UNIFORM_SNAP = 0.05;
+export const UNIFORM_SNAP_SHIFT = 0.25;
+
+/**
+ * Where the uniform scale handle sits: just outside the top corner opposite the rotate handle (the frame's +x, +z
+ * corner), at the top of the bounds.
+ */
+export function uniformHandlePoint(boxes: Shape[], scale: number, frame: Frame = selectionFrame(boxes)): Vec3 {
+  const offset = ROTATE_OFFSET * scale;
+  const { ex, ez } = shapeAxes(frame);
+  const corner = fromShapeLocal(frame, { x: frame.width / 2, z: frame.depth / 2 });
+  const out = { x: (ex.x + ez.x) / Math.SQRT2, z: (ex.z + ez.z) / Math.SQRT2 };
+  return { x: corner.x + out.x * offset, y: boundsOf(boxes).maxY, z: corner.z + out.z * offset };
+}
+
+/** What a uniform scale drag scales about: the bottom center of the selection's bounds (as transform_nodes). */
+export const uniformPivot = (b: Bounds) => ({ x: round2((b.minX + b.maxX) / 2), y: round2(b.minY), z: round2((b.minZ + b.maxZ) / 2) });
+
 const dot = (a: Vec3, b: Vec3) => a.x * b.x + a.y * b.y + a.z * b.z;
 const cross = (a: Vec3, b: Vec3): Vec3 => ({ x: a.y * b.z - a.z * b.y, y: a.z * b.x - a.x * b.z, z: a.x * b.y - a.y * b.x });
 const unit = (a: Vec3): Vec3 => {
@@ -386,6 +411,11 @@ export function hitGizmo(
       if (d <= Math.hypot(rim.sx - c.sx, rim.sy - c.sy) + HANDLE_HIT_PX / 2) best = { part: "rotate", d };
     }
   }
+  if (parts.includes("uniform") && boxes.length > 0) {
+    const p = worldToScreen(cam, size, uniformHandlePoint(boxes, scale, frame));
+    const d = p ? Math.hypot(p.sx - sx, p.sy - sy) : Infinity;
+    if (d <= HANDLE_HIT_PX + 2 && (!best || d < best.d)) best = { part: "uniform", d };
+  }
   if (box) {
     for (const part of ["pitch", "roll"] as const) {
       if (!parts.includes(part)) continue;
@@ -470,6 +500,12 @@ export function startHandleDrag(
   if (part === "pitch" || part === "roll") {
     return { part, origin, bounds, frame, grab: ringAngle(cam, size, sx, sy, tiltRing(origin[0], part)) };
   }
+  if (part === "uniform") {
+    // How far the cursor is from the pivot, on the ground plane under it: the factor is the ratio to this.
+    const pivot = uniformPivot(bounds);
+    const p = screenToPlane(cam, size, sx, sy, bounds.maxY);
+    return { part, origin, bounds, frame, grab: Math.max(1e-3, Math.hypot(p.x - pivot.x, p.z - pivot.z)) };
+  }
   if (part === "rotate") {
     // The cursor's angle around the pivot (the selection frame's center), on the plane of its top.
     const p = screenToPlane(cam, size, sx, sy, bounds.maxY);
@@ -524,12 +560,21 @@ export function dragUpdate(
   sy: number,
   mods: DragModifiers,
   others: Shape[],
-): { patches: Record<string, ShapePatch>; label: string; turn?: number } {
+): { patches: Record<string, ShapePatch>; label: string; turn?: number; scale?: number } {
   const { part, origin, bounds, frame } = drag;
   const anchor = gizmoAnchor(bounds, frame);
   const patches: Record<string, ShapePatch> = {};
 
   if (isScalePart(part)) return scaleUpdate(drag, part, cam, size, sx, sy, mods);
+  if (part === "uniform") {
+    const pivot = uniformPivot(bounds);
+    const p = screenToPlane(cam, size, sx, sy, bounds.maxY);
+    const raw = Math.hypot(p.x - pivot.x, p.z - pivot.z) / (drag.grab as number);
+    const step = mods.shift ? UNIFORM_SNAP_SHIFT : UNIFORM_SNAP;
+    const factor = round2(Math.min(MAX_SCALE, Math.max(MIN_SCALE_DRAG, mods.snap ? Math.max(step, snapTo(raw, step)) : raw)));
+    for (const s of origin) patches[s.id] = transformShape(s, { pivot, scale: factor });
+    return { patches, label: `×${factor.toFixed(2)}`, scale: factor };
+  }
   if (isProfilePart(part)) return profileUpdate(drag, part, cam, size, sx, sy, mods);
 
   if (part === "rotate") {

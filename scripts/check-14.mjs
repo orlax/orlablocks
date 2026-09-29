@@ -40,6 +40,34 @@ const CHECKS = {
     const withItems = await call("update_nodes", { items: true, changes: [{ id: arr.created[0].id, layout: { radius: 12 } }] });
     check(Array.isArray(withItems.updated[0].at) && withItems.updated[0].at.length === 12, "items: true lists them");
   },
+
+  // Uniform scale: the human's sketch made again at scale in one call; the human's scale over the WebSocket.
+  async "14.3"({ human, call }) {
+    await call("define_entity", { name: "peak", shapes: [{ type: "cylinder", kind: "volume", x: 0, z: 0, width: 4, depth: 4, height: 6, sides: 7, taper: 0.8 }] });
+    const sketch = await call("draw_shapes", {
+      shapes: [
+        { type: "group", ref: "s", name: "sketch" },
+        { kind: "room", x: 0, z: 0, width: 4, depth: 3, height: 1, parent: "$s" },
+        { type: "instance", ref: "p", entity: "peak", x: 3, z: 0, parent: "$s" },
+        { type: "line", through: { stops: ["$p", "box_1"] }, parent: "$s" },
+      ],
+    });
+    const group = sketch.refs.s;
+    const made = await call("transform_nodes", { ids: [group], copy: true, scale: 4.5, mirror: "x", to: { x: 100, z: 0 } });
+    check(made.copies && made.copies.box_1 && made.copies.instance_1, "the copy says which copy is which");
+    const scene = await call("get_scene", { full: true });
+    const room = scene.nodes.find((n) => n.id === made.copies.box_1);
+    const peak = scene.nodes.find((n) => n.id === made.copies.instance_1);
+    check(room.width === 18 && room.height === 4.5 && room.wall === 0.9, "the room grew 4.5×, its walls too");
+    check(peak.scale === 4.5 && peak.x < 100, "the peak grew through its scale, and the mirror put it west of the pivot");
+    const line = scene.nodes.find((n) => n.id === made.copies.line_1);
+    check(line.through.stops[0] === made.copies.instance_1, "the copied route goes through the copies");
+    human.send({ type: "transform_nodes", ids: [made.copies.box_1], scale: 0.5 });
+    await new Promise((r) => setTimeout(r, 200));
+    const after = await call("find_nodes", { name: "" });
+    const halved = (await call("get_scene", { full: true })).nodes.find((n) => n.id === made.copies.box_1);
+    check(halved.width === 9 && halved.wall === 0.45 && after.found.length > 0, "the human's Scale… halves it, walls too");
+  },
 };
 
 for (const [name, run] of Object.entries(CHECKS)) {

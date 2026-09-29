@@ -26,6 +26,7 @@ import {
   Spline,
   Package,
   PencilRuler,
+  Scaling,
   Unlink,
   type LucideIcon,
 } from "lucide-react";
@@ -45,7 +46,9 @@ import {
   MAX_NOTE_TEXT,
   MAX_ARRAY_ENTITIES,
   MAX_ARRAY_ITEMS,
+  MAX_SCALE,
   MIN_ARRAY_SPACING,
+  MIN_SCALE,
   type ArrayFacing,
   type ArrayLayout,
   type ArrayLayoutType,
@@ -123,6 +126,10 @@ export type InspectorProps = {
     onChange: (patch: { taper?: number; bevel?: number }) => void;
     onPreview?: Preview<{ taper?: number; bevel?: number }>;
   };
+  /** Instances and arrays (14.3): their uniform scale, undefined when they differ. */
+  scale?: { value: number | undefined; onChange: (scale: number) => void };
+  /** Scale… (14.3): the whole selection scaled by a factor about the bottom center of its bounds. */
+  onScaleBy?: (factor: number) => void;
   /** Box and cylinder volumes and holes: pitch and roll, each undefined when they differ. */
   tilt?: { pitch: number | undefined; roll: number | undefined; onChange: (patch: { pitch?: number; roll?: number }) => void };
   /** Lines: thickness, dashes, arrows, and Reverse if given. */
@@ -175,9 +182,9 @@ export type ArrayControls = {
   onRestoreAll: () => void;
 };
 
-export function Inspector({ title, info, library = null, links, note, instance, array, makeEntity, description, tags, sides, wall, profile, tilt, line, ramp, onMirror, onConvert, editPoints }: InspectorProps) {
+export function Inspector({ title, info, library = null, links, note, instance, array, makeEntity, description, tags, sides, wall, profile, scale, onScaleBy, tilt, line, ramp, onMirror, onConvert, editPoints }: InspectorProps) {
   const { ref, header, style, collapsed, toggle } = useFloating("orlablocks.inspector", ".inspector-header");
-  const actions = onMirror || onConvert || editPoints || makeEntity;
+  const actions = onMirror || onConvert || editPoints || makeEntity || onScaleBy;
   return (
     <div className={collapsed ? "inspector collapsed" : "inspector"} ref={ref} style={style}>
       <div className="inspector-header" {...header} title="Drag to move the inspector · double-click to put it back">
@@ -259,6 +266,21 @@ export function Inspector({ title, info, library = null, links, note, instance, 
               </Row>
             </Section>
           )}
+          {scale && (
+            <Section label="Scale">
+              <Row label="scale">
+                <NumberField
+                  title={`Its entity's uniform scale, around its pivot (1 = as defined; ${MIN_SCALE} to ${MAX_SCALE})`}
+                  value={scale.value}
+                  unit="×"
+                  step={0.25}
+                  min={MIN_SCALE}
+                  fallback={1}
+                  onChange={(v) => scale.onChange(Math.min(MAX_SCALE, v))}
+                />
+              </Row>
+            </Section>
+          )}
           {tilt && <TiltSection {...tilt} />}
           {ramp && <RampSection {...ramp} />}
           {line && <LineSection {...line} />}
@@ -286,6 +308,7 @@ export function Inspector({ title, info, library = null, links, note, instance, 
                     <Spline size={16} /> {editPoints.active ? "Done" : (editPoints.label ?? "Edit points")}
                   </button>
                 )}
+                {onScaleBy && <ScaleBy onScale={onScaleBy} />}
                 {makeEntity && <MakeEntity {...makeEntity} />}
               </div>
             </Section>
@@ -411,6 +434,46 @@ function DescriptionField({ value, onChange, library }: { value: string; onChang
 }
 
 /** Make entity: a button that asks for the entity's name in place, then makes it (Enter) or doesn't (Esc). */
+/**
+ * Scale… (14.3): a factor for the whole selection, about the bottom center of its bounds, as one step. Everything in
+ * meters grows (walls, heights and steps too), as the gizmo's uniform handle does.
+ */
+function ScaleBy({ onScale }: { onScale: (factor: number) => void }) {
+  const [factor, setFactor] = useState<string | null>(null);
+  if (factor === null) {
+    return (
+      <button className="labeled" title="Scale the selection by a factor about the bottom center of its bounds (walls, heights and steps too)" onClick={() => setFactor("2")}>
+        <Scaling size={16} /> Scale…
+      </button>
+    );
+  }
+  const apply = () => {
+    const f = Number(factor);
+    if (Number.isFinite(f) && f >= MIN_SCALE && f <= MAX_SCALE && f !== 1) onScale(f);
+    setFactor(null);
+  };
+  return (
+    <div className="make-entity">
+      <input
+        autoFocus
+        value={factor}
+        inputMode="decimal"
+        title="The factor: 2 doubles it, 0.5 halves it (Enter scales, Esc cancels)"
+        onFocus={(e) => e.currentTarget.select()}
+        onChange={(e) => setFactor(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") apply();
+          if (e.key === "Escape") setFactor(null);
+        }}
+        onBlur={() => setFactor(null)}
+      />
+      <button className="labeled primary" onMouseDown={(e) => e.preventDefault()} onClick={apply}>
+        ×
+      </button>
+    </div>
+  );
+}
+
 function MakeEntity({ suggested, onMake }: { suggested: string; onMake: (name: string) => void }) {
   const [name, setName] = useState<string | null>(null);
   if (name === null) {
