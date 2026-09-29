@@ -165,7 +165,7 @@ export function WalkHud({
       <div className="walk-status">
         Walking · {preset} · {Math.round(speed * 10) / 10} m/s{session.floating ? " · floating (F lands)" : ""}
         {shots > 0 && ` · ${shots} shot${shots === 1 ? "" : "s"}`}
-        <span className="muted"> · click for a shot · Esc pauses</span>
+        <span className="muted"> · click for a shot · Esc pauses · Tab frees the mouse</span>
       </div>
       {flash && (
         <div key={flash.key} className="walk-flash">
@@ -238,7 +238,6 @@ export function WalkMenu({
   shots,
   onRemoveShot,
   onContinue,
-  onRelease,
   onExit,
 }: {
   session: WalkSession;
@@ -248,8 +247,6 @@ export function WalkMenu({
   shots: ShotView[];
   onRemoveShot: (id: string) => void;
   onContinue: () => void;
-  /** Closes the menu and leaves the mouse free (14.1). */
-  onRelease: () => void;
   onExit: () => void;
 }) {
   const third = session.preset === "third";
@@ -345,9 +342,6 @@ export function WalkMenu({
         <div className="walk-menu-actions">
           <button type="button" className="primary" onClick={onContinue}>
             Continue <kbd>Enter</kbd>
-          </button>
-          <button type="button" title="Close the menu and keep the mouse free (for another window); Enter continues" onClick={onRelease}>
-            Release mouse <kbd>Tab</kbd>
           </button>
           <button type="button" onClick={onExit}>
             Exit <kbd>Esc</kbd>

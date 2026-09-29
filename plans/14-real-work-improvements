@@ -527,3 +527,4 @@ Proposed in this plan, to confirm:
   - **All checks:** `check-14.mjs` (34 checks, every increment) and `eval-temple.mjs` (4,826 characters received in 8 calls) pass.
   - **What's left for Orlando:** the browser acceptance (§15), none of which was checked in a browser, and the race.
 - **2026-09-29:** Orlando: 14.10 is the ability (Work with agent, from 14.5), not a test. `eval-valley.mjs` removed; `race-report.mjs` kept as an optional readout.
+- **2026-09-29:** From Orlando's check: the pause menu's three buttons were cut off. **Release mouse** is gone from the menu; Tab while walking frees the mouse (released, no menu), and the walk's status line says so.

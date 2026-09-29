@@ -646,6 +646,8 @@ export function Viewport({
   };
   const updateWalk = (patch: Partial<WalkSession>) => walkRef.current && setWalk({ ...walkRef.current, ...patch });
   const updateWalkRef = useRef(updateWalk);
+  // Set by Tab while walking: the lock's loss that follows releases the walk instead of opening the menu.
+  const releaseNext = useRef(false);
   updateWalkRef.current = updateWalk;
   const live = useRef<WalkLive | null>(null);
   const playerRef = useRef(player);
@@ -781,7 +783,10 @@ export function Viewport({
       if (locked && sess.phase === "paused") setWalk({ ...sess, phase: "walking", released: false });
       else if (!locked && sess.phase === "walking") {
         if (live.current) live.current.keys = { ...NO_KEYS };
-        setWalk({ ...sess, phase: "paused", pausedAt: performance.now() });
+        // Tab let go of the mouse (14.1): paused and released, no menu.
+        const released = releaseNext.current;
+        releaseNext.current = false;
+        setWalk({ ...sess, phase: "paused", pausedAt: performance.now(), released });
       }
     };
     const onLockError = () => updateWalk({ released: true });
@@ -838,6 +843,11 @@ export function Viewport({
         invalidate();
       } else if (e.code === "KeyF" && sess.floating) updateWalk({ floating: false });
       else if (e.code === "KeyK" && !e.repeat) void walkShotRef.current();
+      else if (e.code === "Tab" && sess.phase === "walking" && document.pointerLockElement) {
+        // Tab frees the mouse (14.1): the walk pauses, released, for working in another window.
+        releaseNext.current = true;
+        document.exitPointerLock();
+      }
     };
     const onKeyUp = (e: KeyboardEvent) => {
       const l = live.current;
@@ -2199,7 +2209,6 @@ export function Viewport({
           shots={shots.filter((sh) => sh.camera.kind === "walk" && sh.createdAt >= walk.startedAt)}
           onRemoveShot={onRemoveShot}
           onContinue={continueWalk}
-          onRelease={() => updateWalk({ released: true })}
           onExit={exitWalk}
         />
       )}
