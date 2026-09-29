@@ -366,7 +366,7 @@ function findItems(nodes: SceneNode[], query: FindQuery, library: Library, array
         distance = round2(Math.max(0, Math.hypot(item.x - near.x, item.z - near.z) - Math.max(w, d) / 2));
         if (distance > near.radius) continue;
       }
-      found.push({ id: `${a.id}/${item.index}`, type: "item", entity: item.entity, at: itemLine(a.id, item), parent: a.id, ...(distance !== undefined ? { distance } : {}) });
+      found.push({ id: `${a.id}/${item.index}`, type: "item", entity: item.entity, at: itemLine(a, item), parent: a.id, ...(distance !== undefined ? { distance } : {}) });
     }
   }
   if (near) found.sort((p, q) => p.distance! - q.distance!);

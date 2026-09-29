@@ -70,6 +70,8 @@ import type { LineStyle, RampStyle } from "./Viewport";
 export type Preview<T> = (patch: T | null) => void;
 
 export type InspectorProps = {
+  /** What the node is linked to (13.4): what it stands on, what a line goes through; Unlink keeps what it has now. */
+  links?: { label: string; value: string; title: string; unlinkTitle: string; onUnlink: () => void }[];
   /** What it shows: `lobby (box_3)`, `3 selected`, `next box`. */
   title: string;
   /** The read-only numbers (`6 × 4 × 3 m · wall 0.2 · y 0 · 0°`). */
@@ -173,7 +175,7 @@ export type ArrayControls = {
   onRestoreAll: () => void;
 };
 
-export function Inspector({ title, info, library = null, note, instance, array, makeEntity, description, tags, sides, wall, profile, tilt, line, ramp, onMirror, onConvert, editPoints }: InspectorProps) {
+export function Inspector({ title, info, library = null, links, note, instance, array, makeEntity, description, tags, sides, wall, profile, tilt, line, ramp, onMirror, onConvert, editPoints }: InspectorProps) {
   const { ref, header, style, collapsed, toggle } = useFloating("orlablocks.inspector", ".inspector-header");
   const actions = onMirror || onConvert || editPoints || makeEntity;
   return (
@@ -188,6 +190,20 @@ export function Inspector({ title, info, library = null, note, instance, array, 
       {!collapsed && (
         <div className="inspector-body">
           {info && <div className="inspector-info">{info}</div>}
+          {links && links.length > 0 && (
+            <Section label="Linked">
+              {links.map((link) => (
+                <Row key={link.label} label={link.label}>
+                  <span className="array-follows" title={link.title}>
+                    {link.value}
+                  </span>
+                  <button className="labeled" title={link.unlinkTitle} onClick={link.onUnlink}>
+                    <Unlink size={14} /> Unlink
+                  </button>
+                </Row>
+              ))}
+            </Section>
+          )}
           {note && <NoteSection {...note} library={library} />}
           {instance && <InstanceSection {...instance} library={library} />}
           {array && library && <ArraySection {...array} lib={library} />}

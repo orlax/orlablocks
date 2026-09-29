@@ -114,7 +114,7 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
     const warnings = [...own, ...holes, ...missing];
     return warnings.length > 0 ? { ...result, warnings } : result;
   };
-  const server = new McpServer({ name: "orlablocks", version: "0.0.26" }, { instructions: INSTRUCTIONS });
+  const server = new McpServer({ name: "orlablocks", version: "0.0.27" }, { instructions: INSTRUCTIONS });
   // Every tool reads or edits the open scene, and fails with a clear message while nothing is open.
   const store = () => workspace.requireScene();
   const library = (): Library => (workspace.getOpen() ? workspace.library.get() : EMPTY_LIBRARY);
@@ -351,6 +351,10 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
         `layout.along.id), so a line and the array that follows it, or a group (type: group, with name, description, tags) ` +
         `and everything in it, arrive in one call: a door hole drawn into the room's group cuts it from the start. A ref ` +
         `only names entries before it; the result maps each ref to its ID. ` +
+        `STANDING ON: an instance or array with on: { id } stands on that node's walking surface (instead of y), kept up to ` +
+        `date; an array on an array stands item on item. THROUGH: a line with through: { stops, style?, apex? } instead ` +
+        `of points goes through its stops (node IDs, items array_3/5, array_3/* for all of them, array_3/2..6), each the ` +
+        `center of its walking surface, as jump arcs (the default) or straight, kept up to date: the critical path. ` +
         `The batch is all-or-nothing: if any shape is invalid, nothing is drawn and the error says which one. ` +
         `The result is compact: each new node's id, type, kind, name, parent and bounds (a count instead of points; an array's layout, item count and item lines).`,
       inputSchema: { shapes: z.array(ShapeInputSchema).min(1), verbose: VERBOSE },
@@ -393,6 +397,8 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
         `points (the whole path, with y), thickness, dashed and arrow; a ramp name, parent, color, ` +
         `points (with y), width, step (null = smooth) and base; a note name, parent, x, y, z, color, text, label (null removes it) and status (open or done); an instance name, parent, x, y, z, rotation and entity (another entity's ID, to swap it); ` +
         `an array name, parent, entities, layout (fields merge into it; another type replaces it), facing, rotation, jitter, turnJitter, seed and skip. ` +
+        `An instance or array takes on ({ id } to stand on a node, null to stop), a line through (new stops, or null to unlink it). ` +
+        `Giving a through line points, or something standing a height (y, or an array's layout y), unlinks it. ` +
         `A group takes only name, description (what that part of the level is; null removes it), parent, locked and hidden (any node takes those two). ` +
         `{ id, type: "freeform" } alone converts a box or cylinder into a free-form with a new ID; a call that converts ` +
         `only converts (edit the new free-form in a second call). ` +
@@ -421,12 +427,14 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
       inputSchema: { ids: z.array(z.string()).min(1).describe("IDs of existing nodes, e.g. box_3 or group_1") },
     },
     async ({ ids }) => {
-      const following = (nodes: SceneNode[]) => new Set(nodes.filter(isFollowing).map((n) => n.id));
+      // What follows, stands on or goes through something (10.3, 13.4).
+      const linked = (n: SceneNode) => isFollowing(n) || ((n.type === "instance" || n.type === "array") && !!n.on) || (n.type === "line" && !!n.through);
+      const following = (nodes: SceneNode[]) => new Set(nodes.filter(linked).map((n) => n.id));
       const before = following(store().getScene().nodes);
       store().removeNodes(ids, "agent");
       const after = following(store().getScene().nodes);
       const kept = new Set(store().getScene().nodes.map((n) => n.id));
-      // Arrays that followed a removed node keep the path they had, unlinked.
+      // What followed, stood on or went through a removed node keeps what it had, unlinked.
       const unlinked = [...before].filter((id) => !after.has(id) && kept.has(id));
       return json({ removed: ids, remaining: store().getScene().nodes.length, ...(unlinked.length > 0 ? { unlinked } : {}) });
     },

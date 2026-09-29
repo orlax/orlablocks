@@ -30,6 +30,7 @@ import {
   type PlayerCamera,
   type ShotCamera,
   type WalkPreset,
+  type ClientMessage,
 } from "../shared/scene.types";
 import { boundsOf, footprintBounds, isClosed, isTilted, polyline, rampStations, reversePoints, round2, wallOf } from "../shared/geometry";
 import { shapesUnder, childrenOf, countsText, isShape, isGroup, hiddenIds, lockedIds, subtreeIds, tagsOf } from "../shared/tree";
@@ -171,6 +172,42 @@ const STATS_KEY = "dd.stats";
 const WALK_PRESET_KEY = "dd.walk.preset";
 /** The player camera is saved this long after the pause menu's last change (a slider sends many). */
 const PLAYER_SAVE_MS = 400;
+
+/**
+ * What a node is linked to (13.4), for the inspector's Linked rows: what an instance or array stands on, the stops a
+ * line goes through. Unlink keeps what it has now (its height, its points).
+ */
+function linksOf(node: SceneNode | null | undefined, nodes: SceneNode[], send: (msg: ClientMessage) => void): InspectorProps["links"] {
+  const name = (id: string) => {
+    const n = nodes.find((m) => m.id === id);
+    return n?.name ? `${n.name} (${id})` : id;
+  };
+  if ((node?.type === "instance" || node?.type === "array") && node.on) {
+    const onId = node.on.id;
+    return [
+      {
+        label: "on",
+        value: name(onId),
+        title: `It stands on ${onId}'s walking surface${node.type === "array" ? " (item by item on an array)" : ""}, and moves up and down with it`,
+        unlinkTitle: "Unlink: keep the height it has now (it stops standing on it)",
+        onUnlink: () => send({ type: "update_nodes", changes: [{ id: node.id, on: null }] }),
+      },
+    ];
+  }
+  if (node?.type === "line" && node.through) {
+    const { stops, style } = node.through;
+    return [
+      {
+        label: "through",
+        value: `${stops.length} stop${stops.length === 1 ? "" : "s"}${style === "jumps" ? ", as jumps" : ""}`,
+        title: `Its points come from ${stops.join(", ")}: it follows them when they move`,
+        unlinkTitle: "Unlink: keep the points it has now (editing them unlinks it too)",
+        onUnlink: () => send({ type: "update_nodes", changes: [{ id: node.id, through: null }] }),
+      },
+    ];
+  }
+  return undefined;
+}
 
 export function App() {
   // The agent's renders are drawn by the view (09.3).
@@ -812,6 +849,7 @@ export function App() {
               title: contextNode ? `${contextNode.name ?? contextNode.id} › ${selectionTitle}` : selectionTitle,
               info: editing && editable ? `editing ${editable.type === "array" ? "items" : "points"} · ${selectionInfo}` : selectionInfo,
               library,
+              links: linksOf(single, nodes, send),
               instance:
                 single?.type === "instance" && library
                   ? {

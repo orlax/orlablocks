@@ -550,8 +550,8 @@ describe("arcs and spirals (plan 13 §5)", () => {
 
   it("refuses a line with both points and a spiral, or neither", () => {
     const s = store();
-    expect(() => s.drawShapes([{ type: "line", points: [{ x: 0, y: 0, z: 0 }, { x: 1, y: 0, z: 0 }], spiral: { x: 0, z: 0, radius: 1, turn: 90, y: 0, rise: 0 } }], "agent")).toThrow(/points or spiral/);
-    expect(() => s.drawShapes([{ type: "line" }], "agent")).toThrow(/points or spiral/);
+    expect(() => s.drawShapes([{ type: "line", points: [{ x: 0, y: 0, z: 0 }, { x: 1, y: 0, z: 0 }], spiral: { x: 0, z: 0, radius: 1, turn: 90, y: 0, rise: 0 } }], "agent")).toThrow(/one of points, spiral or through/);
+    expect(() => s.drawShapes([{ type: "line" }], "agent")).toThrow(/one of points, spiral or through/);
   });
 
   it("puts a path layout on a spiral, its items climbing with it", () => {

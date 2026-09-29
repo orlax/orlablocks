@@ -325,12 +325,18 @@ export function arrayLayout(array: ArrayNode): { items: ArrayItem[]; total: numb
       x += Math.cos(a) * r;
       z += Math.sin(a) * r;
     }
-    const turn = facingTurn(array.layout, facing, pose, () => u(4)) + (array.rotation ?? 0) + (array.turnJitter ? (u(3) * 2 - 1) * array.turnJitter : 0);
+    let turn = facingTurn(array.layout, facing, pose, () => u(4)) + (array.rotation ?? 0) + (array.turnJitter ? (u(3) * 2 - 1) * array.turnJitter : 0);
+    // Standing on a node (13.4): where it stands on it; on another array, that array's item's place and turn.
+    const stand = array.stand?.[index];
+    if (stand) {
+      [x, z] = [stand.x, stand.z];
+      if (stand.rotation !== undefined) turn = stand.rotation + (array.rotation ?? 0);
+    }
     items.push({
       index,
       entity: pickEntity(array.entities, u(0)),
       x: round2(x),
-      y: round2(pose.y),
+      y: round2(stand ? stand.y : pose.y),
       z: round2(z),
       rotation: round2(normalizeDeg(turn)) % 360,
     });

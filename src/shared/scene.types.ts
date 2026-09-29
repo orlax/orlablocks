@@ -129,6 +129,7 @@ export type Line = {
   thickness: number;
   dashed: boolean;
   arrow: LineArrow;
+  through?: Through; // its points come from these stops, kept up to date (13.4)
   createdBy: Actor;
 };
 
@@ -193,6 +194,21 @@ export type Note = {
  * from above) around the pivot, then moved to `x, y, z`. Its description and tags are the entity's; it has only a
  * place, a turn and a name of its own. For holes it's a group: its shapes are "directly in" it.
  */
+/** What an instance or array stands on (plan 13 §7): another node's walking surface, kept up to date. */
+export type StandOn = { id: string };
+/** Where an array's item stands (13.4): its pivot on what it's on, and on another array that item's turn too. */
+export type StandPose = { x: number; y: number; z: number; rotation?: number };
+/** How a through line joins its stops: an arc per hop, or straight. */
+export const THROUGH_STYLES = ["jumps", "straight"] as const;
+export type ThroughStyle = (typeof THROUGH_STYLES)[number];
+/**
+ * A through line's stops (plan 13 §7): node IDs, array items (`array_3/5`), every item of an array (`array_3/*`) or
+ * a range of them (`array_3/2..6`). Its points come from their walking surfaces, kept up to date.
+ */
+export type Through = { stops: string[]; style: ThroughStyle; apex?: number };
+/** How far above the higher stop a jump arc peaks, by default. */
+export const DEFAULT_APEX = 1.2;
+
 export type Instance = {
   id: string; // "instance_1", ...
   type: "instance";
@@ -205,6 +221,7 @@ export type Instance = {
   y: number;
   z: number;
   rotation: number;
+  on?: StandOn; // standing on another node: y is its top under the pivot (13.4)
   createdBy: Actor;
 };
 
@@ -295,6 +312,8 @@ export type ArrayNode = {
   turnJitter?: number;
   seed?: number;
   skip?: number[];
+  on?: StandOn; // standing on another node (13.4): each item on its top; on another array, on its item i
+  stand?: (StandPose | null)[]; // derived from `on`, by layout index (null: where the layout puts it)
   createdBy: Actor;
 };
 
@@ -352,6 +371,10 @@ export type ShapePatch = Partial<Pick<Footprinted, "name" | "kind" | "x" | "z" |
   turnJitter?: number;
   seed?: number;
   skip?: number[];
+  // Standing on and lines through (from 13.4).
+  on?: StandOn;
+  stand?: (StandPose | null)[];
+  through?: Through;
 };
 /** What an update op can change on any node: shape fields (shapes only), `description` (groups only), `name` and `parent`. */
 export type NodePatch = ShapePatch & { parent?: string; description?: string; tags?: string[]; locked?: true; hidden?: true };
@@ -566,6 +589,7 @@ const LineSchema = z.object({
   thickness: z.number().min(MIN_THICKNESS).max(MAX_THICKNESS),
   dashed: z.boolean(),
   arrow: z.enum(LINE_ARROWS),
+  through: z.object({ stops: z.array(z.string()).min(2).max(MAX_POINTS), style: z.enum(THROUGH_STYLES), apex: z.number().optional() }).optional(),
   createdBy: ActorSchema,
 });
 
@@ -617,6 +641,7 @@ const InstanceSchema = z.object({
   y: z.number(),
   z: z.number(),
   rotation: z.number(),
+  on: z.object({ id: z.string() }).optional(),
   createdBy: ActorSchema,
 });
 
@@ -685,6 +710,8 @@ const ArraySchema = z.object({
   turnJitter: z.number().min(0).max(180).optional(),
   seed: z.number().int().optional(),
   skip: z.array(z.number().int().min(0)).optional(),
+  on: z.object({ id: z.string() }).optional(),
+  stand: z.array(z.object({ x: z.number(), y: z.number(), z: z.number(), rotation: z.number().optional() }).nullable()).optional(),
   createdBy: ActorSchema,
 });
 
@@ -768,6 +795,19 @@ const lineField = {
   arrow: z.enum(LINE_ARROWS).describe("Arrowheads: none, end (at the last point) or both"),
 };
 
+/** `through` for a line (plan 13 §7): its points come from stops, kept up to date. */
+export const ThroughInputSchema = z
+  .strictObject({
+    stops: z
+      .array(z.string())
+      .min(2)
+      .max(MAX_POINTS)
+      .describe('In order: node IDs (a platform, a room\'s floor, a ramp, an instance), items ("array_3/5"), every item of an array ("array_3/*"), a range ("array_3/2..6"), or earlier entries\' $refs ("$ring/*")'),
+    style: z.enum(THROUGH_STYLES).optional().describe("jumps (the default): an arc per hop, peaking apex m above the higher stop; straight: a polyline"),
+    apex: z.number().min(0).optional().describe(`Jumps: meters above the higher stop of each hop. Default ${DEFAULT_APEX}`),
+  })
+  .describe("Instead of points: go through these stops, each the center of its walking surface, kept up to date as they move (a critical path)");
+
 /**
  * A spiral, given instead of points to a ramp, a line or a path layout (plan 13 §5): the server turns it into points,
  * one every 90° at most, with circle handles.
@@ -792,6 +832,7 @@ export const LineInputSchema = z.strictObject({
     .optional()
     .describe(`The path, ${MIN_LINE_POINTS}..${MAX_POINTS} points in absolute world x/y/z (it doesn't close). Give points or spiral`),
   spiral: SpiralInputSchema.optional().describe("An arc or a spiral instead of points (a curved route, a spine for an array): the server turns it into points"),
+  through: ThroughInputSchema.optional(),
   color: field.color.optional().describe(`Palette key: ${SHAPE_COLORS.join(", ")}. Defaults to ${DEFAULT_LINE_COLOR}`),
   thickness: lineField.thickness.optional().describe(`Screen pixels, ${MIN_THICKNESS}..${MAX_THICKNESS}. Defaults to ${DEFAULT_THICKNESS}`),
   dashed: lineField.dashed.optional().describe("Dashed instead of solid. Defaults to false"),
@@ -860,6 +901,11 @@ export const NoteInputSchema = z.strictObject({
 });
 
 /** An instance for `draw_shapes`: which entity, and where. */
+/** `on` for draw_shapes (plan 13 §7): what an instance or array stands on, kept up to date. */
+const StandOnInputSchema = z
+  .strictObject({ id: z.string().describe("The node to stand on (a platform, a room, a ramp, an instance, an array or an item), or an earlier entry's $ref") })
+  .describe("Stand on another node's walking surface, kept up to date: y is its top under the pivot (instead of giving y). On an array, item by item");
+
 export const InstanceInputSchema = z.strictObject({
   type: z.literal("instance").describe("A placed copy of a library entity (a prefab): it shows the entity's shapes"),
   entity: z.string().describe('The entity\'s ID, e.g. "tree-tall" (get_library lists them)'),
@@ -867,6 +913,7 @@ export const InstanceInputSchema = z.strictObject({
   z: z.number().describe("World z, meters"),
   y: z.number().optional().describe("The height its bottom stands at (a floor's y, a platform's top). Defaults to 0"),
   rotation: z.number().optional().describe("Degrees, counterclockwise seen from above, around its pivot. Defaults to 0"),
+  on: StandOnInputSchema.optional(),
   name: field.name.optional().describe('A name for this one, e.g. "entry_window". Not unique'),
   parent: field.parent.optional().describe("ID of the group to put it in. Omit for the top level"),
 });
@@ -961,13 +1008,14 @@ export const ArrayInputSchema = z.strictObject({
   type: z.literal("array").describe("Repeats entities on a layout (a path, a circle, a grid or a scatter), live: one node for many items"),
   entity: z.string().optional().describe('The entity to repeat, e.g. "merlon" (or give entities)'),
   entities: arrayField.entities.optional(),
-  layout: ArrayLayoutInputSchema,
+  layout: ArrayLayoutInputSchema.optional().describe("Where its items go (required, unless it stands on another array: then it takes that array's, one item on each of its items)"),
   facing: arrayField.facing.optional(),
   rotation: arrayField.rotation.optional(),
   jitter: arrayField.jitter.optional(),
   turnJitter: arrayField.turnJitter.optional(),
   seed: arrayField.seed.optional(),
   skip: arrayField.skip.optional(),
+  on: StandOnInputSchema.optional(),
   name: field.name.optional(),
   parent: field.parent.optional().describe("ID of the group to put it in (its items cut and are cut as instances there). Omit for the top level"),
 });
@@ -1065,6 +1113,14 @@ export const NodeUpdateSchema = z.strictObject({
   status: noteField.status.optional().describe("Notes only: open or done (mark a note done when it's handled, rather than removing it)"),
   entity: z.string().optional().describe("Instances only: another entity's ID, to show it instead, in the same place"),
   entities: arrayField.entities.optional().describe("Arrays only: the whole list of entities (with weights)"),
+  on: z
+    .strictObject({ id: z.string() })
+    .nullable()
+    .optional()
+    .describe("Instances and arrays only: stand on this node, kept up to date; null stops standing (it keeps its height)"),
+  through: ThroughInputSchema.nullable()
+    .optional()
+    .describe("Lines only: go through these stops (the whole new list), kept up to date; null unlinks it (it keeps its points)"),
   layout: z
     .strictObject({
       type: z.enum(ARRAY_LAYOUTS).optional(),

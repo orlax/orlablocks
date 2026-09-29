@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { setDefinitions } from "../shared/entities";
 import type { ArrayNode, OpenScene, SceneNode } from "../shared/scene.types";
 import { describeScene, findNodes, MAX_MATCHES } from "./outline";
-import { compactNode, compactNodes, itemLine, MAX_ITEM_LINES } from "./results";
+import { compactNode, compactNodes, MAX_ITEM_LINES } from "./results";
 
 /** A slab 2 × 2 × 0.5 around its pivot. */
 const SLAB: SceneNode[] = [{ id: "box_1", type: "box", kind: "volume", x: 0, z: 0, y: 0, width: 2, depth: 2, height: 0.5, rotation: 0, color: "gray", createdBy: "human" }];
@@ -88,9 +88,9 @@ describe("finding array items", () => {
 
   it("lists an array's items under it", () => {
     expect(findNodes([ring(3)], { under: "array_1" }).found.map((f) => f.at)).toEqual([
-      itemLine("array_1", { index: 0, entity: "slab", x: 10, y: 3, z: 0, rotation: 90 }),
-      itemLine("array_1", { index: 1, entity: "slab", x: -5, y: 3, z: -8.66, rotation: 210 }),
-      itemLine("array_1", { index: 2, entity: "slab", x: -5, y: 3, z: 8.66, rotation: 330 }),
+      "array_1/0 → 10, 3, 0 · top 3.5 · 90°",
+      "array_1/1 → -5, 3, -8.66 · top 3.5 · 210°",
+      "array_1/2 → -5, 3, 8.66 · top 3.5 · 330°",
     ]);
   });
 

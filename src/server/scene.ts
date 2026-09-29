@@ -72,10 +72,13 @@ import {
   type Scene,
   type SceneNode,
   type ShapeInput,
+  type Through,
+  type ThroughStyle,
   type View,
 } from "../shared/scene.types";
 import { firstIds, type NextId } from "../shared/project.types";
 import { arrayItems, followPath, isFollowing, tidyArrayPatch, withFollowed } from "../shared/arrays";
+import { standHeight, standPoses, standProblem, throughPoints } from "../shared/surfaces";
 import { definitionOf, expandInstance } from "../shared/entities";
 import { shapesUnder, commonParent, copyNodes, isShape, isGroup, subtreeIds, topmost } from "../shared/tree";
 import { applyOp, createHistory, invertOp, runOps, type History, type HistoryEntry, type Op } from "./commands";
@@ -84,7 +87,8 @@ export class SceneError extends Error {}
 
 /**
  * A `draw_shapes` entry with its batch refs resolved (plan 13 §6): every `$name` in a field that takes an ID
- * (`parent`, `layout.along.id`) becomes what `lookup` gives for `name`.
+ * (`parent`, `layout.along.id`, `on.id`, and a through line's stops, where `$ring/*` is the items of `$ring`) becomes
+ * what `lookup` gives for `name`.
  */
 function resolveBatchRefs(input: ShapeInput, lookup: (ref: string, where: string) => string): ShapeInput {
   const resolve = (value: unknown, where: string) => (typeof value === "string" && value.startsWith("$") ? lookup(value.slice(1), where) : value);
@@ -92,6 +96,19 @@ function resolveBatchRefs(input: ShapeInput, lookup: (ref: string, where: string
   if ("parent" in out) out.parent = resolve(out.parent, "parent");
   const layout = out.layout as { along?: { id?: unknown } } | undefined;
   if (layout?.along?.id !== undefined) out.layout = { ...layout, along: { ...layout.along, id: resolve(layout.along.id, "layout.along.id") } };
+  const on = out.on as { id?: unknown } | undefined;
+  if (on?.id !== undefined) out.on = { ...on, id: resolve(on.id, "on.id") };
+  const through = out.through as { stops?: unknown[] } | undefined;
+  if (Array.isArray(through?.stops)) {
+    out.through = {
+      ...through,
+      stops: through.stops.map((stop, k) => {
+        if (typeof stop !== "string" || !stop.startsWith("$")) return stop;
+        const [ref, ...rest] = stop.slice(1).split("/");
+        return [lookup(ref, `through.stops[${k}]`), ...rest].join("/");
+      }),
+    };
+  }
   delete out.ref;
   return out as ShapeInput;
 }
@@ -172,10 +189,13 @@ const FIELD_VERBS: Record<keyof NodePatch, string> = {
   turnJitter: "jitter",
   seed: "reroll",
   skip: "skip items of",
+  on: "stand",
+  stand: "stand",
+  through: "route",
 };
 
 /** What an array's update can change (plan 10 §9): its items come from these. */
-const ARRAY_FIELDS: readonly string[] = ["name", "parent", "locked", "hidden", "entities", "layout", "facing", "rotation", "jitter", "turnJitter", "seed", "skip"];
+const ARRAY_FIELDS: readonly string[] = ["name", "parent", "locked", "hidden", "entities", "layout", "facing", "rotation", "jitter", "turnJitter", "seed", "skip", "on"];
 /** The fields only an array has. */
 const ARRAY_ONLY = ["entities", "layout", "facing", "jitter", "turnJitter", "seed", "skip"] as const;
 
@@ -296,21 +316,80 @@ export function createSceneStore({
     emit();
   };
 
-  /** The update that brings every following array's path up to date with what it follows, or null if none changed. */
+  /**
+   * The update that brings everything derived from other nodes up to date, or null if nothing changed, in phases:
+   * following arrays' paths (10.3); then what stands ON something (13.4): an instance's y, an array's item heights
+   * (a few passes, for things standing on things that stand); then THROUGH lines' points from their stops (13.4).
+   * A follower whose target is gone is unlinked, keeping what it has: an array its path, an instance its height;
+   * a through line drops the stops that are gone, and with fewer than 2 left is unlinked, keeping its points.
+   */
   const refollow = (nodes: SceneNode[]): Op | null => {
-    const byIdNow = new Map(nodes.map((n) => [n.id, n]));
-    const changes: { id: string; patch: NodePatch }[] = [];
-    for (const n of nodes) {
+    let current = nodes;
+    const patches = new Map<string, NodePatch>();
+    const patch = (id: string, p: NodePatch) => {
+      patches.set(id, { ...(patches.get(id) ?? {}), ...p });
+      current = applyOp(current, { op: "update", changes: [{ id, patch: p }] });
+    };
+    const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+
+    // Following arrays.
+    let byIdNow = new Map(current.map((n) => [n.id, n]));
+    for (const n of current) {
       if (!isFollowing(n)) continue;
       if (!byIdNow.has(n.layout.along.id)) {
         const { along: _along, ...unlinked } = n.layout;
-        changes.push({ id: n.id, patch: { layout: unlinked } });
+        patch(n.id, { layout: unlinked });
         continue;
       }
       const next = withFollowed(n, (id) => byIdNow.get(id));
-      if (next !== n) changes.push({ id: n.id, patch: { layout: next.layout } });
+      if (next !== n) patch(n.id, { layout: next.layout });
     }
-    return changes.length > 0 ? { op: "update", changes } : null;
+
+    // Standing on.
+    for (let pass = 0; pass < 3; pass++) {
+      let changed = false;
+      byIdNow = new Map(current.map((n) => [n.id, n]));
+      for (const n of current) {
+        if ((n.type !== "instance" && n.type !== "array") || !n.on) continue;
+        if (!byIdNow.has(n.on.id)) {
+          patch(n.id, n.type === "array" ? { on: undefined, stand: undefined } : { on: undefined });
+          changed = true;
+        } else if (n.type === "instance") {
+          const y = standHeight(current, n);
+          if (y !== null && y !== n.y) {
+            patch(n.id, { y });
+            changed = true;
+          }
+        } else {
+          const stand = standPoses(current, n);
+          if (!same(stand, n.stand ?? [])) {
+            patch(n.id, { stand });
+            changed = true;
+          }
+        }
+      }
+      if (!changed) break;
+    }
+
+    // Through lines.
+    byIdNow = new Map(current.map((n) => [n.id, n]));
+    const exists = (stop: string) => byIdNow.has(stop.replace(/\/(\*|\d+(\.\.\d+)?)$/, ""));
+    for (const n of current) {
+      if (n.type !== "line" || !n.through) continue;
+      const stops = n.through.stops.filter(exists);
+      if (stops.length < 2) {
+        patch(n.id, { through: undefined });
+        continue;
+      }
+      const through = stops.length === n.through.stops.length ? n.through : { ...n.through, stops };
+      const { points } = throughPoints(current, through);
+      const p: NodePatch = {};
+      if (through !== n.through) p.through = through;
+      if (points.length >= 2 && !same(points, n.points)) p.points = points;
+      if (Object.keys(p).length > 0) patch(n.id, p);
+    }
+
+    return patches.size > 0 ? { op: "update", changes: [...patches].map(([id, p]) => ({ id, patch: p })) } : null;
   };
 
   /**
@@ -320,6 +399,18 @@ export function createSceneStore({
   const relinkCopies = (source: SceneNode[], copies: SceneNode[]): SceneNode[] => {
     const ids = new Map(source.map((n, i) => [n.id, copies[i].id]));
     return copies.map((c) => {
+      // What stands on a copied node stands on its copy (13.4); on anything else, it stays where it stands.
+      if ((c.type === "instance" || c.type === "array") && c.on && ids.has(c.on.id)) return { ...c, on: { id: ids.get(c.on.id)! } };
+      // A through line copied with all its stops goes through the copies; else it's unlinked (it keeps its points).
+      if (c.type === "line" && c.through) {
+        const stops = c.through.stops.map((stop) => {
+          const [head, ...rest] = stop.split("/");
+          return ids.has(head) ? [ids.get(head)!, ...rest].join("/") : null;
+        });
+        if (stops.every((st) => st !== null)) return { ...c, through: { ...c.through, stops: stops as string[] } };
+        const { through: _through, ...unlinked } = c;
+        return unlinked;
+      }
       if (!isFollowing(c)) return c;
       const to = ids.get(c.layout.along.id);
       if (to) return { ...c, layout: { ...c.layout, along: { ...c.layout.along, id: to } } };
@@ -344,6 +435,26 @@ export function createSceneStore({
     return boxes.filter((b) => !isFollowing(b));
   };
 
+  /**
+   * The changes of a move, turn or mirror with what it unlinks merged in (13.4): a through line moving without all its
+   * stops (it keeps the points it's moved to), and, moved up or down, what stands on something not moving with it
+   * (it keeps its new height). Otherwise what stands or goes through is brought up to date in the step.
+   */
+  const withUnlinks = (boxes: Shape[], changes: { id: string; patch: NodePatch }[], vertical: boolean) => {
+    const moving = new Set(boxes.map((b) => b.id));
+    const base = (stop: string) => stop.replace(/\/(\*|\d+(\.\.\d+)?)$/, "");
+    const merged = new Map(changes.map((c) => [c.id, { ...c.patch }]));
+    for (const b of boxes) {
+      let unlink: NodePatch | null = null;
+      if (b.type === "line" && b.through && !b.through.stops.every((stop) => moving.has(base(stop)))) unlink = { through: undefined };
+      if (vertical && (b.type === "instance" || b.type === "array") && b.on && !moving.has(b.on.id)) {
+        unlink = b.type === "array" ? { on: undefined, stand: undefined } : { on: undefined };
+      }
+      if (unlink) merged.set(b.id, { ...(merged.get(b.id) ?? {}), ...unlink });
+    }
+    return [...merged].map(([id, patch]) => ({ id, patch }));
+  };
+
   /** Errors for IDs that don't exist or repeat. `prefix` is e.g. "ids". */
   const checkIds = (prefix: string, ids: string[], errors: string[]) => {
     const nodes = byId();
@@ -365,6 +476,26 @@ export function createSceneStore({
     if (!node) return `no group "${parent}"`;
     if (!isGroup(node)) return `"${parent}" is a ${node.type}, not a group`;
     return null;
+  };
+
+  /** The nodes as edits see them: the scene's, and a batch's entries already built (see `pending`). */
+  const present = () => [...scene.nodes, ...pending];
+
+  /** `{ on }` for a node standing on another (plan 13 §7), or an error: its height comes in the step (`refollow`). */
+  const standOnFrom = (prefix: string, on: { id: string } | undefined, self: string, errors: string[]) => {
+    if (!on) return {};
+    const problem = standProblem(present(), on.id, self);
+    if (problem) errors.push(`${prefix}: ${problem}`);
+    return { on: { id: on.id } };
+  };
+
+  /** A through line's stops as stored and the points they give now (plan 13 §7), or errors. */
+  const throughFrom = (prefix: string, t: { stops: string[]; style?: ThroughStyle; apex?: number }, errors: string[]) => {
+    const through: Through = { stops: t.stops, style: t.style ?? "jumps", ...(t.apex !== undefined ? { apex: round2(t.apex) } : {}) };
+    const { points, problems } = throughPoints(present(), through);
+    errors.push(...problems.map((p) => `${prefix}.stops: ${p}`));
+    if (problems.length === 0 && points.length < 2) errors.push(`${prefix}.stops: a line needs at least 2 stops with something to stand on`);
+    return { through, points: points.length >= 2 ? points : [{ x: 0, y: 0, z: 0 }, { x: 1, y: 0, z: 0 }] };
   };
 
   /** Reports sizes that fall out of range once rounded to 2 decimals. */
@@ -450,12 +581,22 @@ export function createSceneStore({
     // Arrays following a converted shape follow its free-form (10.3).
     const newIds = new Map(ids.map((id, i) => [id, made[i].id]));
     const relink = scene.nodes.filter(isFollowing).filter((a) => newIds.has(a.layout.along.id));
+    // What stands on a converted shape, or goes through it, keeps doing so on its free-form (13.4).
+    const restand = scene.nodes.flatMap((n) => ((n.type === "instance" || n.type === "array") && n.on && newIds.has(n.on.id) ? [{ id: n.id, patch: { on: { id: newIds.get(n.on.id)! } } }] : []));
+    const reroute = scene.nodes.flatMap((n) =>
+      n.type === "line" && n.through && n.through.stops.some((st) => newIds.has(st))
+        ? [{ id: n.id, patch: { through: { ...n.through, stops: n.through.stops.map((st) => newIds.get(st) ?? st) } } }]
+        : [],
+    );
+    const relinks = [
+      ...relink.map((a) => ({ id: a.id, patch: { layout: { ...a.layout, along: { ...a.layout.along, id: newIds.get(a.layout.along.id)! } } } as NodePatch })),
+      ...restand,
+      ...reroute,
+    ];
     commit(label("convert", `${listIds(ids)} to ${to}`, actor), actor, [
       { op: "remove", ids },
       { op: "add", nodes: made, indices },
-      ...(relink.length > 0
-        ? [{ op: "update" as const, changes: relink.map((a) => ({ id: a.id, patch: { layout: { ...a.layout, along: { ...a.layout.along, id: newIds.get(a.layout.along.id)! } } } })) }]
-        : []),
+      ...(relinks.length > 0 ? [{ op: "update" as const, changes: relinks }] : []),
     ]);
     return made;
   };
@@ -763,13 +904,15 @@ export function createSceneStore({
           };
         }
         if (d.type === "line") {
-          if ((d.points === undefined) === (d.spiral === undefined)) errors.push(`${prefix}: give a line either points or spiral (one of them)`);
+          if ([d.points, d.spiral, d.through].filter((v) => v !== undefined).length !== 1) errors.push(`${prefix}: give a line one of points, spiral or through`);
+          const through = d.through ? throughFrom(`${prefix}.through`, d.through, errors) : undefined;
           return {
             type: "line" as const,
             ...(name ? { name } : {}),
             ...(d.parent !== undefined ? { parent: d.parent } : {}),
             color: d.color ?? DEFAULT_LINE_COLOR,
-            points: d.spiral ? spiralLinePoints(d.spiral) : checkLinePoints(prefix, d.points ?? [], errors),
+            ...(through ? { through: through.through } : {}),
+            points: through ? through.points : d.spiral ? spiralLinePoints(d.spiral) : checkLinePoints(prefix, d.points ?? [], errors),
             thickness: round2(d.thickness ?? DEFAULT_THICKNESS),
             dashed: d.dashed ?? false,
             arrow: d.arrow ?? "none",
@@ -788,15 +931,26 @@ export function createSceneStore({
             y: round2(d.y ?? 0),
             z: round2(d.z),
             rotation: normalizeRotation(d.rotation ?? 0),
+            ...standOnFrom(`${prefix}.on`, d.on, predicted[i], errors),
           };
         }
         if (d.type === "array") {
           if ((d.entity === undefined) === (d.entities === undefined)) errors.push(`${prefix}: give an array either entity or entities (one of them)`);
-          if (d.layout.type === "path" && [d.layout.points, d.layout.spiral, d.layout.along].filter(Boolean).length > 1) {
+          if (d.layout?.type === "path" && [d.layout.points, d.layout.spiral, d.layout.along].filter(Boolean).length > 1) {
             errors.push(`${prefix}.layout: give a path one of points, spiral or along`);
           }
           const entities = arrayEntitiesFrom(`${prefix}.entities`, d.entities ?? (d.entity !== undefined ? [{ entity: d.entity }] : []), errors);
-          const layout = arrayLayoutFrom(`${prefix}.layout`, d.layout, arrayDefaults(entities), errors);
+          // On another array (13.4), an array without a layout takes that array's: one item on each of its items.
+          const under = d.on ? byId().get(d.on.id) : undefined;
+          let layout: ArrayLayout;
+          if (d.layout) layout = arrayLayoutFrom(`${prefix}.layout`, d.layout, arrayDefaults(entities), errors);
+          else if (under?.type === "array") {
+            const { along: _along, ...own } = under.layout as ArrayLayout & { along?: unknown };
+            layout = own as ArrayLayout;
+          } else {
+            errors.push(`${prefix}.layout: give an array a layout (only one standing on another array can go without: it takes that array's)`);
+            layout = { type: "circle", x: 0, y: 0, z: 0, radius: 1, count: 1 };
+          }
           return defined({
             type: "array" as const,
             ...(name ? { name } : {}),
@@ -806,6 +960,7 @@ export function createSceneStore({
             facing: d.facing,
             rotation: d.rotation === undefined ? undefined : normalizeRotation(d.rotation) || undefined,
             ...arrayNoise(d),
+            ...standOnFrom(`${prefix}.on`, d.on, predicted[i], errors),
           });
         }
         if (d.type === "note") {
@@ -1113,6 +1268,30 @@ export function createSceneStore({
           if (fields.rotation !== undefined) patch.rotation = normalizeRotation(fields.rotation) || undefined;
           Object.assign(patch, arrayNoise(fields));
         }
+        // Standing on and lines through (13.4); what they derive comes in the step (`refollow`).
+        if (fields.on !== undefined) {
+          if (node.type !== "instance" && node.type !== "array") errors.push(`changes[${i}].on: only an instance or an array stands on things ("${id}" is a ${node.type})`);
+          else if (fields.on === null) Object.assign(patch, node.type === "array" ? { on: undefined, stand: undefined } : { on: undefined });
+          else {
+            const problem = standProblem(scene.nodes, fields.on.id, id);
+            if (problem) errors.push(`changes[${i}].on: ${problem}`);
+            else patch.on = { id: fields.on.id };
+          }
+        }
+        if (fields.through !== undefined) {
+          if (node.type !== "line") errors.push(`changes[${i}].through: only a line goes through stops ("${id}" is a ${node.type})`);
+          else if (fields.through === null) patch.through = undefined;
+          else if (fields.points !== undefined) errors.push(`changes[${i}]: give a line points or through, not both`);
+          else {
+            const t = throughFrom(`changes[${i}].through`, fields.through, errors);
+            patch.through = t.through;
+            patch.points = t.points;
+          }
+        }
+        // A hand edit unlinks: points given to a through line, a height given to what stands on something.
+        if (node.type === "line" && node.through && fields.points !== undefined && fields.through === undefined) patch.through = undefined;
+        if (node.type === "instance" && node.on && fields.y !== undefined && fields.on === undefined) patch.on = undefined;
+        if (node.type === "array" && node.on && fields.layout?.y !== undefined && fields.on === undefined) Object.assign(patch, { on: undefined, stand: undefined });
         if (fields.parent !== undefined) patch.parent = parent;
         if (fields.locked !== undefined) patch.locked = fields.locked || undefined;
         if (fields.hidden !== undefined) patch.hidden = fields.hidden || undefined;
@@ -1177,7 +1356,7 @@ export function createSceneStore({
       failIf(errors, "Nothing was moved.");
       const boxes = withoutFollowers(ids, shapesUnder(scene.nodes, ids), "move");
       const patches = Object.fromEntries(boxes.map((b) => [b.id, moveShape(b, dx, dy, dz)]));
-      const changes = effectiveShapeChanges(boxes, patches);
+      const changes = withUnlinks(boxes, effectiveShapeChanges(boxes, patches), dy !== 0);
       if (changes.length > 0) commit(label("move", listIds(ids), actor), actor, [{ op: "update", changes }]);
       const moved = new Set(boxes.map((b) => b.id));
       return scene.nodes.filter((n): n is Shape => moved.has(n.id));
@@ -1236,7 +1415,7 @@ export function createSceneStore({
       const b = boundsOf(all);
       const pivot = given ?? { x: round2((b.minX + b.maxX) / 2), z: round2((b.minZ + b.maxZ) / 2) };
       const patches = rotateAround(boxes, pivot, degrees);
-      const changes = effectiveShapeChanges(boxes, patches);
+      const changes = withUnlinks(boxes, effectiveShapeChanges(boxes, patches), false);
       if (changes.length > 0) commit(label("rotate", listIds(ids), actor), actor, [{ op: "update", changes }]);
       const turned = new Set(boxes.map((b) => b.id));
       return { shapes: scene.nodes.filter((n): n is Shape => turned.has(n.id)), pivot };
@@ -1318,7 +1497,7 @@ export function createSceneStore({
       checkIds("ids", ids, errors);
       failIf(errors, "Nothing was mirrored.");
       const boxes = withoutFollowers(ids, shapesUnder(scene.nodes, ids), "mirror");
-      const changes = effectiveShapeChanges(boxes, mirrorAcross(boxes, axis));
+      const changes = withUnlinks(boxes, effectiveShapeChanges(boxes, mirrorAcross(boxes, axis)), false);
       if (changes.length > 0) commit(label("mirror", `${listIds(ids)} on ${axis.toUpperCase()}`, actor), actor, [{ op: "update", changes }]);
       const mirrored = new Set(boxes.map((b) => b.id));
       return scene.nodes.filter((n): n is Shape => mirrored.has(n.id));

@@ -201,7 +201,14 @@ const GUIDE: Record<Exclude<GuideTopic, "design">, string> = {
     "items cut and are cut as instances placed where the array is: a window array in the tower's group cuts the " +
     "tower's walls. Windows round a 10-sided tower 20 m across: a circle at the tower's center, count 10, facing " +
     "tangent, radius = the distance to the middle of a face (10 × cos 18° = 9.51) minus half the wall (9.41), start 0 " +
-    "(a sided cylinder's flat edge faces its local +x). update_nodes on an array takes entities, layout (the fields " +
+    "(a sided cylinder's flat edge faces its local +x). STANDING ON: on: { id } (draw_shapes or update_nodes) stands " +
+    "every item on that node's walking surface under it (items over nothing keep the layout's height), kept up to date; " +
+    "an array ON AN ARRAY stands its item i on that array's item i, at its place, turned as it is, on its top, and " +
+    "needs no layout of its own (it takes that array's): flame jets on a ring's slabs are { type: \"array\", entity: " +
+    "\"flame-jet\", on: { id: \"$ring\" }, skip: [the slabs without one] }, and they stay on their slabs whatever the " +
+    "ring does. An instance takes on too (instead of y). Giving it a height (y, or the layout's " +
+    "y) or moving it up or down without what it stands on unlinks it; on: null stops it standing. " +
+    "update_nodes on an array takes entities, layout (the fields " +
     "given merge into it: { count: 12 } or { radius: 9 }; a different type is a whole new layout), facing, rotation, " +
     "jitter, turnJitter, seed, skip, name and parent. move_nodes, rotate_nodes and mirror_nodes act on its layout (a " +
     "mirrored array's items face the mirrored way; the entities aren't flipped), and copy copies it as one node. An " +
@@ -301,7 +308,16 @@ const GUIDE: Record<Exclude<GuideTopic, "design">, string> = {
     "ramp's): a circle of `radius` round (x, z) from angle `from` (0 = east, 90 = north) through `turn` degrees " +
     "(counterclockwise; negative clockwise), climbing `rise` from `y`; the server makes it points (one every 90°, with " +
     "circle handles), so don't sample a circle yourself. A 17 m arc over 120° rising 8 m from the south: spiral: { x: " +
-    "0, z: 0, radius: 17, from: 270, turn: 120, y: 0.5, rise: 8 }; rise 0 is a flat arc. It has no kind, x, z, y, " +
+    "0, z: 0, radius: 17, from: 270, turn: 120, y: 0.5, rise: 8 }; rise 0 is a flat arc. THROUGH NODES: for a route " +
+    "over platforms (the critical path), don't compute points: give `through: { stops, style?, apex? }` instead. Stops " +
+    "are, in order, node IDs (a platform, a room's floor, a ramp, an instance, a note), array items (array_3/5), every " +
+    "item of an array (array_3/*, skipped ones left out) or a range (array_3/2..6), and batch refs ($ring/*); each is the " +
+    "center of its walking surface. style jumps (the default) draws an arc per hop, peaking `apex` m (default 1.2) " +
+    "above the higher stop; straight a polyline. It's kept up to date: move a platform, resize it or change an array's " +
+    "layout and the line follows in that step; a removed stop drops out (with fewer than 2 left, the line keeps its " +
+    "points, unlinked). Giving it points, or moving it without its stops, unlinks it; update_nodes { through } gives it " +
+    "new stops, { through: null } unlinks it. " +
+    "It has no kind, x, z, y, " +
     "height or rotation; move_nodes, rotate_nodes and mirror_nodes change its points.",
   notes:
     "A NOTE (type: note) is a post-it pinned to a point: x, z and y (the surface it stands on: a floor's y, a " +

@@ -91,30 +91,39 @@ const spineEntries = [
 const arrayEntries = (wall, spire) => [
   { type: "array", entity: "ruin-slab", layout: { type: "path", along: { id: wall }, place: "count", count: 9 }, name: "wall spiral" },
   { type: "array", entity: "ruin-slab", layout: { type: "path", along: { id: spire }, place: "count", count: 7 }, name: "spire spiral" },
-  { type: "array", entity: "ruin-slab", layout: { type: "circle", x: 0, z: 0, y: 12.5, radius: 9, count: 8 }, name: "flame ring" },
+  { type: "array", entity: "ruin-slab", ref: "ring", layout: { type: "circle", x: 0, z: 0, y: 12.5, radius: 9, count: 8 }, name: "flame ring" },
+  // The flame jets: since 13.4 standing on the ring's slabs (--verbose: a second circle at the ring's y + 0.5).
+  verbose
+    ? { type: "array", entity: "ruin-slab", layout: { type: "circle", x: 0, z: 0, y: 13, radius: 9, count: 8 }, skip: [1, 3, 5, 7], name: "flame jets" }
+    : { type: "array", entity: "ruin-slab", on: { id: "$ring" }, skip: [1, 3, 5, 7], name: "flame jets" },
 ];
 let spines, arrays;
 if (verbose) {
   spines = await call("spines", "draw_shapes", { shapes: spineEntries.map(({ ref: _ref, ...e }) => e) });
-  arrays = await call("arrays", "draw_shapes", { shapes: arrayEntries(idOf(spines, 0), idOf(spines, 1)) });
+  arrays = await call("arrays", "draw_shapes", { shapes: arrayEntries(idOf(spines, 0), idOf(spines, 1)).map(({ ref: _ref, ...e }) => e) });
 } else {
   const both = await call("spines and arrays", "draw_shapes", { shapes: [...spineEntries, ...arrayEntries("$wallSpine", "$spireSpine")] });
   spines = { created: both.created.slice(0, 2) };
   arrays = { created: both.created.slice(2) };
 }
 
-// 4. The critical path through the items (13.4 replaces this with `through`).
-// Where the items are: from the compact result's item lines, or (verbose) from get_scene, as before plan 13.
-const lines = verbose
-  ? (await Promise.all(arrays.created.map((a) => call(`items of ${a.id}`, "get_scene", { root: a.id })))).flatMap((o) => o.root.at)
-  : arrays.created.flatMap((a) => a.at);
-const stops = lines
-  .filter((l) => l.startsWith("array_"))
-  .map((l) => {
-    const [x, y, z] = l.split(" → ")[1].split(" · ")[0].split(", ").map(Number);
-    return { x, y: y + 0.5, z };
+// 4. The critical path: since 13.4 a line through the arrays' items (--verbose: points worked out from where the
+// items are, read with get_scene, as the tools before plan 13 needed).
+const [wall, spire, ring] = arrays.created.map((a) => a.id);
+if (verbose) {
+  const lines = (await Promise.all([wall, spire, ring].map((id) => call(`items of ${id}`, "get_scene", { root: id })))).flatMap((o) => o.root.at);
+  const stops = lines
+    .filter((l) => l.startsWith("array_"))
+    .map((l) => {
+      const [x, y, z] = l.split(" → ")[1].split(" · ")[0].split(", ").map(Number);
+      return { x, y: y + 0.5, z };
+    });
+  await call("critical path", "draw_shapes", { shapes: [{ type: "line", points: stops, color: "yellow", arrow: "end", name: "critical path" }] });
+} else {
+  await call("critical path", "draw_shapes", {
+    shapes: [{ type: "line", through: { stops: [`${wall}/*`, `${ring}/0..3`, `${spire}/*`] }, color: "yellow", arrow: "end", name: "critical path" }],
   });
-await call("critical path", "draw_shapes", { shapes: [{ type: "line", points: stops, color: "yellow", arrow: "end", name: "critical path" }] });
+}
 
 // 5. Looking things up.
 await call("find items near the door", "find_nodes", { type: "item", near: { x: 0, z: 17, radius: 4 } });

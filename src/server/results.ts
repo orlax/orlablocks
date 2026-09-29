@@ -1,6 +1,7 @@
 import { boundsOf, round2 } from "../shared/geometry";
 import { arrayLayout, type ArrayItem } from "../shared/arrays";
-import { definitionOf } from "../shared/entities";
+import { arrayItemInstance, instanceShapes } from "../shared/entities";
+import { surfaceAt } from "../shared/surfaces";
 import type { ArrayLayout, ArrayNode, SceneNode } from "../shared/scene.types";
 import { countsText, isGroup, isShape, shapesUnder, subtreeIds } from "../shared/tree";
 import { boundsFor, entitiesOf, type AgentBounds } from "./outline";
@@ -14,26 +15,25 @@ import { boundsFor, entitiesOf, type AgentBounds } from "./outline";
 /** The most item lines an array's compact line lists; get_scene { root } on the array lists them all. */
 export const MAX_ITEM_LINES = 40;
 
-/** How high an entity's definition reaches above its pivot (its bottom center): the top of its bounds. */
-export function entityTop(entity: string): number {
-  const shapes = (definitionOf(entity) ?? []).filter(isShape);
-  return shapes.length > 0 ? boundsOf(shapes).maxY : 0;
+/** How high an item's walking surface is over its pivot (13.4), else the top of its shapes; its y when it has none. */
+function itemTop(array: ArrayNode, item: ArrayItem): number {
+  const inst = arrayItemInstance(array, item.index);
+  const shapes = inst ? instanceShapes(inst) : [];
+  return shapes.length > 0 ? round2(surfaceAt(shapes, item.x, item.z) ?? boundsOf(shapes).maxY) : item.y;
 }
 
 /**
- * An **item line**: where an array's item stands (its pivot), how high its top is, and its turn, e.g.
- * `array_5/3 → 12.1, 4.5, -8 · top 5 · 90°`. The top is its entity's highest point for now (13.4: its walking
- * surface).
+ * An **item line**: where an array's item stands (its pivot), how high its walking surface is, and its turn, e.g.
+ * `array_5/3 → 12.1, 4.5, -8 · top 5 · 90°`.
  */
-export function itemLine(arrayId: string, item: ArrayItem): string {
-  const top = round2(item.y + entityTop(item.entity));
-  return `${arrayId}/${item.index} → ${item.x}, ${item.y}, ${item.z} · top ${top} · ${item.rotation}°`;
+export function itemLine(array: ArrayNode, item: ArrayItem): string {
+  return `${array.id}/${item.index} → ${item.x}, ${item.y}, ${item.z} · top ${itemTop(array, item)} · ${item.rotation}°`;
 }
 
 /** An array's item lines: all of them, or the first `max` with a line saying how to read the rest. */
 export function itemLines(array: ArrayNode, max = Infinity): string[] {
   const items = arrayLayout(array).items;
-  const lines = items.slice(0, max).map((item) => itemLine(array.id, item));
+  const lines = items.slice(0, max).map((item) => itemLine(array, item));
   if (items.length > max) lines.push(`… ${items.length - max} more: get_scene { root: "${array.id}" }`);
   return lines;
 }
@@ -78,14 +78,15 @@ export function compactNode(nodes: SceneNode[], n: SceneNode): CompactNode {
   }
   const bounds = boundsFor([n]);
   switch (n.type) {
-    case "freeform":
     case "line":
+      return { ...base, bounds, points: n.points.length, ...(n.through ? { through: { stops: n.through.stops.length, style: n.through.style } } : {}) };
+    case "freeform":
     case "ramp":
       return { ...base, bounds, points: n.points.length };
     case "note":
       return { ...base, text: n.text.length > 120 ? `${n.text.slice(0, 120)}…` : n.text, status: n.status, ...(n.label ? { label: n.label } : {}), bounds };
     case "instance":
-      return { ...base, entity: n.entity, x: n.x, y: n.y, z: n.z, rotation: n.rotation ?? 0, bounds };
+      return { ...base, entity: n.entity, x: n.x, y: n.y, z: n.z, rotation: n.rotation ?? 0, ...(n.on ? { on: n.on.id } : {}), bounds };
     case "array": {
       const items = arrayLayout(n).items.length;
       return {
@@ -93,6 +94,7 @@ export function compactNode(nodes: SceneNode[], n: SceneNode): CompactNode {
         entities: entitiesOf(n),
         layout: layoutSummary(n.layout),
         ...(n.skip && n.skip.length > 0 ? { skip: n.skip } : {}),
+        ...(n.on ? { on: n.on.id } : {}),
         items,
         bounds,
         at: itemLines(n, MAX_ITEM_LINES),
