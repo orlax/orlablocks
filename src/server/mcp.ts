@@ -143,9 +143,10 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
   /** Runs an edit tool's body for real, or as a dry run (14.2): the same result, marked, with nothing changed. */
   const edit = <T extends object>(dryRun: boolean | undefined, run: () => T) =>
     dryRun ? { dryRun: "nothing was changed: this is what the call would do", ...store().dryRun(run) } : run();
-  const server = new McpServer({ name: "orlablocks", version: "0.0.32" }, { instructions: INSTRUCTIONS });
+  const server = new McpServer({ name: "orlablocks", version: "0.0.33" }, { instructions: INSTRUCTIONS });
   // Every tool reads or edits the open scene, and fails with a clear message while nothing is open.
-  const store = () => workspace.requireScene();
+  // The agent's scene (14.5): its own while the human is in another one, else the human's open document.
+  const store = () => workspace.requireAgentScene();
   const library = (): Library => (workspace.getOpen() ? workspace.library.get() : EMPTY_LIBRARY);
   /** The outline's line about the design guide: its size and when it last changed, as a reminder to read it. */
   const guideLine = () => {
@@ -185,8 +186,20 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
     },
     async (query) => {
       const scene = store().getScene();
-      const open = workspace.getOpen()!;
+      const open = workspace.agentOpen()!;
       const outline = describeScene(open, scene, query, { library: library(), guide: guideLine() });
+      // Working apart (14.5): this scene is the agent's own, and the human's view and selection are elsewhere.
+      const apart = workspace.agentApart();
+      if (apart) {
+        return json(
+          warned({
+            ...outline,
+            view: undefined,
+            selection: [],
+            agent: `This scene is yours: the human invited you to it (Work with agent) and is working in ${apart.humanIn}. Their view, selection and walk aren't here, so there's no "this", "here" or human to check sight from; render_view still works.`,
+          }),
+        );
+      }
       if (!open.entity) return json(warned(outline));
       // Edit entity mode: the nodes are the entity's definition.
       const meta = library().entities.find((e) => e.id === open.entity!.id);
@@ -599,30 +612,32 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
       const job = prepareRender(request, {
         nodes: scene.nodes,
         view: scene.view,
-        shot: (id) => workspace.shots.get(id),
-        shots: workspace.shots.list(),
-        seq: workspace.documentSeq() ?? 0,
+        shot: (id) => workspace.agentShots().get(id),
+        shots: workspace.agentShots().list(),
+        seq: workspace.agentSeq() ?? 0,
         entities: library().entities,
       });
       if (job.pairs?.length === 0) {
         return { content: [{ type: "text" as const, text: "No captioned shot was taken before the last change: nothing to re-check." }] };
       }
+      // The agent's own scene (14.5) isn't on any tab: the job carries it.
+      if (workspace.agentApart()) job.nodes = scene.nodes;
       const result = await renders.request(job);
       const lines = [result.text];
       if (job.view === "shots" && !request.shots) {
-        const changed = workspace.shots.list().filter((s) => s.caption && s.seq < (workspace.documentSeq() ?? 0)).length;
+        const changed = workspace.agentShots().list().filter((s) => s.caption && s.seq < (workspace.agentSeq() ?? 0)).length;
         if (changed > job.pairs!.length) lines.push(`${changed - job.pairs!.length} older captioned shots weren't re-checked: pass shots: [...] for them.`);
       }
       if (job.view === "entities" && !request.ids && library().entities.length > job.entities!.length) {
         lines.push(`${library().entities.length - job.entities!.length} more entities weren't drawn: pass ids for them.`);
       }
       if (job.view === "shot") {
-        const shot = workspace.shots.get(job.shot!)!;
-        const since = (workspace.documentSeq() ?? shot.seq) - shot.seq;
+        const shot = workspace.agentShots().get(job.shot!)!;
+        const since = (workspace.agentSeq() ?? shot.seq) - shot.seq;
         lines.push(since === 0 ? `Nothing has changed since ${shot.id} was taken.` : `${since} step${since === 1 ? "" : "s"} since ${shot.id} was taken: compare with its image (get_shots id).`);
       }
       if (request.save && result.camera) {
-        const kept = workspace.addShot({ camera: result.camera, image: result.image }, "agent");
+        const kept = workspace.addAgentShot({ camera: result.camera, image: result.image }, "agent");
         lines.push(`Kept as ${kept.id} in the Shots panel.`);
       }
       return { content: [{ type: "image" as const, data: result.image, mimeType: "image/png" }, { type: "text" as const, text: lines.join("\n") }] };
@@ -690,8 +705,8 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
     },
     async ({ id }) => {
       store();
-      const seq = workspace.documentSeq() ?? 0;
-      const summary = (s: ReturnType<typeof workspace.shots.list>[number]) => ({
+      const seq = workspace.agentSeq() ?? 0;
+      const summary = (s: ReturnType<ReturnType<typeof workspace.agentShots>["list"]>[number]) => ({
         id: s.id,
         ...(s.caption ? { caption: s.caption } : {}),
         createdBy: s.createdBy,
@@ -700,10 +715,10 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
         camera: s.camera,
         changedSince: seq - s.seq,
       });
-      if (!id) return json({ shots: workspace.shots.list().map(summary) });
-      const shot = workspace.shots.list().find((s) => s.id === id);
+      if (!id) return json({ shots: workspace.agentShots().list().map(summary) });
+      const shot = workspace.agentShots().list().find((s) => s.id === id);
       if (!shot) throw new SceneError(`No shot "${id}" in the open document. get_shots lists them.`);
-      const image = workspace.shots.image(id);
+      const image = workspace.agentShots().image(id);
       if (!image) throw new SceneError(`${id}'s image is missing from the data folder.`);
       return {
         content: [

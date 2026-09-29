@@ -440,3 +440,57 @@ describe("workspace", () => {
   });
 });
 
+
+describe("work with agent (14.5)", () => {
+  const room = { kind: "room" as const, x: 0, z: 0, width: 4, depth: 4 };
+
+  it("keeps the agent in its scene while the human works in another, each with its own history, and rejoins", () => {
+    const root = tempRoot();
+    const { workspace } = startWithScene(root);
+    workspace.inviteAgent();
+    expect(workspace.getAgent()).toMatchObject({ project: "castle", scene: "entrance", name: "Entrance", apart: false });
+    // Together: one store.
+    expect(workspace.requireAgentScene()).toBe(workspace.requireScene());
+    workspace.createScene({ project: "castle", name: "Crypt" });
+    expect(workspace.getAgent()).toMatchObject({ apart: true });
+    // Apart: the agent draws in the entrance, the human in the crypt.
+    workspace.requireAgentScene().drawShapes([room], "agent");
+    workspace.requireScene().drawShapes([room, { ...room, x: 10 }], "human");
+    expect(workspace.agentOpen()?.scene.id).toBe("entrance");
+    expect(workspace.getOpen()?.scene.id).toBe("crypt");
+    expect(sceneJson(root, "castle", "entrance").nodes).toHaveLength(1);
+    expect(sceneJson(root, "castle", "crypt").nodes).toHaveLength(2);
+    expect(workspace.requireAgentScene().getHistory().undoLabel).toBe("Agent: draw box_1");
+    // Opening it again rejoins it: the human sees the agent's work, in one store.
+    workspace.openScene({ project: "castle", scene: "entrance" });
+    expect(workspace.requireScene().getScene().nodes).toHaveLength(1);
+    expect(workspace.requireAgentScene()).toBe(workspace.requireScene());
+    expect(workspace.getAgent()).toMatchObject({ apart: false });
+  });
+
+  it("survives a restart, and ends when the human opens another project, telling the agent once", () => {
+    const root = tempRoot();
+    const first = startWithScene(root);
+    first.workspace.inviteAgent();
+    first.workspace.createScene({ project: "castle", name: "Crypt" });
+    first.stop();
+    releases.pop();
+    const { workspace } = start(root);
+    expect(workspace.getAgent()).toMatchObject({ scene: "entrance", apart: true });
+    expect(workspace.agentOpen()?.scene.id).toBe("entrance");
+    workspace.createProject({ name: "Other", sceneName: "Main" });
+    expect(workspace.getAgent()).toBeNull();
+    expect(() => workspace.requireAgentScene()).toThrow(/ended your invitation to "Entrance"/);
+    expect(workspace.requireAgentScene()).toBe(workspace.requireScene());
+  });
+
+  it("keeps the agent's scene while the human edits an entity", () => {
+    const { workspace } = startWithScene(tempRoot());
+    workspace.inviteAgent();
+    workspace.openEntity("human");
+    expect(workspace.getAgent()).toMatchObject({ apart: true });
+    expect(workspace.requireAgentScene().getDocument()).toBe("scene");
+    workspace.closeEntity();
+    expect(workspace.getAgent()).toMatchObject({ apart: false });
+  });
+});

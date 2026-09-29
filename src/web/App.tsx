@@ -49,6 +49,7 @@ import { Outliner } from "./Outliner";
 import { ProjectPicker, Welcome } from "./ProjectPicker";
 import { ContextualBar, EDIT_ARRAY_HINT, EDIT_POINTS_HINT, HINTS, TOOLS, ToolBar, ViewBar, WalkBar } from "./ToolBar";
 import { useScene, type RenderHandler } from "./useScene";
+import { AgentChip } from "./AgentChip";
 import { Viewport, type CursorPoint, type KindFields, type LineStyle, type RampStyle, type Tool, type ViewportApi } from "./Viewport";
 import { blobToBase64 } from "./capture";
 import { ShotsPanel, ShutterFlash } from "./ShotsPanel";
@@ -238,7 +239,7 @@ function linksOf(node: SceneNode | null | undefined, nodes: SceneNode[], send: (
 export function App() {
   // The agent's renders are drawn by the view (09.3).
   const renderer = useRef<RenderHandler | null>(null);
-  const { scene, history, seq, shots, player: savedPlayer, projects, open, restore, library: libraryState, connected, error, clearError, send } = useScene(renderer);
+  const { scene, history, seq, shots, player: savedPlayer, agent, projects, open, restore, library: libraryState, connected, error, clearError, send } = useScene(renderer);
   const library = libraryState.library;
   // The Library panel, open or not, remembered per viewer.
   const [libraryOpen, setLibraryOpenState] = useState(() => {
@@ -1201,6 +1202,14 @@ export function App() {
           >
             <BookOpen size={14} />
           </button>
+          <AgentChip
+            agent={agent}
+            here={!!agent && !editingEntity && agent.project === open.project.id && agent.scene === open.scene.id}
+            canInvite={!editingEntity}
+            onInvite={() => send({ type: "invite_agent" })}
+            onStop={() => send({ type: "stop_agent" })}
+            onJoin={() => agent && send({ type: "open_scene", project: agent.project, scene: agent.scene })}
+          />
         </div>
       )}
 
@@ -1303,6 +1312,7 @@ export function App() {
           error={error}
           onClose={open ? () => setPickerOpen(false) : undefined}
           send={send}
+          agent={agent}
         />
       )}
     </div>

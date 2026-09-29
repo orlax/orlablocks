@@ -19,9 +19,9 @@ import { arrayItems } from "../shared/arrays";
 import { boundsOf, round2 } from "../shared/geometry";
 import { applyLibraryOp, entityMeta, findRefs, resolveRef, type EntityMeta, type Library, type LibraryEdit, type Uses } from "../shared/library";
 import { allDefinitions, setDefinition, setDefinitions } from "../shared/entities";
-import { firstIds, type LibraryFile, type NextId, type SceneFile } from "../shared/project.types";
+import { firstIds, type AppFile, type LibraryFile, type NextId, type SceneFile } from "../shared/project.types";
 import { isGroup, tagsOf } from "../shared/tree";
-import type { SceneNode, Shape, ShapeInput } from "../shared/scene.types";
+import type { AgentInfo, SceneNode, Shape, ShapeInput } from "../shared/scene.types";
 import { applyOp, createHistory, type HistoryEntry } from "./commands";
 import { DEFAULT_GUIDE } from "./defaultGuide";
 import { HUMAN, HUMAN_DESCRIPTION } from "./defaultEntities";
@@ -237,7 +237,7 @@ export function createWorkspace(data: DataDir) {
   // The library open with the scene: its project, the step it's saved at, and the defaults it was given.
   let openLibrary: { project: string; seq: number; seeded: string[] } | null = null;
   // Each other scene's nodes in the open project, for counting uses (read when the library loads or changes).
-  let otherScenes: { name: string; nodes: SceneNode[] }[] = [];
+  let otherScenes: { id: string; name: string; nodes: SceneNode[] }[] = [];
   let open:
     | (Omit<OpenScene, "entity"> & {
         createdAt: string;
@@ -332,7 +332,7 @@ export function createWorkspace(data: DataDir) {
       .filter((sc) => (open!.entity || sc.id !== open!.scene.id) && !sc.error)
       .flatMap((sc) => {
         try {
-          return [{ name: sc.name, nodes: data.readScene(open!.project.id, sc.id).nodes }];
+          return [{ id: sc.id, name: sc.name, nodes: data.readScene(open!.project.id, sc.id).nodes }];
         } catch {
           return [];
         }
@@ -396,7 +396,9 @@ export function createWorkspace(data: DataDir) {
     const lib = library.get();
     const result: Uses = { tags: {}, skills: {}, entities: {} };
     // While an entity is open, the store holds it, and every scene (the one to go back to included) is read from disk.
-    const scenes = open && !open.entity ? [{ name: open.scene.name, nodes: store.getScene().nodes }, ...otherScenes] : otherScenes;
+    // The agent's own scene (14.5), live too.
+    const others = agentDoc ? [...otherScenes.filter((sc) => sc.id !== agentDoc!.scene.id), { id: agentDoc.scene.id, name: agentDoc.scene.name, nodes: agentDoc.store.getScene().nodes }] : otherScenes;
+    const scenes = open && !open.entity ? [{ name: open.scene.name, nodes: store.getScene().nodes }, ...others] : others;
     for (const { name: sceneName, nodes } of scenes) {
       const counts = countUses(lib, nodes);
       for (const kind of ["tags", "skills"] as const) {
@@ -456,9 +458,104 @@ export function createWorkspace(data: DataDir) {
     if (!data.sceneExists(project, scene)) throw new SceneError(`${failure}\nNo scene "${scene}" in project "${project}"`);
   };
 
+  /**
+   * Work with agent (plan 14 §8). `agentScene` is the scene the human invited the agent to, or null (the agent works
+   * in whatever the human has open, as before). While the human has that scene open, the two share the one store; when
+   * the human opens another scene of the project (or an entity), the agent's scene is loaded into a store of its own
+   * (`agentDoc`, from disk: every step is saved), which saves itself after every step. Opening it again rejoins it.
+   * Opening another project ends the invitation, and the agent's next call is told once (`agentEnded`).
+   */
+  let agentScene: { project: string; scene: string } | null = null;
+  let agentEnded: string | null = null;
+  type AgentDoc = {
+    project: OpenScene["project"];
+    scene: OpenScene["scene"];
+    createdAt: string;
+    seq: number;
+    store: SceneStore;
+    shots: ShotStore;
+    stop: () => void;
+  };
+  let agentDoc: AgentDoc | null = null;
+  const agentListeners = new Set<(agent: AgentInfo | null) => void>();
+  const agentInfo = (): AgentInfo | null => {
+    if (!agentScene) return null;
+    const name = agentDoc?.scene.name ?? (open && open.scene.id === agentScene.scene ? open.scene.name : agentScene.scene);
+    return { project: agentScene.project, scene: agentScene.scene, name, apart: !!agentDoc };
+  };
+  const agentChanged = () => agentListeners.forEach((l) => l(agentInfo()));
+  const writeAppFile = () =>
+    data.writeApp({ lastOpen: open ? { project: open.project.id, scene: open.scene.id } : null, ...(agentScene ? { agentScene } : {}) } as AppFile);
+
+  const writeAgentScene = (doc: AgentDoc) =>
+    data.writeScene(doc.project.id, doc.scene.id, { name: doc.scene.name, createdAt: doc.createdAt, seq: doc.seq, nextId: doc.store.getNextId(), nodes: doc.store.getScene().nodes });
+
+  /** Loads the agent's scene into a store of its own (from disk), saving it after every step. */
+  const loadAgentDoc = (project: string, scene: string) => {
+    const file = data.readScene(project, scene);
+    const restored = restoreScene(file, data.readHistory(project, scene));
+    const own = createSceneStore({
+      resolveTag: (name) => resolveRef(library.get(), "tag", name)?.name,
+      entityName: (id) => entityMeta(library.get(), id)?.name,
+    });
+    own.load({ nodes: restored.nodes, nextId: restored.nextId, history: restored.history });
+    const docShots = createShotStore(data);
+    docShots.load(project, { kind: "scene", id: scene });
+    const projectFile = data.readProject(project);
+    const doc: AgentDoc = {
+      project: { id: project, name: projectFile.name, description: projectFile.description },
+      scene: { id: scene, name: file.name },
+      createdAt: file.createdAt,
+      seq: restored.seq,
+      store: own,
+      shots: docShots,
+      stop: () => {},
+    };
+    doc.stop = own.onStep((step) => {
+      try {
+        doc.seq += 1;
+        data.appendHistory(project, scene, lineOf(doc.seq, step));
+        writeAgentScene(doc);
+      } catch (err) {
+        console.error("Saving the agent's scene failed", err);
+        throw new SceneError(`The change was made but not saved: ${(err as Error).message}`);
+      }
+    });
+    agentDoc = doc;
+  };
+  const dropAgentDoc = () => {
+    agentDoc?.stop();
+    agentDoc = null;
+  };
+  const endInvitation = (why: string) => {
+    if (!agentScene) return;
+    agentEnded = why;
+    agentScene = null;
+    dropAgentDoc();
+    writeAppFile();
+    agentChanged();
+  };
+  /** Before the human's store leaves `open` for `next` (a scene, or null for an entity): where the agent's scene goes. */
+  const beforeHumanMoves = (next: { project: string; scene: string } | null) => {
+    if (!agentScene) return;
+    if (next && next.project !== agentScene.project) {
+      const name = agentInfo()?.name ?? agentScene.scene;
+      endInvitation(`The human ended your invitation to "${name}": they opened another project. Your tools now act on the scene they have open.`);
+      return;
+    }
+    if (next && next.scene === agentScene.scene) {
+      // The human rejoins the agent's scene: one store again, loaded from disk (the agent's store saved every step).
+      dropAgentDoc();
+      return;
+    }
+    // The human leaves the agent's scene (for another scene or an entity): the agent keeps it in a store of its own.
+    if (!agentDoc && open && !open.entity && open.scene.id === agentScene.scene) loadAgentDoc(agentScene.project, agentScene.scene);
+  };
+
   /** Loads a scene into the store and makes it the open one. Throws a SceneError if it's missing or doesn't load. */
   const openScene = (project: string, scene: string) => {
     if (!data.sceneExists(project, scene)) throw new SceneError(`No scene "${scene}" in project "${project}"`);
+    beforeHumanMoves({ project, scene });
     // The scene being left keeps its last camera and selection.
     flushEditor();
     let loaded;
@@ -491,9 +588,10 @@ export function createWorkspace(data: DataDir) {
       console.warn(`${project}/${scene}: scene.json missed the last step in history.jsonl; applied it`);
       writeScene();
     }
-    data.writeApp({ lastOpen: { project, scene } });
+    writeAppFile();
     readOtherScenes();
     openedChanged(restoreOf());
+    agentChanged();
   };
 
   return {
@@ -630,6 +728,7 @@ export function createWorkspace(data: DataDir) {
       const meta = entityMeta(library.get(), entity);
       if (!meta) throw new SceneError(`No entity "${entity}" in the project library.`);
       flushEditor();
+      beforeHumanMoves(null);
       let loaded;
       try {
         const file = data.readEntity(open.project.id, entity);
@@ -714,11 +813,74 @@ export function createWorkspace(data: DataDir) {
       return store;
     },
 
+    /**
+     * The store the agent works in (14.5): its own scene's while the human is elsewhere, else the human's (as
+     * requireScene). Once after the invitation ended, it throws to say so.
+     */
+    requireAgentScene(): SceneStore {
+      if (agentEnded) {
+        const why = agentEnded;
+        agentEnded = null;
+        throw new SceneError(why);
+      }
+      return agentDoc?.store ?? this.requireScene();
+    },
+
+    /** The document the agent works in: its own scene, or the human's open document. */
+    agentOpen(): OpenScene | null {
+      return agentDoc ? { project: agentDoc.project, scene: agentDoc.scene } : publicOpen();
+    },
+
+    /** Whether the agent has a scene of its own right now (the human is in another one), and which the human is in. */
+    agentApart(): { humanIn: string } | null {
+      return agentDoc ? { humanIn: open ? (open.entity ? `the entity ${open.entity.id}` : `"${open.scene.name}"`) : "nothing" } : null;
+    },
+
+    /** The agent's document's shots, and its history step (as `shots` and `documentSeq`, for its own scene). */
+    agentShots(): ShotStore {
+      return agentDoc?.shots ?? shots;
+    },
+    agentSeq(): number | null {
+      return agentDoc ? agentDoc.seq : open ? (open.entity ? open.entity.seq : open.seq) : null;
+    },
+    /** Saves a shot of the agent's document (a render kept with save: true). */
+    addAgentShot(shot: NewShot, actor: "human" | "agent") {
+      if (agentDoc) return agentDoc.shots.add(shot, actor, agentDoc.seq);
+      if (!open) throw new SceneError(NO_SCENE_OPEN);
+      return shots.add(shot, actor, open.entity ? open.entity.seq : open.seq);
+    },
+
+    /** Work with agent (14.5): the open scene becomes the agent's, wherever the human goes in the project. */
+    inviteAgent(): void {
+      if (!open) throw new SceneError(NO_SCENE_OPEN);
+      if (open.entity) throw new SceneError("Open a scene to work with the agent in (this is an entity).");
+      dropAgentDoc();
+      agentScene = { project: open.project.id, scene: open.scene.id };
+      agentEnded = null;
+      writeAppFile();
+      agentChanged();
+    },
+
+    /** Ends the invitation: the agent works in whatever the human has open again (told once, on its next call). */
+    stopAgent(): void {
+      const name = agentInfo()?.name;
+      if (name !== undefined) endInvitation(`The human stopped working with you in "${name}". Your tools now act on the scene they have open.`);
+    },
+
+    /** The agent's scene, or null. */
+    getAgent: (): AgentInfo | null => agentInfo(),
+
+    onAgentChanged(listener: (agent: AgentInfo | null) => void): () => void {
+      agentListeners.add(listener);
+      return () => agentListeners.delete(listener);
+    },
+
     /** Reopens the scene that was open when the server stopped, if it's still there and loads. */
     restore(): void {
       let lastOpen;
+      let invited: { project: string; scene: string } | null = null;
       try {
-        lastOpen = data.readApp().lastOpen;
+        ({ lastOpen, agentScene: invited } = data.readApp());
       } catch (err) {
         console.warn(`Not reopening the last scene: ${(err as Error).message}`);
         return;
@@ -728,7 +890,19 @@ export function createWorkspace(data: DataDir) {
         openScene(lastOpen.project, lastOpen.scene);
       } catch (err) {
         console.warn(`Not reopening ${lastOpen.project}/${lastOpen.scene}: ${(err as Error).message}`);
+        return;
       }
+      // The agent's scene (14.5), if it was invited to one of this project's (read before reopening wrote app.json).
+      if (!invited || invited.project !== lastOpen.project || !data.sceneExists(invited.project, invited.scene)) return;
+      agentScene = invited;
+      try {
+        if (invited.scene !== lastOpen.scene) loadAgentDoc(invited.project, invited.scene);
+      } catch (err) {
+        console.warn(`Not reopening the agent's scene: ${(err as Error).message}`);
+        agentScene = null;
+      }
+      writeAppFile();
+      agentChanged();
     },
 
     /** Creates a project and its first scene, and opens that scene. */
@@ -776,6 +950,11 @@ export function createWorkspace(data: DataDir) {
         open.scene = { ...open.scene, name };
         writeScene();
         openedChanged();
+      } else if (agentDoc && agentDoc.project.id === project && agentDoc.scene.id === scene) {
+        // So is the agent's own (14.5).
+        agentDoc.scene = { ...agentDoc.scene, name };
+        writeAgentScene(agentDoc);
+        agentChanged();
       } else {
         fileOp(failure, () => data.writeScene(project, scene, { ...data.readScene(project, scene), name }));
       }

@@ -12,7 +12,8 @@ import WebSocket from "ws";
 export async function connect(port, { project = `check ${Date.now()}`, scene = "main" } = {}) {
   if (port === 5170) throw new Error("Not on 5170: run it against a spare server with its own DATA_DIR");
   const human = await openHuman(port);
-  await human.request({ type: "create_project", name: project, sceneName: scene }, (m) => m.type === "opened" && m.open?.project.name === project);
+  // (The greeting messages of a new connection can still arrive: take the one for this project.)
+  const { open: opened } = await human.request({ type: "create_project", name: project, sceneName: scene }, (m) => m.type === "opened" && m.open?.project.name === project);
   const client = new Client({ name: "check", version: "1" });
   await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`)));
   /** Calls a tool; the result's text parsed as JSON when it is, or the text. Throws on a tool error unless `allowError`. */
@@ -28,7 +29,7 @@ export async function connect(port, { project = `check ${Date.now()}`, scene = "
     }
     return result.isError ? { error: text } : value;
   };
-  return { human, call, project, close: async () => (human.close(), await client.close()) };
+  return { human, call, project, opened, close: async () => (human.close(), await client.close()) };
 }
 
 /** A WebSocket as the editor: `send`, `request` (send, then wait for a matching message) and every message seen. */

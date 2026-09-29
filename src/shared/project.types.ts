@@ -82,5 +82,7 @@ export type ShotsFile = z.infer<typeof ShotsFileSchema>;
 /** `app.json`: the server-level state. */
 export const AppFileSchema = z.object({
   lastOpen: z.object({ project: z.string(), scene: z.string() }).nullable().default(null),
+  // The scene the human invited the agent to (14.5: Work with agent), kept across restarts.
+  agentScene: z.object({ project: z.string(), scene: z.string() }).nullable().default(null),
 });
 export type AppFile = z.infer<typeof AppFileSchema>;

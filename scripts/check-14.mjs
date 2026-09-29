@@ -91,6 +91,36 @@ const CHECKS = {
     const back = await call("get_scene", { full: true });
     check(back.nodes.filter((n) => n.type === "instance").every((p) => !p.roll && Math.abs(p.y) < 0.02), "and back upright");
   },
+
+  // Work with agent: the agent keeps its scene while the human works in another.
+  async "14.5"({ human, call, opened }) {
+    const agentScene = opened.scene.id;
+    await human.request({ type: "invite_agent" }, (m) => m.type === "agent" && m.agent);
+    await human.request({ type: "create_scene", project: opened.project.id, name: "race human" }, (m) => m.type === "opened" && m.open?.scene.name === "race human");
+    const agentMsg = await human.wait((m) => m.type === "agent" && m.agent?.apart === true);
+    check(agentMsg.agent.name !== "race human", "the chip says the agent works apart, in its own scene");
+    await call("draw_shapes", { shapes: [{ kind: "room", x: 0, z: 0, width: 10, depth: 8, name: "agent hall" }] });
+    const mine = await call("get_scene");
+    check(mine.scene.id === agentScene && /This scene is yours/.test(mine.agent), "the agent reads its own scene, told the human is elsewhere");
+    human.send({ type: "add_shapes", shapes: [{ kind: "volume", x: 5, z: 5, width: 2, depth: 2, name: "human block" }] });
+    await human.wait((m) => m.type === "scene" && m.scene.nodes.some((n) => n.name === "human block"));
+    const still = await call("get_scene");
+    check(still.nodes.length === 1 && still.nodes[0].name === "agent hall", "the human's edits land in their scene, not the agent's");
+    // A render of the agent's scene goes to the human's tab (showing another scene) with the agent's nodes in the job.
+    human.send({ type: "tab", visible: true, focused: true });
+    await new Promise((r) => setTimeout(r, 100));
+    const rendering = call("render_view", { view: "plan" });
+    const asked = await human.wait((m) => m.type === "render");
+    check(asked.job.nodes?.some((n) => n.name === "agent hall") && !asked.job.nodes.some((n) => n.name === "human block"), "render_view sends the agent's scene to a tab that shows another");
+    const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+    human.send({ type: "rendered", requestId: asked.requestId, result: { image: png, width: 1, height: 1, text: "plan" } });
+    await rendering;
+    await human.request({ type: "open_scene", project: opened.project.id, scene: agentScene }, (m) => m.type === "scene" && m.scene.nodes.some((n) => n.name === "agent hall"));
+    check(true, "opening the agent's scene shows its work");
+    await human.request({ type: "stop_agent" }, (m) => m.type === "agent" && m.agent === null);
+    const told = await call("get_scene", {}, { allowError: true });
+    check(/stopped working with you/.test(told.error ?? ""), "the agent is told once that the invitation ended");
+  },
 };
 
 for (const [name, run] of Object.entries(CHECKS)) {

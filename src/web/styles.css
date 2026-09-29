@@ -363,6 +363,14 @@ summary:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
   cursor: pointer;
 }
 .library-toggle:hover { color: var(--ink); background: var(--field); }
+/* Work with agent (14.5): the agent's scene, here or elsewhere, and ✕. */
+.agent-chip { flex: none; display: inline-flex; align-items: center; height: 30px; border: 2px solid var(--edge); border-radius: 10px; background: var(--surface); box-shadow: var(--shadow-md); overflow: hidden; }
+.agent-chip.here { background: var(--accent-fill); }
+.agent-chip button { height: 100%; border: 0; background: transparent; color: var(--ink); font: 700 12px var(--body); display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.agent-chip .agent-where { padding: 0 8px 0 10px; max-width: 220px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.agent-chip.here .agent-where { color: var(--btn-ink); cursor: default; }
+.agent-chip .agent-stop { padding: 0 8px; border-left: 2px solid var(--edge); color: var(--ink-soft); }
+.agent-chip .agent-stop:hover { color: var(--ink); background: var(--field); }
 .library-toggle.active { color: var(--btn-ink); background: var(--accent-fill); }
 /* Top-left and top-right frames sink onto their shadow while pressed, like the Control Panel's buttons. */
 .project-bar,
@@ -1433,3 +1441,6 @@ summary:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
 .modal-backdrop.welcome > .muted { margin: 0; color: var(--ink-soft); font-weight: 700; }
 /* The status bar stays in view below the welcome, with its connection dot. */
 .modal-backdrop.welcome { bottom: var(--status-h); }
+
+/* The agent's scene in the project picker (14.5). */
+.picker-row .agent-badge { display: inline-flex; align-items: center; margin-left: 6px; color: var(--accent); }

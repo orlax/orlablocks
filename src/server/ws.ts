@@ -62,6 +62,7 @@ export function attachWebSocket(httpServer: Server, workspace: Workspace, render
   workspace.onProjectsChanged((projects) => broadcast({ type: "projects", projects }));
   workspace.shots.onChange(() => broadcast({ type: "shots", shots: workspace.shots.list() }));
   workspace.onPlayerChanged((player) => broadcast({ type: "player", player }));
+  workspace.onAgentChanged((agent) => broadcast({ type: "agent", agent }));
 
   wss.on("connection", (ws) => {
     // This tab can render for the agent (09.3).
@@ -77,6 +78,7 @@ export function attachWebSocket(httpServer: Server, workspace: Workspace, render
     send(ws, libraryMessage());
     send(ws, { type: "shots", shots: workspace.shots.list() });
     send(ws, { type: "player", player: workspace.player() });
+    send(ws, { type: "agent", agent: workspace.getAgent() });
 
     ws.on("message", (raw) => {
       let data: unknown;
@@ -99,6 +101,8 @@ export function attachWebSocket(httpServer: Server, workspace: Workspace, render
         if (msg.type === "rename_scene") return workspace.renameScene(withoutType(msg));
         if (msg.type === "duplicate_scene") return void workspace.duplicateScene(withoutType(msg));
         if (msg.type === "open_scene") return workspace.openScene(withoutType(msg));
+        if (msg.type === "invite_agent") return workspace.inviteAgent();
+        if (msg.type === "stop_agent") return workspace.stopAgent();
         if (msg.type === "update_library") return void workspace.editLibrary(withoutType(msg), "human");
         if (msg.type === "library_undo") return void workspace.requireLibrary().undo();
         if (msg.type === "library_redo") return void workspace.requireLibrary().redo();

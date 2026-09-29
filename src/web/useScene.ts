@@ -3,6 +3,7 @@ import { NO_USES, type Library, type Uses } from "../shared/library";
 import { setDefinitions } from "../shared/entities";
 import {
   DEFAULT_PLAYER,
+  type AgentInfo,
   type ClientMessage,
   type EditorRestore,
   type HistorySummary,
@@ -30,6 +31,8 @@ export function useScene(renderer?: { current: RenderHandler | null }) {
   const [shots, setShots] = useState<ShotView[]>([]);
   // The open project's player camera (09.2).
   const [player, setPlayer] = useState<PlayerCamera>(DEFAULT_PLAYER);
+  // The scene the agent was invited to (14.5), or null.
+  const [agent, setAgent] = useState<AgentInfo | null>(null);
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   // undefined until the server says; null = nothing is open.
   const [open, setOpen] = useState<OpenScene | null | undefined>(undefined);
@@ -83,6 +86,8 @@ export function useScene(renderer?: { current: RenderHandler | null }) {
           setShots(msg.shots);
         } else if (msg.type === "player") {
           setPlayer(msg.player);
+        } else if (msg.type === "agent") {
+          setAgent(msg.agent);
         } else if (msg.type === "render") {
           const answer = (m: ClientMessage) => ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify(m));
           const run = renderer?.current;
@@ -127,5 +132,5 @@ export function useScene(renderer?: { current: RenderHandler | null }) {
     if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
   }, []);
 
-  return { scene, history, seq, shots, player, projects, open, restore, library, definitionsVersion, connected, error, clearError, send };
+  return { scene, history, seq, shots, player, agent, projects, open, restore, library, definitionsVersion, connected, error, clearError, send };
 }

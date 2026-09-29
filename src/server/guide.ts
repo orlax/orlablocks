@@ -42,7 +42,9 @@ export const INSTRUCTIONS =
   "orlablocks: an ideation tool for dungeon layouts. The human edits the same scene in a local 3D editor, " +
   "and you read and edit it with these tools. The scene is one scene of a project (a project holds several scenes, " +
   "e.g. one per level); get_scene reports which, and the project's description gives the context. You only see the " +
-  "open scene: the human opens and switches scenes in the editor. Every change is saved as it happens, and every " +
+  "open scene: the human opens and switches scenes in the editor, unless they invited you to one (Work with agent): " +
+  "then that scene is yours while they work in another of the project (get_scene's `agent` says so), and you have no " +
+  "\"this\" or \"here\" from them there. Every change is saved as it happens, and every " +
   "tool call that changes the scene is one step in the undo history shared with the human. " +
   "Units are meters, kept to 2 decimals. The world is 3D with y up and the ground at y = 0. The compass is fixed: " +
   'NORTH is -z, south +z, east +x, west -x, so "the north wall" is a shape\'s -z side. ' +

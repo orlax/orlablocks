@@ -554,6 +554,8 @@ export function Viewport({
     extra: Shape[] = [],
     /** Other nodes than the document's: an entity's definition (a model sheet), cut as in an instance. */
     source?: SceneNode[],
+    /** What `source` is: an entity's definition (the default), or another scene (14.5: the agent's, no tab shows it). */
+    sourceKind: "entity" | "scene" = "entity",
   ) => {
     await manifoldReady();
     const from = source ?? nodesRef.current;
@@ -564,7 +566,7 @@ export function Viewport({
       ).filter((b) => !isHole(b)),
       ...extra,
     ];
-    const entityNow = source ? true : entityModeRef.current;
+    const entityNow = source ? sourceKind === "entity" : entityModeRef.current;
     // The live view's cuts, unless this capture hides more (a hidden hole cuts nothing).
     const visibleNodes = () => expandNodes(from.filter((n) => !hiddenNow.has(n.id)));
     const cutsNow = source || options.hide ? cutters(entityNow ? inEntityRoot(visibleNodes()) : visibleNodes()) : cutsRef.current;
@@ -605,11 +607,12 @@ export function Viewport({
         return { png, width, height, camera };
       },
       render(job) {
-        const nodesNow = nodesRef.current;
+        // The agent's own scene (14.5) comes with the job: this tab shows another one.
+        const nodesNow = job.nodes ?? nodesRef.current;
         // The job's hide (13.6) joins the scene's hidden nodes, for this render only; clip cuts every capture of it.
         const hiddenNow = withHidden(nodesNow, job.hide);
         const extra = { ...(job.hide ? { hide: job.hide } : {}), ...(job.clip !== undefined ? { clip: job.clip } : {}) };
-        const standable = expandShapes(boxesRef.current.filter((b) => !hiddenNow.has(b.id)));
+        const standable = expandShapes((job.nodes ? job.nodes.filter(isShape) : boxesRef.current).filter((b) => !hiddenNow.has(b.id)));
         return renderJob(job, {
           nodes: nodesNow,
           hidden: hiddenNow,
@@ -617,7 +620,7 @@ export function Viewport({
           player: playerRef.current,
           avatarEntity: avatarEntityRef.current,
           surfaceY: (x, z) => surfaceUnder({ origin: { x, y: 10_000, z }, dir: { x: 0, y: -1, z: 0 } }, standable, { slopes: true })?.y ?? 0,
-          capture: (view, width, height, options, shapes) => runCapture(view, width, height, 1, { ...options, ...extra }, shapes),
+          capture: (view, width, height, options, shapes) => runCapture(view, width, height, 1, { ...options, ...extra }, shapes, job.nodes, "scene"),
           captureNodes: (view, width, height, nodes, extra) => runCapture(view, width, height, 1, { notes: false, lines: true }, extra, nodes),
         });
       },

@@ -1,6 +1,6 @@
-import { Copy, FolderPlus, Pencil, Plus, TriangleAlert, X } from "lucide-react";
+import { Bot, Copy, FolderPlus, Pencil, Plus, TriangleAlert, X } from "lucide-react";
 import { useEffect, useState, type KeyboardEvent } from "react";
-import { DEFAULT_SCENE_NAME, type ClientMessage, type OpenScene, type ProjectSummary } from "../shared/scene.types";
+import { DEFAULT_SCENE_NAME, type AgentInfo, type ClientMessage, type OpenScene, type ProjectSummary } from "../shared/scene.types";
 import { TAGLINE, Wordmark } from "../ui/Wordmark";
 
 type Props = {
@@ -11,6 +11,8 @@ type Props = {
   /** Missing while nothing is open: there's no scene to go back to, so the picker can't be dismissed. */
   onClose?: () => void;
   send: (msg: ClientMessage) => void;
+  /** The scene the agent was invited to (14.5), badged in the list. */
+  agent?: AgentInfo | null;
 };
 
 type Renaming = { kind: "project" | "scene"; id: string; value: string };
@@ -22,7 +24,7 @@ type Renaming = { kind: "project" | "scene"; id: string; value: string };
  * the create project form. The wordmark sits above it; with nothing open it's the **welcome** (plan 12 §6): the
  * paper instead of the view, and the wordmark rises in.
  */
-export function ProjectPicker({ projects, open, error, onClose, send }: Props) {
+export function ProjectPicker({ projects, open, error, onClose, send, agent = null }: Props) {
   const [selected, setSelected] = useState<string | null>(open?.project.id ?? projects[0]?.id ?? null);
   const [creating, setCreating] = useState(projects.length === 0);
   const [renaming, setRenaming] = useState<Renaming | null>(null);
@@ -169,6 +171,11 @@ export function ProjectPicker({ projects, open, error, onClose, send }: Props) {
                           ) : (
                             <>
                               <span className="label">{s.name}</span>
+                              {agent?.project === project.id && agent.scene === s.id && (
+                                <span className="agent-badge" title="The agent works in this scene (Work with agent)">
+                                  <Bot size={12} />
+                                </span>
+                              )}
                               {s.error && <TriangleAlert size={13} className="warn" />}
                               {isOpen(project.id, s.id) && <i className="open-dot" />}
                               {!s.error && (

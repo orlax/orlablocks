@@ -1496,6 +1496,8 @@ export type RecheckedShot = { id: string; caption?: string; url: string; camera:
  * shots to re-check, the entities of a model sheet).
  */
 export type RenderJob = RenderRequest & {
+  /** The document to draw, when no tab shows it (14.5: the agent's own scene); else the tab draws its own. */
+  nodes?: SceneNode[];
   human?: Walking;
   shotCamera?: { camera: ShotCamera; width: number; height: number };
   pairs?: RecheckedShot[];
@@ -1521,6 +1523,9 @@ export const ClientMessageSchema = z.discriminatedUnion("type", [
   RenameSceneSchema.extend({ type: z.literal("rename_scene") }),
   DuplicateSceneSchema.extend({ type: z.literal("duplicate_scene") }),
   OpenSceneSchema.extend({ type: z.literal("open_scene") }),
+  // Work with agent (14.5): the open scene becomes the agent's; `stop_agent` ends the invitation.
+  z.object({ type: z.literal("invite_agent") }),
+  z.object({ type: z.literal("stop_agent") }),
   z.object({ type: z.literal("add_shapes"), shapes: z.array(ShapeInputSchema).min(1) }),
   z.object({ type: z.literal("update_nodes"), changes: z.array(NodeUpdateSchema).min(1) }),
   // `cut`: the same removal, labeled "Cut" (the editor put the nodes on the clipboard first).
@@ -1575,6 +1580,12 @@ export const ClientMessageSchema = z.discriminatedUnion("type", [
 ]);
 export type ClientMessage = z.input<typeof ClientMessageSchema>;
 
+/**
+ * Work with agent (14.5): the scene the human invited the agent to, its name, and whether the agent has it in a store
+ * of its own (the human is in another scene) or shares the human's.
+ */
+export type AgentInfo = { project: string; scene: string; name: string; apart: boolean };
+
 export type ServerMessage =
   // `seq`: the open document's history step (09.1: a shot taken at an earlier one shows the level changed since).
   | { type: "scene"; scene: Scene; history: HistorySummary; seq?: number }
@@ -1591,4 +1602,6 @@ export type ServerMessage =
   // The open project's player camera (09.2): on connect, when a project opens and after every change.
   | { type: "player"; player: PlayerCamera }
   // The agent's render_view (09.3), for this tab to render and answer with `rendered`.
-  | { type: "render"; requestId: number; job: RenderJob };
+  | { type: "render"; requestId: number; job: RenderJob }
+  // The scene the agent works in (14.5): on connect and when it changes; null when it follows the human's.
+  | { type: "agent"; agent: AgentInfo | null };
