@@ -23,3 +23,23 @@ and then start from blank on the orlablocks tool and on an MCP from blender and 
 - quality of the results. 
 
 that would give me some definitive numbers on does this tool improve performance. But just for the blockout ability it is already worth it for me to have it.
+
+## The design race (plan 14, 14.10)
+
+Orlando's idea from `thinking-07`: the human and the agent, from the same brief, at the same time, each in a scene of their own. Who's faster, and how do the results compare?
+
+**Setup.**
+1. Create a project with two empty scenes, `race-agent` and `race-human`. Write the brief (and any sketch) into the project's description or design guide, so both sides start from the same text.
+2. Open `race-agent` and press **Work with agent** (the robot button, top left). Give the agent the brief.
+3. Open `race-human` and build. The chip says **agent: race-agent**. A second window can open `race-agent` to watch; opening it there joins the agent's scene rather than taking it away.
+4. When both are done, stop the agent (✕ on the chip).
+
+**Measuring.**
+- `node scripts/race-report.mjs <data folder> <project> race-human race-agent` gives each scene's first and last step times, how long that took, its steps by who made them, its undo and redo count, its node count, and its longest pause.
+- From Claude Code's session, count the agent's tool calls, renders and tokens.
+- For quality, a `render_view` sheet of each scene side by side (the human judges), plus `check_scene` and, for a closed level, `check_enclosure` on each.
+
+**The scripted valley.** This isn't the race; it's a baseline for what the tools cost. `scripts/eval-valley.mjs` runs plan 14's §1 valley against a spare server in **9 calls and 13,142 characters both ways**. A get_scene of the full scene is 6,021 of those; the transform that makes the 1:10 sketch again at 4.5× is 413. The same work before phase 14 meant re-deriving the sketch point by point, an atan2 per ring, and working out sealing, flight times and clearances by hand, with no tool counting any of it.
+
+**Race log.**
+- ____-__-__: (brief, times, steps, tokens, the verdict)

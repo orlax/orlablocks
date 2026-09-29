@@ -520,3 +520,10 @@ Proposed in this plan, to confirm:
   - **Other docs:** `skills/orlablocks/SKILL.md` rewritten for the tools as they are now (it named a stale workflow), and CLAUDE.md's tool list.
   - **Size:** the core instructions are now 8.8 kB, where 08 kept them to 3.6 kB. Worth trimming in a later pass.
   - MCP version 0.0.37. `check-14.mjs 14.9` reads the new review topic and a new project's guide.
+- **2026-09-29:** **14.10 prepared** (the race itself is Orlando's to run).
+  - **`scripts/eval-valley.mjs`:** §1's valley against a spare server. The human sketches over the WebSocket, then the agent defines the ring entity, copies the sketch at 4.5× in one call, puts rings on the route facing along it, and runs `check_enclosure`, `measure_path` and `check_scene`. The human reshapes a peak, and `get_changes` reads it back. **9 calls, 13,142 characters both ways.**
+  - **`scripts/race-report.mjs`:** each race scene's times, steps by actor, undo count, nodes and longest pause, read from its history.
+  - **The protocol** is in `thinking-04-evals`, "The design race".
+  - **Fixed on the way:** the valley run showed `check_enclosure` reporting one gap twice at different heights (the plug only covered the part of the opening the fill had reached). The plug now spans the whole opening in that column, and gaps between the same two solids are merged.
+  - **All checks:** `check-14.mjs` (34 checks, every increment) and `eval-temple.mjs` (4,826 characters received in 8 calls) pass.
+  - **What's left for Orlando:** the browser acceptance (§15), none of which was checked in a browser, and the race.

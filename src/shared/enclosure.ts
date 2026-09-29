@@ -272,10 +272,10 @@ export function checkEnclosure(nodes: SceneNode[], input: EnclosureInput): Enclo
     const i = c % nx;
     const k = Math.floor(c / nx) % nz;
     const j = Math.floor(c / (nx * nz));
-    // Its height range: the air above and below it in that column, along the way the fill went.
+    // Its height range: the whole opening in that column, the air between the solids below and above it.
     let [lo, hi] = [j, j];
-    while (lo > 0 && !solidAt(i, k, lo - 1) && run.parent[idx(i, k, lo - 1)] !== -1) lo--;
-    while (hi < ny - 1 && !solidAt(i, k, hi + 1) && run.parent[idx(i, k, hi + 1)] !== -1) hi++;
+    while (lo > 0 && !solidAt(i, k, lo - 1)) lo--;
+    while (hi < ny - 1 && !solidAt(i, k, hi + 1)) hi++;
     const at = center(i, k, j);
     const between = [...new Set((gap?.sides ?? []).filter((o) => o > 0).map((o) => sightOwner(solids[o - 1].id)))];
     gaps.push({
@@ -293,5 +293,12 @@ export function checkEnclosure(nodes: SceneNode[], input: EnclosureInput): Enclo
       }
     }
   }
-  return { sealed: false, cell, band, escapes: gaps.map((g) => (Number.isFinite(g.width) ? g : { ...g, width: -1 })), ...(more ? { more: true } : {}), ...(note ? { note } : {}) };
+  // One gap between the same two solids is one gap, whatever heights it was found at.
+  const merged: Gap[] = [];
+  for (const g of gaps) {
+    const same = merged.find((m) => m.between.join() === g.between.join() && g.between.length === 2 && Math.hypot(m.at.x - g.at.x, m.at.z - g.at.z) < Math.max(m.width, g.width, cell) * 2);
+    if (same) same.y = [Math.min(same.y[0], g.y[0]), Math.max(same.y[1], g.y[1])];
+    else merged.push(g);
+  }
+  return { sealed: false, cell, band, escapes: merged.map((g) => (Number.isFinite(g.width) ? g : { ...g, width: -1 })), ...(more ? { more: true } : {}), ...(note ? { note } : {}) };
 }
