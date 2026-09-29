@@ -87,6 +87,14 @@ export const INSTRUCTIONS =
   "REVIEWING (get_guide review): the human's captioned shots are requirements: after a change that may touch one, " +
   "re-check it (render_view view: shots) and say whether its caption holds. To know whether a landmark is in view, " +
   "check_sight (text, cheap) before render_view. Keep detail proportional to gameplay. " +
+  "CHECKING TOOLS do the arithmetic you'd otherwise do by hand, and say what they checked: check_sight (what's " +
+  "visible from where, and what blocks it), check_enclosure (whether a closed level is sealed, and the gaps it " +
+  "leaks through), measure_path (a route's length, time, slopes, climb rates and clearance), check_scene (floating " +
+  "things, stale notes, off-center entities, holes that cut nothing, duplicates). Before working something out by " +
+  "hand, ask whether one of them answers it. " +
+  "STARTING a design: ask the constraints first, before drawing a full design: the team's size and timeline, the art " +
+  "references (organic or hard, what it should feel like), and how finished the result should be. Say which " +
+  "decisions you'll make yourself and which are the human's. " +
   "ENTITIES are the project's prefabs (a tree, a door, a poison pit): an instance (type: instance, e.g. instance_4) " +
   "shows its entity's shapes at its x, y, z and rotation, and carries its description and tags; the outline shows " +
   "one line per instance, and the glossary what each entity is and its size. Place and repeat entities instead of " +
@@ -137,6 +145,18 @@ const GUIDE: Record<Exclude<GuideTopic, "design">, string> = {
     "building or reshaping something, for stairs that end in walls, doors that cut nothing, floating shapes, overlaps, " +
     "rooms with no way in, and scale against the human. Entities: view: entities before placing ones you haven't seen. " +
     "Say what you checked and what you found, in a line each; don't describe every image. " +
+    "SEALING: a level that must be closed (a valley, an arena, a flight course with a ceiling) is sealed only where its " +
+    "boundary pieces overlap at the height it must be sealed to, not only at their base: tapered and rounded shapes " +
+    "narrow with height. Check it with check_enclosure { from: a point inside, band: [0, that height] } after every " +
+    "change to the boundary; for each gap it reports, look at a slice there (render_view { view: \"plan\", slice: its " +
+    "height }) and close it, then check again. " +
+    "PATHS: a route the player flies, rides or runs is checked with measure_path (speed, climb_rate, sink_rate, " +
+    "max_slope and probe from the design guide's game facts): its time, the stretches too steep, and where it passes " +
+    "too close to a solid. A route through rings or gates that must not be skipped: from ring n, check_sight to ring " +
+    "n + 2 should be blocked by solid rock. " +
+    "END OF A SESSION: run check_scene and fix what it finds; read the open notes and mark done the ones you handled, " +
+    "rewrite the ones your changes made stale; check that the entities you made still match their descriptions; and " +
+    "if the human settled something (a size, a rule, the art direction), offer to add it to the design guide. " +
     "HOW MUCH DETAIL. A blockout decides the level: shapes are gameplay space (where the player walks, climbs, hides " +
     "and looks). Put detail where the player's attention is (a landmark, a goal), in as few shapes as read clearly. " +
     "Decoration is one shape or one array, not many shapes: a roof as one cone, a railing as one thin box, battlements " +

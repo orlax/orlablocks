@@ -174,6 +174,14 @@ const CHECKS = {
     const ids = lint.findings.map((f) => `${f.check}:${f.id}`);
     check(ids.includes("floating:instance_1") && ids.includes("stale_notes:note_1"), "the lint finds the ring at y 122 and the note naming array_7");
   },
+
+  // The guide: the review loop, and the design guide's new sections.
+  async "14.9"({ call }) {
+    const review = await call("get_guide", { topic: "review" });
+    check(/SEALING/.test(review) && /END OF A SESSION/.test(review) && /check_enclosure/.test(review), "the review topic has the sealing, path and end-of-session loops");
+    const design = await call("get_guide", { topic: "design" });
+    check(/## Constraints/.test(design) && /## Art direction/.test(design) && /transform_nodes/.test(design), "a new project's design guide asks for constraints and art direction, and says how to use a sketch");
+  },
 };
 
 for (const [name, run] of Object.entries(CHECKS)) {

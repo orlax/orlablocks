@@ -18,6 +18,19 @@ Every rule below serves one of these.
 - **Uses the player's kit.** Spaces are built around what the player can do (the skills in the project's library), not around generic obstacles.
 - **One piece.** Each room belongs to the level around it: it's reached, it leads on, and it pays off something set up earlier.
 
+## Constraints
+
+Fill these in, or ask first: they reshape everything.
+
+- Team: ___ people, for ___ (the timeline)
+- How finished: a sketch to discuss / a blockout to play / a layout to build art on
+
+## Art direction
+
+- References: ___ (games, films, illustrators)
+- Silhouettes: ___ (organic, or hard and architectural)
+- Avoid: ___ (for example, long straight walls in a natural place)
+
 ## The game's facts
 
 Fill these in. Until they're here, ask before relying on a number.
@@ -25,6 +38,8 @@ Fill these in. Until they're here, ask before relying on a number.
 - Player height: ___ m (the default \`human\` entity is 1.8 m)
 - Jump: ___ m up, ___ m across (standing), ___ m across (running)
 - Safe drop: ___ m
+- Speed (walking, running, flying): ___ m/s; climb and sink rates: ___ m/s
+- Sealed up to: ___ m (a closed level: its boundary must overlap at this height, not only at its base; check_enclosure checks it)
 - Abilities: see the library's skills
 
 ### Sizes, for scale
@@ -48,6 +63,7 @@ Fill these in. Until they're here, ask before relying on a number.
 
 ## Workflow
 
+- **A sketch is the best brief.** When the human draws a small version of an idea, make it again at the size asked with \`transform_nodes\` (copy, scale, turn, mirror, move: one call), then build on it. Don't re-derive it point by point.
 - **For a big request, write a short brief first:** the beats in order, what the player needs at each, the skills it uses, the notes it answers. Show it to the human before drawing. It can be sketched in the scene as lines (the path) and named groups.
 - **Offer options that differ in structure,** not three versions of one idea.
 - **Build in named, described groups,** so the outline reads as the level's plan.

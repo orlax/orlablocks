@@ -6,35 +6,30 @@ tags: [level-design, 3d, gamedev, blockout, mcp]
 
 # Orlablocks Level Design Skill
 
-Use this skill when designing, viewing, or modifying 3D dungeon layouts, rooms, levels, blockouts, or architectural geometry through the Orlablocks MCP server (`http://127.0.0.1:5170/mcp` or active port).
+Use this skill when designing, viewing, or modifying 3D dungeon layouts, rooms, levels, blockouts, or architectural geometry through the Orlablocks MCP server (`http://127.0.0.1:5170/mcp` or the active port). The server's own instructions and `get_guide` topics have the detail; this is the workflow.
 
-## 1. Core Coordinate System & Conventions
-- **Units:** Real-world meters (2 decimals). Ground plane is at `y = 0`. Vertical axis is `+y` (up).
-- **Compass:**
-  - **North:** `-z`
-  - **South:** `+z`
-  - **East:** `+x`
-  - **West:** `-x`
-  - *Example:* "the north wall" of a room is at its `-z` edge.
-- **Node IDs:** Server-assigned immutable IDs (`box_1`, `cylinder_1`, `freeform_1`, `ramp_1`, `group_1`, `instance_1`). Never invent or reuse IDs.
-- **Undo History:** Every tool call that modifies the scene creates one atomic step in the undo history shared with the human in the 3D editor.
+## 1. Conventions
+- **Units:** meters (2 decimals). The ground is `y = 0`, and `+y` is up.
+- **Compass:** north is `-z`, south `+z`, east `+x`, west `-x`: "the north wall" is a room's `-z` side.
+- **IDs:** assigned by the server (`box_1`, `cylinder_1`, `freeform_1`, `ramp_1`, `line_1`, `note_1`, `instance_1`, `array_1`, `group_1`), never reused. Items of an array are `array_1/3`.
+- **Undo:** every call that changes the scene is one step in the undo history shared with the human.
+- **The scene:** you see the one the human has open, unless they invited you to one with **Work with agent**. Then that scene is yours while they work in another (`get_scene`'s `agent` says so).
 
-## 2. Shapes & Geometry
-- **`box` (Default):** Centered at `(x, z)`, rising from `y` to `y + height`. Sized with `width` (local x) and `depth` (local z), rotated by `rotation` (degrees CCW).
-- **`cylinder`:** Inscribed in `width × depth`. Set `sides` (3 to 64) for regular polygon prisms (hexagons, octagons) or omit for smooth curves.
-- **`freeform`:** Closed polygon path with 2D points and bezier handles in world x/z, with `y` and `height`.
-- **`hole`:** Any closed shape marked with `kind: "hole"` that cuts near shapes in the hierarchy (doors, windows, archways, floor drops).
-- **`ramp`:** Walkways, straight stairs, landings, or spiral stairs. Follows a centerline path with `width` and height changes.
-- **`line`:** Open annotations, patrol paths, player jump arcs, arrows.
-- **`note`:** Post-it pinned to a 3D point (`x, y, z`) with work items or intents (`open` / `done`).
+## 2. What's in a scene
+- **Closed shapes** (`box`, `cylinder`, `freeform`) are rooms (hollow), volumes (solid) or holes (they cut the shapes near them: doors, windows). Any closed shape can taper, bevel and tilt (`pitch`, `roll`).
+- **Ramps** are paths with a width (stairs with `step`, spirals). **Lines** are annotations (routes, jump arcs), and can go `through` nodes. **Notes** are the human's work items: mark them done, don't remove them.
+- **Entities** are prefabs: define one with `define_entity` (shapes around the origin), place it as an `instance` (with `rotation` as degrees or `{ toward | away | along }`, and `scale`), or repeat it with one `array` (a path, a circle, a grid, a scatter).
+- **Groups** hold parts of the level. Describe them, so the outline reads as the plan.
 
-## 3. Entities (Prefabs)
-- Prefabs shared across scenes (e.g. `human` (1.8m scale reference), `torch`, `tree`, `pillar`).
-- Created with `make_entity`, placed in scenes as `instance` nodes with position and rotation.
-
-## 4. Design Workflow
-1. **Outline & Context:** Call `get_scene` to inspect the level structure, open project, and visible area.
-2. **Design Guide:** Call `get_guide design` to read the game's specific facts, jump distances, player size, and aesthetic rules.
-3. **Inspect Nodes:** Use `find_nodes` to find specific landmarks or selection (`scene.selection`).
-4. **Build & Iterate:** Use `draw_shapes` to create rooms, `move_nodes` / `rotate_nodes` to manipulate them, and `update_nodes` to tune properties.
-5. **Review Sightlines:** Check sightlines and critical paths with `render_view` (`view: "plan"`, `view: "eye"`, or `view: "walk"`).
+## 3. Workflow
+1. **Start:** `get_scene` (the outline), `get_guide design` (the project's taste and the game's facts), and the library. Ask the constraints before drawing a full design: team and timeline, art references, how finished.
+2. **Each turn:** if `get_scene` has `changes`, read `get_changes` first. It says what the human reshaped since your last step.
+3. **Sketches:** when the human sketches something small, make it again at scale with `transform_nodes { ids, copy: true, scale, rotate?, mirror?, to }` in one call. Everything grows with it, walls and heights too.
+4. **Build:** `draw_shapes` in one batch (refs `$name` between its entries, `group` entries, `dry_run: true` to check a big batch first). Then `update_nodes`, `move_nodes` (with `copy` and `count` for rows), `rotate_nodes` (`axis: "x"` or `"z"` tilts things as one), `mirror_nodes` and `transform_nodes`.
+5. **Check with tools, not arithmetic:**
+   - `check_sight`: what's visible from where, and what blocks it.
+   - `check_enclosure`: whether a closed level is sealed up to a height, and each gap it leaks through.
+   - `measure_path`: a route's length, time, slopes, climb rates and clearance.
+   - `check_scene`: floating things, stale notes, off-center entities, holes that cut nothing, duplicates.
+6. **Look:** `render_view`. It can draw a sheet, a plan (`slice: y` cuts it at a height and rings the gaps), a node, an eye view, a walk along a route, the human's shots again, or the entities. `hide` and `clip` see inside an enclosed room.
+7. **End of a session:** run `check_scene`, go through the open notes (done or rewritten), check that the entities match their descriptions, and offer to add what was settled to the design guide.

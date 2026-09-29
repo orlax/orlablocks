@@ -513,3 +513,10 @@ Proposed in this plan, to confirm:
     It lists at most 25 findings per check, then a count.
   - **Changed while building:** there's no "over the ceiling" check (the ceiling was dropped), and no "links" check: a lost stop, `on` target or `along` target is already unlinked by `refollow` in the same step. Floating volumes aren't flagged (a platformer's slabs float on purpose), only instances and items. `entityMiddle` moved to `src/shared/entities.ts`, so the lint can use it without importing the workspace.
   - MCP version 0.0.36. Tests: `measure.test.ts` (2) and `lint.test.ts` (2; 527 in all). `check-14.mjs 14.8`: a 157 m route takes 9.8 s at 16 m/s, one climb over 6 m/s, the tightest clearance against the peak; the lint finds a ring at y 122 and a note naming `array_7/3`.
+- **2026-09-29:** **14.9 built.**
+  - **Core instructions:** CHECKING TOOLS (what each checking tool replaces; ask whether one answers something before working it out by hand), STARTING a design (constraints first: team and timeline, art references, how finished; say which decisions are whose), CHANGES (read `get_changes` when the header says so), and the sketch workflow (14.3).
+  - **The `review` topic:** SEALING (overlap at the sealed height, not the base; `check_enclosure` then a slice at each gap), PATHS (`measure_path` with the game's facts; `check_sight` from ring n to n + 2 for skips), and END OF A SESSION (`check_scene`, the open notes, the entities against their descriptions, offering to add what was settled to the design guide).
+  - **The default design guide** (new projects only; existing projects keep theirs) gets Constraints, Art direction, speed and climb rates and "sealed up to" among the facts, and "a sketch is the best brief" in Workflow.
+  - **Other docs:** `skills/orlablocks/SKILL.md` rewritten for the tools as they are now (it named a stale workflow), and CLAUDE.md's tool list.
+  - **Size:** the core instructions are now 8.8 kB, where 08 kept them to 3.6 kB. Worth trimming in a later pass.
+  - MCP version 0.0.37. `check-14.mjs 14.9` reads the new review topic and a new project's guide.
