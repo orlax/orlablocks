@@ -38,82 +38,44 @@ const TOPIC_SUMMARIES: Record<GuideTopic, string> = {
   arrays: "arrays: one node repeating entities along a path, around a circle, in a grid or scattered (battlements, windows, pillars, forests)",
 };
 
+/**
+ * The core (trimmed after 14): what exists and the few rules every call needs, each tool and topic named once. The
+ * how lives in the get_guide topics and in each tool's own description.
+ */
 export const INSTRUCTIONS =
-  "orlablocks: an ideation tool for dungeon layouts. The human edits the same scene in a local 3D editor, " +
-  "and you read and edit it with these tools. The scene is one scene of a project (a project holds several scenes, " +
-  "e.g. one per level); get_scene reports which, and the project's description gives the context. You only see the " +
-  "open scene: the human opens and switches scenes in the editor, unless they invited you to one (Work with agent): " +
-  "then that scene is yours while they work in another of the project (get_scene's `agent` says so), and you have no " +
-  "\"this\" or \"here\" from them there. Every change is saved as it happens, and every " +
-  "tool call that changes the scene is one step in the undo history shared with the human. " +
-  "Units are meters, kept to 2 decimals. The world is 3D with y up and the ground at y = 0. The compass is fixed: " +
-  'NORTH is -z, south +z, east +x, west -x, so "the north wall" is a shape\'s -z side. ' +
-  "The scene is a flat list of nodes, shapes and groups, each with a server-assigned ID (box_1, cylinder_1, " +
-  "freeform_1, line_1, ramp_1, group_1, ..., never reused) and an optional `name` (not unique; tools take IDs). " +
-  "The shapes: box (the default type), cylinder and freeform are CLOSED shapes, each a room (hollow: floor and walls, " +
-  "no ceiling, its footprint the room's outside, walls growing inward), a volume (solid: a platform, a pillar, a hill) " +
-  "or a hole (it cuts the shapes near it: doors, windows, holes in floors). A box's footprint is CENTERED at (x, z), " +
-  "`width` along its local x and `depth` along its local z, turned by `rotation` (degrees, counterclockwise seen from " +
-  "above); it rises from `y` (its bottom: 0 = on the ground) to y + height, so to stack B on A, B.y = A.y + A.height. " +
-  "A ramp is a path with a width (ramps and stairs), and a line is an annotation (a route, an arrow, an idea). A group " +
-  "has no position of its own: a node is in a group when its `parent` is that group's ID, shapes keep world " +
-  "coordinates, and tools act on a group as a unit. " +
-  "READING: get_scene returns an outline: the top level (or a group's contents with `root`), with each group's " +
-  "description, bounds and counts (`contains`); `depth` opens more levels and `full: true` returns every node " +
-  `(a scene of ${FULL_SCENE_MAX} nodes or fewer comes back in full). The human's selection is always included: when ` +
-  'they say "this", they mean the `selection`. When `view.isolated` is set, the human is working inside that node: ' +
-  "pass it as root, and put new shapes for it inside it. Use find_nodes to look nodes up by name, type, kind, group " +
-  "or place, instead of reading the whole scene. RESULTS of the edit tools are COMPACT: each node's id, type, kind, " +
-  "name, parent and bounds (x, z at the center, y the bottom, width, depth, height), with a count instead of points, " +
-  "and for an array its item count and the range of its tops; items: true adds its item lines (`array_5/3 → x, y, z · " +
-  "top t · r°`: where each item stands, how high its top is and its turn). Pass verbose: true only to read a node " +
-  "back in full. dry_run: true on an edit tool checks the whole call and returns what it would do, and every error, " +
-  "changing nothing: use it before a big batch. Open notes come short in get_scene (notes: \"full\" for every field). " +
-  "An instance's rotation can be where it faces instead of degrees: { toward: {x, z} or an ID }, { away }, { along: " +
-  "a line or ramp }. `view.focus` is the ground point at the screen center: draw near it " +
-  "to be on screen. `view.walking` (while the human walks through the level with the Walk tool) is their eye, where " +
-  "it looks (`yaw` as the view's, `pitch` up) and the field of view: what they see from there. `view.pointer` is where " +
-  "the human's pointer last rested (on a node, with its `id`, or on the ground): \"here\" means there. A node with `locked: true` (the human can't pick it) or `hidden: true` (not drawn, and a hidden " +
-  "hole cuts nothing) is the human's aid: leave those alone unless asked. " +
-  "CHANGES: when get_scene's `changes` says the human made steps since your last, read get_changes first: it says " +
-  "what they added, removed and reshaped (field by field), so you never build on a height or an outline they've changed. " +
-  "WAYS OF WORKING: describe groups (update_nodes description) so the outline tells what each part is. To repeat " +
-  "things, copy them with move_nodes and copy: true (count for a row) instead of redrawing; for symmetry, copy then " +
-  "mirror_nodes. When the human SKETCHES something small and asks for it at scale, the sketch is the brief: make it " +
-  "again with transform_nodes { ids, copy: true, scale, rotate?, mirror?, to } in one call (everything grows, walls " +
-  "and heights too), never by re-deriving its points; scale an instance or array with its `scale`. " +
-  "A door or window is a hole shape in the room's group: cut it, don't build walls around the opening. " +
-  "Draw lines for paths, routes, jumps and ideas. " +
-  "REVIEWING (get_guide review): the human's captioned shots are requirements: after a change that may touch one, " +
-  "re-check it (render_view view: shots) and say whether its caption holds. To know whether a landmark is in view, " +
-  "check_sight (text, cheap) before render_view. Keep detail proportional to gameplay. " +
-  "CHECKING TOOLS do the arithmetic you'd otherwise do by hand, and say what they checked: check_sight (what's " +
-  "visible from where, and what blocks it), check_enclosure (whether a closed level is sealed, and the gaps it " +
-  "leaks through), measure_path (a route's length, time, slopes, climb rates and clearance), check_scene (floating " +
-  "things, stale notes, off-center entities, holes that cut nothing, duplicates). Before working something out by " +
-  "hand, ask whether one of them answers it. " +
-  "STARTING a design: ask the constraints first, before drawing a full design: the team's size and timeline, the art " +
-  "references (organic or hard, what it should feel like), and how finished the result should be. Say which " +
-  "decisions you'll make yourself and which are the human's. " +
-  "ENTITIES are the project's prefabs (a tree, a door, a poison pit): an instance (type: instance, e.g. instance_4) " +
-  "shows its entity's shapes at its x, y, z and rotation, and carries its description and tags; the outline shows " +
-  "one line per instance, and the glossary what each entity is and its size. Place and repeat entities instead of " +
-  "redrawing a thing twice. Make a new entity with define_entity (its shapes around the origin, never drawn in the " +
-  "scene). To repeat an entity many times (battlements, windows round a tower, pillars in a hall, a " +
-  "row of torches), use one ARRAY (type: array; get_guide arrays), not copies: it stays one node and draws cheaply. " +
-  "When get_scene has `editing`, the human is editing an entity: the nodes are its shapes " +
-  "around its pivot, and your changes reach every instance. " +
-  "NOTES (type: note) are post-its pinned in the scene: the human's intents and work items. The outline always lists " +
-  "the open ones (`notes`); treat them as intent, act on them when asked, and mark one done (update_nodes status: " +
-  "done) once it's handled. Leave a note of your own for an assumption or a question. " +
-  "THE PROJECT: its library has tags (#climbable) and skills (@telekinesis: what the player can do), and nodes carry " +
-  "tags; the outline's `glossary` explains the ones it shows, and get_library lists them all. Build around the " +
-  "player's skills. The project's DESIGN GUIDE (get_guide design; get_scene's `guide` says when it changed) holds the " +
-  "human's taste, the game's facts and house rules: read it once per session before designing or reviewing, and " +
-  "follow it. Change the library or the guide only when asked. " +
-  "THE GUIDE: before using a shape type or a field for the first time in a session, read its topic with get_guide: " +
-  GUIDE_TOPICS.map((t) => `${t} (${TOPIC_SUMMARIES[t]})`).join("; ") +
-  ". Errors and warnings name the topic to read when one helps.";
+  "orlablocks: a level blockout tool. The human edits the same scene in a 3D editor; you read and edit it with " +
+  "these tools. Every change is saved at once and is one step in the undo history you share. You see the scene the " +
+  "human has open (get_scene says which project and scene), unless they invited you to one (Work with agent): then " +
+  "it's yours while they work in another (get_scene's `agent`), with no \"this\" or \"here\" from them. " +
+  "WORLD: meters (2 decimals), y up, the ground at y = 0. NORTH is -z, south +z, east +x, west -x. Nodes have " +
+  "server IDs (box_1, cylinder_1, freeform_1, ramp_1, line_1, note_1, instance_1, array_1, group_1; an array's items " +
+  "array_1/3), never reused; `name` is a label. Closed shapes (box, cylinder, freeform) are rooms (hollow, walls " +
+  "growing inward), volumes (solid) or holes (they cut what's near them: doors, windows). A box is CENTERED at x, z " +
+  "(width along its local x, depth along its local z, turned by rotation, degrees counterclockwise from above) and " +
+  "rises from y, its bottom, to y + height: to stack B on A, B.y = A.y + A.height. Ramps are paths with a width " +
+  "(stairs), lines are annotations (routes, jump arcs), notes are the human's work items. A group has no position: " +
+  "`parent` puts a node in it, and tools move a group as a unit. " +
+  "READING: get_scene is an outline (`root`, `depth`, `full`; " +
+  `a scene of ${FULL_SCENE_MAX} nodes or fewer comes whole), ` +
+  "with the human's `selection` (\"this\"), `view` (`focus`: draw near it; `pointer`: \"here\"; `walking`; " +
+  "`isolated`: work inside it), the open `notes` (their intent: mark one done when it's handled) and `changes` (the " +
+  "human edited since your last step: read get_changes first). find_nodes looks nodes up. Edit results are compact " +
+  "(`items`, `verbose` for more); `dry_run` checks a call without changing anything. With `editing`, you're in an " +
+  "entity's definition, around its pivot, and every instance follows. Leave `locked` and `hidden` nodes alone. " +
+  "WORKING: describe groups, so the outline reads as the plan. Repeat things with copies (move_nodes copy, count; " +
+  "mirror_nodes for symmetry), or an entity many times with one array. Entities are the project's prefabs " +
+  "(define_entity, make_entity, instances). A sketch the human asks for at scale: transform_nodes { copy, scale, to } " +
+  "in one call, never re-derived. A door or window is a hole in the room's group. " +
+  "CHECKING: use tools, not arithmetic: check_sight (what's visible, what blocks it), check_enclosure (is it sealed, " +
+  "where it leaks), measure_path (length, time, slopes, clearance), check_scene (likely mistakes), render_view (to " +
+  "see it; the human's captioned shots are requirements, get_shots). " +
+  "STARTING: read get_guide design once per session and follow it (the project's taste, the game's facts, house " +
+  "rules). Before a full design, ask about the team, the timeline, the art references and how finished it should " +
+  "be, and say which decisions you'll make. The library's tags and skills (get_library) are explained in the " +
+  "outline's `glossary`; change the library or the guide (update_library) only when asked. " +
+  "THE GUIDE: read a topic with get_guide before first using what it covers: " +
+  GUIDE_TOPICS.join(", ") +
+  ". Errors name the topic to read.";
 
 const GUIDE: Record<Exclude<GuideTopic, "design">, string> = {
   review:
