@@ -22,6 +22,7 @@ import {
   toLocal3,
   toShapeLocal,
   toWorld3,
+  tiltShape,
   transformShape,
   wallOf,
   verticalRange,
@@ -29,6 +30,7 @@ import {
   type Frame,
   type Point3,
 } from "../shared/geometry";
+import { rotX, rotZ } from "../shared/rotation3";
 import { paramOnLine, screenRay, screenToPlane, worldToScreen, type CameraState, type Size, type Vec3 } from "./camera";
 
 /**
@@ -315,6 +317,23 @@ export function tiltRing(shape: Shape, part: TiltPart): { center: Vec3; axis: Ve
   return { center, axis, u, v: cross(axis, u) };
 }
 
+/** Whether a selection tilts on its own axes (14.4): one box or cylinder, with the rings of its own pitch and roll. */
+export const ownTilt = (boxes: Shape[]) => boxes.length === 1 && isFootprinted(boxes[0]);
+
+/**
+ * The tilt ring a selection shows (14.4): a single box's or cylinder's own (see `tiltRing`), else a ring around the
+ * world's x axis (`pitch`: the top leans south) or z axis (`roll`: it leans west) through the middle of the
+ * selection's bounds, which tilts everything in it as one: a group, several nodes, a free-form, an instance.
+ */
+export function selectionTiltRing(boxes: Shape[], part: TiltPart): { center: Vec3; axis: Vec3; u: Vec3; v: Vec3 } {
+  if (ownTilt(boxes)) return tiltRing(boxes[0], part);
+  const b = boundsOf(boxes);
+  const center = { x: (b.minX + b.maxX) / 2, y: (b.minY + b.maxY) / 2, z: (b.minZ + b.maxZ) / 2 };
+  const axis = part === "pitch" ? AXES.x : AXES.z;
+  const u = AXES.y;
+  return { center, axis, u, v: cross(axis, u) };
+}
+
 /** Points around a tilt ring, in the world, for drawing it and for hit testing it on screen. */
 export function tiltRingPoints(ring: ReturnType<typeof tiltRing>, scale: number, n = 48): Vec3[] {
   const r = TILT_RADIUS * scale;
@@ -416,10 +435,10 @@ export function hitGizmo(
     const d = p ? Math.hypot(p.sx - sx, p.sy - sy) : Infinity;
     if (d <= HANDLE_HIT_PX + 2 && (!best || d < best.d)) best = { part: "uniform", d };
   }
-  if (box) {
+  if (boxes.length > 0) {
     for (const part of ["pitch", "roll"] as const) {
       if (!parts.includes(part)) continue;
-      const screen = tiltRingPoints(tiltRing(box, part), scale).map((p) => worldToScreen(cam, size, p));
+      const screen = tiltRingPoints(selectionTiltRing(boxes, part), scale).map((p) => worldToScreen(cam, size, p));
       for (let i = 0; i < screen.length; i++) {
         const [a, b] = [screen[i], screen[(i + 1) % screen.length]];
         if (!a || !b) continue;
@@ -427,6 +446,8 @@ export function hitGizmo(
         if (d <= HANDLE_HIT_PX && (!best || d < best.d)) best = { part, d };
       }
     }
+  }
+  if (box) {
     for (const part of parts.filter(isScalePart)) {
       const p = worldToScreen(cam, size, scaleHandlePoint(box, part, frame));
       const d = p ? Math.hypot(p.sx - sx, p.sy - sy) : Infinity;
@@ -498,7 +519,7 @@ export function startHandleDrag(
 ): GizmoDrag {
   const bounds = boundsOf(origin);
   if (part === "pitch" || part === "roll") {
-    return { part, origin, bounds, frame, grab: ringAngle(cam, size, sx, sy, tiltRing(origin[0], part)) };
+    return { part, origin, bounds, frame, grab: ringAngle(cam, size, sx, sy, selectionTiltRing(origin, part)) };
   }
   if (part === "uniform") {
     // How far the cursor is from the pivot, on the ground plane under it: the factor is the ratio to this.
@@ -560,7 +581,13 @@ export function dragUpdate(
   sy: number,
   mods: DragModifiers,
   others: Shape[],
-): { patches: Record<string, ShapePatch>; label: string; turn?: number; scale?: number } {
+): {
+  patches: Record<string, ShapePatch>;
+  label: string;
+  turn?: number;
+  scale?: number;
+  tilt?: { axis: "x" | "z"; degrees: number; pivot: { x: number; y: number; z: number } };
+} {
   const { part, origin, bounds, frame } = drag;
   const anchor = gizmoAnchor(bounds, frame);
   const patches: Record<string, ShapePatch> = {};
@@ -589,6 +616,17 @@ export function dragUpdate(
     return { patches, label: `${turn}°`, turn };
   }
 
+  if ((part === "pitch" || part === "roll") && !ownTilt(origin)) {
+    // Everything tilts as one around a world axis (14.4), by a whole 15° unless Cmd/Ctrl.
+    const ring = selectionTiltRing(origin, part);
+    let delta = normalizeDeg(ringAngle(cam, size, sx, sy, ring) - (drag.grab as number));
+    if (delta > 180) delta -= 360;
+    delta = round2(mods.snap ? snapTo(delta, ROTATE_SNAP) : delta);
+    const m = part === "pitch" ? rotX(delta) : rotZ(delta);
+    for (const s of origin) patches[s.id] = tiltShape(s, m, ring.center);
+    const axis = part === "pitch" ? "x" : "z";
+    return { patches, label: `tilt ${axis} ${delta}°`, tilt: { axis, degrees: delta, pivot: { x: round2(ring.center.x), y: round2(ring.center.y), z: round2(ring.center.z) } } };
+  }
   if (part === "pitch" || part === "roll") {
     const box = origin[0];
     if (!isFootprinted(box)) return { patches, label: "" };

@@ -19,8 +19,10 @@ import {
   sameValue,
   toFreeformPoints,
   transformShape,
+  tiltShape,
   type Transform,
 } from "../shared/geometry";
+import { rotX, rotZ } from "../shared/rotation3";
 import {
   ArrayLayoutInputSchema,
   MIN_ARRAY_SPACING,
@@ -151,6 +153,13 @@ function describeIds(nodes: SceneNode[], ids: string[]): string {
   return name ? `${name} (${ids[0]})` : listIds(ids);
 }
 
+/** A tilt patch as stored (14.4): a pitch or roll of 0 is none (removed, not kept as 0). */
+const tidyTilt = (patch: ShapePatch): ShapePatch => ({
+  ...patch,
+  ...(patch.pitch === 0 ? { pitch: undefined } : {}),
+  ...(patch.roll === 0 ? { roll: undefined } : {}),
+});
+
 /** An instance's or array's scale as stored (14.3): 2 decimals, and 1 (the default) left out. */
 const scaleField = (scale: number | undefined) => (scale !== undefined && round2(scale) !== 1 ? { scale: round2(scale) } : {});
 
@@ -203,7 +212,7 @@ const FIELD_VERBS: Record<keyof NodePatch, string> = {
 };
 
 /** What an array's update can change (plan 10 §9): its items come from these. */
-const ARRAY_FIELDS: readonly string[] = ["name", "parent", "locked", "hidden", "entities", "layout", "facing", "rotation", "jitter", "turnJitter", "seed", "skip", "on", "scale"];
+const ARRAY_FIELDS: readonly string[] = ["name", "parent", "locked", "hidden", "entities", "layout", "facing", "rotation", "jitter", "turnJitter", "seed", "skip", "on", "scale", "pitch", "roll"];
 /** The fields only an array has. */
 const ARRAY_ONLY = ["entities", "layout", "facing", "jitter", "turnJitter", "seed", "skip"] as const;
 
@@ -973,6 +982,8 @@ export function createSceneStore({
             z: round2(d.z),
             rotation: normalizeRotation(facingOf(prefix, d, errors)),
             ...scaleField(d.scale),
+            ...(angle(d.pitch) !== undefined ? { pitch: angle(d.pitch) } : {}),
+            ...(angle(d.roll) !== undefined ? { roll: angle(d.roll) } : {}),
             ...standOnFrom(`${prefix}.on`, d.on, predicted[i], errors),
           };
         }
@@ -1002,6 +1013,8 @@ export function createSceneStore({
             facing: d.facing,
             rotation: d.rotation === undefined ? undefined : normalizeRotation(d.rotation) || undefined,
             ...scaleField(d.scale),
+            ...(angle(d.pitch) !== undefined ? { pitch: angle(d.pitch) } : {}),
+            ...(angle(d.roll) !== undefined ? { roll: angle(d.roll) } : {}),
             ...arrayNoise(d),
             ...standOnFrom(`${prefix}.on`, d.on, predicted[i], errors),
           });
@@ -1056,7 +1069,15 @@ export function createSceneStore({
           ...(taper !== undefined ? { taper } : {}),
           ...(bevel !== undefined ? { bevel } : {}),
         };
-        if (d.type === "freeform") return { type: "freeform" as const, ...common, points: checkPoints(prefix, d.points, errors) };
+        if (d.type === "freeform") {
+          return {
+            type: "freeform" as const,
+            ...common,
+            points: checkPoints(prefix, d.points, errors),
+            ...(angle(d.pitch) !== undefined ? { pitch: angle(d.pitch) } : {}),
+            ...(angle(d.roll) !== undefined ? { roll: angle(d.roll) } : {}),
+          };
+        }
         const type = d.type ?? "box";
         if (d.sides !== undefined && type !== "cylinder") errors.push(`${prefix}.sides: only a cylinder has sides (this is a ${type})`);
         return {
@@ -1163,11 +1184,11 @@ export function createSceneStore({
           if (fields.entity !== undefined && node.type !== "instance") errors.push(`changes[${i}].entity: only an instance shows an entity ("${id}" is a ${node.type})`);
           if (node.type === "instance") {
             const notInstance = (
-              ["kind", "width", "depth", "height", "sides", "wall", "taper", "bevel", "pitch", "roll", "points", "tags", "thickness", "dashed", "arrow", "step", "base", "color", "text", "label", "status"] as const
+              ["kind", "width", "depth", "height", "sides", "wall", "taper", "bevel", "points", "tags", "thickness", "dashed", "arrow", "step", "base", "color", "text", "label", "status"] as const
             ).filter((k) => fields[k] !== undefined);
             if (notInstance.length > 0) {
               errors.push(
-                `changes[${i}]: "${id}" is an instance, with no ${notInstance.join(", ")} of its own: it has x, y, z, rotation, scale, name and entity ` +
+                `changes[${i}]: "${id}" is an instance, with no ${notInstance.join(", ")} of its own: it has x, y, z, rotation, pitch, roll, scale, name and entity ` +
                   `(its shapes, description and tags are the entity's: detach_instances turns it into a group you can edit)`,
               );
             }
@@ -1238,7 +1259,7 @@ export function createSceneStore({
             }
           }
           if (node.type === "freeform") {
-            const footprinted = (["x", "z", "width", "depth", "rotation", "pitch", "roll"] as const).filter((k) => fields[k] !== undefined);
+            const footprinted = (["x", "z", "width", "depth", "rotation"] as const).filter((k) => fields[k] !== undefined);
             if (footprinted.length > 0) {
               errors.push(
                 `changes[${i}]: "${id}" is a free-form, with no ${footprinted.join(", ")} of its own: change its points, ` +
@@ -1470,15 +1491,25 @@ export function createSceneStore({
      * bounds), as one step: each center orbits it and the angle is added to each rotation (a free-form's points
      * orbit it). Returns the shapes that turned and the pivot, so turning back by the same pivot restores them.
      */
-    rotateNodes(input: z.input<typeof RotateNodesSchema>, actor: Actor): { shapes: Shape[]; pivot: { x: number; z: number } } {
-      const { ids, degrees, pivot: given } = parse(RotateNodesSchema, input, "Nothing was rotated.");
+    rotateNodes(input: z.input<typeof RotateNodesSchema>, actor: Actor): { shapes: Shape[]; pivot: { x: number; y?: number; z: number } } {
+      const { ids, degrees, axis = "y", pivot: given } = parse(RotateNodesSchema, input, "Nothing was rotated.");
       const errors: string[] = [];
       checkIds("ids", ids, errors);
       failIf(errors, "Nothing was rotated.");
       const all = shapesUnder(scene.nodes, ids);
       const boxes = withoutFollowers(ids, all, "turn");
       const b = boundsOf(all);
-      const pivot = given ?? { x: round2((b.minX + b.maxX) / 2), z: round2((b.minZ + b.maxZ) / 2) };
+      if (axis !== "y") {
+        // Tilting them as one (14.4): around a world axis through a point, at half their height by default.
+        const pivot = { x: given?.x ?? round2((b.minX + b.maxX) / 2), y: given?.y ?? round2((b.minY + b.maxY) / 2), z: given?.z ?? round2((b.minZ + b.maxZ) / 2) };
+        const m = axis === "x" ? rotX(degrees) : rotZ(degrees);
+        const patches = Object.fromEntries(boxes.map((s) => [s.id, tidyTilt(s.type === "array" ? tidyArrayPatch(tiltShape(s, m, pivot)) : tiltShape(s, m, pivot))]));
+        const changes = withUnlinks(boxes, effectiveShapeChanges(boxes, patches), true);
+        if (changes.length > 0) commit(label("tilt", listIds(ids), actor), actor, [{ op: "update", changes }]);
+        const turned = new Set(boxes.map((s) => s.id));
+        return { shapes: scene.nodes.filter((n): n is Shape => turned.has(n.id)), pivot };
+      }
+      const pivot = given ? { x: given.x, z: given.z } : { x: round2((b.minX + b.maxX) / 2), z: round2((b.minZ + b.maxZ) / 2) };
       const patches = rotateAround(boxes, pivot, degrees);
       const changes = withUnlinks(boxes, effectiveShapeChanges(boxes, patches), false);
       if (changes.length > 0) commit(label("rotate", listIds(ids), actor), actor, [{ op: "update", changes }]);
@@ -1581,8 +1612,8 @@ export function createSceneStore({
       const errors: string[] = [];
       checkIds("ids", t.ids, errors);
       failIf(errors, "Nothing was transformed.");
-      if (t.scale === undefined && !t.rotate && !t.mirror && !t.to && !t.move && !t.copy) {
-        throw new SceneError("Give at least one of scale, rotate, mirror, to, move or copy. Nothing was transformed.");
+      if (t.scale === undefined && !t.tilt && !t.rotate && !t.mirror && !t.to && !t.move && !t.copy) {
+        throw new SceneError("Give at least one of scale, tilt, rotate, mirror, to, move or copy. Nothing was transformed.");
       }
       if (t.to && t.move) throw new SceneError("Give to or move, not both. Nothing was transformed.");
 
@@ -1592,17 +1623,26 @@ export function createSceneStore({
       const move = t.to
         ? { dx: round2(t.to.x - pivot.x), dy: t.to.y === undefined ? 0 : round2(t.to.y - pivot.y), dz: round2(t.to.z - pivot.z) }
         : { dx: t.move?.dx ?? 0, dy: t.move?.dy ?? 0, dz: t.move?.dz ?? 0 };
-      const transform: Transform = { pivot, ...(t.scale !== undefined ? { scale: t.scale } : {}), ...(t.rotate ? { rotate: t.rotate } : {}), ...(t.mirror ? { mirror: t.mirror } : {}), move };
-      const vertical = (t.scale !== undefined && t.scale !== 1) || move.dy !== 0;
+      const tilted = !!(t.tilt && (t.tilt.pitch || t.tilt.roll));
+      const transform: Transform = {
+        pivot,
+        ...(t.scale !== undefined ? { scale: t.scale } : {}),
+        ...(tilted ? { tilt: t.tilt } : {}),
+        ...(t.rotate ? { rotate: t.rotate } : {}),
+        ...(t.mirror ? { mirror: t.mirror } : {}),
+        move,
+      };
+      const vertical = (t.scale !== undefined && t.scale !== 1) || tilted || move.dy !== 0;
       const what = [
         ...(t.scale !== undefined && t.scale !== 1 ? [`×${t.scale}`] : []),
+        ...(tilted ? ["tilted"] : []),
         ...(t.rotate ? [`${t.rotate}°`] : []),
         ...(t.mirror ? [`mirrored on ${t.mirror.toUpperCase()}`] : []),
         ...(move.dx || move.dy || move.dz ? ["moved"] : []),
       ].join(", ");
       /** What a transformed shape would be, with its sizes checked. */
       const transformed = (s: Shape, i: number) => {
-        const patch = s.type === "array" ? tidyArrayPatch(transformShape(s, transform)) : transformShape(s, transform);
+        const patch = tidyTilt(s.type === "array" ? tidyArrayPatch(transformShape(s, transform)) : transformShape(s, transform));
         const next = { ...s, ...patch } as Shape;
         const prefix = `ids[${i}] › ${s.id}`;
         if (isClosed(next)) {

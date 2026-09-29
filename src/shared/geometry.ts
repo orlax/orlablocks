@@ -1,6 +1,7 @@
 import { differenceD, EndType, FillRule, inflatePathsD, JoinType, type PathD } from "@countertype/clipper2-ts";
 import { arrayShapes, instanceShapes } from "./entities";
-import { layoutAnchor, layoutPoints, mirrorArray, moveArray, rotateArray, scaleArray } from "./arrays";
+import { layoutAnchor, layoutPoints, mirrorArray, moveArray, rotateArray, scaleArray, tiltArray } from "./arrays";
+import { apply, mul, orbit3, orientationYXZ, rotY, tiltXZ, toXZY, toYXZ, type Mat3 } from "./rotation3";
 import {
   CURVE_SEGMENTS,
   DEFAULT_WALL,
@@ -14,6 +15,7 @@ import {
   type ClosedShape,
   type Cylinder,
   type FootPoint,
+  type Freeform,
   type Line,
   type LinePoint,
   type Offset,
@@ -156,10 +158,15 @@ export function sampleOutline(points: FootPoint[]): { polygon: Point[]; edge: nu
  * - A cylinder: its corners on the ellipse inscribed in width × depth, corner i at angle (i + ½) × 360° / sides from
  *   local +x, counterclockwise seen from above, so a flat edge faces local +x (and, for a side count divisible by
  *   4, every axis). A smooth one is drawn and picked with SMOOTH_SEGMENTS corners.
- * - A free-form: its sampled outline; its frame is the world's.
+ * - A free-form: its sampled outline; its frame is the world's, or for a tilted one (14.4) its outline's center.
  */
 export function localFootprint(shape: ClosedShape): Point[] {
-  if (shape.type === "freeform") return sampleOutline(shape.points).polygon;
+  if (shape.type === "freeform") {
+    const polygon = sampleOutline(shape.points).polygon;
+    if (!isTilted(shape)) return polygon;
+    const c = freeformCenter(shape);
+    return polygon.map((p) => ({ x: p.x - c.x, z: p.z - c.z }));
+  }
   const hw = shape.width / 2;
   const hd = shape.depth / 2;
   if (shape.type === "cylinder") {
@@ -177,8 +184,22 @@ export function localFootprint(shape: ClosedShape): Point[] {
   ];
 }
 
-/** Whether a shape is tilted: a box or cylinder with a pitch or a roll. */
-export const isTilted = (shape: Shape): boolean => isFootprinted(shape) && (!!shape.pitch || !!shape.roll);
+/** Whether a shape is tilted: a box, cylinder or (from 14.4) free-form with a pitch or a roll. */
+export const isTilted = (shape: Shape): boolean => (isFootprinted(shape) || shape.type === "freeform") && (!!shape.pitch || !!shape.roll);
+
+const centerCache = new WeakMap<FootPoint[], Point>();
+/**
+ * The center of a free-form's outline on the ground (its sampled outline's centroid): what a tilted free-form turns
+ * around (14.4), at half its height. A centroid turns, scales and moves with the outline (a bounds' middle wouldn't
+ * under a turn), so a free-form's tilt stays put when its points are turned; it moves a little when one is edited.
+ */
+export function freeformCenter(shape: Freeform): Point {
+  const hit = centerCache.get(shape.points);
+  if (hit) return hit;
+  const c = centroid(sampleOutline(shape.points).polygon);
+  centerCache.set(shape.points, c);
+  return c;
+}
 
 /**
  * A point in a closed shape's own frame (x/z on its footprint, y from 0 at its bottom up to its height) in the
@@ -224,8 +245,16 @@ function tiltedPoints(shape: ClosedShape): Point3[] {
   return volumeRings(shape).flatMap(({ ring, y }) => ring.map((p) => toWorld3(shape, { x: p.x, y, z: p.z })));
 }
 
-/** Where a shape's own frame sits in the world and how it's turned (degrees). `localFootprint` is in this frame. */
-export const shapeFrame = (shape: ClosedShape) => (isFootprinted(shape) ? { x: shape.x, z: shape.z, rotation: shape.rotation } : { x: 0, z: 0, rotation: 0 });
+/**
+ * Where a shape's own frame sits in the world and how it's turned (degrees). `localFootprint` is in this frame. A
+ * free-form's is the world's, or a tilted one's outline center (14.4), so it tilts around its middle.
+ */
+export const shapeFrame = (shape: ClosedShape) =>
+  isFootprinted(shape)
+    ? { x: shape.x, z: shape.z, rotation: shape.rotation }
+    : isTilted(shape)
+      ? { ...freeformCenter(shape), rotation: 0 }
+      : { x: 0, z: 0, rotation: 0 };
 
 /** The shape's footprint in world x/z. */
 export const footprint = (shape: ClosedShape): Point[] => {
@@ -870,6 +899,10 @@ export function moveShape(shape: Shape, dx: number, dy: number, dz: number): Sha
  * pivot and the angle adds to its rotation; a free-form's points orbit it and their handles turn with them.
  */
 export function rotateShape(shape: Shape, pivot: Point, degrees: number): ShapePatch {
+  // A tilted free-form's or array's tilt is around the world's axes (14.4), so a turn changes it: turn it rigidly.
+  if ((shape.type === "freeform" || shape.type === "array") && (shape.pitch || shape.roll)) {
+    return tiltShape(shape, rotY(degrees), { x: pivot.x, y: 0, z: pivot.z });
+  }
   const a = (degrees * Math.PI) / 180;
   const cos = Math.cos(a);
   const sin = Math.sin(a);
@@ -967,19 +1000,89 @@ export function scaleShape(shape: Shape, factor: number, pivot: Pivot3): ShapePa
   return { ...vertical, x: px(shape.x), z: pz(shape.z), width: len(shape.width), depth: len(shape.depth) };
 }
 
-/** A transform about one pivot (14.3): scale, then turn, then mirror, all about the pivot, then move. */
-export type Transform = { pivot: Pivot3; scale?: number; rotate?: number; mirror?: MirrorAxis; move?: { dx: number; dy: number; dz: number } };
+/** A tilt as stored: degrees in -180..180, 2 decimals, 0 for none (the store leaves a 0 out). */
+const tiltAngle = (d: number) => {
+  const a = round2(normalizeDeg(d + 180) - 180);
+  return a === -180 ? 180 : a + 0;
+};
+
+/**
+ * A shape turned rigidly by the rotation `m` about a point (14.4: tilting a group, or anything, as one): its place
+ * orbits the pivot in 3D and its orientation becomes m times its own.
+ * - A box or cylinder (and an instance, around its pivot) keeps its orientation as yaw, pitch and roll (m · Ry Rx Rz,
+ *   split again as YXZ).
+ * - A free-form has no yaw: its tilt is split as Rx · Rz · Ry, and the Ry part turns its points around its center.
+ * - An array, likewise: its tilt is Rx · Rz about its layout's anchor, and the Ry part turns its layout.
+ * - A line's points (and handles) turn exactly; a ramp's too, but its width stays level (a ramp's surface is always
+ *   level across), so a tilted ramp is only roughly one. A note's point orbits.
+ */
+export function tiltShape(shape: Shape, m: Mat3, pivot: Pivot3): ShapePatch {
+  const round3 = (p: Pivot3) => ({ x: round2(p.x), y: round2(p.y), z: round2(p.z) });
+  if (shape.type === "note") return round3(orbit3(m, pivot, shape));
+  if (shape.type === "line" || shape.type === "ramp") {
+    const turn = (o: { x: number; y?: number; z: number }) => {
+      const r = apply(m, { x: o.x, y: o.y ?? 0, z: o.z });
+      return shape.type === "ramp" ? { x: r.x, z: r.z } : r;
+    };
+    const points = shape.points.map((p) => ({
+      ...p,
+      ...orbit3(m, pivot, p),
+      ...(p.in ? { in: turn(p.in) } : {}),
+      ...(p.out ? { out: turn(p.out) } : {}),
+    }));
+    return { points: roundPoints(points) as LinePoint[] | RampPoint[] };
+  }
+  if (shape.type === "instance") {
+    const o = toYXZ(mul(m, orientationYXZ(shape.rotation, shape.pitch ?? 0, shape.roll ?? 0)));
+    return { ...round3(orbit3(m, pivot, shape)), rotation: round2(normalizeDeg(o.yaw)) % 360, pitch: tiltAngle(o.pitch), roll: tiltAngle(o.roll) };
+  }
+  if (shape.type === "array") return tiltArray(shape, m, pivot);
+  if (isFootprinted(shape)) {
+    const h = shape.height / 2;
+    const c = orbit3(m, pivot, { x: shape.x, y: shape.y + h, z: shape.z });
+    const o = toYXZ(mul(m, orientationYXZ(shape.rotation, shape.pitch ?? 0, shape.roll ?? 0)));
+    return { x: round2(c.x), y: round2(c.y - h), z: round2(c.z), rotation: round2(normalizeDeg(o.yaw)) % 360, pitch: tiltAngle(o.pitch), roll: tiltAngle(o.roll) };
+  }
+  // A free-form: its center orbits, its tilt composes, and the turn inside it goes into its points.
+  const center = freeformCenter(shape);
+  const h = shape.height / 2;
+  const c = orbit3(m, pivot, { x: center.x, y: shape.y + h, z: center.z });
+  const o = toXZY(mul(m, tiltXZ(shape.pitch ?? 0, shape.roll ?? 0)));
+  const r = (o.turn * Math.PI) / 180;
+  const [cos, sin] = [Math.cos(r), Math.sin(r)];
+  const spin = (v: Offset) => ({ x: v.x * cos + v.z * sin, z: -v.x * sin + v.z * cos });
+  const points = shape.points.map((p) => {
+    const l = spin({ x: p.x - center.x, z: p.z - center.z });
+    return { ...p, x: c.x + l.x, z: c.z + l.z, ...(p.in ? { in: spin(p.in) } : {}), ...(p.out ? { out: spin(p.out) } : {}) };
+  });
+  // The outline's center after turning is where the center went (a turn about the center keeps it), up to rounding.
+  return { points: roundPoints(points), y: round2(c.y - h), pitch: tiltAngle(o.pitch), roll: tiltAngle(o.roll) };
+}
+
+/**
+ * A transform about one pivot (14.3): scale, then tilt (14.4: pitch and roll around the world's x and z axes, roll
+ * first), then turn, then mirror, all about the pivot, then move.
+ */
+export type Transform = {
+  pivot: Pivot3;
+  scale?: number;
+  tilt?: { pitch?: number; roll?: number };
+  rotate?: number;
+  mirror?: MirrorAxis;
+  move?: { dx: number; dy: number; dz: number };
+};
 
 /** A shape with a transform applied (see `Transform`): the whole patch, from the shape as it is. */
 export function transformShape(shape: Shape, t: Transform): ShapePatch {
   let s = shape;
-  const apply = (patch: ShapePatch) => {
+  const step = (patch: ShapePatch) => {
     s = { ...s, ...patch } as Shape;
   };
-  if (t.scale !== undefined && t.scale !== 1) apply(scaleShape(s, t.scale, t.pivot));
-  if (t.rotate) apply(rotateShape(s, t.pivot, t.rotate));
-  if (t.mirror) apply(mirrorShape(s, t.mirror, round2(2 * (t.mirror === "x" ? t.pivot.x : t.pivot.z))));
-  if (t.move && (t.move.dx || t.move.dy || t.move.dz)) apply(moveShape(s, t.move.dx, t.move.dy, t.move.dz));
+  if (t.scale !== undefined && t.scale !== 1) step(scaleShape(s, t.scale, t.pivot));
+  if (t.tilt && (t.tilt.pitch || t.tilt.roll)) step(tiltShape(s, tiltXZ(t.tilt.pitch ?? 0, t.tilt.roll ?? 0), t.pivot));
+  if (t.rotate) step(rotateShape(s, t.pivot, t.rotate));
+  if (t.mirror) step(mirrorShape(s, t.mirror, round2(2 * (t.mirror === "x" ? t.pivot.x : t.pivot.z))));
+  if (t.move && (t.move.dx || t.move.dy || t.move.dz)) step(moveShape(s, t.move.dx, t.move.dy, t.move.dz));
   const patch: ShapePatch = {};
   for (const k of Object.keys(s) as (keyof ShapePatch)[]) {
     if ((s as ShapePatch)[k] !== (shape as ShapePatch)[k]) (patch as Record<string, unknown>)[k] = (s as ShapePatch)[k];
@@ -1027,19 +1130,26 @@ function round2HalfEven(n: number): number {
  *   order (so their indices stay stable), which only reverses the outline's winding.
  */
 export function mirrorShape(shape: Shape, axis: MirrorAxis, sum: number): ShapePatch {
-  if (shape.type === "array") return mirrorArray(shape, axis, sum);
+  // A tilt reflects (14.4): on X the roll flips, on Z the pitch (a free-form's, an instance's, an array's).
+  const flipTilt = (s: { pitch?: number; roll?: number }): ShapePatch => {
+    const f = axis === "x" ? "roll" : "pitch";
+    const v = s[f];
+    return v ? { [f]: v === 180 ? 180 : -v } : {};
+  };
+  if (shape.type === "array") return { ...mirrorArray(shape, axis, sum), ...flipTilt(shape) };
   if (shape.type === "note") return axis === "x" ? { x: round2(sum - shape.x) } : { z: round2(sum - shape.z) };
   // An instance moves to its mirrored point and turns to face the mirrored way; the entity itself isn't flipped.
   if (shape.type === "instance") {
     return axis === "x"
-      ? { x: round2(sum - shape.x), rotation: round2(normalizeDeg(180 - shape.rotation)) % 360 }
-      : { z: round2(sum - shape.z), rotation: round2(normalizeDeg(-shape.rotation)) % 360 };
+      ? { x: round2(sum - shape.x), rotation: round2(normalizeDeg(180 - shape.rotation)) % 360, ...flipTilt(shape) }
+      : { z: round2(sum - shape.z), rotation: round2(normalizeDeg(-shape.rotation)) % 360, ...flipTilt(shape) };
   }
   if (!isFootprinted(shape)) {
     const points: FootPoint[] = shape.points;
+    const tilt = shape.type === "freeform" ? flipTilt(shape) : {};
     return axis === "x"
-      ? { points: mapPoints(points, (p) => ({ x: sum - p.x, z: p.z }), (o) => ({ x: -o.x, z: o.z })) }
-      : { points: mapPoints(points, (p) => ({ x: p.x, z: sum - p.z }), (o) => ({ x: o.x, z: -o.z })) };
+      ? { points: mapPoints(points, (p) => ({ x: sum - p.x, z: p.z }), (o) => ({ x: -o.x, z: o.z })), ...tilt }
+      : { points: mapPoints(points, (p) => ({ x: p.x, z: sum - p.z }), (o) => ({ x: o.x, z: -o.z })), ...tilt };
   }
   const odd = shape.type === "cylinder" && shape.sides !== undefined && shape.sides % 2 === 1;
   const rotation = round2(normalizeDeg(axis === "x" && odd ? 180 - shape.rotation : -shape.rotation)) % 360;

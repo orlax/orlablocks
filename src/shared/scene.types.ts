@@ -97,8 +97,8 @@ export type Freeform = {
   wall?: number; // rooms only, as a box's
   taper?: number; // volumes and holes only, as a box's (toward the outline's centroid)
   bevel?: number; // volumes and holes only, as a box's
-  pitch?: undefined; // a free-form never tilts (its points are on the ground)
-  roll?: undefined;
+  pitch?: number; // from 14.4: degrees around the world x axis through its outline's center, at half its height; none = 0
+  roll?: number; // around the world z axis, as a box's roll
   points: FootPoint[];
   createdBy: Actor;
 };
@@ -222,6 +222,8 @@ export type Instance = {
   z: number;
   rotation: number;
   scale?: number; // uniform, around its pivot (14.3); none = 1
+  pitch?: number; // tilt around its own x axis through its pivot (14.4), as a box's; none = 0
+  roll?: number; // around its own z axis; none = 0
   on?: StandOn; // standing on another node: y is its top under the pivot (13.4)
   createdBy: Actor;
 };
@@ -318,6 +320,8 @@ export type ArrayNode = {
   seed?: number;
   skip?: number[];
   scale?: number; // every item's uniform scale, around its pivot (14.3); none = 1
+  pitch?: number; // the whole array tilted around the world x axis through its layout's anchor (14.4); none = 0
+  roll?: number; // around the world z axis (roll first, then pitch); none = 0
   on?: StandOn; // standing on another node (13.4): each item on its top; on another array, on its item i
   stand?: (StandPose | null)[]; // derived from `on`, by layout index (null: where the layout puts it)
   createdBy: Actor;
@@ -445,10 +449,11 @@ export const KIND_FIELDS = {
   wall: ["room"],
   taper: ["volume", "hole"],
   bevel: ["volume", "hole"],
-  pitch: ["volume", "hole"],
-  roll: ["volume", "hole"],
+  // Rooms tilt too from 14.4 (a whole tilted group of rooms and props).
+  pitch: ["room", "volume", "hole"],
+  roll: ["room", "volume", "hole"],
 } as const satisfies Record<string, readonly ShapeKind[]>;
-/** The tilt fields: only boxes and cylinders have them (a free-form's points are on the ground). */
+/** The tilt fields: every closed shape has them (from 14.4; before, only boxes and cylinders). */
 export const TILT_FIELDS = ["pitch", "roll"] as const;
 export type KindField = keyof typeof KIND_FIELDS;
 /** A cylinder's side count, when it has one; without, it's smooth. */
@@ -527,10 +532,10 @@ const field = {
   bevel: z.number().min(0).max(1).describe("Volumes and holes only: 0 (a sharp top edge, the default) to 1 (the top edge as round as it fits, a dome)"),
   pitch: z
     .number()
-    .describe("Box and cylinder volumes and holes only: degrees around the shape's own x axis through its center; + leans the top toward local +z. Default 0"),
+    .describe("Closed shapes: degrees around the shape's own x axis through its center (a free-form's: the world's x); + leans the top toward local +z. Default 0"),
   roll: z
     .number()
-    .describe("Box and cylinder volumes and holes only: degrees around the shape's own z axis through its center; + leans the top toward local -x. Default 0"),
+    .describe("Closed shapes: degrees around the shape's own z axis through its center (a free-form's: the world's z); + leans the top toward local -x. Default 0"),
 };
 
 const ActorSchema = z.enum(["human", "agent"]);
@@ -582,6 +587,8 @@ const FreeformSchema = z.object({
   wall: z.number().min(MIN_WALL).optional(),
   taper: z.number().min(0).max(1).optional(),
   bevel: z.number().min(0).max(1).optional(),
+  pitch: z.number().optional(),
+  roll: z.number().optional(),
   points: z.array(FootPointSchema).min(MIN_POINTS).max(MAX_POINTS),
   createdBy: ActorSchema,
 });
@@ -651,6 +658,8 @@ const InstanceSchema = z.object({
   z: z.number(),
   rotation: z.number(),
   scale: z.number().min(MIN_SCALE).max(MAX_SCALE).optional(),
+  pitch: z.number().optional(),
+  roll: z.number().optional(),
   on: z.object({ id: z.string() }).optional(),
   createdBy: ActorSchema,
 });
@@ -721,6 +730,8 @@ const ArraySchema = z.object({
   seed: z.number().int().optional(),
   skip: z.array(z.number().int().min(0)).optional(),
   scale: z.number().min(MIN_SCALE).max(MAX_SCALE).optional(),
+  pitch: z.number().optional(),
+  roll: z.number().optional(),
   on: z.object({ id: z.string() }).optional(),
   stand: z.array(z.object({ x: z.number(), y: z.number(), z: z.number(), rotation: z.number().optional() }).nullable()).optional(),
   createdBy: ActorSchema,
@@ -787,6 +798,8 @@ export const FreeformInputSchema = z.strictObject({
   wall: BoxInputSchema.shape.wall,
   taper: BoxInputSchema.shape.taper,
   bevel: BoxInputSchema.shape.bevel,
+  pitch: BoxInputSchema.shape.pitch,
+  roll: BoxInputSchema.shape.roll,
   name: field.name.optional(),
   tags: field.tags.optional(),
   parent: BoxInputSchema.shape.parent,
@@ -939,6 +952,8 @@ export const InstanceInputSchema = z.strictObject({
     "Degrees, counterclockwise seen from above, around its pivot (default 0); or where it faces (its local +x), worked out once: { toward: {x, z} or an ID }, { away: ... } or { along: a line or ramp }",
   ),
   scale: z.number().min(MIN_SCALE).max(MAX_SCALE).optional().describe("Its entity's shapes scaled uniformly around the pivot (walls and heights too). Default 1"),
+  pitch: z.number().optional().describe("Degrees around its own x axis through its pivot (it leans toward its local +z). Default 0"),
+  roll: z.number().optional().describe("Degrees around its own z axis through its pivot (roll first, then pitch). Default 0"),
   on: StandOnInputSchema.optional(),
   name: field.name.optional().describe('A name for this one, e.g. "entry_window". Not unique'),
   parent: field.parent.optional().describe("ID of the group to put it in. Omit for the top level"),
@@ -1042,6 +1057,8 @@ export const ArrayInputSchema = z.strictObject({
   seed: arrayField.seed.optional(),
   skip: arrayField.skip.optional(),
   scale: z.number().min(MIN_SCALE).max(MAX_SCALE).optional().describe("Every item's entity scaled uniformly around its pivot. Default 1"),
+  pitch: z.number().optional().describe("The whole array tilted: degrees around the world x axis through its layout's anchor (a circle's or grid's center). Default 0"),
+  roll: z.number().optional().describe("Degrees around the world z axis through the anchor (roll first, then pitch). Default 0"),
   on: StandOnInputSchema.optional(),
   name: field.name.optional(),
   parent: field.parent.optional().describe("ID of the group to put it in (its items cut and are cut as instances there). Omit for the top level"),
@@ -1233,11 +1250,15 @@ export const PasteNodesSchema = z.strictObject({
 });
 export const RotateNodesSchema = z.strictObject({
   ids: IdsSchema.describe("IDs of boxes and/or groups; a group turns everything in it"),
-  degrees: z.number().describe("Counterclockwise seen from above"),
-  pivot: z
-    .object({ x: z.number(), z: z.number() })
+  degrees: z.number().describe("Right-handed around the axis: around y, counterclockwise seen from above"),
+  axis: z
+    .enum(["y", "x", "z"])
     .optional()
-    .describe("The ground point to turn around. Defaults to the center of the nodes' combined bounds"),
+    .describe("The world axis to turn around (14.4): y (the default) turns them, x and z tilt them as one (a group leaning): + around x leans the top south, + around z leans it west"),
+  pivot: z
+    .object({ x: z.number(), y: z.number().optional(), z: z.number() })
+    .optional()
+    .describe("The point to turn around. Defaults to the center of the nodes' combined bounds (for x and z, at half their height)"),
 });
 /**
  * One transform of nodes about one pivot (plan 14 §6), as one step: optionally copied first, then scaled, turned and
@@ -1252,6 +1273,13 @@ export const TransformNodesSchema = z.strictObject({
     .max(MAX_SCALE)
     .optional()
     .describe("Uniform factor about the pivot: every position and length grows, walls, heights and steps too (2 = twice as big, 0.5 = half)"),
+  tilt: z
+    .strictObject({
+      pitch: z.number().optional().describe("Degrees around the world's x axis through the pivot (+ leans the top south, toward +z)"),
+      roll: z.number().optional().describe("Degrees around the world's z axis through the pivot (+ leans the top west, toward -x); roll first, then pitch"),
+    })
+    .optional()
+    .describe("Tilt everything rigidly as one about the pivot (a group of peaks leaning together): each shape's place orbits it and its tilt composes"),
   rotate: z.number().optional().describe("Degrees around the vertical axis through the pivot, counterclockwise seen from above"),
   mirror: z.enum(["x", "z"]).optional().describe("Mirror across the pivot on a world axis: x swaps east and west, z swaps north and south"),
   pivot: z

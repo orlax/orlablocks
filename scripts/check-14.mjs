@@ -68,6 +68,29 @@ const CHECKS = {
     const halved = (await call("get_scene", { full: true })).nodes.find((n) => n.id === made.copies.box_1);
     check(halved.width === 9 && halved.wall === 0.45 && after.found.length > 0, "the human's Scale… halves it, walls too");
   },
+
+  // Free tilt: a group of peaks leaning together, and back; a tilted free-form and array.
+  async "14.4"({ call }) {
+    await call("define_entity", { name: "peak", shapes: [{ type: "cylinder", kind: "volume", x: 0, z: 0, width: 4, depth: 4, height: 8, taper: 0.9 }] });
+    const drawn = await call("draw_shapes", {
+      shapes: [
+        { type: "group", ref: "g", name: "peaks" },
+        { type: "instance", entity: "peak", x: 0, z: 0, parent: "$g" },
+        { type: "instance", entity: "peak", x: 6, z: 0, parent: "$g" },
+        { type: "freeform", kind: "volume", points: [{ x: -4, z: -2 }, { x: 10, z: -2 }, { x: 3, z: 4 }], height: 1, parent: "$g" },
+        { type: "array", entity: "peak", layout: { type: "circle", x: 20, y: 0, z: 0, radius: 6, count: 6 }, parent: "$g" },
+      ],
+    });
+    const tilted = await call("rotate_nodes", { ids: [drawn.refs.g], axis: "z", degrees: 20 });
+    const scene = await call("get_scene", { full: true });
+    const peaks = scene.nodes.filter((n) => n.type === "instance");
+    // + around z leans the tops west: what's east of the pivot rises, so the eastern peak ends higher.
+    check(peaks.every((p) => p.roll === 20) && peaks[1].y > peaks[0].y, "the peaks lean together (roll 20), the eastern one higher");
+    check(scene.nodes.find((n) => n.type === "freeform").roll === 20 && scene.nodes.find((n) => n.type === "array").roll === 20, "the free-form and the array lean with them");
+    await call("rotate_nodes", { ids: [drawn.refs.g], axis: "z", degrees: -20, pivot: tilted.pivot });
+    const back = await call("get_scene", { full: true });
+    check(back.nodes.filter((n) => n.type === "instance").every((p) => !p.roll && Math.abs(p.y) < 0.02), "and back upright");
+  },
 };
 
 for (const [name, run] of Object.entries(CHECKS)) {

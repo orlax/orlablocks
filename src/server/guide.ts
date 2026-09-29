@@ -283,13 +283,17 @@ const GUIDE: Record<Exclude<GuideTopic, "design">, string> = {
     "it fits: a tall cylinder gets a dome, a box a rounded top); together they make hills and mountains (taper 0.6, " +
     "bevel 0.5). The top stays at y + height, the bottom stays flat. Rooms have neither; making a volume a room drops " +
     "them, and making a room a volume drops its wall. " +
-    "A box or cylinder volume or hole can also tilt: `pitch` turns it around its own x axis and `roll` around its own " +
+    "Any closed shape can also tilt (rooms and free-forms too, from 14.4): a box or cylinder's `pitch` turns it around its own x axis and `roll` around its own " +
     "z axis, in degrees through its CENTER (x, y + height / 2, z), roll first, then pitch, then `rotation` as usual " +
     "(so rotating never changes the tilt). +pitch leans the top toward its local +z, +roll toward its local -x. `y` " +
     "stays the bottom before tilting and `height` the length along the tilted axis: a cylinder lying on its side (a " +
     "round window or a log) is pitch 90, with height as its length and its center at y + height / 2. get_scene gives " +
-    "a tilted shape its actual axis-aligned `bounds`. Free-forms and rooms don't tilt, and a tilted shape can't " +
-    "convert to a free-form.",
+    "a tilted shape its actual axis-aligned `bounds`. A free-form's pitch and roll are around the WORLD's x and z axes " +
+    "through its outline's center (it has no rotation of its own). An instance tilts around its pivot (pitch, roll), " +
+    "an array around its layout's anchor (every item with it). To tilt SEVERAL THINGS AS ONE (a group of peaks " +
+    "leaning together, a platform with what's on it), rotate_nodes { ids, axis: \"x\" or \"z\", degrees } or " +
+    "transform_nodes { tilt: { pitch, roll } }: each shape's place orbits the pivot and its tilt composes. A tilted " +
+    "shape has no walking surface, and can't convert to a free-form.",
   holes:
     "A HOLE (kind: hole) is any closed shape that cuts itself out of other shapes when drawn: a door, a window, an " +
     "arch, a hole in a floor, a tunnel. For a hole in group G, whose parent is P (the top level if G is top-level), it " +

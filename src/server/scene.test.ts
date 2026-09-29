@@ -1156,20 +1156,20 @@ describe("scene store tilt", () => {
     expect(flat).not.toHaveProperty("pitch");
   });
 
-  it("refuses tilt on rooms and free-forms, and refuses to convert a tilted shape", () => {
+  it("tilts rooms and free-forms too (14.4), and refuses to convert a tilted shape", () => {
     const store = createSceneStore();
-    expect(() => store.drawShapes([{ kind: "room", x: 0, z: 0, width: 4, depth: 4, pitch: 30 }], "agent")).toThrow(/only a volume or a hole has a pitch/);
-    expect(() =>
-      store.drawShapes([{ type: "freeform", kind: "volume", points: [{ x: 0, z: 0 }, { x: 4, z: 0 }, { x: 2, z: 3 }], pitch: 30 } as never], "agent"),
-    ).toThrow(/pitch/);
+    const [room] = store.drawShapes([{ kind: "room", x: 0, z: 0, width: 4, depth: 4, pitch: 30 }], "agent");
+    expect(room).toMatchObject({ kind: "room", pitch: 30 });
     const [f, b] = store.drawShapes(
       [
-        { type: "freeform", kind: "volume", points: [{ x: 0, z: 0 }, { x: 4, z: 0 }, { x: 2, z: 3 }] },
+        { type: "freeform", kind: "volume", points: [{ x: 0, z: 0 }, { x: 4, z: 0 }, { x: 2, z: 3 }], pitch: 20 },
         { kind: "volume", x: 10, z: 0, width: 2, depth: 2, roll: 30 },
       ],
       "agent",
     );
-    expect(() => store.updateNodes([{ id: f.id, roll: 10 }], "agent")).toThrow(/free-form/);
+    expect(f).toMatchObject({ type: "freeform", pitch: 20 });
+    expect(store.updateNodes([{ id: f.id, roll: 10 }], "agent")[0]).toMatchObject({ pitch: 20, roll: 10 });
+    expect(() => store.updateNodes([{ id: f.id, rotation: 10 }], "agent")).toThrow(/free-form/);
     expect(() => store.convertNodes({ ids: [b.id] }, "agent")).toThrow(/is tilted/);
   });
 
@@ -1196,9 +1196,10 @@ describe("scene store holes", () => {
     expect(door).toMatchObject({ kind: "hole", height: 2.2 });
     expect(window).toMatchObject({ kind: "hole", pitch: 90, taper: 0.2 });
     expect(() => store.drawShapes([{ kind: "hole", x: 0, z: 0, width: 1, depth: 1, wall: 0.3 }], "agent")).toThrow(/only a room has walls \(this is a hole\)/);
-    // A hole that becomes a room loses its tilt and taper.
+    // A hole that becomes a room loses its taper, and keeps its tilt (rooms tilt too, from 14.4).
     store.updateNodes([{ id: window.id, kind: "room" }], "agent");
-    expect(store.getScene().nodes[1]).not.toHaveProperty("pitch");
+    expect(store.getScene().nodes[1]).not.toHaveProperty("taper");
+    expect(store.getScene().nodes[1]).toHaveProperty("pitch", 90);
   });
 });
 
@@ -1420,5 +1421,41 @@ describe("transformNodes (14.3)", () => {
     expect(store.getScene().nodes.find((n) => n.id === "box_2")).toMatchObject({ width: 0.5, height: 0.5, y: 0 });
     expect(() => store.transformNodes({ ids: ["box_1"], scale: 0.01 }, "agent")).toThrow(/Nothing was transformed/);
     expect(() => store.transformNodes({ ids: ["box_1"] }, "agent")).toThrow(/at least one of/);
+  });
+});
+
+describe("tilting as one (14.4)", () => {
+  it("tilts a group with a door around a world axis, as one step, and back", () => {
+    const store = createSceneStore();
+    const [group] = store.drawShapes(
+      [
+        { type: "group", ref: "g", name: "hut" },
+        { kind: "room", x: 0, z: 0, width: 6, depth: 6, height: 3, parent: "$g" },
+        { kind: "hole", x: 0, z: 3, width: 1, depth: 1, height: 2, parent: "$g" },
+        { type: "freeform", kind: "volume", points: [{ x: 5, z: 0 }, { x: 7, z: 0 }, { x: 6, z: 2 }], parent: "$g" },
+      ],
+      "agent",
+    );
+    const { pivot } = store.rotateNodes({ ids: [group.id], axis: "x", degrees: 20 }, "agent");
+    expect(store.getHistory().undoLabel).toBe("Agent: tilt group_1");
+    const [room, door, rock] = store.getScene().nodes.slice(1) as [Box, Box, Freeform];
+    expect(room.pitch).toBe(20);
+    expect(door.pitch).toBe(20);
+    expect(rock.pitch).toBe(20);
+    // The door still cuts the room.
+    expect(holeWarnings(store.getScene().nodes)).toEqual([]);
+    store.rotateNodes({ ids: [group.id], axis: "x", degrees: -20, pivot }, "agent");
+    const back = store.getScene().nodes[1] as Box;
+    expect(back).not.toHaveProperty("pitch");
+    expect(back.y).toBeCloseTo(0, 1);
+  });
+
+  it("tilts with transform_nodes, and a tilted instance keeps its pitch and roll", () => {
+    setDefinitions({ block: [{ id: "box_1", type: "box", kind: "volume", x: 0, z: 0, y: 0, width: 1, depth: 1, height: 1, rotation: 0, color: "gray", createdBy: "human" }] });
+    const store = createSceneStore({ entityName: (id) => (id === "block" ? "block" : undefined) });
+    const [inst] = store.drawShapes([{ type: "instance", entity: "block", x: 4, z: 0, roll: 15 }], "agent");
+    expect(inst).toMatchObject({ roll: 15 });
+    const { shapes } = store.transformNodes({ ids: [inst.id], tilt: { roll: 15 }, pivot: { x: 4, y: 0, z: 0 } }, "agent");
+    expect(shapes[0]).toMatchObject({ roll: 30, x: 4 });
   });
 });

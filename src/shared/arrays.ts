@@ -27,6 +27,7 @@ import {
   type Point,
   type Point3,
 } from "./geometry";
+import { mul, orbit3, rotY, tiltXZ, toXZY, toYXZ, type Mat3 } from "./rotation3";
 import {
   MAX_ARRAY_ITEMS,
   type ArrayFacing,
@@ -53,7 +54,8 @@ export const isFollowing = (n: SceneNode): n is ArrayNode & { layout: { type: "p
  * channel, not from a running sequence, so adding items to a path leaves the others as they were.
  */
 
-export type ArrayItem = { index: number; entity: string; x: number; y: number; z: number; rotation: number };
+/** An item: where its pivot is, its turn, and (in a tilted array, 14.4) its tilt, as an instance's. */
+export type ArrayItem = { index: number; entity: string; x: number; y: number; z: number; rotation: number; pitch?: number; roll?: number };
 
 /** A pose on the layout, before the array's turn and noise: where, and the facing's turn there. */
 type Pose = { x: number; y: number; z: number; facing: number };
@@ -317,6 +319,7 @@ export function arrayLayout(array: ArrayNode): { items: ArrayItem[]; total: numb
   const facing = facingOf(array);
   const skip = new Set(array.skip ?? []);
   const items: ArrayItem[] = [];
+  const tilted = array.pitch || array.roll ? { m: tiltXZ(array.pitch ?? 0, array.roll ?? 0), anchor: layoutAnchor(array.layout) } : null;
   poses.forEach((pose, index) => {
     if (skip.has(index)) return;
     const u = (channel: number) => hash01(seed, index, channel);
@@ -334,13 +337,25 @@ export function arrayLayout(array: ArrayNode): { items: ArrayItem[]; total: numb
       [x, z] = [stand.x, stand.z];
       if (stand.rotation !== undefined) turn = stand.rotation + (array.rotation ?? 0);
     }
+    let y = stand ? stand.y : pose.y;
+    // A tilted array (14.4): every item's place turns about the layout's anchor, and its orientation with it.
+    let tilt: { pitch: number; roll: number } | null = null;
+    if (tilted) {
+      const p = orbit3(tilted.m, tilted.anchor, { x, y, z });
+      [x, y, z] = [p.x, p.y, p.z];
+      const o = toYXZ(mul(tilted.m, rotY(turn)));
+      turn = o.yaw;
+      tilt = { pitch: round2(o.pitch), roll: round2(o.roll) };
+    }
     items.push({
       index,
       entity: pickEntity(array.entities, u(0)),
       x: round2(x),
-      y: round2(stand ? stand.y : pose.y),
+      y: round2(y),
       z: round2(z),
       rotation: round2(normalizeDeg(turn)) % 360,
+      ...(tilt && tilt.pitch ? { pitch: tilt.pitch } : {}),
+      ...(tilt && tilt.roll ? { roll: tilt.roll } : {}),
     });
   });
   const result = { items, total, made: poses.length };
@@ -490,6 +505,24 @@ export function scaleArray(array: ArrayNode, f: number, pivot: Pivot3): ShapePat
     };
   }
   return { layout, scale: round2((array.scale ?? 1) * f), ...(array.jitter !== undefined ? { jitter: len(array.jitter) } : {}) };
+}
+
+/**
+ * The array turned rigidly by the rotation `m` about `pivot` (14.4): its layout's anchor orbits the pivot, and its
+ * tilt composes with m. An array's tilt has no yaw (Rx · Rz about the anchor), so the turn part of the new
+ * orientation (split as Rx · Rz · Ry) turns its layout around the anchor instead, as rotate_nodes would.
+ */
+export function tiltArray(array: ArrayNode, m: Mat3, pivot: Pivot3): ShapePatch {
+  const a = layoutAnchor(array.layout);
+  const to = orbit3(m, pivot, a);
+  const o = toXZY(mul(m, tiltXZ(array.pitch ?? 0, array.roll ?? 0)));
+  const moved = { ...array, ...moveArray(array, round2(to.x - a.x), round2(to.y - a.y), round2(to.z - a.z)) } as ArrayNode;
+  const turned = { ...moved, ...rotateArray(moved, layoutAnchor(moved.layout), o.turn) } as ArrayNode;
+  const angle = (d: number) => {
+    const v = round2(normalizeDeg(d + 180) - 180);
+    return v === -180 ? 180 : v + 0;
+  };
+  return { layout: turned.layout, ...(turned.rotation !== array.rotation ? { rotation: turned.rotation } : {}), pitch: angle(o.pitch), roll: angle(o.roll) };
 }
 
 /** A free-form's points through `f` (a position) and `h` (a handle's offset), rounded. */

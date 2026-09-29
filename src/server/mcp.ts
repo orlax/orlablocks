@@ -129,6 +129,9 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
                 .map((e) => `${n.id} repeats entity "${e.entity}", which isn't in the library (its items show as red blocks): change its entities or remove it`),
               ...(arrayShortfall(n) ? [`${n.id}: ${arrayShortfall(n)}`] : []),
               ...followWarning(n),
+              ...((n.pitch || n.roll) && (isFollowing(n) || n.on)
+                ? [`${n.id} is tilted, so its items leave the ${isFollowing(n) ? "outline it follows" : "surface it stands on"}: level it (pitch and roll 0), or unlink it`]
+                : []),
             ]
           : [],
     );
@@ -140,7 +143,7 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
   /** Runs an edit tool's body for real, or as a dry run (14.2): the same result, marked, with nothing changed. */
   const edit = <T extends object>(dryRun: boolean | undefined, run: () => T) =>
     dryRun ? { dryRun: "nothing was changed: this is what the call would do", ...store().dryRun(run) } : run();
-  const server = new McpServer({ name: "orlablocks", version: "0.0.31" }, { instructions: INSTRUCTIONS });
+  const server = new McpServer({ name: "orlablocks", version: "0.0.32" }, { instructions: INSTRUCTIONS });
   // Every tool reads or edits the open scene, and fails with a clear message while nothing is open.
   const store = () => workspace.requireScene();
   const library = (): Library => (workspace.getOpen() ? workspace.library.get() : EMPTY_LIBRARY);
@@ -503,7 +506,11 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
       description:
         `Turn shapes and/or whole groups by \`degrees\` (counterclockwise seen from above) around the vertical axis through ` +
         `\`pivot\` (default: the center of their combined bounds): every box's or cylinder's center orbits that point and ` +
-        `its rotation grows by the same angle; a free-form's points orbit it. The result gives the pivot used. The ` +
+        `its rotation grows by the same angle; a free-form's points orbit it. With axis x or z, TILT them as one ` +
+        `instead (a group of peaks leaning together, a tilted platform with what's on it): around that world axis through ` +
+        `the pivot (default: the middle of their bounds, at half their height), every shape's place orbits it and its tilt ` +
+        `composes (boxes, cylinders, free-forms, rooms, instances and arrays keep a pitch and roll; lines and ramps turn their ` +
+        `points). + around x leans the top south, + around z leans it west. The result gives the pivot used. The ` +
         `bounds' center moves as shapes turn, so to turn something back (or in several steps), pass that same pivot. ` +
         `The result is compact, unless verbose.`,
       inputSchema: RotateNodesSchema.extend({ verbose: VERBOSE, items: ITEMS, dry_run: DRY_RUN }).shape,
@@ -540,7 +547,8 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
         `copies: the way to make the human's small SKETCH again at the required scale (copy: true, scale: 4.5, to: where ` +
         `it goes), instead of re-deriving it point by point. In order: copy (the originals stay; copies get new IDs, ` +
         `their links between each other kept), scale (uniform: every position moves away from the pivot and every length ` +
-        `grows, walls, heights and steps too; instances and arrays grow through their scale), rotate (degrees around the ` +
+        `grows, walls, heights and steps too; instances and arrays grow through their scale), tilt ({ pitch, roll } around ` +
+        `the world's x and z axes through the pivot, everything as one), rotate (degrees around the ` +
         `vertical, counterclockwise seen from above), mirror (x or z, across the pivot), then move (to: the pivot lands ` +
         `there; or move: an offset). The pivot defaults to the bottom center of their combined bounds. Returns the pivot, ` +
         `the result (compact unless verbose), and with copy which copy is which (\`copies\`: { original: copy }).`,

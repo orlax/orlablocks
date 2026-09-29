@@ -49,6 +49,7 @@ import {
   type Point,
   type Point3,
   handleFrame,
+  isTilted,
 } from "../shared/geometry";
 import { shapesUnder, isGroup, isShape, hiddenIds, lockedIds, selectableAt, subtreeIds } from "../shared/tree";
 import { cutters, isHole } from "../shared/holes";
@@ -265,6 +266,8 @@ type Drag = GizmoDrag & {
   turn?: number;
   /** A uniform scale drag (14.3): the factor now. */
   scale?: number;
+  /** A tilt drag around a world axis (14.4): the axis, the angle now and the pivot. */
+  tilt?: { axis: "x" | "z"; degrees: number; pivot: { x: number; y: number; z: number } };
   sx: number;
   sy: number;
 };
@@ -405,6 +408,8 @@ type Props = {
   onUpdate: (changes: NodeUpdate[]) => void;
   /** A short message for the status bar (the Pen's "the outline crosses itself"). */
   onNotice: (message: string) => void;
+  /** One tilt (14.4: a tilt ring on a selection): around a world axis through a pivot, one undo step. */
+  onTilt: (t: { ids: string[]; axis: "x" | "z"; degrees: number; pivot: { x: number; y: number; z: number } }) => void;
   /** One transform (14.3: the uniform scale handle): scale about a pivot, one undo step. */
   onTransform: (t: { ids: string[]; scale: number; pivot: { x: number; y: number; z: number } }) => void;
   /** One Alt-drag: copies the nodes by the drag's offset, one undo step. */
@@ -503,6 +508,7 @@ export function Viewport({
   onNotice,
   onCursor,
   onTransform,
+  onTilt,
   onViewChange,
   cameraRestore,
   cameraFrame,
@@ -1092,8 +1098,11 @@ export function Viewport({
     selection.length === 1 && selectedBoxes.length === 1 && selectedBoxes[0].id === selection[0] ? selectedBoxes[0] : undefined;
   // Height and scale handles and the profile knobs are for a single closed shape (a line has none; a tilted
   // shape's sit on its own tilted top). Tilt rings are for a single box or cylinder volume or hole.
-  const scalable = single && isClosed(single) ? single : undefined;
-  const tiltable = single && isFootprinted(single) && single.kind !== "room";
+  // (A tilted free-form has none: its handles would stretch it in the world's frame, not its own; 14.4.)
+  const scalable = single && isClosed(single) && !(single.type === "freeform" && isTilted(single)) ? single : undefined;
+  // Tilt rings (14.4): a single box's or cylinder's own, or around the world's axes for anything else (a group,
+  // several nodes, a free-form, an instance), which tilts it all as one.
+  const tiltable = selectedBoxes.some((b) => b.type !== "note");
   // The selection frame turns with the selection: live while rotating, then as far as it was turned.
   const selectionKey = selection.join(",");
   const frameTurn = drag?.active && drag.turn !== undefined ? drag.turn : turn?.key === selectionKey ? turn.angle : 0;
@@ -1231,8 +1240,8 @@ export function Viewport({
     const others = expandShapes(copy ? onViewRef.current : onViewRef.current.filter((b) => !d.ids.includes(b.id)));
     const mods = { shift: keys.shiftKey, alt: keys.altKey, snap: !noSnap(keys) };
     const size = { width: wrap.current!.clientWidth, height: wrap.current!.clientHeight };
-    const { patches, label, turn, scale } = dragUpdate(d, cam.current, size, sx, sy, mods, others);
-    return { ...d, active: true, copy, patches, label, turn, scale, sx, sy };
+    const { patches, label, turn, scale, tilt } = dragUpdate(d, cam.current, size, sx, sy, mods, others);
+    return { ...d, active: true, copy, patches, label, turn, scale, tilt, sx, sy };
   };
 
   /** A point's position on screen (a free-form's at ground level, a line's at its own y). */
@@ -1717,6 +1726,12 @@ export function Viewport({
         if (offset.dx !== 0 || offset.dy !== 0 || offset.dz !== 0) {
           onDuplicate({ ids: drag.nodeIds, ...offset });
           setPending({ origin: drag.origin, patches: drag.patches, copy: true });
+        }
+      } else if (drag.active && drag.tilt) {
+        // Tilting as one around a world axis (14.4): one rotate_nodes on the server, which tilts arrays and instances too.
+        if (drag.tilt.degrees !== 0) {
+          onTilt({ ids: drag.nodeIds, ...drag.tilt });
+          setPending({ origin: drag.origin, patches: drag.patches, copy: false });
         }
       } else if (drag.active && drag.part === "uniform") {
         // One transform on the server (14.3), so links and instances scale as they should; the preview shows meanwhile.

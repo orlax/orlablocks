@@ -19,7 +19,7 @@ import {
   SCALE_HANDLE,
   scaleHandlePoint,
   TILT_RADIUS,
-  tiltRing,
+  selectionTiltRing,
   UNIFORM_HANDLE,
   uniformHandlePoint,
   type GizmoPart,
@@ -124,10 +124,10 @@ export function TransformGizmo({
     <>
       {parts.includes("rotate") && <RotateHandle boxes={boxes} frame={frame} hot={hot === "rotate"} cam={cam} />}
       {parts.includes("uniform") && <UniformHandle boxes={boxes} frame={frame} hot={hot === "uniform"} cam={cam} />}
-      {box &&
+      {boxes.length > 0 &&
         (["pitch", "roll"] as const)
           .filter((part) => parts.includes(part))
-          .map((part) => <TiltRing key={part} shape={box} part={part} hot={hot === part} cam={cam} />)}
+          .map((part) => <TiltRing key={part} shapes={boxes} part={part} hot={hot === part} cam={cam} />)}
       {box &&
         parts
           .filter(isScalePart)
@@ -216,13 +216,13 @@ function RotateHandle({ boxes, frame, hot, cam }: { boxes: Shape[]; frame: Frame
 }
 
 /** A tilt ring around the shape's center, square to the axis it turns the shape around, at a constant size on screen. */
-function TiltRing({ shape, part, hot, cam }: { shape: Shape; part: TiltPart; hot: boolean; cam: RefObject<CameraState> }) {
+function TiltRing({ shapes, part, hot, cam }: { shapes: Shape[]; part: TiltPart; hot: boolean; cam: RefObject<CameraState> }) {
   const group = useRef<THREE.Group>(null);
 
   useFrame(() => {
     const g = group.current;
     if (!g) return;
-    const { center, axis, u, v } = tiltRing(shape, part);
+    const { center, axis, u, v } = selectionTiltRing(shapes, part);
     g.position.set(center.x, center.y, center.z);
     // The torus's x, y and z go to the ring's u, v and axis.
     g.quaternion.setFromRotationMatrix(

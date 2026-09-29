@@ -131,7 +131,13 @@ export type InspectorProps = {
   /** Scale… (14.3): the whole selection scaled by a factor about the bottom center of its bounds. */
   onScaleBy?: (factor: number) => void;
   /** Box and cylinder volumes and holes: pitch and roll, each undefined when they differ. */
-  tilt?: { pitch: number | undefined; roll: number | undefined; onChange: (patch: { pitch?: number; roll?: number }) => void };
+  tilt?: {
+    pitch: number | undefined;
+    roll: number | undefined;
+    onChange: (patch: { pitch?: number; roll?: number }) => void;
+    /** Boxes, cylinders and instances (14.4): their turn around the vertical, typed. */
+    yaw?: { value: number | undefined; onChange: (rotation: number) => void };
+  };
   /** Lines: thickness, dashes, arrows, and Reverse if given. */
   line?: { style: Partial<LineStyle>; onChange: (patch: Partial<LineStyle>) => void; onPreview?: Preview<{ thickness: number }>; onReverse?: () => void };
   /** Ramps: width, steps and base, and Reverse if given. */
@@ -1114,10 +1120,15 @@ function SidesControl({ value, onChange }: { value: number | undefined; onChange
  * A box's or cylinder's tilt: pitch (around its own x axis, + leans the top toward its +z) and roll (around its own
  * z axis), in degrees with − / + in 15° steps (the rings' snap), and Reset tilt, which levels it in one step.
  */
-function TiltSection({ pitch, roll, onChange }: NonNullable<InspectorProps["tilt"]>) {
+function TiltSection({ pitch, roll, onChange, yaw }: NonNullable<InspectorProps["tilt"]>) {
   const level = pitch === 0 && roll === 0;
   return (
     <Section label="Tilt">
+      {yaw && (
+        <Row label="yaw">
+          <NumberField title="Yaw: degrees around the vertical, counterclockwise seen from above" value={yaw.value} unit="°" step={15} fallback={0} onChange={yaw.onChange} />
+        </Row>
+      )}
       <Row label="pitch">
         <NumberField title="Pitch: degrees around the shape's own x axis (the red ring)" value={pitch} unit="°" step={15} fallback={0} onChange={(p) => onChange({ pitch: p })} />
       </Row>

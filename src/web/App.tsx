@@ -790,7 +790,12 @@ export function App() {
         }
       : undefined;
   // The tilt fields act on every box and cylinder volume or hole in the selection, each around its own center.
-  const tiltable = selectedVolumes.filter((v): v is Box | Cylinder => v.type === "box" || v.type === "cylinder");
+  // Tilt (14.4): every closed shape, instance and array selected, each by its own pitch and roll (a free-form's and
+  // an array's around the world's axes).
+  const tiltable = selection.flatMap((id) => {
+    const n = nodes.find((m) => m.id === id);
+    return n && ((isShape(n) && isClosed(n)) || n.type === "instance" || n.type === "array") ? [n as ClosedShape | Instance | ArrayNode] : [];
+  });
   const sharedTilt = (f: "pitch" | "roll") => (tiltable.every((v) => (v[f] ?? 0) === (tiltable[0][f] ?? 0)) ? (tiltable[0]?.[f] ?? 0) : undefined);
   const tiltControl =
     tiltable.length > 0
@@ -798,6 +803,15 @@ export function App() {
           pitch: sharedTilt("pitch"),
           roll: sharedTilt("roll"),
           onChange: (patch: { pitch?: number; roll?: number }) => send({ type: "update_nodes", changes: tiltable.map((v) => ({ id: v.id, ...patch })) }),
+        }
+      : undefined;
+  // Yaw (14.4): a box's, cylinder's or instance's turn, typed (only the gizmo set it before).
+  const yawable = tiltable.filter((n): n is Box | Cylinder | Instance => n.type === "box" || n.type === "cylinder" || n.type === "instance");
+  const yawControl =
+    yawable.length > 0 && yawable.length === tiltable.length
+      ? {
+          value: yawable.every((n) => n.rotation === yawable[0].rotation) ? yawable[0].rotation : undefined,
+          onChange: (rotation: number) => send({ type: "update_nodes", changes: yawable.map((n) => ({ id: n.id, rotation })) }),
         }
       : undefined;
   // Instances and arrays selected directly (14.3): their uniform scale.
@@ -990,7 +1004,7 @@ export function App() {
                   : undefined,
               wall: wallControl,
               profile: profileControl,
-              tilt: tiltControl,
+              tilt: tiltControl && { ...tiltControl, ...(yawControl ? { yaw: yawControl } : {}) },
               scale: scaleControl,
               onScaleBy: selectedShapes.some((s) => s.type !== "note")
                 ? (factor) => {
@@ -1077,6 +1091,7 @@ export function App() {
         }
         onUpdate={(changes) => send({ type: "update_nodes", changes })}
         onTransform={(t) => send({ type: "transform_nodes", ...t })}
+        onTilt={(t) => send({ type: "rotate_nodes", ...t })}
         onDuplicate={({ ids, ...offset }) => {
           lastCopy.current = offset;
           duplicate(ids, offset);

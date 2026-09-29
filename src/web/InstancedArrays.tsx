@@ -51,7 +51,8 @@ const placed = new WeakMap<THREE.InstancedMesh, { matrices: THREE.Matrix4[]; geo
 const itemMatrix = (item: ArrayItem, scale: number) =>
   new THREE.Matrix4().compose(
     new THREE.Vector3(item.x, item.y, item.z),
-    new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), (item.rotation * Math.PI) / 180),
+    // Turned, and in a tilted array (14.4) tilted, as an instance is (roll, then pitch, then the turn: "YXZ").
+    new THREE.Quaternion().setFromEuler(new THREE.Euler(((item.pitch ?? 0) * Math.PI) / 180, (item.rotation * Math.PI) / 180, ((item.roll ?? 0) * Math.PI) / 180, "YXZ")),
     new THREE.Vector3(scale, scale, scale),
   );
 
@@ -70,7 +71,7 @@ function InstancedPart({
   highlight?: "hover" | "selected";
 }) {
   const { solid, floor, edges } = useShapeGeometry(part, cuts);
-  const itemsKey = JSON.stringify([scale, items.map((i) => [i.x, i.y, i.z, i.rotation])]);
+  const itemsKey = JSON.stringify([scale, items.map((i) => [i.x, i.y, i.z, i.rotation, i.pitch, i.roll])]);
   const matrices = useMemo(() => {
     const local = shapeMatrix(part);
     return items.map((i) => itemMatrix(i, scale).multiply(local));

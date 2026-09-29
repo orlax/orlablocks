@@ -1,5 +1,6 @@
 import { arrayItems } from "./arrays";
-import { moveShape, rotateShape, scaleShape } from "./geometry";
+import { moveShape, rotateShape, scaleShape, tiltShape } from "./geometry";
+import { orientationYXZ } from "./rotation3";
 import type { ArrayNode, Group, Instance, SceneNode, Shape } from "./scene.types";
 
 /**
@@ -72,7 +73,13 @@ export function expandInstance(inst: Instance): SceneNode[] {
         if (n.type === "group") return { ...n, id: ns(n.id), parent };
         // Scaled about the pivot (14.3), turned around it, then moved to the instance's place.
         const scaled = inst.scale && inst.scale !== 1 ? ({ ...n, ...scaleShape(n, inst.scale, { x: 0, y: 0, z: 0 }) } as Shape) : n;
-        const turned = inst.rotation ? ({ ...scaled, ...rotateShape(scaled, { x: 0, z: 0 }, inst.rotation) } as Shape) : scaled;
+        // A tilted instance (14.4) turns its shapes by its whole orientation around the pivot.
+        const tilted = !!(inst.pitch || inst.roll);
+        const turned = tilted
+          ? ({ ...scaled, ...tiltShape(scaled, orientationYXZ(inst.rotation, inst.pitch ?? 0, inst.roll ?? 0), { x: 0, y: 0, z: 0 }) } as Shape)
+          : inst.rotation
+            ? ({ ...scaled, ...rotateShape(scaled, { x: 0, z: 0 }, inst.rotation) } as Shape)
+            : scaled;
         const placed = { ...turned, ...moveShape(turned, inst.x, inst.y, inst.z) } as Shape;
         return { ...placed, id: ns(n.id), parent };
       })
@@ -117,6 +124,8 @@ const itemInstance = (array: ArrayNode, item: ReturnType<typeof arrayItems>[numb
   y: item.y,
   z: item.z,
   rotation: item.rotation,
+  ...(item.pitch ? { pitch: item.pitch } : {}),
+  ...(item.roll ? { roll: item.roll } : {}),
   ...(array.scale && array.scale !== 1 ? { scale: array.scale } : {}),
   createdBy: array.createdBy,
 });
