@@ -63,8 +63,12 @@ export const INSTRUCTIONS =
   "pass it as root, and put new shapes for it inside it. Use find_nodes to look nodes up by name, type, kind, group " +
   "or place, instead of reading the whole scene. RESULTS of the edit tools are COMPACT: each node's id, type, kind, " +
   "name, parent and bounds (x, z at the center, y the bottom, width, depth, height), with a count instead of points, " +
-  "and for an array its item lines (`array_5/3 → x, y, z · top t · r°`: where each item stands, how high its top is " +
-  "and its turn). Pass verbose: true only to read a node back in full. `view.focus` is the ground point at the screen center: draw near it " +
+  "and for an array its item count and the range of its tops; items: true adds its item lines (`array_5/3 → x, y, z · " +
+  "top t · r°`: where each item stands, how high its top is and its turn). Pass verbose: true only to read a node " +
+  "back in full. dry_run: true on an edit tool checks the whole call and returns what it would do, and every error, " +
+  "changing nothing: use it before a big batch. Open notes come short in get_scene (notes: \"full\" for every field). " +
+  "An instance's rotation can be where it faces instead of degrees: { toward: {x, z} or an ID }, { away }, { along: " +
+  "a line or ramp }. `view.focus` is the ground point at the screen center: draw near it " +
   "to be on screen. `view.walking` (while the human walks through the level with the Walk tool) is their eye, where " +
   "it looks (`yaw` as the view's, `pitch` up) and the field of view: what they see from there. `view.pointer` is where " +
   "the human's pointer last rested (on a node, with its `id`, or on the ground): \"here\" means there. A node with `locked: true` (the human can't pick it) or `hidden: true` (not drawn, and a hidden " +
@@ -137,7 +141,10 @@ const GUIDE: Record<Exclude<GuideTopic, "design">, string> = {
     "and a DEFINITION, its shapes around a PIVOT at the origin (its bottom center). Its ID is a slug of its first " +
     "name (\"tree-tall\") and never changes. An INSTANCE (type: instance) places one: { entity, x, z, y?, rotation?, " +
     "name? } in draw_shapes, where x, y, z is where the pivot goes (y the surface it stands on) and rotation turns it " +
-    "around the pivot (degrees, counterclockwise seen from above). An instance has nothing else of its own: its shapes, " +
+    "around the pivot (degrees, counterclockwise seen from above). FACING: instead of degrees, rotation can say where " +
+    "its local +x faces, worked out once (it doesn't follow later): { toward: {x, z} or a node or item ID } (a stand " +
+    "facing the ring), { away: ... } (its back to it), { along: a line's or ramp's ID } (along the route where it " +
+    "passes nearest: rings along a flight path). No atan2. An instance has nothing else of its own: its shapes, " +
     "description and tags are its entity's (find_nodes { tag } finds instances through their entity's tags), and " +
     "editing the entity changes every instance. update_nodes on an instance takes x, y, z, rotation, name, parent and " +
     "`entity` (swap: a small tree becomes a tall one in place). move_nodes, rotate_nodes and copy work on instances as " +
@@ -164,8 +171,9 @@ const GUIDE: Record<Exclude<GuideTopic, "design">, string> = {
     "layout places, so change the layout and every item follows. draw_shapes { type: \"array\", entity (or entities: " +
     "[{ entity, weight? }] to mix several, chosen by weight), layout, facing?, rotation?, jitter?, turnJitter?, seed?, " +
     "skip?, name?, parent? }. The outline shows it as one line with `items` (how many) and its bounds. WHERE ITEMS ARE: " +
-    "draw_shapes' and update_nodes' results list an array's ITEM LINES (`array_5/3 → 12.1, 4.5, -8 · top 5 · 90°`: " +
-    "item 3 stands at x 12.1, y 4.5, z -8, its top is at y 5 and it's turned 90°), the first 40; get_scene { root: " +
+    "with items: true, the edit tools' results list an array's ITEM LINES (`array_5/3 → 12.1, 4.5, -8 · top 5 · 90°`: " +
+    "item 3 stands at x 12.1, y 4.5, z -8, its top is at y 5 and it's turned 90°), the first 40 (by default only the " +
+    "count and the range of tops, to keep results short); get_scene { root: " +
     "\"array_5\" } lists them all, and find_nodes { type: \"item\", near } finds the ones near a point, nearest first. " +
     "Use them to aim a line from item to item, or to pick which to skip, instead of working out where the layout puts " +
     "them. LAYOUTS: " +
@@ -333,7 +341,8 @@ const GUIDE: Record<Exclude<GuideTopic, "design">, string> = {
     "one it's a plain pin), a `color` (default yellow) and a `status`: open (a work item) or done (handled). Its text can " +
     "refer to skills (@name) and tags (#name). Notes have no size, kind or tags; move_nodes, rotate_nodes and " +
     "mirror_nodes move their point, and a note in a group moves with it, so pin a note about a room inside the room's " +
-    "group. Every open note is in get_scene's `notes` (wherever it is, at any depth), and find_nodes { type: note, " +
+    "group. Every open note is in get_scene's `notes` (wherever it is, at any depth; with a root, those in it), short: " +
+    "its id, label, point and the start of its text (notes: \"full\" for every field, false for only a count), and find_nodes { type: note, " +
     "status: done } finds the handled ones; find_nodes' name also searches a note's text. An area is described in the " +
     "text (\"slow the player down within 10 m of here\"): read it, act on it when asked, and mark the note done " +
     "(update_nodes status: done) rather than removing it, so the human sees what was handled. Leave notes of your own " +

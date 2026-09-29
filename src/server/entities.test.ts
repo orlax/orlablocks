@@ -366,6 +366,13 @@ describe("entities in the workspace", () => {
     expect(() => ws.defineEntity({ name: "empty", shapes: [{ type: "group" }] }, "agent")).toThrow(/at least one shape/);
   });
 
+  it("doesn't call an odd-sided cylinder on the origin off-center (14.2)", () => {
+    const ws = start(tempRoot());
+    ws.createProject({ name: "Peaks", sceneName: "Valley" });
+    const made = ws.defineEntity({ name: "peak", shapes: [{ type: "cylinder", kind: "volume", x: 0, z: 0, width: 30, depth: 30, height: 20, sides: 7, taper: 0.8 }] }, "agent");
+    expect(made).not.toHaveProperty("warnings");
+  });
+
   it("makes an entity without leaving an instance, with keep: false", () => {
     const ws = start(tempRoot());
     ws.createProject({ name: "Temple", sceneName: "Hall" });

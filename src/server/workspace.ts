@@ -191,6 +191,26 @@ export function countUses(library: Library, nodes: SceneNode[]): { tags: Map<str
  * The open scene (plan 04 §4): one per server, shared by every tab and the agent, or none. Loads a scene's files
  * into the store when it opens, and writes `scene.json` after every step.
  */
+/**
+ * Where an entity's shapes are centered on the ground (14.2), for the off-center warning: their bounds' middle, with
+ * each box's and cylinder's bounds made symmetric about its own center first, so a 7-sided cylinder (whose bounds
+ * lean toward its pointed side) centered on the origin counts as centered.
+ */
+export function entityMiddle(shapes: Shape[]): { x: number; z: number } {
+  let [minX, maxX, minZ, maxZ] = [Infinity, -Infinity, Infinity, -Infinity];
+  for (const s of shapes) {
+    const b = boundsOf([s]);
+    if (s.type === "box" || s.type === "cylinder") {
+      const hx = Math.max(s.x - b.minX, b.maxX - s.x);
+      const hz = Math.max(s.z - b.minZ, b.maxZ - s.z);
+      [minX, maxX, minZ, maxZ] = [Math.min(minX, s.x - hx), Math.max(maxX, s.x + hx), Math.min(minZ, s.z - hz), Math.max(maxZ, s.z + hz)];
+    } else {
+      [minX, maxX, minZ, maxZ] = [Math.min(minX, b.minX), Math.max(maxX, b.maxX), Math.min(minZ, b.minZ), Math.max(maxZ, b.maxZ)];
+    }
+  }
+  return { x: (minX + maxX) / 2, z: (minZ + maxZ) / 2 };
+}
+
 export function createWorkspace(data: DataDir) {
   const library: LibraryStore = createLibraryStore();
   const store = createSceneStore({
@@ -590,10 +610,11 @@ export function createWorkspace(data: DataDir) {
       if (shapes.length === 0) throw new SceneError("shapes: an entity needs at least one shape. No entity was made.");
       const meta = createEntity(input, nodes, actor);
       const b = boundsOf(shapes);
+      const middle = entityMiddle(shapes);
       const warnings = [
         ...(round2(b.minY) !== 0 ? [`its bottom is at y ${round2(b.minY)}, not 0: instances will stand ${round2(b.minY)} m off their y`] : []),
-        ...(Math.hypot((b.minX + b.maxX) / 2, (b.minZ + b.maxZ) / 2) > 0.5
-          ? [`its middle is at x ${round2((b.minX + b.maxX) / 2)}, z ${round2((b.minZ + b.maxZ) / 2)}: instances will sit that far off their point (build it around the origin)`]
+        ...(Math.hypot(middle.x, middle.z) > 0.5
+          ? [`its middle is at x ${round2(middle.x)}, z ${round2(middle.z)}: instances will sit that far off their point (build it around the origin)`]
           : []),
       ];
       return { entity: meta, ...(warnings.length > 0 ? { warnings } : {}) };

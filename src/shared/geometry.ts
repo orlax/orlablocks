@@ -6,6 +6,7 @@ import {
   DEFAULT_WALL,
   MIN_LINE_POINTS,
   MIN_POINTS,
+  MIN_RAMP_WIDTH,
   RAMP_SINK,
   RAMP_SLAB,
   SMOOTH_SEGMENTS,
@@ -407,6 +408,15 @@ export function rampRange(ramp: Ramp): [number, number] {
 /** A ramp can have at most this many steps in all. */
 export const MAX_STEPS = 1000;
 
+/** The radius of the circle through three points on the ground (Infinity when they're in a line). */
+function turnRadius(a: { x: number; z: number }, b: { x: number; z: number }, c: { x: number; z: number }): number {
+  const ab = Math.hypot(b.x - a.x, b.z - a.z);
+  const bc = Math.hypot(c.x - b.x, c.z - b.z);
+  const ca = Math.hypot(a.x - c.x, a.z - c.z);
+  const cross = Math.abs((b.x - a.x) * (c.z - a.z) - (b.z - a.z) * (c.x - a.x));
+  return cross < 1e-9 ? Infinity : (ab * bc * ca) / (2 * cross);
+}
+
 /**
  * What's wrong with a ramp, or null: fewer than 2 points, neighbors in the same place on the ground, a turn too
  * tight for its width (an edge would fold back on itself), or too many steps.
@@ -425,7 +435,11 @@ export function rampProblem(ramp: Ramp): string | null {
       const e = { x: q[side].x - p[side].x, z: q[side].z - p[side].z };
       if (e.x * along.x + e.z * along.z <= 1e-9) {
         const near = pts.reduce((best, pt, i) => (Math.hypot(pt.x - p.x, pt.z - p.z) < Math.hypot(pts[best].x - p.x, pts[best].z - p.z) ? i : best), 0);
-        return `the ramp turns too tightly for its ${ramp.width} m width near point ${near} (make the curve wider or the ramp narrower)`;
+        // How tight the centerline turns there (14.2): the smallest radius through three stations nearby.
+        let radius = Infinity;
+        for (let j = Math.max(0, k - 3); j + 2 < Math.min(st.length, k + 5); j++) radius = Math.min(radius, turnRadius(st[j], st[j + 1], st[j + 2]));
+        const allowed = Number.isFinite(radius) ? ` Its centerline turns with a radius of about ${round2(radius)} m there, and a ${ramp.width} m wide ramp needs at least ${round2(ramp.width / 2)} m: widen the curve to that, or narrow the ramp to at most ${round2(Math.max(MIN_RAMP_WIDTH, radius * 2 * 0.95))} m.` : "";
+        return `the ramp turns too tightly for its ${ramp.width} m width near point ${near} (make the curve wider or the ramp narrower).${allowed}`;
       }
     }
   }

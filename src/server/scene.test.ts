@@ -1323,3 +1323,60 @@ describe("batch refs and groups in a batch (plan 13 §6)", () => {
     expect(s.getScene().nodes).toEqual([]);
   });
 });
+
+describe("validation and facing (14.2)", () => {
+  const block = { id: "box_1", type: "box", kind: "volume", x: 0, z: 0, y: 0, width: 1, depth: 1, height: 1, rotation: 0, color: "gray", createdBy: "human" } as const;
+
+  it("runs a dry run without changing anything, and says what it would make", () => {
+    const store = createSceneStore();
+    const listener = vi.fn();
+    store.onChange(listener);
+    const made = store.dryRun(() => {
+      const [room] = store.drawShapes([{ kind: "room", x: 0, z: 0, width: 6, depth: 4 }], "agent");
+      return { id: room.id, count: store.getScene().nodes.length };
+    });
+    expect(made).toEqual({ id: "box_1", count: 1 });
+    expect(store.getScene().nodes).toEqual([]);
+    expect(store.getHistory().canUndo).toBe(false);
+    expect(listener).not.toHaveBeenCalled();
+    // The IDs weren't used up.
+    expect(store.drawShapes([{ kind: "room", x: 0, z: 0, width: 6, depth: 4 }], "agent")[0].id).toBe("box_1");
+  });
+
+  it("says how tight a ramp may turn, and names each failing entry by its ref", () => {
+    const store = createSceneStore();
+    const tight = { type: "ramp", ref: "spiral", spiral: { x: 0, z: 0, radius: 0.5, turn: 180, y: 0, rise: 1 }, width: 2 } as const;
+    let message = "";
+    try {
+      store.drawShapes([tight, { kind: "room", ref: "hall", x: 0, z: 0, width: -1, depth: 4 }], "agent");
+    } catch (err) {
+      message = (err as Error).message;
+    }
+    expect(message).toMatch(/2 entries have problems/);
+    expect(message).toMatch(/shapes\[0\] \(ref "spiral"\)/);
+    expect(message).toMatch(/shapes\[1\] \(ref "hall"\)/);
+    expect(message).toMatch(/radius of about [\d.]+ m there, and a 2 m wide ramp needs at least 1 m/);
+  });
+
+  it("turns an instance toward a point or a node, away from one, or along a line, once", () => {
+    setDefinitions({ block: [block] });
+    const store = createSceneStore({ entityName: (id) => (id === "block" ? "block" : undefined) });
+    const [line] = store.drawShapes([{ type: "line", points: [{ x: 0, y: 0, z: 10 }, { x: 0, y: 0, z: -10 }] }], "agent");
+    const [east, north, back, along] = store.drawShapes(
+      [
+        { type: "instance", entity: "block", x: 0, z: 0, rotation: { toward: { x: 5, z: 0 } } },
+        { type: "instance", entity: "block", x: 0, z: 0, rotation: { toward: { x: 0, z: -5 } } },
+        { type: "instance", entity: "block", x: 0, z: 0, rotation: { away: { x: 5, z: 0 } } },
+        { type: "instance", entity: "block", x: 3, z: 2, rotation: { along: line.id } },
+      ],
+      "agent",
+    );
+    expect([east, north, back, along].map((n) => (n as { rotation: number }).rotation)).toEqual([0, 90, 180, 90]);
+    const [turned] = store.updateNodes([{ id: east.id, rotation: { toward: along.id } }], "agent");
+    expect((turned as { rotation: number }).rotation).toBe(326.31);
+    const [moved] = store.updateNodes([{ id: east.id, x: 10, rotation: { toward: { x: 0, z: 0 } } }], "agent");
+    expect((moved as { rotation: number }).rotation).toBe(180);
+    expect(() => store.updateNodes([{ id: line.id, rotation: { toward: { x: 1, z: 1 } } }], "agent")).toThrow(/only an instance's rotation can be where it faces/);
+    expect(() => store.drawShapes([{ type: "instance", entity: "block", x: 0, z: 0, rotation: { along: "box_99" } }], "agent")).toThrow(/along: no node "box_99"/);
+  });
+});

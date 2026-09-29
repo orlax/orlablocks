@@ -449,3 +449,11 @@ Proposed in this plan, to confirm:
   - **Lines toggle,** and the holes, grid, notes, lines and cursor toggles remembered in `localStorage` (`dd.view.*`).
   - **Zoom:** `MAX_DISTANCE` 5000, with `clipPlanes(distance)` (near 0.5 up to 200 m, then d / 400; far max(2400, 6d)) applied by the camera rig every frame and used by captures. The grid's lines step up by tens and its plane grows with the view.
   - MCP version 0.0.29. Tests: 4 new (slopes, the normal, clip planes; 486 in all). `scripts/check-client.mjs` (the human over ws, the agent over MCP, a fresh project) and `scripts/check-14.mjs` (per increment): the pointer reaches `get_scene`, which caught `setView` dropping it. Not checked in a browser (Orlando was away): §15 items 1–5.
+- **2026-09-29:** **14.2 built.**
+  - **Notes:** `get_scene`'s open notes are short (id, label, point, the first 120 characters, the path), only the root's with a root; `notes: "full"` or `false` (a count, `openNotes`). The glossary still explains what short notes name.
+  - **Items:** edit results give an array's `items` and `tops` (a range), and item lines with `items: true` (every edit tool takes it).
+  - **Dry runs:** the store's `dryRun(run)` lets commits change the nodes for `run` to read, then puts back the nodes and the ID counters, with no history, step or broadcast. `dry_run` on `draw_shapes`, `update_nodes`, `move_nodes`, `rotate_nodes` and `mirror_nodes`.
+  - **Errors:** the ramp turn error gives the centerline's radius there (the tightest circle through three stations nearby) and the width it would allow; a failing batch names each failing entry's ref and how many entries fail.
+  - **Facing:** `src/shared/facing.ts` (`facingRotation`): `rotation: { toward | away | along }` on instances in `draw_shapes` and `update_nodes`, resolved into degrees. **Changed while building:** the entity's front is its local **+x** (as array items face, `turnToward`), not +z as §5 said.
+  - **Pivot warning:** `entityMiddle` makes each box's and cylinder's bounds symmetric about its center, so an odd-sided cylinder on the origin doesn't warn.
+  - MCP version 0.0.30. Tests: 5 new (491 in all). `check-14.mjs 14.2` passes. `eval-temple.mjs`: **4,782 characters received** in 8 calls, against 5,755 before 14.2 (its arrays' item lines).

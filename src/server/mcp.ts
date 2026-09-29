@@ -48,6 +48,18 @@ const VERBOSE = z
   .optional()
   .describe("Return the nodes in full (every field, points included) instead of the compact result: only to read back what you're about to edit point by point");
 
+/** Every edit tool's `items` (14.2): an array's item lines only when asked. */
+const ITEMS = z
+  .boolean()
+  .optional()
+  .describe("List every array's item lines (where each item stands, its top and its turn) in the result; by default an array says how many items and their range of tops");
+
+/** Every edit tool's `dry_run` (14.2): check and build it, return the result it would have, and change nothing. */
+const DRY_RUN = z
+  .boolean()
+  .optional()
+  .describe("Check the whole call and return what it would do (and every error), changing nothing: before a big batch, or to test a ramp's curve");
+
 /** Which guide topic helps with a warning, named at its end. */
 const withTopic = (warning: string) =>
   /\bhole\b/.test(warning) ? `${warning} (see get_guide holes)` : /\barray\b/.test(warning) ? `${warning} (see get_guide arrays)` : warning;
@@ -124,7 +136,10 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
     const warnings = [...own, ...holes, ...missing];
     return warnings.length > 0 ? { ...result, warnings } : result;
   };
-  const server = new McpServer({ name: "orlablocks", version: "0.0.29" }, { instructions: INSTRUCTIONS });
+  /** Runs an edit tool's body for real, or as a dry run (14.2): the same result, marked, with nothing changed. */
+  const edit = <T extends object>(dryRun: boolean | undefined, run: () => T) =>
+    dryRun ? { dryRun: "nothing was changed: this is what the call would do", ...store().dryRun(run) } : run();
+  const server = new McpServer({ name: "orlablocks", version: "0.0.30" }, { instructions: INSTRUCTIONS });
   // Every tool reads or edits the open scene, and fails with a clear message while nothing is open.
   const store = () => workspace.requireScene();
   const library = (): Library => (workspace.getOpen() ? workspace.library.get() : EMPTY_LIBRARY);
@@ -158,6 +173,10 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
           .describe("ID of a group to list the contents of (a shape's ID returns just that shape; an array's, with every item's line). Default: the top level"),
         depth: z.number().int().min(1).max(20).optional().describe("How many levels of groups to open, default 1"),
         full: z.boolean().optional().describe("List every node under the root, with no depth limit"),
+        notes: z
+          .union([z.enum(["short", "full"]), z.literal(false)])
+          .optional()
+          .describe('Open notes (those in the root, with one): "short" (default: id, label, point, the start of the text), "full" (every field), or false (only a count)'),
       },
     },
     async (query) => {
@@ -366,10 +385,10 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
         `of points goes through its stops (node IDs, items array_3/5, array_3/* for all of them, array_3/2..6), each the ` +
         `center of its walking surface, as jump arcs (the default) or straight, kept up to date: the critical path. ` +
         `The batch is all-or-nothing: if any shape is invalid, nothing is drawn and the error says which one. ` +
-        `The result is compact: each new node's id, type, kind, name, parent and bounds (a count instead of points; an array's layout, item count and item lines).`,
-      inputSchema: { shapes: z.array(ShapeInputSchema).min(1), verbose: VERBOSE },
+        `The result is compact: each new node's id, type, kind, name, parent and bounds (a count instead of points; an array's layout, item count and range of tops, with items: true its item lines). dry_run: true checks the batch and returns this result, and every error, drawing nothing.`,
+      inputSchema: { shapes: z.array(ShapeInputSchema).min(1), verbose: VERBOSE, items: ITEMS, dry_run: DRY_RUN },
     },
-    async ({ shapes, verbose }) => {
+    async ({ shapes, verbose, items, dry_run }) => json(edit(dry_run, () => {
       const created = guided(() => store().drawShapes(shapes, "agent"));
       const refs = refWarnings(created.flatMap((c) => (c.type === "note" ? [{ id: c.id, description: c.text }] : c.type === "group" ? [{ id: c.id, description: c.description }] : [])));
       // Each batch ref's ID (the entries are created in order).
@@ -390,9 +409,9 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
         groups: all.filter(isGroup).length,
       };
       const warnings = refs.length > 0 ? { warnings: refs } : {};
-      if (!verbose) return json(warned({ ...batchRefs, created: compactNodes(all, created.map((c) => c.id)), ...warnings }));
-      return json(warned({ ...batchRefs, created, totals, ...warnings }));
-    },
+      if (!verbose) return warned({ ...batchRefs, created: compactNodes(all, created.map((c) => c.id), { items }), ...warnings });
+      return warned({ ...batchRefs, created, totals, ...warnings });
+    })),
   );
 
   server.registerTool(
@@ -416,15 +435,15 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
         `An empty name removes the name; parent null moves a node to the top level. ` +
         `The batch is all-or-nothing: an unknown ID or an invalid value rejects it and nothing changes. ` +
         `The result is compact (as draw_shapes'), unless verbose.`,
-      inputSchema: { changes: z.array(NodeUpdateSchema).min(1), verbose: VERBOSE },
+      inputSchema: { changes: z.array(NodeUpdateSchema).min(1), verbose: VERBOSE, items: ITEMS, dry_run: DRY_RUN },
     },
-    async ({ changes, verbose }) => {
+    async ({ changes, verbose, items, dry_run }) => json(edit(dry_run, () => {
       const full = guided(() => store().updateNodes(changes, "agent"));
-      const updated = verbose ? full : compactNodes(store().getScene().nodes, full.map((n) => n.id));
+      const updated = verbose ? full : compactNodes(store().getScene().nodes, full.map((n) => n.id), { items });
       const refs = refWarnings(changes.map((c) => ({ id: c.id, description: c.description ?? c.text })));
-      if (!changes.some((c) => c.type !== undefined)) return json(warned({ updated, ...(refs.length > 0 ? { warnings: refs } : {}) }));
-      return json(warned({ converted: changes.map((c, i) => ({ from: c.id, to: full[i].id })), updated }));
-    },
+      if (!changes.some((c) => c.type !== undefined)) return warned({ updated, ...(refs.length > 0 ? { warnings: refs } : {}) });
+      return warned({ converted: changes.map((c, i) => ({ from: c.id, to: full[i].id })), updated });
+    })),
   );
 
   server.registerTool(
@@ -464,14 +483,16 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
         copy: z.boolean().optional().describe("Leave the nodes in place and add copies at the offset"),
         count: DuplicateNodesSchema.shape.count.describe(`With copy: how many copies, 1..${MAX_COPIES}, default 1`),
         verbose: VERBOSE,
+        items: ITEMS,
+        dry_run: DRY_RUN,
       }).shape,
     },
-    async ({ copy, count, verbose, ...move }) => {
-      const compact = (nodes: SceneNode[]) => (verbose ? nodes : compactNodes(store().getScene().nodes, nodes.map((n) => n.id)));
-      if (copy) return json({ copies: compact(store().duplicateNodes({ ...move, count }, "agent")) });
+    async ({ copy, count, verbose, items, dry_run, ...move }) => json(edit(dry_run, () => {
+      const compact = (nodes: SceneNode[]) => (verbose ? nodes : compactNodes(store().getScene().nodes, nodes.map((n) => n.id), { items }));
+      if (copy) return { copies: compact(store().duplicateNodes({ ...move, count }, "agent")) };
       if (count !== undefined) throw new SceneError("count only applies with copy: true. Nothing was moved.");
-      return json({ moved: compact(store().moveNodes(move, "agent")) });
-    },
+      return { moved: compact(store().moveNodes(move, "agent")) };
+    })),
   );
 
   server.registerTool(
@@ -484,12 +505,12 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
         `its rotation grows by the same angle; a free-form's points orbit it. The result gives the pivot used. The ` +
         `bounds' center moves as shapes turn, so to turn something back (or in several steps), pass that same pivot. ` +
         `The result is compact, unless verbose.`,
-      inputSchema: RotateNodesSchema.extend({ verbose: VERBOSE }).shape,
+      inputSchema: RotateNodesSchema.extend({ verbose: VERBOSE, items: ITEMS, dry_run: DRY_RUN }).shape,
     },
-    async ({ verbose, ...input }) => {
+    async ({ verbose, items, dry_run, ...input }) => json(edit(dry_run, () => {
       const { shapes, pivot } = store().rotateNodes(input, "agent");
-      return json({ rotated: verbose ? shapes : compactNodes(store().getScene().nodes, shapes.map((n) => n.id)), pivot });
-    },
+      return { rotated: verbose ? shapes : compactNodes(store().getScene().nodes, shapes.map((n) => n.id), { items }), pivot };
+    })),
   );
 
   server.registerTool(
@@ -501,12 +522,12 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
         `axis x swaps east and west (every x reflects), axis z swaps north (-z) and south (+z). y never changes, and every rotation ` +
         `becomes -rotation (an odd-sided cylinder mirrored on x: 180 - rotation; a free-form's points reflect). A group mirrors as a unit. ` +
         `Mirroring twice restores the original exactly. The result is compact, unless verbose.`,
-      inputSchema: MirrorNodesSchema.extend({ verbose: VERBOSE }).shape,
+      inputSchema: MirrorNodesSchema.extend({ verbose: VERBOSE, items: ITEMS, dry_run: DRY_RUN }).shape,
     },
-    async ({ verbose, ...input }) => {
+    async ({ verbose, items, dry_run, ...input }) => json(edit(dry_run, () => {
       const mirrored = store().mirrorNodes(input, "agent");
-      return json({ mirrored: verbose ? mirrored : compactNodes(store().getScene().nodes, mirrored.map((n) => n.id)) });
-    },
+      return { mirrored: verbose ? mirrored : compactNodes(store().getScene().nodes, mirrored.map((n) => n.id), { items }) };
+    })),
   );
 
   server.registerTool(

@@ -18,7 +18,14 @@ export const FULL_SCENE_MAX = 40;
 /** The most matches `find_nodes` lists. */
 export const MAX_MATCHES = 100;
 
-export type SceneQuery = { root?: string; depth?: number; full?: boolean };
+/**
+ * `notes` (14.2): how open notes come, "short" (the default: id, label, point and their first 120 characters),
+ * "full" (every field) or false (only a count).
+ */
+export type SceneQuery = { root?: string; depth?: number; full?: boolean; notes?: "short" | "full" | false };
+
+/** The most of a note's text a short note shows. */
+const NOTE_PREVIEW = 120;
 /** What the outline adds from the project: its library, and a line about the design guide. */
 export type SceneContext = { library: Library; guide?: string };
 /** The tags and skills a result names, each with its description (a skill with its tags). */
@@ -41,9 +48,13 @@ export type SceneOutline = OpenScene & {
   hint?: string;
   nodes: AgentNode[];
   selected?: AgentNode[];
-  notes?: AgentNode[];
+  notes?: AgentNode[] | ShortNote[];
+  /** How many open notes there are when `notes: false` left them out. */
+  openNotes?: number;
   glossary?: Glossary;
 };
+/** An open note as the outline lists it by default (14.2): enough to know what it asks and where. */
+export type ShortNote = { id: string; label?: string; x: number; y: number; z: number; text: string; color?: string; path?: string };
 
 /** An entity's size: its definition's width, depth and height (0s for one with no shapes or no definition). */
 export function entitySize(id: string): [number, number, number] {
@@ -233,10 +244,17 @@ export function describeScene(open: OpenScene, scene: Scene, query: SceneQuery =
   const selected = scene.selection.filter((id) => !shown.has(id) && byId.has(id)).map((id) => byId.get(id)!);
   const listedNodes = listed.map(describe);
   const selectedNodes = selected.map((n) => ({ ...describeNode(nodes, n), path: pathOf(nodes, n.id) }));
-  // Every open note, wherever it is: notes are work items, so the depth never hides them.
+  // Every open note (in the root, with one), wherever it is: notes are work items, so the depth never hides them.
+  // Short by default (14.2): a long list of notes re-sent in full on every read was most of an outline's size.
   const listedOrSelected = new Set([...shown, ...selected.map((n) => n.id)]);
-  const openNotes = nodes.filter((n) => n.type === "note" && n.status === "open" && !listedOrSelected.has(n.id)).map((n) => ({ ...describeNode(nodes, n), path: pathOf(nodes, n.id) }));
-  const glossary = glossaryFor(library, [...(rootInfo.root ? [rootInfo.root] : []), ...listedNodes, ...selectedNodes, ...openNotes]);
+  const inRoot = root !== undefined ? subtreeIds(nodes, root) : null;
+  const openList = nodes.filter((n) => n.type === "note" && n.status === "open" && !listedOrSelected.has(n.id) && (!inRoot || inRoot.has(n.id)));
+  const mode = query.notes ?? "short";
+  const openNotes: AgentNode[] = mode === "full" ? openList.map((n) => ({ ...describeNode(nodes, n), path: pathOf(nodes, n.id) })) : [];
+  const shortNotes: ShortNote[] = mode === "short" ? openList.flatMap((n) => (n.type === "note" ? [shortNote(nodes, n)] : [])) : [];
+  // The glossary explains what the notes name, short or not.
+  const noted = mode === false ? [] : openList.map((n) => describeNode(nodes, n));
+  const glossary = glossaryFor(library, [...(rootInfo.root ? [rootInfo.root] : []), ...listedNodes, ...selectedNodes, ...noted]);
   return {
     ...header,
     ...rootInfo,
@@ -249,8 +267,17 @@ export function describeScene(open: OpenScene, scene: Scene, query: SceneQuery =
     nodes: listedNodes,
     ...(selectedNodes.length > 0 ? { selected: selectedNodes } : {}),
     ...(openNotes.length > 0 ? { notes: openNotes } : {}),
+    ...(shortNotes.length > 0 ? { notes: shortNotes } : {}),
+    ...(mode === false && openList.length > 0 ? { openNotes: openList.length } : {}),
     ...(glossary ? { glossary } : {}),
   };
+}
+
+/** An open note, short (14.2): its id, label, point, color when not the default, and the start of its text. */
+function shortNote(nodes: SceneNode[], n: Extract<SceneNode, { type: "note" }>): ShortNote {
+  const text = n.text.length > NOTE_PREVIEW ? `${n.text.slice(0, NOTE_PREVIEW)}… (notes: "full")` : n.text;
+  const path = n.parent !== undefined ? pathOf(nodes, n.id) : undefined;
+  return { id: n.id, ...(n.label ? { label: n.label } : {}), x: n.x, y: n.y, z: n.z, text, ...(path ? { path } : {}) };
 }
 
 export type FindQuery = {

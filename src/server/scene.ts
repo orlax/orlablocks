@@ -77,6 +77,7 @@ import {
   type View,
 } from "../shared/scene.types";
 import { firstIds, type NextId } from "../shared/project.types";
+import { facingRotation, type FacingSpec } from "../shared/facing";
 import { arrayItems, followPath, isFollowing, tidyArrayPatch, withFollowed } from "../shared/arrays";
 import { standHeight, standPoses, standProblem, throughPoints } from "../shared/surfaces";
 import { definitionOf, expandInstance } from "../shared/entities";
@@ -261,6 +262,9 @@ export function createSceneStore({
   /** Tells step listeners (persistence) first, so a step is on disk before anyone sees it. */
   const step = (s: Step) => stepListeners.forEach((l) => l(s));
 
+  /** While a dry run is under way (14.2): commits change the nodes for the run to read, and record nothing. */
+  let dry = false;
+
   /**
    * A `draw_shapes` batch's entries already built (plan 13 §6), with the IDs they'll get: while the batch is checked,
    * later entries see them as if they were in the scene (a group to draw into, a line to follow). Empty otherwise.
@@ -310,6 +314,7 @@ export function createSceneStore({
       all.push(prune);
     }
     scene.nodes = nodes;
+    if (dry) return;
     const entry: HistoryEntry = { label, actor, at: Date.now(), ops: all, inverse };
     history.push(entry);
     step({ type: "commit", entry });
@@ -480,6 +485,17 @@ export function createSceneStore({
 
   /** The nodes as edits see them: the scene's, and a batch's entries already built (see `pending`). */
   const present = () => [...scene.nodes, ...pending];
+
+  /** A new instance's rotation in degrees: as given, or worked out from where it faces (14.2). */
+  const facingOf = (prefix: string, d: { x: number; z: number; rotation?: FacingSpec }, errors: string[]): number => {
+    if (d.rotation === undefined) return 0;
+    const r = facingRotation(present(), { x: d.x, z: d.z }, d.rotation);
+    if ("error" in r) {
+      errors.push(`${prefix}.rotation.${r.error}`);
+      return 0;
+    }
+    return r.rotation;
+  };
 
   /** `{ on }` for a node standing on another (plan 13 §7), or an error: its height comes in the step (`refollow`). */
   const standOnFrom = (prefix: string, on: { id: string } | undefined, self: string, errors: string[]) => {
@@ -824,6 +840,24 @@ export function createSceneStore({
     });
 
   return {
+    /**
+     * Runs edits as a DRY RUN (14.2): they're checked and built as usual, and `run` can read the scene they'd make,
+     * but afterwards the scene, the IDs and the history are as they were, and nothing was saved or broadcast.
+     */
+    dryRun<T>(run: () => T): T {
+      if (dry) return run();
+      const nodes = scene.nodes;
+      const ids = { ...nextId };
+      dry = true;
+      try {
+        return run();
+      } finally {
+        dry = false;
+        scene.nodes = nodes;
+        Object.assign(nextId, ids);
+      }
+    },
+
     getScene(): Scene {
       return scene;
     },
@@ -930,7 +964,7 @@ export function createSceneStore({
             x: round2(d.x),
             y: round2(d.y ?? 0),
             z: round2(d.z),
-            rotation: normalizeRotation(d.rotation ?? 0),
+            rotation: normalizeRotation(facingOf(prefix, d, errors)),
             ...standOnFrom(`${prefix}.on`, d.on, predicted[i], errors),
           };
         }
@@ -1039,7 +1073,11 @@ export function createSceneStore({
       } finally {
         pending = [];
       }
-      failIf(errors, "Nothing was drawn.");
+      // Each failing entry named by its ref too (14.2), so a resend fixes them all at once.
+      const refOf = new Map([...refs].map(([ref, id]) => [predicted.indexOf(id), ref]));
+      const named = errors.map((e) => e.replace(/^shapes\[(\d+)\]/, (m, i) => (refOf.has(Number(i)) ? `${m} (ref "${refOf.get(Number(i))}")` : m)));
+      const failing = new Set(errors.map((e) => /^shapes\[(\d+)\]/.exec(e)?.[1]).filter(Boolean)).size;
+      failIf(named, failing > 1 ? `Nothing was drawn: ${failing} entries have problems.` : "Nothing was drawn.");
 
       const created = valid.map((b) => ({ id: newId(b!.type), ...b!, createdBy: actor }) as SceneNode);
       const ids = created.map((b) => b.id);
@@ -1085,8 +1123,20 @@ export function createSceneStore({
           errors.push(...issueLines(`changes[${i}]`, result.error.issues));
           return null;
         }
-        const { id, ...fields } = result.data;
+        const { id, rotation: facing, ...others } = result.data;
         const node = nodes.get(id);
+        // A facing (14.2) becomes degrees here, from where the instance will stand.
+        let rotation: number | undefined;
+        if (typeof facing === "number") rotation = facing;
+        else if (facing !== undefined) {
+          if (node?.type !== "instance") errors.push(`changes[${i}].rotation: only an instance's rotation can be where it faces; give degrees`);
+          else {
+            const r = facingRotation(present(), { x: others.x ?? node.x, z: others.z ?? node.z }, facing);
+            if ("error" in r) errors.push(`changes[${i}].rotation.${r.error}`);
+            else rotation = r.rotation;
+          }
+        }
+        const fields = { ...others, ...(facing !== undefined ? { rotation: rotation ?? 0 } : {}) };
         if (!node) errors.push(`changes[${i}].id: no node "${id}"`);
         if (seen.has(id)) errors.push(`changes[${i}].id: "${id}" appears more than once`);
         seen.add(id);

@@ -907,13 +907,27 @@ const StandOnInputSchema = z
   .strictObject({ id: z.string().describe("The node to stand on (a platform, a room, a ramp, an instance, an array or an item), or an earlier entry's $ref") })
   .describe("Stand on another node's walking surface, kept up to date: y is its top under the pivot (instead of giving y). On an array, item by item");
 
+/**
+ * An instance's rotation as where it faces (plan 14 §5), worked out once into degrees: its local +x toward a point
+ * {x, z} or a node or item, away from one, or along a line or ramp where it's nearest.
+ */
+const FacingTargetSchema = z.union([z.strictObject({ x: z.number(), z: z.number() }), z.string()]);
+export const FacingInputSchema = z.union([
+  z.number(),
+  z.strictObject({ toward: FacingTargetSchema.describe("A point {x, z} or a node or item ID to face") }),
+  z.strictObject({ away: FacingTargetSchema.describe("A point {x, z} or a node or item ID to turn its back on") }),
+  z.strictObject({ along: z.string().describe("A line's or ramp's ID: face along it (its direction of travel) where it passes nearest") }),
+]);
+
 export const InstanceInputSchema = z.strictObject({
   type: z.literal("instance").describe("A placed copy of a library entity (a prefab): it shows the entity's shapes"),
   entity: z.string().describe('The entity\'s ID, e.g. "tree-tall" (get_library lists them)'),
   x: z.number().describe("Where its pivot (the entity's bottom center) goes: world x, meters"),
   z: z.number().describe("World z, meters"),
   y: z.number().optional().describe("The height its bottom stands at (a floor's y, a platform's top). Defaults to 0"),
-  rotation: z.number().optional().describe("Degrees, counterclockwise seen from above, around its pivot. Defaults to 0"),
+  rotation: FacingInputSchema.optional().describe(
+    "Degrees, counterclockwise seen from above, around its pivot (default 0); or where it faces (its local +x), worked out once: { toward: {x, z} or an ID }, { away: ... } or { along: a line or ramp }",
+  ),
   on: StandOnInputSchema.optional(),
   name: field.name.optional().describe('A name for this one, e.g. "entry_window". Not unique'),
   parent: field.parent.optional().describe("ID of the group to put it in. Omit for the top level"),
@@ -1074,7 +1088,9 @@ export const NodeUpdateSchema = z.strictObject({
   width: field.width.optional().describe("Boxes and cylinders: the local x extent; ramps: the width, meters"),
   depth: field.depth.optional(),
   height: field.height.optional(),
-  rotation: field.rotation.optional(),
+  rotation: FacingInputSchema.optional().describe(
+    "Degrees, counterclockwise seen from above; an instance also takes where it faces (its local +x), worked out once: { toward: {x, z} or an ID }, { away: ... } or { along: a line or ramp }",
+  ),
   color: field.color.optional(),
   sides: field.sides.nullable().optional().describe(`Cylinders only: ${MIN_SIDES}..${MAX_SIDES} sides, or null to make it smooth`),
   wall: field.wall

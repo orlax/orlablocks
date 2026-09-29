@@ -8,9 +8,13 @@ import { boundsFor, entitiesOf, type AgentBounds } from "./outline";
 
 /**
  * What the edit tools return (plan 13 §4): a **compact result**, one line per node saying what changed without
- * repeating it: its id, type, kind, name, parent and bounds, with a count instead of points, and for an array where
- * its items are. The agent rarely needs its own input back; `verbose: true` on a tool returns the nodes in full.
+ * repeating it: its id, type, kind, name, parent and bounds, with a count instead of points, and for an array how
+ * many items and how high their tops go (where each one is with `items: true`, since 14.2). The agent rarely needs its
+ * own input back; `verbose: true` on a tool returns the nodes in full.
  */
+
+/** What a compact result includes beyond the default: every array's item lines (`items`, 14.2). */
+export type CompactOptions = { items?: boolean };
 
 /** The most item lines an array's compact line lists; get_scene { root } on the array lists them all. */
 export const MAX_ITEM_LINES = 40;
@@ -57,7 +61,7 @@ export type CompactNode = {
 };
 
 /** One node's compact line, from the scene as it is after the step. */
-export function compactNode(nodes: SceneNode[], n: SceneNode): CompactNode {
+export function compactNode(nodes: SceneNode[], n: SceneNode, opts: CompactOptions = {}): CompactNode {
   const base: CompactNode = {
     id: n.id,
     type: n.type,
@@ -88,16 +92,21 @@ export function compactNode(nodes: SceneNode[], n: SceneNode): CompactNode {
     case "instance":
       return { ...base, entity: n.entity, x: n.x, y: n.y, z: n.z, rotation: n.rotation ?? 0, ...(n.on ? { on: n.on.id } : {}), bounds };
     case "array": {
-      const items = arrayLayout(n).items.length;
+      const placed = arrayLayout(n).items;
+      const tops = placed.map((item) => itemTop(n, item));
       return {
         ...base,
         entities: entitiesOf(n),
         layout: layoutSummary(n.layout),
         ...(n.skip && n.skip.length > 0 ? { skip: n.skip } : {}),
         ...(n.on ? { on: n.on.id } : {}),
-        items,
+        items: placed.length,
         bounds,
-        at: itemLines(n, MAX_ITEM_LINES),
+        ...(opts.items
+          ? { at: itemLines(n, MAX_ITEM_LINES) }
+          : placed.length > 0
+            ? { tops: Math.min(...tops) === Math.max(...tops) ? `${tops[0]}` : `${round2(Math.min(...tops))}–${round2(Math.max(...tops))}`, at: `items: true (or get_scene { root: "${n.id}" }) for where each item is` }
+            : {}),
       };
     }
     default:
@@ -106,10 +115,10 @@ export function compactNode(nodes: SceneNode[], n: SceneNode): CompactNode {
 }
 
 /** The compact lines of the given nodes (by ID, from the scene after the step), in the order given. */
-export function compactNodes(nodes: SceneNode[], ids: string[]): CompactNode[] {
+export function compactNodes(nodes: SceneNode[], ids: string[], opts: CompactOptions = {}): CompactNode[] {
   const byId = new Map(nodes.map((n) => [n.id, n]));
   return ids.flatMap((id) => {
     const n = byId.get(id);
-    return n ? [compactNode(nodes, n)] : [];
+    return n ? [compactNode(nodes, n, opts)] : [];
   });
 }

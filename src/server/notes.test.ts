@@ -121,6 +121,21 @@ describe("notes for the agent", () => {
     expect(deep).not.toHaveProperty("notes");
   });
 
+  it("lists open notes short by default, only the root's with one, full or as a count when asked (14.2)", () => {
+    const { lib, store, todo } = castle();
+    const scene = store.getScene();
+    const short = describeScene(open, scene, {}, { library: lib.get() }).notes![0];
+    expect(Object.keys(short).sort()).toEqual(["id", "label", "path", "text", "x", "y", "z"]);
+    const full = describeScene(open, scene, { notes: "full" }, { library: lib.get() }).notes![0];
+    expect(full).toMatchObject({ id: todo.id, type: "note", status: "open" });
+    const none = describeScene(open, scene, { notes: false }, { library: lib.get() });
+    expect(none).not.toHaveProperty("notes");
+    expect(none.openNotes).toBe(1);
+    // A root that doesn't hold the note doesn't list it.
+    const [elsewhere] = store.drawShapes([{ type: "group", ref: "g", name: "elsewhere" }, { kind: "room", x: 50, z: 50, width: 4, depth: 4, parent: "$g" }], "agent");
+    expect(describeScene(open, store.getScene(), { root: elsewhere.id }, { library: lib.get() })).not.toHaveProperty("notes");
+  });
+
   it("finds notes by status and by their text", () => {
     const { lib, store, todo, handled } = castle();
     const nodes = store.getScene().nodes;

@@ -38,21 +38,24 @@ describe("compact results", () => {
     expect(JSON.stringify(c)).not.toContain('"x":3,');
   });
 
-  it("give an array's item lines: where each stands, its top and its turn", () => {
-    const c = compactNode([], ring(4));
-    expect(c.items).toBe(4);
+  it("give an array's count and tops by default, and its item lines only when asked (14.2)", () => {
+    const short = compactNode([], ring(4));
+    expect(short.items).toBe(4);
+    expect(short.tops).toBe("3.5");
+    expect(typeof short.at).toBe("string");
+    const c = compactNode([], ring(4), { items: true });
     // Item 1 is at 90° (north, -z), turned tangent; its top is the slab's 0.5 above y 3.
     expect(c.at).toEqual(["array_1/0 → 10, 3, 0 · top 3.5 · 90°", "array_1/1 → 0, 3, -10 · top 3.5 · 180°", "array_1/2 → -10, 3, 0 · top 3.5 · 270°", "array_1/3 → 0, 3, 10 · top 3.5 · 0°"]);
   });
 
   it("list the first item lines of a long array, then say how to read the rest", () => {
-    const at = compactNode([], ring(50)).at as string[];
+    const at = compactNode([], ring(50), { items: true }).at as string[];
     expect(at).toHaveLength(MAX_ITEM_LINES + 1);
     expect(at.at(-1)).toBe(`… 10 more: get_scene { root: "array_1" }`);
   });
 
   it("leave skipped items out, keeping their indices", () => {
-    const at = compactNode([], ring(4, { skip: [1] })).at as string[];
+    const at = compactNode([], ring(4, { skip: [1] }), { items: true }).at as string[];
     expect(at.map((l) => l.split(" ")[0])).toEqual(["array_1/0", "array_1/2", "array_1/3"]);
   });
 
