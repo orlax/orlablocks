@@ -39,7 +39,5 @@ Orlando's idea from `thinking-07`: the human and the agent, from the same brief,
 - From Claude Code's session, count the agent's tool calls, renders and tokens.
 - For quality, a `render_view` sheet of each scene side by side (the human judges), plus `check_scene` and, for a closed level, `check_enclosure` on each.
 
-**The scripted valley.** This isn't the race; it's a baseline for what the tools cost. `scripts/eval-valley.mjs` runs plan 14's §1 valley against a spare server in **9 calls and 13,142 characters both ways**. A get_scene of the full scene is 6,021 of those; the transform that makes the 1:10 sketch again at 4.5× is 413. The same work before phase 14 meant re-deriving the sketch point by point, an atan2 per ring, and working out sealing, flight times and clearances by hand, with no tool counting any of it.
-
 **Race log.**
 - ____-__-__: (brief, times, steps, tokens, the verdict)
