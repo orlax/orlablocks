@@ -5,7 +5,7 @@
   "license": "AGPL-3.0-only",
   "type": "module",
   "scripts": {
-    "dev": "NODE_ENV=development tsx src/server/main.ts",
+    "dev": "NODE_ENV=development tsx --env-file-if-exists=.env src/server/main.ts",
     "build": "npm run build:web && npm run build:server && npm run build:control-panel",
     "build:web": "vite build",
     "build:server": "node scripts/build-server.mjs",

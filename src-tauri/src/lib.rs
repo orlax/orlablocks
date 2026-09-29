@@ -345,8 +345,8 @@ fn restart_server(state: State<'_, ServerState>) -> bool {
     true
 }
 
-#[tauri::command]
-fn stop_server(state: State<'_, ServerState>) -> bool {
+/// Stops the server if it's running; false if there was none.
+fn stop_child(state: &ServerState) -> bool {
     let mut child_guard = state.child.lock().unwrap();
     if let Some(ref mut child) = *child_guard {
         let _ = child.kill();
@@ -356,6 +356,11 @@ fn stop_server(state: State<'_, ServerState>) -> bool {
     } else {
         false
     }
+}
+
+#[tauri::command]
+fn stop_server(state: State<'_, ServerState>) -> bool {
+    stop_child(&state)
 }
 
 #[tauri::command]
@@ -487,17 +492,18 @@ pub fn run() {
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {
-                let state: State<'_, ServerState> = window.state();
-                let mut child_guard = state.child.lock().unwrap();
-                if let Some(ref mut child) = *child_guard {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    *child_guard = None;
-                }
+                stop_child(&window.state::<ServerState>());
             }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        // Quitting the app (Cmd+Q, the dock's Quit) can end it without destroying the window first, which would
+        // leave the server running on its own, holding the port and the data folder's lock.
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event {
+                stop_child(&app.state::<ServerState>());
+            }
+        });
 }
 
 #[cfg(all(test, feature = "portable"))]

@@ -1,0 +1,444 @@
+# 14 — Real Work Improvements
+
+> **For the agent reading this:** Read `plans/thinking-07-first-real-work-day.md` first. It holds Orlando's notes from the first full day of designing a real level (a flight level, with sketches the agent scaled up), then the agent's own feedback from that session. This plan refers to the human's items as **H1–H8** and the agent's as **A1–A9**, in the order they appear there. Background: `plans/13-agent-ergonomics` (compact results, item lines, `on` / `through`, `check_sight`, `hide` / `clip`), `plans/07-geometry-tools` (tilt, taper and bevel), `plans/07B-geometry-refinements` (drawing on surfaces, the view bar) and `plans/09-review-loop` (`render_view` and its broker).
+>
+> The phase is long on purpose, and it has four parts:
+> - **the editor at scale:** a 3D cursor, drawing on sloped tops, hiding lines, zooming out much farther, and walking without trapping the mouse (H1–H5);
+> - **transforms:** uniform **scale** and free **tilt** for everything, groups and free-forms included, for the human and the agent. One `transform_nodes` call copies, scales, turns and mirrors a sketch (H7, H8, A4, A5);
+> - **the agent's own scene:** **Work with agent** pins a scene for the agent while the human works on another scene of the same project, so they can race (H6);
+> - **what the agent checks:** leaner results and dry runs, `get_changes` (what the human did), a **slice** render and `check_enclosure` (sealing), `measure_path`, and a lint pass (`check_scene`), plus the guide and skill content the session asked for (A1–A3, A5–A8).
+>
+> The work is split into small increments (§13). Each one ends with the human ↔ agent loop working, `npm test` and `npm run typecheck` passing, and a scripted check against a spare server (`PORT=5171 DATA_DIR=<scratch>`). Where the editor changes, it also ends with a browser checklist for Orlando. The server's MCP version goes up one patch per increment, starting from 0.0.28: restart the server and reconnect with `/mcp` after each one. Add this phase's terms to `GLOSSARY.md` (marked "from 14") as they land. Log progress in §17 at the end of this file.
+
+---
+
+## 1. Goal
+
+The flight-level session, done again with this phase built:
+
+1. Orlando sketches a valley at 1:10, with a free-form ridge tilted a little, a group of peaks tilted as one, and a race-ring entity. Orlando presses **Work with agent** on a new scene, `valley_agent`, then opens `valley_human` in the same project to work in.
+2. The agent reads the sketch and makes it once at scale, in **one call**: `transform_nodes { ids: [sketch group], copy: true, scale: 4.5, mirror: "x", to: { x: 0, z: 0 } }`. Everything grows 4.5×: walls get thicker, heights and steps taller, and the rings' instances get `scale: 4.5`.
+3. It places race rings with `rotation: { along: "line_7" }`, with no atan2.
+4. It runs **`check_enclosure { from: [0, 20, 0], band: [0, 120] }`**. The air escapes through two gaps between peaks at y 96–110, and the result names the pair of nodes at each gap. It closes them and checks again: sealed. A **slice** render (`render_view { view: "plan", slice: 110 }`) shows the outlines at 110 m.
+5. **`measure_path { id: "line_7", speed: 16, climb_rate: 6, probe: 5 }`** returns the length, the time, the steepest part, where the climb rate is too high, and the tightest clearance, with where each one is.
+6. **`check_scene`** flags an instance floating 40 m above anything and a note that names a removed ring.
+7. Between turns, Orlando reshapes a mountain in `valley_agent`. The agent's next `get_scene` says "2 human steps since your last". **`get_changes`** says what changed: `freeform_12` points and height 200 → 143.
+8. Meanwhile Orlando builds a version of their own in `valley_human`, with the **3D cursor** showing where the pointer is. Orlando draws on a mountain's rounded top, zooms out to see all 3 km, and walks the route in one window while watching the agent's scene in another, releasing the mouse without fighting the pointer lock.
+9. The race log in `thinking-04-evals` gives both times and step counts from the two scenes' histories.
+
+---
+
+## 2. Scope
+
+### In
+
+- **The editor (14.1):**
+  - a 3D cursor (H1);
+  - drawing on the sloped or rounded top of a tapered or bevelled volume (H2, a bug);
+  - a paused walk that leaves the mouse free (H3);
+  - a lines toggle in the view bar (H4);
+  - the zoom-out limit raised about 8× (H5).
+- **Leaner results and validation (14.2):**
+  - notes in `get_scene` scoped to `root`, with short text by default (A6);
+  - item lines opt-in (A6);
+  - `dry_run` on the edit tools (A7);
+  - the ramp error stating the smallest radius it allows (A7);
+  - facing helpers `rotation: { toward }` / `{ along }` (A5);
+  - the entity pivot warning fixed for odd-sided cylinders (A8).
+- **Uniform scale (14.3):** `scale` on instances and arrays, a shared `scaleShape` for every type, `transform_nodes` (A4, H8), and a scale handle and field in the editor for any selection.
+- **Free tilt (14.4):** pitch and roll on free-forms, rooms, instances and arrays. Tilting a group or a multi-selection turns each member rigidly about one pivot. The gizmo's pitch and roll rings work for any selection, and `rotate_nodes` takes an axis (H7).
+- **Work with agent (14.5):** the server holds a second document of the same project for the agent. `render_view` draws scenes that no tab shows (H6).
+- **What the human changed (14.6):** `get_changes`, with a hint in `get_scene` (A2).
+- **Sealing (14.7):** `render_view` plan with `slice`, and `check_enclosure` (A1).
+- **Measuring and lint (14.8):** `measure_path` (A3) and `check_scene` (A8).
+- **Guide and skill (14.9):** the process lessons in the core instructions and the `review` topic, new sections in the default design guide, and `skills/orlablocks/SKILL.md` brought up to date (A's "worth encoding" and "content to write").
+- **The race (14.10):** the design race as an eval, logged.
+
+### Out (deliberately deferred)
+
+- **Groups with a transform of their own** (a group-local frame). A tilted or scaled group is baked into its members (§6, §7), and groups stay positionless. This keeps the phase free of a data-model refactor.
+- **Non-uniform scale of instances** (stretching an entity along one axis). Only uniform `scale`. Stretching a single box or free-form stays what the scale handles already do.
+- **An agent scene in another project.** `src/shared/entities.ts` keeps one registry of definitions per process, and the server one library and one player. With both scenes in one project they're shared as they are (§8).
+- **Several agents,** each with its own scene: one invited scene per server.
+- **The facts as data and `check_route`** (13's T4). `measure_path` takes its numbers per call (§11). A later phase can read them from the project.
+- **A ceiling as a scene setting (A9),** and a lint check or render tied to it. It was specific to the flight level. `check_enclosure` takes the height to check up to per call (§10).
+- **Project-specific content.** The flight level's art direction (Witch Hat Atelier / Ghibli), its ceiling, sealing and anti-skip rules, and a "flight level" checklist belong in that project's design guide and library. The agent writes them there with `update_library`, not in this repo. The repo gets the generic parts (§12).
+- **Editor performance** with many shapes stays its own phase (`thinking-05-performance`). The zoom change only makes large scenes visible.
+
+---
+
+## 3. Naming and data
+
+### Terms
+
+| Term | Meaning |
+|---|---|
+| **3D cursor** | the small marker where the pointer's ray meets the scene (or the ground), with its x, y, z in the status bar |
+| **released (walk)** | a paused walk with the menu closed and the mouse free: clicks don't take the lock back, and Enter or **Continue** does |
+| **scale (instance, array)** | a uniform factor on an instance's or array's entity shapes, around its pivot; 1 by default |
+| **tilt** | pitch and roll (degrees around a shape's own x and z axes, through its center), as boxes and cylinders have them since 07 |
+| **transform** | one step that copies (optionally), scales, tilts, turns, mirrors and moves nodes about one pivot: `transform_nodes` |
+| **agent's scene** | the scene the human invited the agent to with **Work with agent**; the agent's tools act on it wherever the human is |
+| **slice** | a plan render with each solid's outline cut at one height |
+| **enclosure check** | `check_enclosure`: a flood fill of the air from a point, within a height band, reporting where it escapes |
+| **lint** | `check_scene`: a list of likely mistakes (floating things, stale notes, off-center pivots, broken links) |
+
+### Data
+
+- **Instances and arrays:** `scale?: number` (0.01–100, 1 by default, never stored at 1), and `pitch?`, `roll?` (degrees). An array's scale and tilt apply to every item, and its tilt also turns its layout's positions (§7).
+- **Free-forms and rooms:** `pitch?`, `roll?`, through the center of their bounds. A free-form's tilt is about its footprint's bounds center at mid-height, recomputed from its points, so editing a point of a tilted free-form moves its pivot a little. That's acceptable for a blockout.
+- **History:** every entry gets a `seq` in memory (the log already has it) and keeps its `actor`. `get_changes` reads them (§9).
+- **App file:** `agentScene?: { project, scene }`, so the invitation survives a restart.
+
+---
+
+## 4. The editor (14.1)
+
+### 3D cursor (H1)
+
+- On every pointer move, the view already casts to the ground (`onCursor`, `Viewport.tsx:1567`), and the draw tools cast to surfaces. Cast once with `pickHit` against the pickable meshes, and fall back to the ground. Put a small sphere there (about 6 px on screen, scaled with the camera distance as the gizmo is), with a short disc along the hit face's normal so slopes read.
+- `rayMeshAll` (`src/shared/ray.ts:68`) has the triangle's edges, so `pickHit` returns the `normal` as well.
+- The status bar shows `x, y, z` (today it shows the ground point). A **cursor** toggle goes in the view bar, on by default and kept in `localStorage`. The cursor hides during a gizmo drag and while walking.
+- For the agent, the view reports `pointer: { x, y, z, id? }`: the last point the human's cursor rested on (throttled, sent after 300 ms still), so "put it here" means something. `get_scene`'s view carries it.
+
+### Drawing on sloped tops (H2)
+
+- `surfaceUnder` (`src/shared/ray.ts:106-132`) counts only level faces: a volume's last ring, which a taper shrinks and a bevel insets, down to nothing at `taper: 1` or a full bevel. The ray passes through the slope, so the new shape lands on the ground.
+- Fix: when the ray hits a volume's mesh outside the flat top ring, stand on the hit point's height, as long as the face isn't steeper than 60°. That covers the draw tools, the Pen's `penY` and the Walk drop point. The flat-top test stays for what it does well (the landing label says "top"; on a slope it says "slope").
+- `pick.test.ts:202-210` asserts today's pass-through. Change it: a ray onto a bevel's rounding lands on it, and `taper: 1` lands on the cone.
+
+### Walking without trapping the mouse (H3)
+
+- Today (`Viewport.tsx:650-796`): Esc drops the lock and opens the menu, and Enter or **Continue** relocks. A refused relock hides the menu and shows "Click to continue walking", and any click on the view relocks. So a click that only focuses the window takes the mouse again, and Orlando's workaround (Esc, then Enter quickly, so Chrome refuses) is the only way to stay released.
+- New: the menu gets **Release mouse** (and Tab toggles it). **Released** hides the menu and shows a small "Paused · Enter to continue" chip. Clicks in the view do nothing, so they focus the window safely, and Enter or the chip's **Continue** takes the lock back. A refused lock also leads to released, not to click-to-relock. Losing window focus while walking pauses the walk. It already does, through the lock loss.
+- While released, the walk view stays as it is: the other window can be worked in, and this one keeps showing the walk.
+
+### Hiding lines (H4)
+
+- `showLines` next to `showNotes` (`App.tsx:270`), a view bar button beside the notes one, and the same filter (`Viewport.tsx:1005`): hidden lines aren't drawn or picked, and selected ones still show.
+- The notes, lines, holes and grid toggles are kept in `localStorage` from now on (today only stats and panels are).
+- Captures keep their own options (the shutter takes both; `render_view` draws lines and leaves notes out), as today.
+
+### Zooming out farther (H5)
+
+- The limit (`camera.ts:25-26`, `MAX_DISTANCE = 600`) is there because the far plane (`MAX_DISTANCE × 4`), the capture cameras' far planes and the grid (a 4 km plane) are sized from it. Unlimited would need a far plane that follows the distance, with depth precision worsening as it does.
+- New: `MAX_DISTANCE = 5000` (about 8×: a view about 15 km deep).
+  - The near and far planes follow the distance: `near = max(0.5, d / 400)`, `far = d × 6`. The near plane stays 0.5 up to 200 m, so close work is unchanged.
+  - The grid plane is sized from the distance.
+  - `renderView.ts:268`'s literal 600 becomes the constant.
+  - Shadows stay limited to about 120 m around the focus, as designed.
+- Checks: at 5000 there's no z-fighting on coplanar floors 1 m apart, labels and lines stay sized, and `view.bounds` stays finite (pitch 35° − half the FOV > 0, so it does).
+
+---
+
+## 5. Leaner results and validation (14.2)
+
+### Notes and item lines (A6)
+
+- `get_scene` lists open notes in full, from the whole scene, even with `root` (`outline.ts:236-251`). Now:
+  - With `root`, it lists the open notes in that subtree.
+  - Without `root`, it lists every open note in a short form (id, label, its first 120 characters, its point), as `find_nodes` already does.
+  - `notes: "full"` gives the whole text, and `notes: false` leaves them out, with a count left behind.
+- Item lines in edit results become **opt-in** (`items: true`). By default an array's compact line says `24 items · tops 12.0–19.5 · get_scene { root: "array_3" } for where`. `get_scene { root: array }` and `find_nodes { under }` list them, as today. The `arrays` topic says when to ask.
+
+### Dry runs and better errors (A7)
+
+- `dry_run: true` on `draw_shapes`, `update_nodes`, `transform_nodes`, `move_nodes`, `rotate_nodes` and `mirror_nodes`. It checks and builds the whole batch as usual, but commits nothing, and returns the compact result and every error, not only the first entry's.
+- The ramp error (`geometry.ts:428`) states the limit: "turns too tightly near point 4: its centerline radius there is 2.1 m, and a 6 m wide ramp needs at least 3.0 m (width / 2). Widen the curve or narrow the ramp to 4.2 m". The radius comes from the three stations around the fold.
+- A failed batch's message lists every failing entry by index, with its `ref` if it has one, so a resend fixes all of them at once.
+
+### Facing helpers (A5)
+
+- Instances in `draw_shapes` and `update_nodes` take `rotation` as a number or as:
+  - `{ toward: {x, z} | id }`: turned so its local +z (the facing convention in the `entities` topic) points at it;
+  - `{ along: id }`: tangent to a line or ramp at its nearest point;
+  - `{ away: … }`.
+- The helper is resolved to degrees when it's drawn and not kept (not live, unlike `on`). The result says the angle. Arrays already have `facing`.
+
+### The pivot warning (A8)
+
+- `define_entity` and `make_entity` warn when the shapes' middle is more than 0.5 m off the origin, measured on the bounds. A 7- or 9-sided cylinder's bounds aren't centered on its center, so it warns wrongly. Measure on the shapes' own centers (for a single footprinted shape, its x and z) instead of the bounds.
+
+---
+
+## 6. Uniform scale (14.3)
+
+### Geometry
+
+- `scaleShape(node, factor, pivot: {x, y, z})` in `geometry.ts`, beside `moveShape`, `rotateShape` and `mirrorShape`, one case per type:
+  - **box, cylinder:** center and `y` relative to the pivot; `width`, `depth`, `height` and a room's `wall` × factor. Taper, bevel, pitch and roll are ratios and angles, so they keep.
+  - **free-form:** points and handles relative to the pivot, `y`, `height` and a room's `wall` × factor.
+  - **ramp:** points (with their y) and handles, `width` and `step` × factor, so a scaled stair has the same number of steps, each bigger.
+  - **line:** 3D points and handles. Its `thickness` is in screen px and keeps.
+  - **note:** its point only.
+  - **instance:** its position relative to the pivot, and `scale` × factor.
+  - **array:** its layout's lengths (path points, spacing, circle center, radius and rise, grid spacings, scatter area and minimum distance, jitter), and `scale` × factor for its items.
+  - **group:** its members, recursively, about the same pivot.
+- **Scale means everything scales:** walls get thicker and taller, steps bigger, and nothing keeps its size. The only exceptions are what isn't in meters: a line's `thickness` (screen px), angles and the taper and bevel fractions. A wall that comes out too thick after scaling a sketch is one `update_nodes` away.
+- `scale` on instances goes through `expandInstance` (`entities.ts`): the definition's shapes scaled about the pivot, the one place the geometry, rendering, picking, holes, surfaces and sight all read an instance's shapes. Mirroring and bounds follow from that.
+- `on` and `through` survive a scale: an instance standing on something keeps standing on it, a through line's stops are recomputed, and `along` follows its scaled path.
+
+### MCP: `transform_nodes` (A4, H8)
+
+- `transform_nodes { ids, copy?, count?, scale?, tilt?: { pitch, roll }, rotate?, mirror?: "x" | "z", pivot?, to?, move?, dry_run?, verbose? }`. In order: scale, tilt, turn and mirror about the pivot (the selection's bounds' bottom center by default), then move so the pivot lands on `to` (or by `move`).
+  - One step, and one undo.
+  - With `copy`, the originals stay and the copies get new IDs. A copied group's internal links (`along`, `on`, `through`, holes' groups) point to the copies, as `move_nodes { copy }` does today.
+  - The result gives the pivot, the copies' IDs, and a map `{ old: new }`.
+- `move_nodes`, `rotate_nodes` and `mirror_nodes` stay as they are, as shorthands.
+- The core instructions say: to start from the human's sketch, `transform_nodes` a copy of it; never redraw it point by point.
+
+### The editor
+
+- The gizmo gets a **uniform scale** handle (a corner cube) for any selection, groups and multi-selection included, with the same pivot rule and a readout of the factor (×1.50) while dragging. Shift snaps to 0.25 steps.
+- The single shape's scale handles stay as they are (a non-uniform resize of one box, cylinder or free-form).
+- The inspector gets a **scale** field for instances and arrays, and a **Scale…** action for any selection (a factor), which runs the same `transformNodes` in the store.
+
+---
+
+## 7. Free tilt (14.4)
+
+Today only a single box or cylinder volume or hole tilts: it has `pitch` and `roll`, and `toWorld3` applies roll, then pitch, then yaw. Orlando wants groups and free-forms to tilt the same way (H7).
+
+### Data
+
+- **Free-forms** get `pitch` and `roll`, through their footprint's bounds center at mid-height (§3). Their mesh and ray code go through the same `toWorld3` / `toLocal3` with a zero yaw, because a free-form's points already carry its turn.
+- **Rooms** can tilt: `KIND_FIELDS` drops the volume-only rule for pitch and roll. Walls and floor are built in the local frame and turned, and holes already cut in the hole's local frame. A tilted room has no walking surface (`topOf` returns none, as for tilted volumes).
+- **Instances** get `pitch` and `roll`. `expandInstance` composes the instance's turn with each definition shape's own turn.
+- **Arrays** get `pitch` and `roll`. They turn the layout's positions about the array's center and compose with every item's turn. An array tilted this way stops following an outline (`along`) and standing (`on`), and a warning says so.
+- Lines and ramps have their tilt **baked into their points**, exactly for lines and approximately for ramps: the centerline tilts, the width stays level, and a warning says so. Notes move with their point.
+
+### Tilting many things as one
+
+- `tiltShape(node, rotation: Quaternion, pivot: {x, y, z})` in `geometry.ts`: the node's center orbits the pivot in 3D, and its orientation (yaw, pitch, roll) becomes `rotation × its own`, decomposed back into yaw, pitch and roll in the order `toWorld3` uses. Near ±90° pitch, it goes to the equivalent with roll 0, so the fields stay readable. A group applies it to its members recursively.
+- `rotate_nodes` gains `axis: "y" | "x" | "z"` (default `"y"`, world axes) and a 3D `pivot`. `transform_nodes` takes `tilt`.
+- The gizmo's pitch and roll rings (`Viewport.tsx:1068`, `tiltable`) appear for any selection whose members all tilt, so groups and multi-selections too. They snap at 15° (Shift for free). A selection that holds an array following an outline shows the rings with a warning chip.
+- The inspector's **Tilt** section (`TiltSection`) shows for free-forms, rooms, instances and arrays. A **yaw** row for boxes, cylinders and instances, which only the gizmo sets today, lets the human type an angle.
+
+### Risks
+
+- Composing and decomposing angles is where the bugs will be. Unit tests: tilt then untilt with the returned pivot is exact (to 2 decimals), and a group tilted 30° and back is unchanged.
+- Holes in a tilted group: the hole tilts with the group, and cuts in its own frame. Check that a door in a tilted room still cuts.
+- Surfaces and `on`: a thing standing on a now-tilted node unlinks (there's no level top to stand on).
+
+---
+
+## 8. Work with agent (14.5)
+
+### The model
+
+- Today the workspace holds **one** open document, and every tab and the agent share it (`workspace.ts:190-229`). Opening another scene reloads the same store, so the agent's next call acts on what the human just opened.
+- New: the per-document state (`open`, its `SceneStore`, its shots, its history log, its step hook, its editor state) moves out of the workspace into a **document** object. The workspace holds `human` and `agent` documents, which are **the same object** unless the human has invited the agent to another scene of the project. So the default is exactly today's shared scene.
+- **Work with agent** (in the scene menu and the top bar) pins the open scene as the agent's. The top bar then shows an **Agent: valley_agent** chip. When the human opens another scene of the project, the agent's document stays loaded in memory and keeps saving.
+  - Opening the agent's scene again makes the two the same object again, so both are live in one store, as today.
+  - **Stop working with agent** (on the chip) unpins it.
+- The library, the entity definitions (the registry in `entities.ts`) and the player settings are per project. With both documents in one project they're shared as they are.
+- Opening **another project** ends the invitation. The agent's next call fails once with "the human ended the invitation to valley_agent", then its tools act on the human's scene again.
+- The MCP tools resolve `workspace.agent` instead of `requireScene()`. ws keeps acting on `workspace.human`. `uses()` counts both live documents. `app.json` keeps `agentScene`, so a restart restores both.
+
+### What only the human's scene has
+
+- `view`, `selection`, `isolated` and `walking` belong to a tab. When the agent's scene isn't on screen, `get_scene` reports `view: null · the human is in valley_human`, and `"human"` isn't available as an eye in `check_sight`.
+- **Entity edit mode**: the human edits a definition in their own document, and every instance in both scenes follows (the registry is shared). The agent's scene gets the refollow step as an automatic step labeled "entity changed".
+
+### Rendering a scene no tab shows
+
+- `render_view` asks a tab to draw, and the tab draws its own scene (`Viewport.tsx:584-599`). The render job now carries the agent document's `nodes`, its hidden set and its shots, and the tab draws them with `captureNodes`, off screen, which the entity sheets already do. It works whichever scene the tab shows.
+- `shot` and `shots` views read the agent document's shots. The Shots panel shows the tab's own scene's shots.
+
+### The editor
+
+- A tab can show the agent's scene: open it as any scene, which rejoins it. A second window watching the agent while Orlando works in the first is the race setup. H3 makes switching between the windows painless.
+- The scene list marks the agent's scene with a small badge.
+
+### Risks
+
+- The size of the refactor. Every `workspace.*` call site in `mcp.ts`, `ws.ts`, `render.ts` and `shots.ts` needs to say which document (the survey lists them).
+  - Keep one `doc()` accessor per transport, and make the single-document case a test that passes unchanged.
+  - Rename and duplicate special-case the open scene (`workspace.ts:753, :769`), and now check both documents.
+
+---
+
+## 9. What the human changed (14.6)
+
+### `get_changes` (A2)
+
+- The history now numbers its steps (`seq`, the log's number) in memory. `get_changes { since?: seq }` defaults to the agent's last step in this document. It returns:
+  - the steps since then (seq, actor, label, time);
+  - a net diff by node: added (compact lines), removed (IDs and names) and changed, each changed node with its fields, `old → new` for numbers and strings, and `points: 12 → 14 (changed)` for point lists;
+  - library and entity changes in the same window, by label (their histories have actors too).
+- Undo and redo lines count as the actor who pressed them (ws: human, MCP: agent), so undo lines now record it.
+- `get_scene`'s header: `3 human steps since your last (get_changes)`, when there are any. The core instructions say to check it at the start of every turn.
+
+---
+
+## 10. Sealing (14.7)
+
+### A slice render (A1, second form)
+
+- `render_view { view: "plan", slice: y }`: a plan with each solid's cross-section at height `y`, drawn bold over a faint plan.
+  - The server works out the sections: every expanded solid's mesh triangles crossed by the plane give segments, joined into outlines, with holes' sections drawn dashed. Where two outlines come within a set distance (`gap`, 0.5 m by default), the gap is marked in red with its width.
+  - The render's text lists the gaps.
+- Several heights: `slice: [60, 90, 110]`, a small multiple, one panel each.
+
+### `check_enclosure` (A1, first form)
+
+- `check_enclosure { from: {x, y, z}, band?: [y0, y1], cell?, bounds? }`: a flood fill of the air from `from`, on a voxel grid, in `band`: the heights it should be sealed over, from the ground to the top of the highest solid by default. The band's top is a lid.
+  - The cell is 2 m by default, and finer (down to 0.5 m) near solids where it's cheap enough.
+  - A cell is solid when its center is inside any expanded solid that isn't hidden or cut there by a hole. The tests are point in mesh, with parity along one ray, and bounds boxes prune the candidates.
+- **Escaping:** the air reaches the grid's side (the scene's bounds plus a margin). With `open_top: true`, reaching the band's top counts as escaping too.
+- The result gives `sealed` or `escapes`: the escape points clustered into places, each with its height range, its width, and the two nearest solids on either side (`boundary: between instance_3 and instance_4 at x 120, z −40, y 96–110, 6 m wide`), nearest to `from` first. It also gives the air's volume and its bounds.
+- A time limit and a cell count limit (about 2 million). Beyond them, it coarsens and says so.
+- The `review` topic: for an enclosed level, run it after every change to the boundary, before rendering.
+
+---
+
+## 11. Measuring and lint (14.8)
+
+### `measure_path` (A3)
+
+- `measure_path { id, speed?, climb_rate?, sink_rate?, probe?, max_slope? }` on a line, a through line or a ramp. It returns:
+  - the 3D length and, with `speed`, the time;
+  - the steepest climb and descent (as a slope and, with `speed`, in m/s), with where they are;
+  - every stretch over `climb_rate`, `sink_rate` or `max_slope`, from and to (as distance along, and x, y, z);
+  - with `probe` (a radius), the tightest clearance to any solid, where it is and against which node, and every stretch where the clearance is under the probe;
+  - the height range, and, with `max_y`, the stretches above it.
+- Clearance comes from sampled points along the path (every `probe / 2`), with a point-to-mesh distance over the solids near each sample. Bounds boxes, grown by the probe, prune them.
+- The numbers are per call (§2, Out). The `review` topic says to take them from the design guide's game facts.
+
+### `check_scene` (A8)
+
+- `check_scene { root?, checks? }`: a list of findings, each `{ check, id, message, at }`, nearest-first by severity. The checks:
+  - **floating:** an instance, array item or volume more than 0.5 m above whatever is under it (or the ground), unless it stands `on` something or is tagged as allowed (a `floats` list in the call). This catches the y 122 typo;
+  - **stale notes:** a note whose text names a node ID or an item (`array_3/11`) that doesn't exist, or an item past the array's count;
+  - **off-center entities:** a definition whose middle is off its pivot (with §5's fix, so no false alarms);
+  - **links:** a through line that has lost stops, an `on` whose target is gone, an array following nothing;
+  - **holes that cut nothing,** empty groups, zero-size shapes, and two identical nodes at the same place (a copy dropped twice).
+- Nothing is changed, and each finding has the ID to fix. The `review` topic: run it at the end of a session, and after big batches.
+
+---
+
+## 12. Guide and skill content (14.9)
+
+In the repo (generic, for every project):
+
+- **Core instructions (`guide.ts`):**
+  - At the start, list the tools and ask of each one whether it replaces manual work. `check_sight`, `check_enclosure`, `measure_path` and `check_scene` exist so you don't do their arithmetic.
+  - Ask the constraints first: team size and timeline, art references, and how finished the result should be.
+  - When the human sketches, the sketch is the brief: `transform_nodes` a copy of it to scale, and never re-derive it.
+  - Read `get_changes` at the start of every turn when the header says the human made changes.
+- **The `review` topic:** the sealing loop (`check_enclosure` up to the height that must be sealed, then a slice there), the path loop (`measure_path`), and an **end-of-session audit**: `check_scene`, open notes still true (mark them done or rewrite them), entities matching their descriptions, and the design guide updated with what was decided.
+- **The default design guide (`defaultGuide.ts`),** which new projects start with, gets:
+  - an **Art direction** section (references, silhouettes, what to avoid; blank to fill in);
+  - a **Constraints** section (team, timeline, finish);
+  - under the game's facts, a line for the heights the level must be sealed to, if any, and how sealing works (shapes must overlap at that height, not only at their base);
+  - a **Working with sketches** section.
+- **`skills/orlablocks/SKILL.md`:** brought up to date with the tools since 11, the workflow above, and the sketch → `transform_nodes` flow.
+
+Outside the repo, and not in this phase's code: the flight level project's own design guide gets its art direction, the ceiling, the sealing and anti-skip rules, and a `@fly` skill (or its facts) for broom metrics. The agent writes them in that project with `update_library` in a working session, as the session's agent offered.
+
+---
+
+## 13. Increments
+
+Ordered to land Orlando's own blockers first, then what saves the agent the most, with the two big refactors (transforms, two documents) in the middle, where later checks build on them.
+
+### 14.1 — The editor at scale
+The 3D cursor and `view.pointer`, drawing on sloped tops, released walks, the lines toggle and remembered toggles, and the zoom limit with distance-following near and far planes. Browser: see §15, items 1–5.
+
+### 14.2 — Leaner results and validation
+Scoped notes and `notes`, opt-in `items`, `dry_run`, the ramp radius error, batch errors by entry, `rotation: { toward | along | away }`, and the pivot warning. Check: `scripts/eval-temple.mjs`'s characters drop, and a dry run of a bad batch lists every error.
+
+### 14.3 — Uniform scale
+`scaleShape` per type (walls and steps included), `scale` on instances and arrays through `expandInstance`, `transform_nodes` (scale, turn, mirror, move and copy; tilt comes in 14.4), the gizmo's uniform handle, and the inspector's field and **Scale…**. Browser: scale a group with instances, an array and a room: the walls get thicker and taller with it.
+
+### 14.4 — Free tilt
+Tilt on free-forms, rooms, instances and arrays; `tiltShape` with the angle composition; `rotate_nodes { axis }`; `transform_nodes { tilt }`; the rings for any selection; the Tilt section and the yaw row. Browser: tilt a group of peaks 20° and back, and a tilted room's door still cuts.
+
+### 14.5 — Work with agent
+Documents out of the workspace, **Work with agent** and the chip, MCP on the agent's document, render jobs that carry nodes, `agentScene` in `app.json`, and ending the invitation on a project switch. Check: two scenes edited at once (ws and MCP), each with its own history; `render_view` of the agent's scene while the tab shows the other. Browser: the race setup in two windows.
+
+### 14.6 — What the human changed
+`seq` in memory, undo actors, `get_changes`, and the header hint. Check: human edits via ws show up in `get_changes` as a net diff.
+
+### 14.7 — Sealing
+Sections (`src/shared/slice.ts`), the slice render with gaps, and `check_enclosure` (`src/shared/enclosure.ts`) with limits. Check: a ring of tapered cones leaks where they don't overlap at 110 m and is sealed at 60 m. A door hole in a room's wall leaks.
+
+### 14.8 — Measuring and lint
+`measure_path` (`src/shared/measure.ts`) and `check_scene` (`src/server/lint.ts`), each with the `review` topic's part. Check: a line through a gap reports its clearance, and the y-122 instance and a stale note are flagged.
+
+### 14.9 — Guide and skill
+§12's content. Check: `get_guide review` and the instructions read well end to end; the skill matches the tool list.
+
+### 14.10 — The race
+Orlando and an agent get the same brief, in two scenes of one project (the agent's invited). Record the time to "done", the step counts and each scene's first and last step times (from the histories' `at`), and the agent's calls, tokens and renders. Log it in `thinking-04-evals`, with a render of each scene.
+
+---
+
+## 14. Checks between increments
+
+- `scripts/eval-temple.mjs` stays the compactness guard (14.2 should lower its numbers). A new `scripts/eval-valley.mjs` drives the spare server through §1's calls: the scaled copy, the enclosure before and after, `measure_path`, `check_scene` and `get_changes` after a ws edit.
+- Unit tests:
+  - `scaleShape` per type (walls and steps scale too; scale then 1/scale is exact);
+  - `tiltShape` round trips and group tilts;
+  - the angle decomposition near ±90°;
+  - `surfaceUnder` on slopes;
+  - the ramp radius message;
+  - the facing helpers;
+  - the two-document workspace (edits, persistence, restart, ending the invitation);
+  - `get_changes`' net diff (add then remove is nothing, and several updates merge);
+  - sections and gaps;
+  - `check_enclosure` (a closed box room is sealed, and a door leaks at the door's place);
+  - `measure_path`'s clearance;
+  - each lint check.
+
+---
+
+## 15. Browser acceptance (Orlando)
+
+1. The 3D cursor sits on shapes and slopes, reads x, y, z, and hides while dragging and walking. The toggle is remembered.
+2. Drawing a box on a bevelled and a tapered top lands on the surface, and the landing label says "slope".
+3. In a walk: Esc, then **Release mouse**. Move to a second window and back, and a click doesn't relock. Enter does.
+4. Lines hide and show from the view bar, and a selected line stays visible.
+5. Zoom out to the limit on a 3 km scene: no flicker, the grid is fine, and zooming back in is as before.
+6. Scale a group ×2 with the handle, then undo. **Scale…** ×0.5, and a room's walls thin with it.
+7. Tilt a free-form, a group and a multi-selection with the rings. A tilted room's door cuts.
+8. **Work with agent**, open another scene, and the agent keeps working in its own. Watch it in a second window. Stop working with agent.
+9. A slice render and an enclosure check look right against what the eye sees.
+
+---
+
+## 16. Decisions
+
+Decided with Orlando:
+
+1. **One long phase** for all of the agent's requests (A1–A9) and Orlando's items (H1–H8).
+2. **Tilt for groups and free-forms,** as boxes and cylinders tilt today, which also brings tilt to rooms, instances and arrays (§7).
+3. **The agent's scene is in the same project** as the human's. Opening another project ends the invitation (§8).
+4. **Scaling scales everything,** walls and steps included: nothing keeps its size (§6).
+5. **No ceiling setting:** it was specific to the flight level. `check_enclosure` takes a band, and `measure_path` a `max_y`, per call.
+
+Proposed in this plan, to confirm:
+
+6. **Scale and tilt are baked into members,** and groups stay without a transform of their own (§2, Out). Instances and arrays get a real `scale`, `pitch` and `roll`.
+7. **The zoom limit is 5000** (about 8×), not unlimited, with near and far planes following the distance (§4).
+8. **Item lines become opt-in** (`items: true`), reversing 13.1's default, as A6 asks.
+9. **Facing helpers are resolved once,** not kept live (unlike `on` and `along`).
+10. **`measure_path` takes its numbers per call.** The game's facts as data stay deferred.
+
+---
+
+## 17. Progress
+
+- **2026-09-29:** Plan written from `thinking-07-first-real-work-day.md`, based on two code surveys, and summarized here:
+  - there's one open document per workspace, and ws and MCP both use `requireScene()`;
+  - render jobs carry no nodes;
+  - history entries have actors but no in-memory seq;
+  - notes in `get_scene` are global and full;
+  - `resizeShape` covers only boxes, cylinders and free-forms, and nothing has a `scale`;
+  - tilt is only on box and cylinder volumes and holes, and `rotate_nodes` turns around the vertical only;
+  - `surfaceUnder` counts only a volume's flat last ring, which is why drawing on bevels fails;
+  - `MAX_DISTANCE` is 600, and the far planes and one literal in `renderView.ts` depend on it;
+  - the walk's refused-lock state relocks on any click.
+
+  Decisions 1–3 were made with Orlando.
+- **2026-09-29:** Changed with Orlando: scaling scales everything, walls and steps included (no `detail` option), and the ceiling setting is dropped (no `settings` op, `update_scene` or ceiling outline; `check_enclosure` takes a band, `measure_path` a `max_y`). 14.6 is now only `get_changes`. Decisions 4 and 5 are these.

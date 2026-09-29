@@ -7,3 +7,4 @@ data/
 src-tauri/binaries/
 *.code-workspace
 .claude/settings.local.json
+.env
