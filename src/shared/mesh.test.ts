@@ -274,3 +274,27 @@ describe("ramps", () => {
     expect(volume(m)).toBeGreaterThan(0);
   });
 });
+
+describe("ramp meshes stay closed whatever their numbers", () => {
+  it("closes a ramp whose top comes out a hair off its rounding (the river of end_game_v1, a slope from a tilt)", () => {
+    const base = { id: "ramp_1", type: "ramp", kind: "volume", color: "blue", createdBy: "agent" } as const;
+    const river: Ramp = {
+      ...base,
+      width: 14,
+      base: "floating",
+      points: [
+        { x: 500, y: 45.3, z: -25 },
+        { x: 549.3, y: 38.3, z: 79.1 },
+        { x: 697.2, y: 30.3, z: 36.3 },
+        { x: 713.6, y: 22.3, z: 189.4 },
+        { x: 861.6, y: 14.3, z: 146.6 },
+        { x: 910, y: 6.3, z: 250 },
+        { x: 959.8, y: 4.3, z: 283.4 },
+        { x: 1010, y: 3.3, z: 360 },
+      ],
+    };
+    const slope: Ramp = { ...base, width: 2, base: "solid", points: [{ x: 0, y: 0, z: 0 }, { x: 8, y: 2.82, z: 1.03 }] };
+    const spiral: Ramp = { ...base, width: 1.5, base: "solid", points: spiralPoints({ x: 0, z: 0, radius: 4, turn: 360, y: 0, rise: 4 }) };
+    for (const r of [river, slope, spiral, { ...spiral, step: 0.25 }]) expect(watertight(rampMesh(r)!)).toBe(true);
+  });
+});

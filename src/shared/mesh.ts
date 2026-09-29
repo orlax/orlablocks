@@ -220,8 +220,9 @@ export function rampMesh(ramp: Ramp): Mesh | null {
   // zipped from the bottom up.
   for (let c = 0; c + 1 < columns.length; c++) {
     const [A, B] = [columns[c], columns[c + 1]];
-    const la = A.vs.filter((v) => v.y <= (A.after ?? A.bottom) + 1e-9);
-    const lb = B.vs.filter((v) => v.y <= (B.before ?? B.bottom) + 1e-9);
+    // (The vertices' heights are rounded to 1e-7, the tops aren't: compare with a tolerance above that rounding.)
+    const la = A.vs.filter((v) => v.y <= (A.after ?? A.bottom) + 1e-6);
+    const lb = B.vs.filter((v) => v.y <= (B.before ?? B.bottom) + 1e-6);
     for (const side of ["l", "r"] as const) {
       let [i, j] = [0, 0];
       while (i + 1 < la.length || j + 1 < lb.length) {

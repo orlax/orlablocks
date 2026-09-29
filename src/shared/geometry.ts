@@ -467,7 +467,11 @@ export function rampProblem(ramp: Ramp): string | null {
         // How tight the centerline turns there (14.2): the smallest radius through three stations nearby.
         let radius = Infinity;
         for (let j = Math.max(0, k - 3); j + 2 < Math.min(st.length, k + 5); j++) radius = Math.min(radius, turnRadius(st[j], st[j + 1], st[j + 2]));
-        const allowed = Number.isFinite(radius) ? ` Its centerline turns with a radius of about ${round2(radius)} m there, and a ${ramp.width} m wide ramp needs at least ${round2(ramp.width / 2)} m: widen the curve to that, or narrow the ramp to at most ${round2(Math.max(MIN_RAMP_WIDTH, radius * 2 * 0.95))} m.` : "";
+        // A curve too tight says how much wider it must be; a corner that folds a wide ramp's edge says to round it.
+        const allowed =
+          Number.isFinite(radius) && radius < ramp.width / 2
+            ? ` Its centerline turns with a radius of about ${round2(radius)} m there, and a ${ramp.width} m wide ramp needs at least ${round2(ramp.width / 2)} m: widen the curve to that, or narrow the ramp to at most ${round2(Math.max(MIN_RAMP_WIDTH, radius * 2 * 0.95))} m.`
+            : ` The corner there is too sharp for the width (its edge folds back): round it with handles (in / out), or split it into two gentler turns.`;
         return `the ramp turns too tightly for its ${ramp.width} m width near point ${near} (make the curve wider or the ramp narrower).${allowed}`;
       }
     }
