@@ -18,6 +18,15 @@ const rayAt = (p: Vec3) => {
   return screenRay(cam, size, s.sx, s.sy);
 };
 
+describe("pickHit", () => {
+  it("returns the face's normal, toward the ray (14.1)", () => {
+    const top = pickHit(rayAt({ x: 5, y: 1, z: 4 }), [volume])!;
+    expect(top.normal.y).toBeCloseTo(1);
+    const side = pickHit({ origin: { x: -10, y: 0.5, z: 4 }, dir: { x: 1, y: 0, z: 0 } }, [volume])!;
+    expect(side.normal.x).toBeCloseTo(-1);
+  });
+});
+
 describe("pickShape", () => {
   it("picks a volume inside a room through the open top", () => {
     expect(pickShape(rayAt({ x: 5, y: 1, z: 4 }), [room, volume])).toBe("volume_1");
@@ -207,6 +216,24 @@ describe("surfaceUnder", () => {
     expect(surfaceUnder(rayAt({ x: 5, y: 1, z: 4 }), [{ ...volume, pitch: 20 }])).toBeNull();
     expect(surfaceUnder(rayAt({ x: 5, y: 1, z: 4 }), [{ ...volume, kind: "hole" }])).toBeNull();
     expect(surfaceUnder(rayAt({ x: 5, y: 1, z: 4 }), [{ ...volume, taper: 1 }])).toBeNull();
+  });
+
+  it("with slopes, stands on a taper's or bevel's slope where the ray meets it (14.1)", () => {
+    // 8 × 8 at the base, 4 × 4 at the top, 2 high: a 45° slope.
+    const hill: Box = { ...volume, width: 8, depth: 8, height: 2, taper: 0.5 };
+    // Near the base the slope is at about y 0.2: the new shape stands there, not on the ground.
+    const slope = surfaceUnder(rayAt({ x: 8.8, y: 0.2, z: 4 }), [hill], { slopes: true });
+    expect(slope?.what).toBe("slope");
+    expect(slope!.y).toBeGreaterThan(0.05);
+    expect(slope!.y).toBeLessThan(0.5);
+    // The flat middle is still the top, and a cone (taper 1) or a full bevel has a slope to stand on.
+    expect(surfaceUnder(rayAt({ x: 5, y: 2, z: 4 }), [hill], { slopes: true })?.what).toBe("top");
+    expect(surfaceUnder(rayAt({ x: 5, y: 0.9, z: 4 }), [{ ...volume, taper: 1 }], { slopes: true })?.what).toBe("slope");
+    const dome: Box = { ...volume, width: 4, depth: 4, height: 2, bevel: 1 };
+    expect(surfaceUnder(rayAt({ x: 5, y: 2, z: 4 }), [dome], { slopes: true })?.y).toBeGreaterThan(1.5);
+    // A sheer side isn't stood on.
+    const tower: Box = { ...volume, width: 2, depth: 2, height: 10, taper: 0.05 };
+    expect(surfaceUnder({ origin: { x: -20, y: 5, z: 4 }, dir: { x: 1, y: -0.01, z: 0 } }, [tower], { slopes: true })).toBeNull();
   });
 });
 

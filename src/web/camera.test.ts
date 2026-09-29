@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   basis,
+  clipPlanes,
   DEFAULT_CAMERA,
   framedCamera,
   lerpCamera,
@@ -94,6 +95,14 @@ describe("camera", () => {
     expect(zoomBy(c, 100).distance).toBeGreaterThan(c.distance);
     expect(zoomBy(c, -1e6).distance).toBe(MIN_DISTANCE);
     expect(zoomBy(c, 1e6).distance).toBe(MAX_DISTANCE);
+  });
+
+  it("zooms out to 5 km, with clipping planes that follow (14.1)", () => {
+    expect(MAX_DISTANCE).toBe(5000);
+    expect(clipPlanes(75)).toEqual({ near: 0.5, far: 2400 });
+    const far = clipPlanes(MAX_DISTANCE);
+    expect(far.far).toBeGreaterThan(MAX_DISTANCE * 4);
+    expect(far.far / far.near).toBeLessThanOrEqual(2400);
   });
 
   it("wraps yaw into 0..360", () => {

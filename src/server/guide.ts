@@ -66,7 +66,8 @@ export const INSTRUCTIONS =
   "and for an array its item lines (`array_5/3 → x, y, z · top t · r°`: where each item stands, how high its top is " +
   "and its turn). Pass verbose: true only to read a node back in full. `view.focus` is the ground point at the screen center: draw near it " +
   "to be on screen. `view.walking` (while the human walks through the level with the Walk tool) is their eye, where " +
-  "it looks (`yaw` as the view's, `pitch` up) and the field of view: what they see from there. A node with `locked: true` (the human can't pick it) or `hidden: true` (not drawn, and a hidden " +
+  "it looks (`yaw` as the view's, `pitch` up) and the field of view: what they see from there. `view.pointer` is where " +
+  "the human's pointer last rested (on a node, with its `id`, or on the ground): \"here\" means there. A node with `locked: true` (the human can't pick it) or `hidden: true` (not drawn, and a hidden " +
   "hole cuts nothing) is the human's aid: leave those alone unless asked. " +
   "WAYS OF WORKING: describe groups (update_nodes description) so the outline tells what each part is. To repeat " +
   "things, copy them with move_nodes and copy: true (count for a row) instead of redrawing; for symmetry, copy then " +

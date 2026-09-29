@@ -12,7 +12,7 @@ import {
   type WalkPreset,
 } from "../shared/scene.types";
 import { isShape } from "../shared/tree";
-import { framedCamera, FOV_DEG, type Box3, type CameraState } from "./camera";
+import { framedCamera, FOV_DEG, MAX_DISTANCE, type Box3, type CameraState } from "./camera";
 import { blobToBase64, editorView, makeCamera, type CaptureView } from "./capture";
 import {
   drawnShapes,
@@ -265,7 +265,7 @@ function planView(b: Box3, aspect: number): { view: CaptureView; frame: ReturnTy
       position: { x: frame.x, y: b.maxY + 100, z: frame.z },
       target: { x: frame.x, y: b.minY - 1, z: frame.z },
       vfov: FOV_DEG,
-      light: { focus: { x: frame.x, z: frame.z }, yaw: 0, distance: Math.min(600, Math.max(20, Math.max(frame.width, frame.height) * 1.5)) },
+      light: { focus: { x: frame.x, z: frame.z }, yaw: 0, distance: Math.min(MAX_DISTANCE, Math.max(20, Math.max(frame.width, frame.height) * 1.5)) },
       ortho: { width: frame.width, height: frame.height },
     },
   };

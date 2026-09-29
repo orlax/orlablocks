@@ -36,7 +36,7 @@ import { boundsOf, footprintBounds, isClosed, isTilted, polyline, rampStations, 
 import { shapesUnder, childrenOf, countsText, isShape, isGroup, hiddenIds, lockedIds, subtreeIds, tagsOf } from "../shared/tree";
 import { definitionOf, expandShapes } from "../shared/entities";
 import { arrayItems, arrayLayout, arrayShortfall, defaultFollowOffset, describeLayout, facingOf, isFollowing, layoutAnchor } from "../shared/arrays";
-import type { Box3, CameraState, GroundPoint } from "./camera";
+import type { Box3, CameraState } from "./camera";
 import { clipboardText, readClipboard } from "./clipboard";
 import { ErrorPanel } from "./ErrorPanel";
 import { LibraryPanel } from "./Library";
@@ -49,7 +49,7 @@ import { Outliner } from "./Outliner";
 import { ProjectPicker, Welcome } from "./ProjectPicker";
 import { ContextualBar, EDIT_ARRAY_HINT, EDIT_POINTS_HINT, HINTS, TOOLS, ToolBar, ViewBar, WalkBar } from "./ToolBar";
 import { useScene, type RenderHandler } from "./useScene";
-import { Viewport, type KindFields, type LineStyle, type RampStyle, type Tool, type ViewportApi } from "./Viewport";
+import { Viewport, type CursorPoint, type KindFields, type LineStyle, type RampStyle, type Tool, type ViewportApi } from "./Viewport";
 import { blobToBase64 } from "./capture";
 import { ShotsPanel, ShutterFlash } from "./ShotsPanel";
 import { Wordmark } from "../ui/Wordmark";
@@ -170,6 +170,32 @@ const SHOTS_OPEN_KEY = "dd.shots.open";
 const STATS_KEY = "dd.stats";
 /** localStorage key: the Walk tool's preset (09.2). */
 const WALK_PRESET_KEY = "dd.walk.preset";
+/** localStorage key prefix: the view bar's toggles (holes, grid, notes, lines, the 3D cursor; 14.1). */
+const VIEW_TOGGLE_KEY = "dd.view.";
+
+/** A view bar toggle, remembered per viewer (a convenience: it works without storage). */
+function useViewToggle(name: string, initial = true): [boolean, (on: boolean) => void] {
+  const [on, setOn] = useState(() => {
+    try {
+      const stored = localStorage.getItem(VIEW_TOGGLE_KEY + name);
+      return stored === null ? initial : stored === "1";
+    } catch {
+      return initial;
+    }
+  });
+  const set = (next: boolean) => {
+    setOn(next);
+    try {
+      localStorage.setItem(VIEW_TOGGLE_KEY + name, next ? "1" : "0");
+    } catch {
+      // A convenience only.
+    }
+  };
+  return [on, set];
+}
+
+/** How long the pointer rests before the agent is told where (14.1, `view.pointer`). */
+const POINTER_REST_MS = 300;
 /** The player camera is saved this long after the pause menu's last change (a slider sends many). */
 const PLAYER_SAVE_MS = 400;
 
@@ -233,7 +259,14 @@ export function App() {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [view, setView] = useState<View>(DEFAULT_VIEW);
   const [camera, setCamera] = useState<CameraState | null>(null);
-  const [cursor, setCursor] = useState<GroundPoint | null>(null);
+  const [cursor, setCursor] = useState<CursorPoint | null>(null);
+  // Where the pointer last rested (14.1), for the agent's `view.pointer`: the cursor once it's been still a moment.
+  const [pointer, setPointer] = useState<CursorPoint | null>(null);
+  useEffect(() => {
+    if (!cursor) return;
+    const t = setTimeout(() => setPointer(cursor), POINTER_REST_MS);
+    return () => clearTimeout(t);
+  }, [cursor]);
   const [tool, setTool] = useState<Tool>("select");
   // Notes belong in scenes: the Note tool is off while an entity is open.
   const chooseTool = (t: Tool) => {
@@ -266,8 +299,10 @@ export function App() {
   // The Ramp tool's next ramp.
   const [nextRamp, setNextRamp] = useState<RampStyle>({ kind: "volume", width: DEFAULT_RAMP_WIDTH, base: "solid", color: DEFAULT_COLOR });
   // The view bar: whether holes show as ghosts (off: only what they cut away shows), and the grid.
-  const [showHoles, setShowHoles] = useState(true);
-  const [showNotes, setShowNotes] = useState(true);
+  const [showHoles, setShowHoles] = useViewToggle("holes");
+  const [showNotes, setShowNotes] = useViewToggle("notes");
+  const [showLines, setShowLines] = useViewToggle("lines");
+  const [showCursor, setShowCursor] = useViewToggle("cursor");
   // The stats readout (10.5), remembered per viewer.
   const [showStats, setShowStatsState] = useState(() => {
     try {
@@ -293,7 +328,7 @@ export function App() {
   // The Note tool's next color, and the note it just placed (its text field takes the focus once it's selected).
   const [nextNoteColor, setNextNoteColor] = useState<ShapeColor>(DEFAULT_NOTE_COLOR);
   const [freshNote, setFreshNote] = useState<string | null>(null);
-  const [showGrid, setShowGrid] = useState(true);
+  const [showGrid, setShowGrid] = useViewToggle("grid");
   // Isolation: only this node and what's in it show, plus anything new since it started (`before`: the IDs then),
   // so what's drawn or pasted meanwhile doesn't vanish. For this tab only; not an edit.
   const [isolation, setIsolation] = useState<{ id: string; before: Set<string> } | null>(null);
@@ -488,8 +523,8 @@ export function App() {
   // Tell the server what's visible so the agent's get_scene knows where to draw, and where the camera is, so the
   // scene reopens there.
   useEffect(() => {
-    if (connected && camera) send({ type: "set_view", view: { ...view, ...(isolated ? { isolated } : {}) }, camera });
-  }, [connected, view, camera, send, isolated]);
+    if (connected && camera) send({ type: "set_view", view: { ...view, ...(isolated ? { isolated } : {}), ...(pointer ? { pointer } : {}) }, camera });
+  }, [connected, view, camera, send, isolated, pointer]);
 
   // Tell the server what's selected so the agent knows what "this" means. The last tab to change it wins.
   const selectionKey = selection.join(",");
@@ -976,6 +1011,8 @@ export function App() {
         preview={preview}
         onSelect={setSelection}
         showNotes={showNotes}
+        showLines={showLines}
+        showCursor={showCursor}
         showStats={showStats}
         entityMode={!!editingEntity}
         onOpenEntity={(entity) => send({ type: "open_entity", entity })}
@@ -1173,7 +1210,7 @@ export function App() {
           {connected ? "connected" : "offline"}
         </span>
         <span className="coords">
-          x {coord(cursor?.x)} · z {coord(cursor?.z)} m
+          x {coord(cursor?.x)} · y {coord(cursor?.y)} · z {coord(cursor?.z)} m
         </span>
         <span className="coords">yaw {`${Math.round(view.yaw)}°`.padStart(4)}</span>
         <span className="sep" />
@@ -1209,6 +1246,8 @@ export function App() {
             holes={{ on: showHoles, onToggle: () => setShowHoles(!showHoles) }}
             grid={{ on: showGrid, onToggle: () => setShowGrid(!showGrid) }}
             notes={{ on: showNotes, onToggle: () => setShowNotes(!showNotes) }}
+            lines={{ on: showLines, onToggle: () => setShowLines(!showLines) }}
+            cursor={{ on: showCursor, onToggle: () => setShowCursor(!showCursor) }}
             stats={{ on: showStats, onToggle: () => setShowStats(!showStats) }}
             isolated={
               isolated

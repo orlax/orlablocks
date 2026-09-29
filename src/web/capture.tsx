@@ -1,7 +1,7 @@
 import { useLayoutEffect, useRef, type ReactNode, type RefObject } from "react";
 import { advance, createRoot } from "@react-three/fiber";
 import * as THREE from "three";
-import { cameraPosition, FOV_DEG, MAX_DISTANCE, type CameraState, type Vec3 } from "./camera";
+import { cameraPosition, clipPlanes, FOV_DEG, MAX_DISTANCE, type CameraState, type Vec3 } from "./camera";
 
 /**
  * Captures (plan 09 §4): the scene rendered to an image, for shots and the agent's renders (09.3). Each capture
@@ -35,7 +35,10 @@ export function makeCamera(view: CaptureView, width: number, height: number): TH
     // Looking straight down, north (-z) up the image.
     c.up.set(0, 0, -1);
   } else {
-    c = new THREE.PerspectiveCamera(view.vfov, width / height, 0.05, MAX_DISTANCE * 4);
+    // Far enough for the farthest editor view (its planes follow the distance, 14.1), near enough for a walk's eye.
+    const d = Math.hypot(p.x - t.x, p.y - t.y, p.z - t.z);
+    const { far } = clipPlanes(d);
+    c = new THREE.PerspectiveCamera(view.vfov, width / height, d > 200 ? clipPlanes(d).near : 0.05, far);
     c.up.set(0, 1, 0);
   }
   c.position.set(p.x, p.y, p.z);

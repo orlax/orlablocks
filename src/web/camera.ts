@@ -23,7 +23,7 @@ export const PITCH_DEG = 35;
 /** Vertical field of view. Narrow on purpose: less perspective distortion. Must stay below 2 × PITCH_DEG. */
 export const FOV_DEG = 30;
 export const MIN_DISTANCE = 8;
-export const MAX_DISTANCE = 600;
+export const MAX_DISTANCE = 5000;
 export const YAW_SPEED_DEG = 90; // per second while A/D or ←/→ is held
 
 /** About 20 px per meter at the focus point in an 800 px tall window, like the old 2D editor. */
@@ -35,6 +35,15 @@ const TAN_HALF_FOV = Math.tan(rad(FOV_DEG) / 2);
 
 export const normalizeYaw = (deg: number) => ((deg % 360) + 360) % 360;
 export const clampDistance = (d: number) => Math.min(MAX_DISTANCE, Math.max(MIN_DISTANCE, d));
+
+/**
+ * The editor camera's clipping planes at a distance (14.1): they follow the zoom, so a far-out view of a big
+ * scene isn't cut off, and the near plane moves out with it to keep the depth buffer's precision. Up to 200 m
+ * it's the old near plane (0.5), so close work is unchanged.
+ */
+export function clipPlanes(distance: number): { near: number; far: number } {
+  return { near: Math.max(0.5, distance / 400), far: Math.max(2400, distance * 6) };
+}
 
 /** Unit vectors of the camera: `forward` looks at the focus, `right` and `up` span the screen. */
 export function basis(yaw: number) {

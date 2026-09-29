@@ -389,6 +389,7 @@ export type View = {
   bounds: { x: number; z: number; width: number; depth: number };
   isolated?: string; // the node isolated in the editor (only it and what's in it show); none = everything shows
   walking?: Walking; // while the human walks through the level (09.2)
+  pointer?: { x: number; y: number; z: number; id?: string }; // where the human's pointer last rested (14.1)
 };
 
 export type Scene = {
@@ -1254,6 +1255,8 @@ export const ViewSchema = z.object({
   isolated: z.string().optional(),
   // While the human walks through the level (09.2).
   walking: WalkingSchema.optional(),
+  // Where the human's pointer last rested (14.1): on a shape (its node's id) or on the ground.
+  pointer: z.object({ x: z.number(), y: z.number(), z: z.number(), id: z.string().optional() }).optional(),
 });
 
 /**

@@ -5,6 +5,7 @@ import {
   Eye,
   EyeOff,
   Camera,
+  Crosshair,
   Focus,
   Moon,
   Images,
@@ -19,6 +20,7 @@ import {
   Square,
   SquareDashed,
   SquareDot,
+  Spline,
   StickyNote,
   Sun,
   SunMoon,
@@ -223,6 +225,8 @@ export function ViewBar({
   holes,
   grid,
   notes,
+  lines,
+  cursor,
   stats,
   isolated,
   shots,
@@ -230,6 +234,8 @@ export function ViewBar({
   holes: { on: boolean; onToggle: () => void };
   grid: { on: boolean; onToggle: () => void };
   notes: { on: boolean; onToggle: () => void };
+  lines: { on: boolean; onToggle: () => void };
+  cursor: { on: boolean; onToggle: () => void };
   stats: { on: boolean; onToggle: () => void };
   isolated: { label: string; onEnd: () => void } | null;
   shots: { count: number; panelOpen: boolean; onShutter: () => void; onTogglePanel: () => void };
@@ -260,6 +266,17 @@ export function ViewBar({
       </button>
       <button type="button" className={notes.on ? "toggle" : "toggle off"} title={notes.on ? "Hide the notes" : "Show the notes"} onClick={notes.onToggle}>
         <StickyNote size={13} /> notes
+      </button>
+      <button type="button" className={lines.on ? "toggle" : "toggle off"} title={lines.on ? "Hide the lines" : "Show the lines"} onClick={lines.onToggle}>
+        <Spline size={13} /> lines
+      </button>
+      <button
+        type="button"
+        className={cursor.on ? "toggle" : "toggle off"}
+        title={cursor.on ? "Hide the 3D cursor (where the pointer meets the scene)" : "Show the 3D cursor: where the pointer meets the scene"}
+        onClick={cursor.onToggle}
+      >
+        <Crosshair size={13} /> cursor
       </button>
       <button
         type="button"

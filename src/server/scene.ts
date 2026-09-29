@@ -1802,7 +1802,7 @@ export function createSceneStore({
 
     /** What the editor currently shows (last reporting tab wins). Not an edit, so no broadcast. */
     setView(view: View): void {
-      const { focus, yaw, bounds, isolated, walking } = view;
+      const { focus, yaw, bounds, isolated, walking, pointer } = view;
       scene.view = {
         focus: { x: round2(focus.x), z: round2(focus.z) },
         yaw: round2(yaw),
@@ -1819,6 +1819,7 @@ export function createSceneStore({
               },
             }
           : {}),
+        ...(pointer ? { pointer: { x: round2(pointer.x), y: round2(pointer.y), z: round2(pointer.z), ...(pointer.id ? { id: pointer.id } : {}) } } : {}),
       };
     },
 

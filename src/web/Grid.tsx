@@ -20,6 +20,7 @@ const fragmentShader = /* glsl */ `
   uniform vec2 uFocus;
   uniform float uFadeRadius;
   uniform float uMinorAlpha;
+  uniform float uStep;
   varying vec2 vPos;
 
   // Antialiased grid lines, about widthPx wide on screen.
@@ -30,8 +31,8 @@ const fragmentShader = /* glsl */ `
   }
 
   void main() {
-    float minor = grid(1.0, 1.0) * uMinorAlpha;
-    float major = grid(5.0, 1.5);
+    float minor = grid(uStep, 1.0) * uMinorAlpha;
+    float major = grid(uStep * 5.0, 1.5);
     float alpha = max(minor, major);
     if (alpha < 0.01) discard;
     float fade = 1.0 - smoothstep(uFadeRadius * 0.55, uFadeRadius, distance(vPos, uFocus));
@@ -42,7 +43,8 @@ const fragmentShader = /* glsl */ `
 
 /**
  * Reference grid on the ground plane: a line every 1 m, stronger every 5 m, fading out away from the focus point.
- * A visual aid only, never part of the scene data.
+ * Zoomed far out (14.1) the lines step up by tens (10 m and 50 m, 100 m and 500 m, ...) so they never turn into
+ * noise, and the plane grows to cover the view. A visual aid only, never part of the scene data.
  */
 export function Grid({ cam }: { cam: RefObject<CameraState> }) {
   const mesh = useRef<THREE.Mesh>(null);
@@ -60,6 +62,7 @@ export function Grid({ cam }: { cam: RefObject<CameraState> }) {
           uFocus: { value: new THREE.Vector2() },
           uFadeRadius: { value: 1 },
           uMinorAlpha: { value: 1 },
+          uStep: { value: 1 },
         },
       }),
     [],
@@ -73,8 +76,13 @@ export function Grid({ cam }: { cam: RefObject<CameraState> }) {
     // Fade out toward the farthest visible corner, so the grid softly reaches the window edges.
     const farthest = Math.max(...visibleGround(cam.current, size).map((g) => Math.hypot(g.x - focus.x, g.z - focus.z)));
     material.uniforms.uFadeRadius.value = farthest;
-    // 1 m lines turn into noise when zoomed far out, so fade them before they get denser than ~5 px apart.
-    material.uniforms.uMinorAlpha.value = THREE.MathUtils.smoothstep(pxPerMeterAtFocus(cam.current, size), 5, 10);
+    mesh.current?.scale.setScalar(Math.max(1, (farthest * 2.2) / SIZE));
+    // Minor lines turn into noise when zoomed far out, so fade them before they get denser than ~5 px apart, and
+    // step up by tens once even the major lines would be closer than ~8 px.
+    const ppm = pxPerMeterAtFocus(cam.current, size);
+    const step = Math.max(1, 10 ** Math.ceil(Math.log10(8 / (5 * ppm))));
+    material.uniforms.uStep.value = step;
+    material.uniforms.uMinorAlpha.value = THREE.MathUtils.smoothstep(ppm * step, 5, 10);
   });
 
   return (

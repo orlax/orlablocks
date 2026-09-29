@@ -57,6 +57,7 @@ import { InstancedEntity } from "./InstancedArrays";
 import { splitInstanced } from "./instancing";
 import {
   cameraPosition,
+  clipPlanes,
   DEFAULT_CAMERA,
   restoredCamera,
   FOV_DEG,
@@ -142,7 +143,7 @@ import {
   wheelSpeed,
   type Vec3 as WalkVec3,
 } from "./walk";
-import { Avatar, avatarShapes, loadWalkOptions, newLive, walkKey, WalkHud, WalkMenu, type CameraPose, type WalkLive, type WalkSession } from "./WalkScreens";
+import { Avatar, avatarShapes, loadWalkOptions, newLive, walkKey, WalkHud, WalkMenu, WalkReleased, type CameraPose, type WalkLive, type WalkSession } from "./WalkScreens";
 import { manifoldReady } from "./csg";
 import { VIEW_ACCENT, VIEW_DANGER, VIEW_HANDLE } from "../ui/viewColors";
 
@@ -218,6 +219,9 @@ const inEntityRoot = (nodes: SceneNode[]): SceneNode[] => [
 
 /** The drag-and-drop type of an entity dragged from the Library (its ID). */
 export const ENTITY_DRAG = "application/x-dungeon-entity";
+
+/** Where the pointer meets the scene (14.1): a point on a shape (`id`: the node it belongs to) or on the ground. */
+export type CursorPoint = { x: number; y: number; z: number; id?: string };
 
 export type Tool = "select" | "hand" | "box" | "cylinder" | "pen" | "line" | "ramp" | "note" | "walk";
 /** The tools that drag a footprint on the ground, and the shape type each draws. */
@@ -364,6 +368,10 @@ type Props = {
   showGrid: boolean;
   /** Whether notes show (the view bar); off, they can't be clicked either, unless selected. */
   showNotes: boolean;
+  /** Whether lines show (the view bar, 14.1); off, they can't be clicked either, unless selected. */
+  showLines?: boolean;
+  /** Whether the 3D cursor shows (14.1): a marker where the pointer meets the scene. */
+  showCursor?: boolean;
   /** The stats readout (10.5): render time, draw calls, triangles and shapes, over the view's corner. */
   showStats?: boolean;
   /** A note was placed with the Note tool (at this point, on the surface under the click). */
@@ -396,7 +404,8 @@ type Props = {
   onNotice: (message: string) => void;
   /** One Alt-drag: copies the nodes by the drag's offset, one undo step. */
   onDuplicate: (copy: { ids: string[]; dx: number; dy: number; dz: number }) => void;
-  onCursor: (point: GroundPoint | null) => void;
+  /** Where the pointer meets the scene (a shape's surface, with its id, or the ground), or null off the view. */
+  onCursor: (point: CursorPoint | null) => void;
   /** Reports the view (for the agent) and the camera (saved for the scene), throttled. */
   onViewChange: (view: View, camera: CameraState) => void;
   /** A saved camera to jump to. A new object each time a scene opens; null keeps the current camera. */
@@ -471,6 +480,8 @@ export function Viewport({
   showHoles,
   showGrid,
   showNotes,
+  showLines = true,
+  showCursor = true,
   showStats = false,
   onPlaceNote,
   entityMode,
@@ -593,7 +604,7 @@ export function Viewport({
           editor: walkRef.current?.before ?? cam.current,
           player: playerRef.current,
           avatarEntity: avatarEntityRef.current,
-          surfaceY: (x, z) => surfaceUnder({ origin: { x, y: 10_000, z }, dir: { x: 0, y: -1, z: 0 } }, standable)?.y ?? 0,
+          surfaceY: (x, z) => surfaceUnder({ origin: { x, y: 10_000, z }, dir: { x: 0, y: -1, z: 0 } }, standable, { slopes: true })?.y ?? 0,
           capture: (view, width, height, options, shapes) => runCapture(view, width, height, 1, { ...options, ...extra }, shapes),
           captureNodes: (view, width, height, nodes, extra) => runCapture(view, width, height, 1, { notes: false, lines: true }, extra, nodes),
         });
@@ -619,6 +630,8 @@ export function Viewport({
     setWalkState(next);
   };
   const updateWalk = (patch: Partial<WalkSession>) => walkRef.current && setWalk({ ...walkRef.current, ...patch });
+  const updateWalkRef = useRef(updateWalk);
+  updateWalkRef.current = updateWalk;
   const live = useRef<WalkLive | null>(null);
   const playerRef = useRef(player);
   playerRef.current = player;
@@ -653,9 +666,9 @@ export function Viewport({
     try {
       // A promise in current browsers; refused for a while after an Esc (the menu then says to click).
       const p = el.requestPointerLock() as unknown as Promise<void> | undefined;
-      p?.catch?.(() => updateWalk({ relock: true }));
+      p?.catch?.(() => updateWalk({ released: true }));
     } catch {
-      updateWalk({ relock: true });
+      updateWalk({ released: true });
     }
   };
   /** Drops into the level with the feet at `feet`: the camera flies to the eye, then (unless `paused`) the pointer locks. */
@@ -677,7 +690,7 @@ export function Viewport({
       before,
       options: loadWalkOptions(),
       startedAt: new Date().toISOString(),
-      relock: false,
+      released: false,
       pausedAt: 0,
     });
     onWalkChange(true);
@@ -705,7 +718,7 @@ export function Viewport({
     onViewChangeRef.current(viewOf(cam.current, size), cam.current);
   };
   const continueWalk = () => {
-    updateWalk({ relock: false });
+    updateWalk({ released: false });
     lockPointer();
   };
   /** A shot of what the walker sees, cropped to the frame guide, at its size. */
@@ -750,13 +763,13 @@ export function Viewport({
       const sess = walkRef.current;
       if (!sess) return;
       const locked = document.pointerLockElement === wrap.current;
-      if (locked && sess.phase === "paused") setWalk({ ...sess, phase: "walking", relock: false });
+      if (locked && sess.phase === "paused") setWalk({ ...sess, phase: "walking", released: false });
       else if (!locked && sess.phase === "walking") {
         if (live.current) live.current.keys = { ...NO_KEYS };
         setWalk({ ...sess, phase: "paused", pausedAt: performance.now() });
       }
     };
-    const onLockError = () => updateWalk({ relock: true });
+    const onLockError = () => updateWalk({ released: true });
     const onMouseMove = (e: globalThis.MouseEvent) => {
       const sess = walkRef.current;
       const l = live.current;
@@ -791,6 +804,11 @@ export function Viewport({
           e.preventDefault();
           e.stopImmediatePropagation();
           walkActions.current.continueWalk();
+        } else if (e.key === "Tab" && !typingInField(e)) {
+          // Tab: the menu ⇄ released (the mouse free, 14.1).
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          updateWalkRef.current({ released: !sess.released });
         } else if (!typingInField(e)) e.stopImmediatePropagation();
         return;
       }
@@ -944,6 +962,8 @@ export function Viewport({
   penRef.current = pen;
   const [hotPart, setHotPart] = useState<GizmoPart | null>(null);
   const [drag, setDrag] = useState<Drag | null>(null);
+  // The 3D cursor's hit (14.1), drawn by Cursor3D from this ref.
+  const cursorRef = useRef<CursorHit | null>(null);
   // After releasing a drag, keep showing its result until the server's scene arrives (no flicker back).
   const [pending, setPending] = useState<{ origin: Shape[]; patches: Record<string, ShapePatch>; copy: boolean } | null>(null);
   // The marquee: dragging empty ground in the Select tool. It becomes `active` past CLICK_PX (before that it's a
@@ -1002,7 +1022,9 @@ export function Viewport({
   // Hidden holes (Show holes off) can't be clicked or marquee-selected, unless they're selected.
   const selectedIds = new Set(shapesUnder(nodes, selection).map((b) => b.id));
   // Hidden nodes and what's outside the isolation don't show.
-  const onView = (visible ? shown.filter((b) => visible.has(b.id)) : shown).filter((b) => showNotes || b.type !== "note" || selectedIds.has(b.id));
+  const onView = (visible ? shown.filter((b) => visible.has(b.id)) : shown).filter(
+    (b) => (showNotes || b.type !== "note" || selectedIds.has(b.id)) && (showLines || b.type !== "line" || selectedIds.has(b.id)),
+  );
   const onViewRef = useRef(onView);
   onViewRef.current = onView;
   // What's drawn: each instance as its entity's shapes (IDs like `instance_4/box_2`; `ownerOf` maps a hit back).
@@ -1094,7 +1116,7 @@ export function Viewport({
   };
 
   /** The flat surface under the pointer that a new box, cylinder or free-form would stand on (null: the ground). */
-  const surfaceFor = (sx: number, sy: number, size: Size) => surfaceUnder(screenRay(cam.current, size, sx, sy), pickable);
+  const surfaceFor = (sx: number, sy: number, size: Size) => surfaceUnder(screenRay(cam.current, size, sx, sy), pickable, { slopes: true });
   /** The point under the pointer on the level plane at height `y`, snapped to 0.5 m unless Cmd/Ctrl is held. */
   const planeAt = (e: PointerEvent, y: number) => {
     const { sx, sy, size } = local(e);
@@ -1425,11 +1447,11 @@ export function Viewport({
   // Hand tool (or middle button in any tool): drag to pan, the grabbed ground point stays under the cursor.
   // Box and Cylinder tools: drag a footprint on the ground.
   const onPointerDown = (e: PointerEvent) => {
-    // Walking: a click is the shutter, or (paused after a refused lock) continues. Nothing else happens in the view.
+    // Walking: a click is the shutter. Paused (the menu, or released: 14.1) a click does nothing here, so clicking
+    // to focus this window never takes the mouse back.
     if (walkRef.current) {
       if (e.button !== 0) return;
       if (walkRef.current.phase === "walking") void walkShot();
-      else if (walkRef.current.phase === "paused" && walkRef.current.relock) continueWalk();
       return;
     }
     // The Walk tool: a click drops the walker on the surface under it.
@@ -1564,7 +1586,16 @@ export function Viewport({
   const onPointerMove = (e: PointerEvent) => {
     if (walkRef.current) return;
     const { sx, sy, size } = local(e);
-    onCursor(screenToGround(cam.current, size, sx, sy));
+    // The 3D cursor (14.1): the surface under the pointer, or the ground.
+    const ray = screenRay(cam.current, size, sx, sy);
+    const hit = pickHit(ray, pickable);
+    const ground = screenToGround(cam.current, size, sx, sy);
+    const point: CursorPoint = hit
+      ? { x: round2(hit.point.x), y: round2(hit.point.y), z: round2(hit.point.z), id: ownerOf(hit.id) }
+      : { x: round2(ground.x), y: 0, z: round2(ground.z) };
+    cursorRef.current = hit ? { point: hit.point, normal: hit.normal } : { point: { x: ground.x, y: 0, z: ground.z }, normal: { x: 0, y: 1, z: 0 } };
+    if (showCursor) invalidate();
+    onCursor(point);
 
     if (drag?.pointerId === e.pointerId) {
       if (!drag.active && Math.hypot(sx - drag.sx0, sy - drag.sy0) < CLICK_PX) return;
@@ -1959,6 +1990,8 @@ export function Viewport({
       onContextMenu={(e) => e.preventDefault()}
       onPointerLeave={() => {
         onCursor(null);
+        cursorRef.current = null;
+        invalidate();
         setLanding(null);
         setHoveredId(null);
         setNoteHover(null);
@@ -1974,7 +2007,7 @@ export function Viewport({
           gl.toneMapping = THREE.NeutralToneMapping;
         }}
         frameloop="demand"
-        camera={{ position: [start.x, start.y, start.z], fov: FOV_DEG, near: EDITOR_NEAR, far: MAX_DISTANCE * 4 }}
+        camera={{ position: [start.x, start.y, start.z], fov: FOV_DEG, near: EDITOR_NEAR, far: clipPlanes(MAX_DISTANCE).far }}
       >
         <color attach="background" args={[BACKGROUND]} />
         <CameraRig cam={cam} yawKeys={yawKeys} flight={flight} walker={walker} onViewChange={onViewChange} />
@@ -1983,6 +2016,7 @@ export function Viewport({
         <Lighting cam={cam} />
         {/* Walking, the view is the player's: no grid, axes, gizmo, highlights or hole ghosts (09.2). */}
         {showGrid && !walk && <Grid cam={cam} />}
+        {showCursor && !walk && !drag?.active && <Cursor3D at={cursorRef} />}
         {!walk && <OriginAxes />}
         <Boxes
           boxes={[...drawn, ...expandShapes(ghosts)]}
@@ -2121,7 +2155,10 @@ export function Viewport({
           flash={walkFlash}
         />
       )}
-      {walk?.phase === "paused" && !walk.relock && (
+      {walk?.phase === "paused" && walk.released && (
+        <WalkReleased onContinue={continueWalk} onMenu={() => updateWalk({ released: false })} />
+      )}
+      {walk?.phase === "paused" && !walk.released && (
         <WalkMenu
           session={walk}
           player={player}
@@ -2130,6 +2167,7 @@ export function Viewport({
           shots={shots.filter((sh) => sh.camera.kind === "walk" && sh.createdAt >= walk.startedAt)}
           onRemoveShot={onRemoveShot}
           onContinue={continueWalk}
+          onRelease={() => updateWalk({ released: true })}
           onExit={exitWalk}
         />
       )}
@@ -2635,9 +2673,12 @@ function CameraRig({
     // A walk moves the camera itself (09.2).
     if (walker.current?.active()) return walker.current.step(camera, scene, size, delta);
     // Back from a walk (its field of view and clipping plane are the walker's).
-    if (camera instanceof THREE.PerspectiveCamera && (camera.fov !== FOV_DEG || camera.near !== EDITOR_NEAR)) {
+    // The clipping planes follow the zoom (14.1).
+    const clip = clipPlanes(cam.current.distance);
+    if (camera instanceof THREE.PerspectiveCamera && (camera.fov !== FOV_DEG || camera.near !== clip.near || camera.far !== clip.far)) {
       camera.fov = FOV_DEG;
-      camera.near = EDITOR_NEAR;
+      camera.near = clip.near;
+      camera.far = clip.far;
       camera.updateProjectionMatrix();
     }
     const keys = yawKeys.current;
@@ -2681,6 +2722,47 @@ function CameraRig({
   });
 
   return null;
+}
+
+/** Where the pointer meets the scene, for the 3D cursor (14.1): the point and the face's normal there. */
+type CursorHit = { point: WalkVec3; normal: WalkVec3 };
+/** The 3D cursor's size on screen, in px (its radius). */
+const CURSOR_PX = 5;
+
+/**
+ * The 3D cursor (14.1): a small sphere where the pointer meets the scene, and a flat ring lying on the face there so
+ * a slope reads. Drawn over everything, a constant size on screen. It reads a ref, so moving it doesn't re-render.
+ */
+function Cursor3D({ at }: { at: RefObject<CursorHit | null> }) {
+  const group = useRef<THREE.Group>(null);
+  const camera = useThree((s) => s.camera);
+  const size = useThree((s) => s.size);
+  const up = useMemo(() => new THREE.Vector3(0, 0, 1), []);
+  useFrame(() => {
+    const g = group.current;
+    const hit = at.current;
+    if (!g) return;
+    g.visible = !!hit;
+    if (!hit) return;
+    const p = new THREE.Vector3(hit.point.x, hit.point.y, hit.point.z);
+    const fov = camera instanceof THREE.PerspectiveCamera ? camera.fov : FOV_DEG;
+    const metersPerPx = (2 * camera.position.distanceTo(p) * Math.tan(((fov / 2) * Math.PI) / 180)) / size.height;
+    g.position.copy(p);
+    g.scale.setScalar(metersPerPx * CURSOR_PX);
+    g.quaternion.setFromUnitVectors(up, new THREE.Vector3(hit.normal.x, hit.normal.y, hit.normal.z));
+  });
+  return (
+    <group ref={group} renderOrder={10}>
+      <mesh renderOrder={10}>
+        <sphereGeometry args={[1, 16, 12]} />
+        <meshBasicMaterial color="#ff6a3d" depthTest={false} transparent opacity={0.95} />
+      </mesh>
+      <mesh renderOrder={10}>
+        <ringGeometry args={[1.6, 2.2, 32]} />
+        <meshBasicMaterial color="#ff6a3d" depthTest={false} transparent opacity={0.6} side={THREE.DoubleSide} />
+      </mesh>
+    </group>
+  );
 }
 
 /** A marker at the world origin: +x in red, +y in green, +z in blue (the gizmo's colors), for orientation. */

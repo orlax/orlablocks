@@ -49,8 +49,12 @@ export type WalkSession = {
   options: WalkOptions;
   /** When the walk started: the shots taken since are this walk's. */
   startedAt: string;
-  /** The pointer lock was refused (Chrome waits a moment after an Esc): a click on the view continues. */
-  relock: boolean;
+  /**
+   * Released (14.1): paused with the menu closed and the mouse free, for working in another window while this one
+   * keeps showing the walk. Clicks in the view don't take the mouse back (a click that only focuses the window is
+   * safe); Enter or the chip's Continue does. A refused pointer lock (Chrome waits a moment after an Esc) ends here too.
+   */
+  released: boolean;
   /** When the menu opened, so the Esc that paused doesn't also exit. */
   pausedAt: number;
 };
@@ -168,7 +172,24 @@ export function WalkHud({
           <span>{flash.label}</span>
         </div>
       )}
-      {session.relock && session.phase === "paused" && <div className="walk-relock">Click to continue walking</div>}
+    </div>
+  );
+}
+
+/**
+ * A released walk's chip (14.1): the walk is paused and the mouse is free. Continue (or Enter) takes the mouse back,
+ * Menu (or Tab) opens the pause menu again.
+ */
+export function WalkReleased({ onContinue, onMenu }: { onContinue: () => void; onMenu: () => void }) {
+  return (
+    <div className="walk-released">
+      <span>Paused · the mouse is free</span>
+      <button type="button" className="primary" onClick={onContinue}>
+        Continue <kbd>Enter</kbd>
+      </button>
+      <button type="button" onClick={onMenu}>
+        Menu <kbd>Tab</kbd>
+      </button>
     </div>
   );
 }
@@ -217,6 +238,7 @@ export function WalkMenu({
   shots,
   onRemoveShot,
   onContinue,
+  onRelease,
   onExit,
 }: {
   session: WalkSession;
@@ -226,6 +248,8 @@ export function WalkMenu({
   shots: ShotView[];
   onRemoveShot: (id: string) => void;
   onContinue: () => void;
+  /** Closes the menu and leaves the mouse free (14.1). */
+  onRelease: () => void;
   onExit: () => void;
 }) {
   const third = session.preset === "third";
@@ -321,6 +345,9 @@ export function WalkMenu({
         <div className="walk-menu-actions">
           <button type="button" className="primary" onClick={onContinue}>
             Continue <kbd>Enter</kbd>
+          </button>
+          <button type="button" title="Close the menu and keep the mouse free (for another window); Enter continues" onClick={onRelease}>
+            Release mouse <kbd>Tab</kbd>
           </button>
           <button type="button" onClick={onExit}>
             Exit <kbd>Esc</kbd>
