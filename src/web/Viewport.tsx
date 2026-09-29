@@ -50,7 +50,7 @@ import {
   type Point3,
   handleFrame,
 } from "../shared/geometry";
-import { shapesUnder, isGroup, isShape, hiddenIds, lockedIds, selectableAt } from "../shared/tree";
+import { shapesUnder, isGroup, isShape, hiddenIds, lockedIds, selectableAt, subtreeIds } from "../shared/tree";
 import { cutters, isHole } from "../shared/holes";
 import { ShapeMesh } from "./ShapeMesh";
 import { InstancedEntity } from "./InstancedArrays";
@@ -424,7 +424,20 @@ type Props = {
 export const WALK_DRAG = "application/x-orlablocks-walk";
 
 /** What to show in a capture of the view, besides the shapes. */
-export type CaptureOptions = { notes: boolean; lines: boolean };
+/** The nodes hidden in the scene, plus `more` and what's in them (a render's hide, 13.6). */
+function withHidden(nodes: SceneNode[], more: string[] | undefined): Set<string> {
+  const hidden = hiddenIds(nodes);
+  for (const id of more ?? []) for (const d of subtreeIds(nodes, id)) hidden.add(d);
+  return hidden;
+}
+
+export type CaptureOptions = {
+  notes: boolean;
+  lines: boolean;
+  /** For this capture only (13.6): more nodes left out (with what's in them), and a height everything above is cut at. */
+  hide?: string[];
+  clip?: number;
+};
 /** A capture of the view: the PNG, its size, and the camera it was taken with. */
 export type ViewCapture = { png: Blob; width: number; height: number; camera: CameraState };
 /** What the view does on request. */
@@ -521,21 +534,24 @@ export function Viewport({
   ) => {
     await manifoldReady();
     const from = source ?? nodesRef.current;
-    const hiddenNow = hiddenIds(from);
+    const hiddenNow = withHidden(from, options.hide);
     const shapes = [
       ...expandShapes(
         from.filter(isShape).filter((b) => !hiddenNow.has(b.id) && (options.notes || b.type !== "note") && (options.lines || b.type !== "line")),
       ).filter((b) => !isHole(b)),
       ...extra,
     ];
-    const cutsNow = source ? cutters(inEntityRoot(expandNodes(source.filter((n) => !hiddenNow.has(n.id))))) : cutsRef.current;
     const entityNow = source ? true : entityModeRef.current;
+    // The live view's cuts, unless this capture hides more (a hidden hole cuts nothing).
+    const visibleNodes = () => expandNodes(from.filter((n) => !hiddenNow.has(n.id)));
+    const cutsNow = source || options.hide ? cutters(entityNow ? inEntityRoot(visibleNodes()) : visibleNodes()) : cutsRef.current;
     return captureScene({
       view,
       width,
       height,
       pixelRatio,
       background: BACKGROUND,
+      clip: options.clip,
       content: (light) => (
         <>
           <Lighting cam={light} />
@@ -567,7 +583,9 @@ export function Viewport({
       },
       render(job) {
         const nodesNow = nodesRef.current;
-        const hiddenNow = hiddenIds(nodesNow);
+        // The job's hide (13.6) joins the scene's hidden nodes, for this render only; clip cuts every capture of it.
+        const hiddenNow = withHidden(nodesNow, job.hide);
+        const extra = { ...(job.hide ? { hide: job.hide } : {}), ...(job.clip !== undefined ? { clip: job.clip } : {}) };
         const standable = expandShapes(boxesRef.current.filter((b) => !hiddenNow.has(b.id)));
         return renderJob(job, {
           nodes: nodesNow,
@@ -576,7 +594,7 @@ export function Viewport({
           player: playerRef.current,
           avatarEntity: avatarEntityRef.current,
           surfaceY: (x, z) => surfaceUnder({ origin: { x, y: 10_000, z }, dir: { x: 0, y: -1, z: 0 } }, standable)?.y ?? 0,
-          capture: (view, width, height, options, extra) => runCapture(view, width, height, 1, options, extra),
+          capture: (view, width, height, options, shapes) => runCapture(view, width, height, 1, { ...options, ...extra }, shapes),
           captureNodes: (view, width, height, nodes, extra) => runCapture(view, width, height, 1, { notes: false, lines: true }, extra, nodes),
         });
       },

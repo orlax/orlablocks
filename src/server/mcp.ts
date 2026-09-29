@@ -31,10 +31,16 @@ import { describeScene, entitySize, findNodes, FULL_SCENE_MAX, MAX_MATCHES } fro
 import { definitionOf } from "../shared/entities";
 import { prepareRender, type RenderBroker } from "./render";
 import { compactNodes } from "./results";
+import { checkSight } from "../shared/sight";
+import { expandShapes } from "../shared/entities";
+import { surfaceAt, topOf } from "../shared/surfaces";
 import { SceneError } from "./scene";
 import type { Workspace } from "./workspace";
 
 const json = (value: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(value) }] });
+
+/** Where check_sight's eye is (13.5): a point (the feet), a node or item to stand on, or "human". */
+const SightFromSchema = z.union([z.strictObject({ x: z.number(), y: z.number().optional(), z: z.number() }), z.string()]);
 
 /** Every edit tool's `verbose` (plan 13 §4): its result is compact unless asked. */
 const VERBOSE = z
@@ -82,6 +88,10 @@ const RENDER_INPUT = {
   labels: R.labels.describe("plan / sheet / node: letter labels on the image, with the legend in the text (default true)"),
   size: R.size.describe(`the image's long edge in pixels (default ${DEFAULT_RENDER_SIZE}, at most ${MAX_RENDER_SIZE})`),
   save: R.save.describe("keep the image as a shot (by the agent) in the human's Shots panel: node, eye and shot views only"),
+  hide: R.hide.describe(
+    "for this render only, leave these nodes out (with what's in them; a hidden hole cuts nothing): an enclosed room's walls, to see inside from outside. The scene's own hidden flags are the human's: this never changes them",
+  ),
+  clip: R.clip.describe("for this render only, cut away everything above this height (a section): the walls cut, the floors and what's on them in view"),
 };
 
 function buildServer(workspace: Workspace, renders: RenderBroker) {
@@ -114,7 +124,7 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
     const warnings = [...own, ...holes, ...missing];
     return warnings.length > 0 ? { ...result, warnings } : result;
   };
-  const server = new McpServer({ name: "orlablocks", version: "0.0.27" }, { instructions: INSTRUCTIONS });
+  const server = new McpServer({ name: "orlablocks", version: "0.0.28" }, { instructions: INSTRUCTIONS });
   // Every tool reads or edits the open scene, and fails with a clear message while nothing is open.
   const store = () => workspace.requireScene();
   const library = (): Library => (workspace.getOpen() ? workspace.library.get() : EMPTY_LIBRARY);
@@ -524,7 +534,8 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
         "Render the open document as an image, to see your work as a player would (get_guide review says what to check, and when): " +
         "the human's captioned shots, reveals, wayfinding along the critical path, landmarks, stairs that end in walls, doors that cut nothing, " +
         "floating shapes, scale against the human. The editor draws it (it must be open in a browser), without moving the human's view. " +
-        "Labels are letters, and the text result is their legend. Hidden nodes are left out, and notes aren't drawn (read them in get_scene).",
+        "Labels are letters, and the text result is their legend. Hidden nodes are left out, and notes aren't drawn (read them in get_scene). " +
+        "For an enclosed room, hide its walls or clip at eye height instead of rendering the outside of a wall.",
       inputSchema: RENDER_INPUT,
     },
     async (input) => {
@@ -560,6 +571,55 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
         lines.push(`Kept as ${kept.id} in the Shots panel.`);
       }
       return { content: [{ type: "image" as const, data: result.image, mimeType: "image/png" }, { type: "text" as const, text: lines.join("\n") }] };
+    },
+  );
+
+  server.registerTool(
+    "check_sight",
+    {
+      title: "Check sight",
+      description:
+        "Check what can be SEEN, in text, without rendering: from each eye to each target, how much of the target is " +
+        "visible (the share of about 15 points over it that rays reach) and what blocks the rest, nearest first (items " +
+        "as array_1/12). Rays pass through holes (doors, windows) and leave out hidden nodes and `ignore`. Use it for " +
+        "landmarks and goals: from the entrance and from each beat's standing point, is the relic in view? Render when " +
+        "you need to see how it looks, not whether it's visible.",
+      inputSchema: {
+        from: z
+          .union([SightFromSchema, z.array(SightFromSchema).min(1).max(20)])
+          .describe('Where the eye is: a point {x, y?, z} (the feet; y from the surface there when left out), a node or item ID (someone standing on its top), or "human" (where the human is walking); or a list of them'),
+        to: z.union([z.string(), z.array(z.string()).min(1).max(20)]).describe("The target(s): node or item IDs (a landmark, a goal, a door)"),
+        ignore: z.array(z.string()).optional().describe("Nodes that don't block sight (light shafts, decor, glass), with what's in them"),
+      },
+    },
+    async ({ from, to, ignore }) => {
+      const scene = store().getScene();
+      const nodes = scene.nodes;
+      const eyeHeight = workspace.player().eyeHeight;
+      const solids = expandShapes(nodes.filter(isShape));
+      const eyes = (Array.isArray(from) ? from : [from]).map((f) => {
+        if (f === "human") {
+          if (!scene.view.walking) throw new SceneError('from: "human": the human isn\'t walking right now (view.walking is only there while they use the Walk tool). Give a point or a node instead.');
+          return { label: "human", eye: scene.view.walking.eye };
+        }
+        if (typeof f === "string") {
+          const top = topOf(nodes, f);
+          if (!top) throw new SceneError(`from: "${f}" has nothing to stand on (no such node or item, or a line or an array: its items do)`);
+          return { label: f, eye: { x: top.x, y: top.y + eyeHeight, z: top.z } };
+        }
+        const y = f.y ?? surfaceAt(solids, f.x, f.z) ?? 0;
+        return { label: `${f.x}, ${f.z}`, eye: { x: f.x, y: y + eyeHeight, z: f.z } };
+      });
+      let pairs;
+      try {
+        pairs = checkSight(nodes, eyes, Array.isArray(to) ? to : [to], ignore ?? []);
+      } catch (err) {
+        throw new SceneError(`${(err as Error).message}. Nothing was checked.`);
+      }
+      const lines = pairs.map(
+        (p) => `${p.from} → ${p.to}: ${Math.round(p.visible * 100)}%${p.blockers.length > 0 ? ` · blocked by ${p.blockers.join(", then ")}` : ""}`,
+      );
+      return json({ eyeHeight, sight: lines });
     },
   );
 

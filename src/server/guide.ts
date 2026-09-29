@@ -73,7 +73,8 @@ export const INSTRUCTIONS =
   "mirror_nodes. A door or window is a hole shape in the room's group: cut it, don't build walls around the opening. " +
   "Draw lines for paths, routes, jumps and ideas. " +
   "REVIEWING (get_guide review): the human's captioned shots are requirements: after a change that may touch one, " +
-  "re-check it (render_view view: shots) and say whether its caption holds. Keep detail proportional to gameplay. " +
+  "re-check it (render_view view: shots) and say whether its caption holds. To know whether a landmark is in view, " +
+  "check_sight (text, cheap) before render_view. Keep detail proportional to gameplay. " +
   "ENTITIES are the project's prefabs (a tree, a door, a poison pit): an instance (type: instance, e.g. instance_4) " +
   "shows its entity's shapes at its x, y, z and rotation, and carries its description and tags; the outline shows " +
   "one line per instance, and the glossary what each entity is and its size. Place and repeat entities instead of " +
@@ -98,6 +99,12 @@ const GUIDE: Record<Exclude<GuideTopic, "design">, string> = {
   review:
     "Review your work as a level designer: what the player will see, from where, and what they can do there. A render " +
     "(render_view) is for what a player SEES; numbers (get_scene, find_nodes) are for what a player can DO. " +
+    "WHETHER something is in view is a question for check_sight, not a render: check every landmark and goal from the " +
+    "entrance and from each beat's standing point (from: a point, a node to stand on, or \"human\"), in one call; it " +
+    "names every blocker along the way, nearest first, so fix them all at once; pass light shafts and decor in " +
+    "`ignore`. Render for how it looks. For an ENCLOSED room, render_view { hide: [its walls] } or { clip: eye height } " +
+    "shows it from outside for that render only (the scene's hidden flags stay the human's), instead of the outside " +
+    "of a wall. " +
     "SHOTS ARE REQUIREMENTS. The human takes shots of views that matter, and a shot's caption is a claim about the " +
     "level from that camera (\"the flag reads from the approach\", \"the window shows from the stair\"). get_shots lists " +
     "them with changedSince (steps since each was taken). After a change that may touch a captioned shot's view, " +

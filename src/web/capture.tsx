@@ -53,6 +53,8 @@ export type CaptureRequest = {
   /** Lines, notes and arrowheads are sized in screen pixels: the ratio makes them look as on a screen of that density. */
   pixelRatio: number;
   background: string;
+  /** A height everything above is cut away at (13.6: a section), or none. */
+  clip?: number;
   /** The clean scene (lighting and shapes), given the camera the lighting follows. */
   content: (light: RefObject<CameraState>) => ReactNode;
 };
@@ -92,7 +94,7 @@ export function captureScene(request: CaptureRequest): Promise<Blob> {
   return run;
 }
 
-async function capture({ view, width, height, pixelRatio, background, content }: CaptureRequest): Promise<Blob> {
+async function capture({ view, width, height, pixelRatio, background, clip, content }: CaptureRequest): Promise<Blob> {
   const canvas = document.createElement("canvas");
   const root = createRoot(canvas);
   try {
@@ -107,6 +109,8 @@ async function capture({ view, width, height, pixelRatio, background, content }:
       frameloop: "never",
       onCreated: ({ gl }) => {
         gl.toneMapping = THREE.NeutralToneMapping;
+        // Keeps what's below the height: the plane's normal points down.
+        if (clip !== undefined) gl.clippingPlanes = [new THREE.Plane(new THREE.Vector3(0, -1, 0), clip)];
       },
     });
     let ready!: () => void;

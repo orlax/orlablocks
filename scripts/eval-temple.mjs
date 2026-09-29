@@ -125,7 +125,14 @@ if (verbose) {
   });
 }
 
-// 5. Looking things up.
+// 5. Checking sight: since 13.5 in text (the tools before it needed renders: images, not counted here).
+const named = (name) => structure.created.find((c) => c.name === name)?.id;
+if (!verbose) {
+  const sight = await call("sight from the entrance", "check_sight", { from: named("entrance ledge"), to: [named("spire"), named("north landing")] });
+  console.log(sight.sight.join("\n"));
+}
+
+// 6. Looking things up.
 await call("find items near the door", "find_nodes", { type: "item", near: { x: 0, z: 17, radius: 4 } });
 await call("an array's items", "get_scene", { root: idOf(arrays, 2) });
 await call("reshape a spine", "update_nodes", { changes: [{ id: idOf(spines, 0), points: sampled({ x: 0, z: 0, radius: 16, from: 270, turn: 120, y: 0.5, rise: 8 }) }] });

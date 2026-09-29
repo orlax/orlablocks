@@ -57,10 +57,19 @@ function rayHitsBounds({ origin: o, dir: d }: Ray, min: number[], max: number[])
  * null. Möller–Trumbore, after a bounds check.
  */
 export function rayMesh(ray: Ray, mesh: BoundedMesh): number | null {
-  if (!rayHitsBounds(ray, mesh.min, mesh.max)) return null;
+  const hits = rayMeshAll(ray, mesh);
+  return hits.length > 0 ? Math.min(...hits) : null;
+}
+
+/**
+ * Every place along the ray (t ≥ 0) it crosses a triangle of the mesh, from either side, unsorted (13.5: a sight
+ * line through a door still meets the room's far wall). Möller–Trumbore, after a bounds check.
+ */
+export function rayMeshAll(ray: Ray, mesh: BoundedMesh): number[] {
+  if (!rayHitsBounds(ray, mesh.min, mesh.max)) return [];
   const { origin: o, dir: d } = ray;
   const p = mesh.positions;
-  let best: number | null = null;
+  const hits: number[] = [];
   for (let i = 0; i < mesh.indices.length; i += 3) {
     const a = mesh.indices[i] * 3;
     const b = mesh.indices[i + 1] * 3;
@@ -80,9 +89,9 @@ export function rayMesh(ray: Ray, mesh: BoundedMesh): number | null {
     const v = (d.x * qx + d.y * qy + d.z * qz) * inv;
     if (v < 0 || u + v > 1) continue;
     const t = (e2x * qx + e2y * qy + e2z * qz) * inv;
-    if (t >= 0 && (best === null || t < best)) best = t;
+    if (t >= 0) hits.push(t);
   }
-  return best;
+  return hits;
 }
 
 /** A flat surface a new shape can stand on: a volume's top, a room's floor or the top of its walls. */

@@ -69,6 +69,8 @@ export async function renderJob(job: RenderJob, ctx: RenderContext): Promise<Ren
   const hiddenCount = ctx.nodes.filter((n) => n.hidden).length;
   const notes: string[] = [];
   if (hiddenCount > 0) notes.push(`${hiddenCount} hidden node${hiddenCount === 1 ? "" : "s"} left out.`);
+  if (job.hide) notes.push(`For this render only, ${job.hide.join(", ")} (and what's in ${job.hide.length === 1 ? "it" : "them"}) left out.`);
+  if (job.clip !== undefined) notes.push(`Everything above y ${job.clip} cut away (a section).`);
   const scopeText = job.ids ? job.ids.join(", ") : "everything";
   const needShapes = () => {
     if (scope.length === 0) throw new Error(job.ids ? `${scopeText} draw${job.ids.length === 1 ? "s" : ""} nothing to render.` : "The document is empty: nothing to render.");

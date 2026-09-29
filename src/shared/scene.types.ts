@@ -1396,6 +1396,10 @@ export const RenderRequestSchema = z.object({
   labels: z.boolean().optional(),
   size: z.number().int().min(MIN_RENDER_SIZE).max(MAX_RENDER_SIZE).optional(),
   save: z.boolean().optional(),
+  // For this render only (13.6): nodes left out (with what's in them; a hidden hole cuts nothing), and a height
+  // everything above is cut away at.
+  hide: z.array(z.string()).min(1).optional(),
+  clip: z.number().optional(),
 });
 export type RenderRequest = z.infer<typeof RenderRequestSchema>;
 /** A shot to take again beside its image as taken (`view: "shots"`), with the steps since it was taken. */

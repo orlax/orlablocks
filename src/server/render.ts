@@ -42,6 +42,11 @@ export function prepareRender(
   // A model sheet's ids are entities', checked below.
   const unknown = request.view === "entities" ? [] : (request.ids ?? []).filter((id) => !ids.has(id));
   if (unknown.length > 0) fail(`ids: no node ${unknown.join(", ")} in the open ${doc.nodes.length === 0 ? "document (it's empty)" : "document"}.`);
+  const hidden = (request.hide ?? []).filter((id) => !ids.has(id));
+  if (hidden.length > 0) fail(`hide: no node ${hidden.join(", ")} in the open document.`);
+  if ((request.hide || request.clip !== undefined) && (request.view === "shots" || request.view === "entities")) {
+    fail(`hide and clip apply to views of the document; a ${request.view} view shows ${request.view === "shots" ? "shots as taken and now" : "entities"}.`);
+  }
   if (request.save && !SAVABLE.has(request.view)) fail(`save: only a node, eye or shot view can be kept as a shot (it has one camera); this is a ${request.view}.`);
   const job: RenderJob = { ...request };
   switch (request.view) {

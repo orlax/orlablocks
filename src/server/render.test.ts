@@ -87,6 +87,12 @@ describe("preparing a render", () => {
     expect(prep({ view: "walk", path: "line_1" })).toMatchObject({ path: "line_1" });
   });
 
+  it("hides nodes and clips for one render, checking the ids (13.6)", () => {
+    expect(prep({ hide: ["box_1"], clip: 1.6 })).toMatchObject({ view: "sheet", hide: ["box_1"], clip: 1.6 });
+    expect(() => prep({ hide: ["box_9"] })).toThrow(/hide: no node box_9/);
+    expect(() => prep({ view: "entities", clip: 2 })).toThrow(/hide and clip apply to views of the document/);
+  });
+
   it("says what's missing or wrong", () => {
     expect(() => prep({ ids: ["box_9"] })).toThrow(/no node box_9/);
     expect(() => prep({ view: "node" })).toThrow(/needs ids/);
