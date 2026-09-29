@@ -972,17 +972,42 @@ export const ArrayInputSchema = z.strictObject({
   parent: field.parent.optional().describe("ID of the group to put it in (its items cut and are cut as instances there). Omit for the top level"),
 });
 
+/** A batch ref's name (plan 13 §6): a letter, then letters, digits, `_` or `-`. */
+export const BATCH_REF = /^[A-Za-z][A-Za-z0-9_-]{0,39}$/;
+/**
+ * A name for a `draw_shapes` entry, so later entries of the same batch can use `$name` where an ID goes (`parent`,
+ * `layout.along.id`): the ID it will get, which isn't known yet.
+ */
+const refField = {
+  ref: z
+    .string()
+    .regex(BATCH_REF)
+    .optional()
+    .describe('A name for this entry in the batch (e.g. "chamber"): later entries use "$chamber" where an ID goes (parent, along.id). The result maps each ref to its ID'),
+};
+
+/** A group for `draw_shapes` (plan 13 §6): made in the batch, so what's drawn into it arrives with it (holes cut from the start). */
+export const GroupInputSchema = z.strictObject({
+  type: z.literal("group").describe("A group, drawn in the batch: give it a ref, and parent: \"$ref\" on what goes in it"),
+  name: field.name.optional(),
+  description: z.string().max(MAX_DESCRIPTION).optional().describe('What the group is, e.g. "entry hall, safe zone"'),
+  tags: field.tags.optional(),
+  parent: field.parent.optional().describe("ID of the group to put it in (or an earlier entry's $ref). Omit for the top level"),
+});
+
 export const ShapeInputSchema = z.discriminatedUnion("type", [
   BoxInputSchema.extend({
     type: z.enum(["box", "cylinder"]).optional().describe("box (the default) or cylinder (the ellipse inscribed in width × depth)"),
     sides: field.sides.optional(),
+    ...refField,
   }),
-  FreeformInputSchema,
-  LineInputSchema,
-  RampInputSchema,
-  NoteInputSchema,
-  InstanceInputSchema,
-  ArrayInputSchema,
+  FreeformInputSchema.extend(refField),
+  LineInputSchema.extend(refField),
+  RampInputSchema.extend(refField),
+  NoteInputSchema.extend(refField),
+  InstanceInputSchema.extend(refField),
+  ArrayInputSchema.extend(refField),
+  GroupInputSchema.extend(refField),
 ]);
 export type ShapeInput = z.input<typeof ShapeInputSchema>;
 

@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { NodeSchema, type Box, type Freeform, type Line, type SceneNode } from "../shared/scene.types";
+import { setDefinitions } from "../shared/entities";
+import { holeWarnings } from "../shared/holes";
 import { subtreeIds } from "../shared/tree";
 import { createSceneStore, SceneError } from "./scene";
 
@@ -1256,5 +1258,68 @@ describe("scene store ramps", () => {
     expect((store.getScene().nodes[0] as { points: { x: number }[] }).points.map((p) => p.x)).toEqual([7, 1]);
     const [copy] = store.duplicateNodes({ ids: [r.id], dz: 5 }, "human");
     expect(copy).toMatchObject({ id: "ramp_2", type: "ramp", width: 3 });
+  });
+});
+
+describe("batch refs and groups in a batch (plan 13 §6)", () => {
+  it("draws a group and what's in it in one call, the refs resolved to the IDs they get", () => {
+    const s = createSceneStore();
+    s.drawShapes([{ kind: "volume", x: 0, z: 0, width: 1, depth: 1 }], "agent");
+    const made = s.drawShapes(
+      [
+        { type: "group", ref: "chamber", name: "chamber", description: "the temple's hall" },
+        { kind: "room", x: 0, z: 0, width: 10, depth: 10, parent: "$chamber", ref: "hall" },
+        { kind: "hole", x: 0, z: 5, width: 2, depth: 1, height: 3, parent: "$chamber" },
+      ],
+      "agent",
+    );
+    expect(made.map((n) => [n.id, n.type, n.parent])).toEqual([
+      ["group_1", "group", undefined],
+      ["box_2", "box", "group_1"],
+      ["box_3", "box", "group_1"],
+    ]);
+    expect(made[0]).toMatchObject({ name: "chamber", description: "the temple's hall" });
+    // The door cuts the room from the start: nothing warns it's outside a group.
+    expect(holeWarnings(s.getScene().nodes)).toEqual([]);
+    // One step.
+    s.undo();
+    expect(s.getScene().nodes.map((n) => n.id)).toEqual(["box_1"]);
+  });
+
+  it("lets an array follow a line drawn earlier in the same batch", () => {
+    const s = createSceneStore({ entityName: (id) => (id === "block" ? id : undefined) });
+    setDefinitions({ block: [{ id: "box_1", type: "box", kind: "volume", x: 0, z: 0, y: 0, width: 1, depth: 1, height: 1, rotation: 0, color: "gray", createdBy: "human" }] });
+    const [line, array] = s.drawShapes(
+      [
+        { type: "line", ref: "spine", points: [{ x: 0, y: 0, z: 0 }, { x: 10, y: 5, z: 0 }] },
+        { type: "array", entity: "block", layout: { type: "path", along: { id: "$spine" }, place: "count", count: 3 } },
+      ],
+      "agent",
+    );
+    expect(array).toMatchObject({ layout: { along: { id: line.id }, points: [{ x: 0 }, { x: 10 }] } });
+  });
+
+  it("refuses unknown, forward and repeated refs, drawing nothing", () => {
+    const s = createSceneStore();
+    expect(() => s.drawShapes([{ kind: "volume", x: 0, z: 0, width: 1, depth: 1, parent: "$nope" }], "agent")).toThrow(/shapes\[0\]\.parent: no entry with ref "nope" before this one/);
+    expect(() =>
+      s.drawShapes(
+        [
+          { kind: "volume", x: 0, z: 0, width: 1, depth: 1, parent: "$later" },
+          { type: "group", ref: "later" },
+        ],
+        "agent",
+      ),
+    ).toThrow(/no entry with ref "later" before this one/);
+    expect(() =>
+      s.drawShapes(
+        [
+          { type: "group", ref: "g" },
+          { type: "group", ref: "g" },
+        ],
+        "agent",
+      ),
+    ).toThrow(/"g" is already an earlier entry's ref/);
+    expect(s.getScene().nodes).toEqual([]);
   });
 });

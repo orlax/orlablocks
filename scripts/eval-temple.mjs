@@ -57,38 +57,51 @@ const sampled = ({ x, z, radius, from, turn, y, rise }) =>
     return { x: +(x + radius * Math.cos(a)).toFixed(2), y: +(y + (rise * i * 10) / turn).toFixed(2), z: +(z - radius * Math.sin(a)).toFixed(2) };
   });
 
-// 1. The structure.
+// 1. The structure: since 13.3 the group and its door in the same call (--verbose: draw, then group_nodes).
+const chamber = verbose ? [] : [{ type: "group", ref: "chamber", name: "chamber" }];
+const inChamber = verbose ? {} : { parent: "$chamber" };
 const structure = await call("structure", "draw_shapes", {
   shapes: [
-    { type: "cylinder", kind: "room", x: 0, z: 0, width: 48, depth: 48, height: 36, sides: 16, name: "hall" },
-    { kind: "volume", x: 0, z: 0, width: 44, depth: 44, height: 0.2, color: "red", name: "lava" },
-    { type: "cylinder", kind: "volume", x: 0, z: 0, width: 6, depth: 6, height: 18, taper: 0.4, name: "spire" },
-    { kind: "volume", x: 0, z: 21, width: 6, depth: 4, height: 1, name: "entrance ledge" },
-    { kind: "volume", x: 0, z: -19, width: 8, depth: 4, y: 8, height: 1, name: "north landing" },
+    ...chamber,
+    { type: "cylinder", kind: "room", x: 0, z: 0, width: 48, depth: 48, height: 36, sides: 16, name: "hall", ...inChamber },
+    { kind: "hole", x: 0, z: 23, width: 3, depth: 2, height: 4, name: "door", ...inChamber },
+    { kind: "volume", x: 0, z: 0, width: 44, depth: 44, height: 0.2, color: "red", name: "lava", ...inChamber },
+    { type: "cylinder", kind: "volume", x: 0, z: 0, width: 6, depth: 6, height: 18, taper: 0.4, name: "spire", ...inChamber },
+    { kind: "volume", x: 0, z: 21, width: 6, depth: 4, height: 1, name: "entrance ledge", ...inChamber },
+    { kind: "volume", x: 0, z: -19, width: 8, depth: 4, y: 8, height: 1, name: "north landing", ...inChamber },
   ],
 });
-await call("group", "group_nodes", { ids: structure.created.map((c) => c.id), name: "chamber" });
+if (verbose) await call("group", "group_nodes", { ids: structure.created.map((c) => c.id), name: "chamber" });
 
-// 2. An entity: its shape off to the side, make_entity, remove the instance (13.3 replaces this with define_entity).
-const slabShape = await call("slab shape", "draw_shapes", { shapes: [{ kind: "volume", x: 80, z: 0, width: 2, depth: 2, height: 0.5, name: "ruin slab" }] });
-const slab = await call("make slab", "make_entity", { ids: [idOf(slabShape)], name: "ruin slab" });
-await call("remove slab instance", "remove_nodes", { ids: [slab.instance.id] });
+// 2. An entity: since 13.3 define_entity (--verbose: its shape off to the side, make_entity, remove the instance).
+if (verbose) {
+  const slabShape = await call("slab shape", "draw_shapes", { shapes: [{ kind: "volume", x: 80, z: 0, width: 2, depth: 2, height: 0.5, name: "ruin slab" }] });
+  const slab = await call("make slab", "make_entity", { ids: [idOf(slabShape)], name: "ruin slab" });
+  await call("remove slab instance", "remove_nodes", { ids: [slab.instance.id] });
+} else {
+  await call("define slab", "define_entity", { name: "ruin slab", shapes: [{ kind: "volume", x: 0, z: 0, width: 2, depth: 2, height: 0.5 }] });
+}
 
-// 3. The spines and the arrays on them.
+// 3. The spines and the arrays on them: since 13.3 in one call, the arrays following the spines by ref.
 const spine = (sp) => (verbose ? { points: sampled(sp) } : { spiral: sp });
-const spines = await call("spines", "draw_shapes", {
-  shapes: [
-    { type: "line", ...spine({ x: 0, z: 0, radius: 17, from: 270, turn: 120, y: 0.5, rise: 8 }), dashed: true, name: "wall spine" },
-    { type: "line", ...spine({ x: 0, z: 0, radius: 5.5, from: 90, turn: 180, y: 14, rise: 3.5 }), dashed: true, name: "spire spine" },
-  ],
-});
-const arrays = await call("arrays", "draw_shapes", {
-  shapes: [
-    { type: "array", entity: "ruin-slab", layout: { type: "path", along: { id: idOf(spines, 0) }, place: "count", count: 9 }, name: "wall spiral" },
-    { type: "array", entity: "ruin-slab", layout: { type: "path", along: { id: idOf(spines, 1) }, place: "count", count: 7 }, name: "spire spiral" },
-    { type: "array", entity: "ruin-slab", layout: { type: "circle", x: 0, z: 0, y: 12.5, radius: 9, count: 8 }, name: "flame ring" },
-  ],
-});
+const spineEntries = [
+  { type: "line", ref: "wallSpine", ...spine({ x: 0, z: 0, radius: 17, from: 270, turn: 120, y: 0.5, rise: 8 }), dashed: true, name: "wall spine" },
+  { type: "line", ref: "spireSpine", ...spine({ x: 0, z: 0, radius: 5.5, from: 90, turn: 180, y: 14, rise: 3.5 }), dashed: true, name: "spire spine" },
+];
+const arrayEntries = (wall, spire) => [
+  { type: "array", entity: "ruin-slab", layout: { type: "path", along: { id: wall }, place: "count", count: 9 }, name: "wall spiral" },
+  { type: "array", entity: "ruin-slab", layout: { type: "path", along: { id: spire }, place: "count", count: 7 }, name: "spire spiral" },
+  { type: "array", entity: "ruin-slab", layout: { type: "circle", x: 0, z: 0, y: 12.5, radius: 9, count: 8 }, name: "flame ring" },
+];
+let spines, arrays;
+if (verbose) {
+  spines = await call("spines", "draw_shapes", { shapes: spineEntries.map(({ ref: _ref, ...e }) => e) });
+  arrays = await call("arrays", "draw_shapes", { shapes: arrayEntries(idOf(spines, 0), idOf(spines, 1)) });
+} else {
+  const both = await call("spines and arrays", "draw_shapes", { shapes: [...spineEntries, ...arrayEntries("$wallSpine", "$spireSpine")] });
+  spines = { created: both.created.slice(0, 2) };
+  arrays = { created: both.created.slice(2) };
+}
 
 // 4. The critical path through the items (13.4 replaces this with `through`).
 // Where the items are: from the compact result's item lines, or (verbose) from get_scene, as before plan 13.

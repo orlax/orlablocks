@@ -16,12 +16,12 @@ import {
   type View,
 } from "../shared/scene.types";
 import { arrayItems } from "../shared/arrays";
-import { round2 } from "../shared/geometry";
+import { boundsOf, round2 } from "../shared/geometry";
 import { applyLibraryOp, entityMeta, findRefs, resolveRef, type EntityMeta, type Library, type LibraryEdit, type Uses } from "../shared/library";
 import { allDefinitions, setDefinition, setDefinitions } from "../shared/entities";
 import { firstIds, type LibraryFile, type NextId, type SceneFile } from "../shared/project.types";
 import { isGroup, tagsOf } from "../shared/tree";
-import type { SceneNode } from "../shared/scene.types";
+import type { SceneNode, Shape, ShapeInput } from "../shared/scene.types";
 import { applyOp, createHistory, type HistoryEntry } from "./commands";
 import { DEFAULT_GUIDE } from "./defaultGuide";
 import { HUMAN, HUMAN_DESCRIPTION } from "./defaultEntities";
@@ -284,6 +284,27 @@ export function createWorkspace(data: DataDir) {
     seeded: openLibrary!.seeded,
   });
 
+  /**
+   * A new entity in the open project from its definition's nodes (around its pivot): its folder and file, the
+   * library's entry (not an undo step, as a scene isn't), and every tab told. Tags must exist in the library.
+   */
+  const createEntity = (input: { name?: string; description?: string; tags?: string[] }, nodes: SceneNode[], actor: "human" | "agent"): EntityMeta => {
+    const name = (input.name ?? "").trim() || "entity";
+    const description = (input.description ?? "").trim();
+    const tagNames = input.tags ?? [];
+    const missing = tagNames.filter((t) => !resolveRef(library.get(), "tag", t));
+    if (missing.length > 0) throw new SceneError(`tags: no tag ${missing.map((t) => `#${t}`).join(", ")} in the project library. No entity was made.`);
+    const tags = [...new Set(tagNames.map((t) => resolveRef(library.get(), "tag", t)!.name))];
+    const nextId = raisedNextId(firstIds(), { label: "", actor, at: 0, ops: [{ op: "add", nodes }], inverse: [] });
+    const id = fileOp("No entity was made.", () => data.createEntity(open!.project.id, name, { createdAt: new Date().toISOString(), seq: 0, nextId, nodes }));
+    const meta: EntityMeta = { id, name, ...(description ? { description } : {}), ...(tags.length > 0 ? { tags } : {}) };
+    setDefinition(id, nodes);
+    library.addEntityQuietly(meta);
+    data.writeLibrary(open!.project.id, libraryFile());
+    entitiesChanged();
+    return meta;
+  };
+
   const readOtherScenes = () => {
     if (!open) return void (otherScenes = []);
     const project = data.listProjects().find((p) => p.id === open!.project.id);
@@ -535,26 +556,47 @@ export function createWorkspace(data: DataDir) {
      * is created like a scene is (not an undo step): undoing puts the nodes back, and the entity stays in the
      * library. A single group gives the entity its name, description and tags unless they're given.
      */
-    makeEntity(input: { ids: string[]; name?: string; description?: string; tags?: string[] }, actor: "human" | "agent") {
+    makeEntity(input: { ids: string[]; name?: string; description?: string; tags?: string[]; keep?: boolean }, actor: "human" | "agent") {
       if (!open) throw new SceneError(NO_SCENE_OPEN);
       const prepared = store.prepareEntity(input.ids);
-      const name = (input.name ?? prepared.from?.name ?? "").trim() || "entity";
-      const description = (input.description ?? prepared.from?.description ?? "").trim();
-      const tagNames = input.tags ?? prepared.from?.tags ?? [];
-      const missing = tagNames.filter((t) => !resolveRef(library.get(), "tag", t));
-      if (missing.length > 0) throw new SceneError(`tags: no tag ${missing.map((t) => `#${t}`).join(", ")} in the project library. No entity was made.`);
-      const tags = [...new Set(tagNames.map((t) => resolveRef(library.get(), "tag", t)!.name))];
-      const nextId = raisedNextId(firstIds(), { label: "", actor, at: 0, ops: [{ op: "add", nodes: prepared.nodes }], inverse: [] });
-      const id = fileOp("No entity was made.", () =>
-        data.createEntity(open!.project.id, name, { createdAt: new Date().toISOString(), seq: 0, nextId, nodes: prepared.nodes }),
+      const meta = createEntity(
+        { name: input.name ?? prepared.from?.name, description: input.description ?? prepared.from?.description, tags: input.tags ?? prepared.from?.tags },
+        prepared.nodes,
+        actor,
       );
-      const meta: EntityMeta = { id, name, ...(description ? { description } : {}), ...(tags.length > 0 ? { tags } : {}) };
-      setDefinition(id, prepared.nodes);
-      library.addEntityQuietly(meta);
-      data.writeLibrary(open.project.id, libraryFile());
-      entitiesChanged();
-      const instance = store.commitEntity(prepared, id, name, actor);
-      return { entity: meta, instance };
+      // keep: false (plan 13 §6): the shapes become the entity and leave nothing in their place.
+      const instance = store.commitEntity(prepared, meta.id, meta.name, actor, input.keep ?? true);
+      return { entity: meta, ...(instance ? { instance } : {}) };
+    },
+
+    /**
+     * Define entity (plan 13 §6): a new entity from shapes given around its pivot (the bottom center at the origin),
+     * without drawing them in the scene: no scene step, no instance. The shapes are checked as a definition's (no
+     * instances, arrays or notes), with batch refs and groups as in draw_shapes. Returns the entity and warnings
+     * when its bottom isn't at y 0 or its middle is off the origin (instances would float or sit off their point).
+     */
+    defineEntity(input: { name: string; description?: string; tags?: string[]; shapes: ShapeInput[] }, actor: "human" | "agent") {
+      if (!open) throw new SceneError(NO_SCENE_OPEN);
+      const scratch = createSceneStore({ resolveTag: (t) => resolveRef(library.get(), "tag", t)?.name });
+      scratch.load({ document: "entity", nodes: [], nextId: firstIds() });
+      let nodes: SceneNode[];
+      try {
+        nodes = scratch.drawShapes(input.shapes, actor);
+      } catch (err) {
+        if (err instanceof SceneError) throw new SceneError(err.message.replace("Nothing was drawn.", "No entity was made."));
+        throw err;
+      }
+      const shapes = nodes.filter((n): n is Shape => !isGroup(n));
+      if (shapes.length === 0) throw new SceneError("shapes: an entity needs at least one shape. No entity was made.");
+      const meta = createEntity(input, nodes, actor);
+      const b = boundsOf(shapes);
+      const warnings = [
+        ...(round2(b.minY) !== 0 ? [`its bottom is at y ${round2(b.minY)}, not 0: instances will stand ${round2(b.minY)} m off their y`] : []),
+        ...(Math.hypot((b.minX + b.maxX) / 2, (b.minZ + b.maxZ) / 2) > 0.5
+          ? [`its middle is at x ${round2((b.minX + b.maxX) / 2)}, z ${round2((b.minZ + b.maxZ) / 2)}: instances will sit that far off their point (build it around the origin)`]
+          : []),
+      ];
+      return { entity: meta, ...(warnings.length > 0 ? { warnings } : {}) };
     },
 
     /**

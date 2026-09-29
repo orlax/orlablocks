@@ -82,6 +82,20 @@ import { applyOp, createHistory, invertOp, runOps, type History, type HistoryEnt
 
 export class SceneError extends Error {}
 
+/**
+ * A `draw_shapes` entry with its batch refs resolved (plan 13 §6): every `$name` in a field that takes an ID
+ * (`parent`, `layout.along.id`) becomes what `lookup` gives for `name`.
+ */
+function resolveBatchRefs(input: ShapeInput, lookup: (ref: string, where: string) => string): ShapeInput {
+  const resolve = (value: unknown, where: string) => (typeof value === "string" && value.startsWith("$") ? lookup(value.slice(1), where) : value);
+  const out = { ...input } as Record<string, unknown>;
+  if ("parent" in out) out.parent = resolve(out.parent, "parent");
+  const layout = out.layout as { along?: { id?: unknown } } | undefined;
+  if (layout?.along?.id !== undefined) out.layout = { ...layout, along: { ...layout.along, id: resolve(layout.along.id, "layout.along.id") } };
+  delete out.ref;
+  return out as ShapeInput;
+}
+
 /** A change to the nodes that the history records: a new step, or moving through the existing ones. */
 export type Step = { type: "commit"; entry: HistoryEntry } | { type: "undo"; entry: HistoryEntry } | { type: "redo"; entry: HistoryEntry };
 
@@ -227,7 +241,12 @@ export function createSceneStore({
   /** Tells step listeners (persistence) first, so a step is on disk before anyone sees it. */
   const step = (s: Step) => stepListeners.forEach((l) => l(s));
 
-  const byId = () => new Map(scene.nodes.map((n) => [n.id, n]));
+  /**
+   * A `draw_shapes` batch's entries already built (plan 13 §6), with the IDs they'll get: while the batch is checked,
+   * later entries see them as if they were in the scene (a group to draw into, a line to follow). Empty otherwise.
+   */
+  let pending: SceneNode[] = [];
+  const byId = () => new Map([...scene.nodes, ...pending].map((n) => [n.id, n]));
 
   /** Tags as stored: each resolved to its current name, in order, each once; none = undefined. Unknown ones are errors. */
   const tagList = (prefix: string, tags: string[] | null | undefined, errors: string[]): string[] | undefined => {
@@ -697,11 +716,31 @@ export function createSceneStore({
      * Validates every input first; applies all or nothing. Missing fields get their defaults: a box, the kind's
      * height, y 0, rotation 0, the default color, no name, the top level (and a smooth cylinder).
      */
-    drawShapes(inputs: ShapeInput[], actor: Actor): Shape[] {
+    drawShapes(inputs: ShapeInput[], actor: Actor): SceneNode[] {
       if (inputs.length === 0) throw new SceneError("shapes: at least one shape is required");
 
       const errors: string[] = [];
-      const valid = inputs.map((input, i) => {
+      // Batch refs (plan 13 §6): the ID each entry will get, in order, and `$name` replaced by it where an ID goes.
+      const counters = { ...nextId };
+      const predicted = inputs.map((input) => {
+        const type = ((input as { type?: SceneNode["type"] }).type ?? "box") as SceneNode["type"];
+        return `${type}_${counters[type] === undefined ? 0 : counters[type]++}`;
+      });
+      const refs = new Map<string, string>();
+      const resolved = inputs.map((input, i) => {
+        const out = resolveBatchRefs(input, (ref, where) => {
+          const id = refs.get(ref);
+          if (id === undefined) errors.push(`shapes[${i}].${where}: no entry with ref "${ref}" before this one in the batch`);
+          return id ?? `$${ref}`;
+        });
+        const ref = (input as { ref?: string }).ref;
+        if (ref !== undefined) {
+          if (refs.has(ref)) errors.push(`shapes[${i}].ref: "${ref}" is already an earlier entry's ref in this batch`);
+          else refs.set(ref, predicted[i]);
+        }
+        return out;
+      });
+      const build = (input: ShapeInput, i: number) => {
         const result = ShapeInputSchema.safeParse(input);
         if (!result.success) {
           errors.push(...issueLines(`shapes[${i}]`, result.error.issues));
@@ -714,6 +753,15 @@ export function createSceneStore({
           if (e) errors.push(`${prefix}.parent: ${e}`);
         }
         const name = d.name?.trim();
+        if (d.type === "group") {
+          return {
+            type: "group" as const,
+            ...(name ? { name } : {}),
+            ...(d.description?.trim() ? { description: d.description.trim() } : {}),
+            ...withTags(tagList(prefix, d.tags, errors)),
+            ...(d.parent !== undefined ? { parent: d.parent } : {}),
+          };
+        }
         if (d.type === "line") {
           if ((d.points === undefined) === (d.spiral === undefined)) errors.push(`${prefix}: give a line either points or spiral (one of them)`);
           return {
@@ -825,10 +873,20 @@ export function createSceneStore({
           ...(angle(d.pitch) !== undefined ? { pitch: angle(d.pitch) } : {}),
           ...(angle(d.roll) !== undefined ? { roll: angle(d.roll) } : {}),
         };
-      });
+      };
+      let valid: ReturnType<typeof build>[];
+      try {
+        valid = resolved.map((input, i) => {
+          const built = build(input, i);
+          if (built) pending.push({ id: predicted[i], ...built, createdBy: actor } as SceneNode);
+          return built;
+        });
+      } finally {
+        pending = [];
+      }
       failIf(errors, "Nothing was drawn.");
 
-      const created = valid.map((b) => ({ id: newId(b!.type), ...b!, createdBy: actor }) as Shape);
+      const created = valid.map((b) => ({ id: newId(b!.type), ...b!, createdBy: actor }) as SceneNode);
       const ids = created.map((b) => b.id);
       commit(label("draw", listIds(ids, "shapes"), actor), actor, [{ op: "add", nodes: created }]);
       return created;
@@ -1344,9 +1402,14 @@ export function createSceneStore({
 
     /**
      * The scene half of Make entity, as one step: the prepared nodes are replaced by one instance of `entity` at
-     * their pivot, unturned, where the first of them was. The definition must exist by now. Undo puts the nodes back.
+     * their pivot, unturned, where the first of them was (or, without `keep`, just removed). The definition must exist by now. Undo puts the nodes back.
      */
-    commitEntity(prepared: PreparedEntity, entity: string, label_: string, actor: Actor): Instance {
+    commitEntity(prepared: PreparedEntity, entity: string, label_: string, actor: Actor, keep = true): Instance | null {
+      // keep: false (plan 13 §6): the nodes become the entity and leave nothing in their place.
+      if (!keep) {
+        commit(label("make entity", label_, actor), actor, [{ op: "remove", ids: prepared.remove }]);
+        return null;
+      }
       const removing = new Set(prepared.remove);
       const instance: Instance = {
         id: newId("instance"),

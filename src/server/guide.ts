@@ -77,7 +77,8 @@ export const INSTRUCTIONS =
   "ENTITIES are the project's prefabs (a tree, a door, a poison pit): an instance (type: instance, e.g. instance_4) " +
   "shows its entity's shapes at its x, y, z and rotation, and carries its description and tags; the outline shows " +
   "one line per instance, and the glossary what each entity is and its size. Place and repeat entities instead of " +
-  "redrawing a thing twice. To repeat an entity many times (battlements, windows round a tower, pillars in a hall, a " +
+  "redrawing a thing twice. Make a new entity with define_entity (its shapes around the origin, never drawn in the " +
+  "scene). To repeat an entity many times (battlements, windows round a tower, pillars in a hall, a " +
   "row of torches), use one ARRAY (type: array; get_guide arrays), not copies: it stays one node and draws cheaply. " +
   "When get_scene has `editing`, the human is editing an entity: the nodes are its shapes " +
   "around its pivot, and your changes reach every instance. " +
@@ -134,9 +135,15 @@ const GUIDE: Record<Exclude<GuideTopic, "design">, string> = {
     "`entity` (swap: a small tree becomes a tall one in place). move_nodes, rotate_nodes and copy work on instances as " +
     "on shapes; mirror_nodes moves one to its mirrored place and turns it to face the mirrored way, but doesn't flip " +
     "the entity (a left-handed door stays left-handed). To repeat a thing, make it an entity once and place instances " +
-    "(a forest: a few tree entities, many instances) rather than copying shapes. make_entity { ids, name, description, " +
-    "tags } turns shapes or a group into a new entity and puts an instance in their place (a single group's contents " +
-    "become the entity). detach_instances turns an instance back into a plain group of shapes, only when one copy must " +
+    "(a forest: a few tree entities, many instances) rather than copying shapes. To make a new entity, " +
+    "define_entity { name, description, tags, shapes } takes its shapes (draw_shapes' entries, with refs and groups) " +
+    "around its PIVOT, the bottom center at the origin: build it standing on y = 0 around x = 0, z = 0 (a 2 × 2 × 0.5 " +
+    "slab is { kind: \"volume\", x: 0, z: 0, width: 2, depth: 2, height: 0.5 }; a column on a plinth, the plinth at y " +
+    "0 and the shaft at y = the plinth's height). Nothing is drawn in the scene and no instance is left to clean up, so " +
+    "it's the way to make an entity you're about to place. make_entity { ids, name, description, tags, keep? } turns " +
+    "shapes or a group already in the scene into a new entity and puts an instance in their place (keep: false leaves " +
+    "nothing; a single group's contents become the entity), with the pivot at the bottom center of their bounds. " +
+    "detach_instances turns an instance back into a plain group of shapes, only when one copy must " +
     "differ. get_library { entity } returns a definition's nodes. For HOLES an instance is a group: its shapes are " +
     "directly in it. So an entity that is a hole (a window) cuts what's directly in the instance's parent group and in " +
     "the groups beside it: place a window instance in the room's group and it cuts that room's walls. The human edits " +
@@ -314,7 +321,10 @@ const GUIDE: Record<Exclude<GuideTopic, "design">, string> = {
     'of the level is: "entry hall, safe zone"), set with update_nodes or group_nodes; the outline shows it, so ' +
     "describe the main areas. Tools act on a group as a unit: move_nodes and rotate_nodes on a group move or turn " +
     "everything in it in one step. A group left empty disappears. Draw straight into a group with draw_shapes' " +
-    "`parent`. To repeat things (a row of pillars, a second wing, another floor), copy them with move_nodes and copy: " +
+    "`parent`. To make a group and what's in it in ONE call, put a group entry first in draw_shapes: { type: " +
+    "\"group\", ref: \"chamber\", name, description, tags? }, then parent: \"$chamber\" on the entries that go in it; a " +
+    "door hole drawn into it cuts the room's walls from the start (a hole needs a group to cut in). Refs work for " +
+    "layout.along.id too (a line and the array following it). To repeat things (a row of pillars, a second wing, another floor), copy them with move_nodes and copy: " +
     "true (count for several, each offset further) instead of retyping shapes: copies get new IDs and keep their " +
     "names, structure and parent group. For symmetry, mirror_nodes flips nodes in place on a WORLD axis (x or z, not " +
     "the camera's view): copy a wing with move_nodes, then mirror the copy, instead of computing reflected positions " +

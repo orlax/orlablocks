@@ -219,7 +219,7 @@ describe("entities in the workspace", () => {
     const { entity, instance } = ws.makeEntity({ ids: [g.id], description: "goo that hurts; @fish cleans it" }, "agent");
     expect(entity).toEqual({ id: "poison", name: "Poison", description: "goo that hurts; @fish cleans it", tags: ["hazard"] });
     expect(instance).toMatchObject({ type: "instance", entity: "poison", x: 11, y: 0, z: 10, rotation: 0 });
-    expect(store.getScene().nodes.map((n) => n.id)).toEqual([instance.id]);
+    expect(store.getScene().nodes.map((n) => n.id)).toEqual([instance!.id]);
     expect(store.getHistory().undoLabel).toBe("Agent: make entity Poison");
     const file = JSON.parse(fs.readFileSync(path.join(root, "projects", "castle", "entities", "poison", "entity.json"), "utf8"));
     expect(file.nodes.map((n: Box) => [n.id, n.x])).toEqual([
@@ -258,7 +258,7 @@ describe("entities in the workspace", () => {
     expect(() => ws.editLibrary({ remove: [{ kind: "entity", name: "crate" }] }, "human")).toThrow(/crate is placed 2 times, in Tower, Keep/);
     ws.requireScene().undo();
     ws.openScene({ project: "castle", scene: "keep" });
-    ws.requireScene().removeNodes([instance.id], "human");
+    ws.requireScene().removeNodes([instance!.id], "human");
     ws.editLibrary({ remove: [{ kind: "entity", name: "crate" }] }, "human");
     expect(ws.library.get().entities.map((e) => e.id)).toEqual(["human"]);
     // Its folder stays, so undoing the delete brings it back whole.
@@ -285,7 +285,7 @@ describe("entities in the workspace", () => {
     expect(store.getHistory().canUndo).toBe(false);
     // Taller: every instance follows.
     store.updateNodes([{ id: "box_1", height: 5 }], "agent");
-    expect(boundsOf([{ ...instance, x: 0 }]).maxY).toBe(5);
+    expect(boundsOf([{ ...instance!, x: 0 }]).maxY).toBe(5);
     expect(definitionOf("pillar")?.[0]).toMatchObject({ height: 5 });
     expect(JSON.parse(fs.readFileSync(path.join(root, "projects", "castle", "entities", "pillar", "entity.json"), "utf8")).nodes[0].height).toBe(5);
     expect(fs.readFileSync(path.join(root, "projects", "castle", "entities", "pillar", "history.jsonl"), "utf8").trim().split("\n")).toHaveLength(1);
@@ -323,5 +323,61 @@ describe("entities in the workspace", () => {
     ws.editLibrary({ remove: [{ kind: "entity", name: "human" }] }, "human");
     releases.splice(0).forEach((r) => r());
     expect(start(root).library.get().entities).toEqual([]);
+  });
+
+  it("defines an entity from shapes around its pivot, drawing nothing in the scene (plan 13 §6)", () => {
+    const ws = start(tempRoot());
+    ws.createProject({ name: "Temple", sceneName: "Hall" });
+    const before = ws.requireScene().getHistory();
+    const { entity, warnings } = ws.defineEntity(
+      {
+        name: "Temple column",
+        description: "a fluted column",
+        shapes: [
+          { type: "group", ref: "col", name: "column" },
+          { kind: "volume", x: 0, z: 0, width: 1.4, depth: 1.4, height: 0.4, parent: "$col" },
+          { type: "cylinder", kind: "volume", x: 0, z: 0, y: 0.4, width: 1, depth: 1, height: 5, parent: "$col" },
+        ],
+      },
+      "agent",
+    );
+    expect(entity).toEqual({ id: "temple-column", name: "Temple column", description: "a fluted column" });
+    expect(warnings).toBeUndefined();
+    const def = definitionOf("temple-column")!;
+    expect(def.map((n) => [n.id, n.parent])).toEqual([
+      ["group_1", undefined],
+      ["box_1", "group_1"],
+      ["cylinder_1", "group_1"],
+    ]);
+    // No scene step, no instance.
+    expect(ws.requireScene().getScene().nodes).toEqual([]);
+    expect(ws.requireScene().getHistory()).toEqual(before);
+  });
+
+  it("warns when a defined entity doesn't stand on the origin, and refuses what a definition can't hold", () => {
+    const ws = start(tempRoot());
+    ws.createProject({ name: "Temple", sceneName: "Hall" });
+    const { warnings } = ws.defineEntity({ name: "floaty", shapes: [{ kind: "volume", x: 60, z: 0, y: 2, width: 1, depth: 1 }] }, "agent");
+    expect(warnings).toEqual([
+      "its bottom is at y 2, not 0: instances will stand 2 m off their y",
+      "its middle is at x 60, z 0: instances will sit that far off their point (build it around the origin)",
+    ]);
+    expect(() => ws.defineEntity({ name: "nested", shapes: [{ type: "instance", entity: "floaty", x: 0, z: 0 }] }, "agent")).toThrow(/No entity was made/);
+    expect(() => ws.defineEntity({ name: "empty", shapes: [{ type: "group" }] }, "agent")).toThrow(/at least one shape/);
+  });
+
+  it("makes an entity without leaving an instance, with keep: false", () => {
+    const ws = start(tempRoot());
+    ws.createProject({ name: "Temple", sceneName: "Hall" });
+    const store = ws.requireScene();
+    const [slab] = store.drawShapes([{ kind: "volume", x: 80, z: 0, width: 2, depth: 2, height: 0.5 }], "agent");
+    const made = ws.makeEntity({ ids: [slab.id], name: "ruin slab", keep: false }, "agent");
+    expect(made.entity.id).toBe("ruin-slab");
+    expect(made.instance).toBeUndefined();
+    expect(store.getScene().nodes).toEqual([]);
+    expect(definitionOf("ruin-slab")).toHaveLength(1);
+    // One step: undo puts the shape back.
+    store.undo();
+    expect(store.getScene().nodes.map((n) => n.id)).toEqual([slab.id]);
   });
 });

@@ -114,7 +114,7 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
     const warnings = [...own, ...holes, ...missing];
     return warnings.length > 0 ? { ...result, warnings } : result;
   };
-  const server = new McpServer({ name: "orlablocks", version: "0.0.25" }, { instructions: INSTRUCTIONS });
+  const server = new McpServer({ name: "orlablocks", version: "0.0.26" }, { instructions: INSTRUCTIONS });
   // Every tool reads or edits the open scene, and fails with a clear message while nothing is open.
   const store = () => workspace.requireScene();
   const library = (): Library => (workspace.getOpen() ? workspace.library.get() : EMPTY_LIBRARY);
@@ -230,9 +230,11 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
         "their place, as one scene step (undo puts the shapes back; the entity stays in the library). Its pivot is the " +
         "bottom center of their bounds. A single group is unwrapped: its contents become the entity, and its name, " +
         "description and tags are the entity's unless given. Instances and notes can't go in an entity. Returns the " +
-        "entity (its ID, for draw_shapes' type: instance) and the instance.",
+        "entity (its ID, for draw_shapes' type: instance) and the instance. With keep: false, nothing is left in their " +
+        "place. To make an entity without drawing it in the scene first, use define_entity.",
       inputSchema: {
         ids: z.array(z.string()).min(1).describe("IDs of the shapes and/or groups (with what's in them)"),
+        keep: z.boolean().optional().describe("Leave an instance in their place (default true); false: the shapes become the entity and leave nothing"),
         name: z.string().max(80).optional().describe('What it is, e.g. "tree tall" (its ID is a slug of this: tree-tall)'),
         description: z.string().optional().describe("What it is and does in the game, for the human and you; it can refer to @skills and #tags"),
         tags: z.array(z.string()).optional().describe("Library tags every instance carries (without #), e.g. [\"climbable\"]"),
@@ -241,6 +243,32 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
     async (input) => {
       const made = workspace.makeEntity(input, "agent");
       return json(warned({ ...made, ...(made.entity.description ? { warnings: refWarnings([{ id: made.entity.id, description: made.entity.description }]) } : {}) }));
+    },
+  );
+
+  server.registerTool(
+    "define_entity",
+    {
+      title: "Define entity",
+      description:
+        "Make a new ENTITY (a prefab in the project library) from shapes given around its PIVOT, without drawing them in " +
+        "the scene: no scene step, no instance to clean up, no need for an empty spot. The pivot is the entity's bottom " +
+        "center, at the origin: build it standing on y = 0, centered on x = 0, z = 0 (a 2 × 2 × 0.5 slab is a volume at " +
+        "x 0, z 0, y 0). `shapes` are draw_shapes' entries (boxes, cylinders, free-forms, ramps, lines and groups, with " +
+        "batch refs), but no instances, arrays or notes. Returns the entity (its ID, for draw_shapes' type: instance or " +
+        "array), and warnings when it doesn't stand on the origin.",
+      inputSchema: {
+        name: z.string().max(80).describe('What it is, e.g. "ruin slab" (its ID is a slug of this: ruin-slab)'),
+        description: z.string().optional().describe("What it is and does in the game, for the human and you; it can refer to @skills and #tags"),
+        tags: z.array(z.string()).optional().describe("Library tags every instance carries (without #)"),
+        shapes: z.array(ShapeInputSchema).min(1).describe("Its shapes, around the pivot (the origin, at its bottom center), as draw_shapes takes them"),
+      },
+    },
+    async (input) => {
+      const made = guided(() => workspace.defineEntity(input, "agent"));
+      const refs = made.entity.description ? refWarnings([{ id: made.entity.id, description: made.entity.description }]) : [];
+      const warnings = [...(made.warnings ?? []), ...refs];
+      return json({ entity: { ...made.entity, size: entitySize(made.entity.id) }, ...(warnings.length > 0 ? { warnings } : {}) });
     },
   );
 
@@ -313,19 +341,26 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
       title: "Draw shapes",
       description:
         `Add one or more shapes to the scene in a single batch; they appear live in the editor. Each has a \`type\` ` +
-        `(box, the default, cylinder, freeform, line, ramp, note, instance or array) and that type's fields. For a box or cylinder (a room, a volume or a hole) only ` +
+        `(box, the default, cylinder, freeform, line, ramp, note, instance, array or group) and that type's fields. For a box or cylinder (a room, a volume or a hole) only ` +
         `kind, x, z, width and depth are required; for a free-form, kind and points; for a line, points; for a ramp, points or spiral; for a note, x, z and text; for an instance of an entity, entity, x and z; ` +
         `for an array (get_guide arrays), entity (or entities) and layout. The rest have defaults (the kind's ` +
         `height, y 0, rotation 0, color ${DEFAULT_COLOR} (${DEFAULT_LINE_COLOR} for a line), ${DEFAULT_WALL} m room walls, no taper or bevel, no name, top level, a smooth cylinder, ` +
         `and a solid ${DEFAULT_THICKNESS} px line with no arrow). ` +
         `Set \`parent\` to a group's ID to draw straight into that group. ` +
+        `ONE BATCH, ONE CALL: give an entry a \`ref\` ("chamber") and later entries use "$chamber" where an ID goes (parent, ` +
+        `layout.along.id), so a line and the array that follows it, or a group (type: group, with name, description, tags) ` +
+        `and everything in it, arrive in one call: a door hole drawn into the room's group cuts it from the start. A ref ` +
+        `only names entries before it; the result maps each ref to its ID. ` +
         `The batch is all-or-nothing: if any shape is invalid, nothing is drawn and the error says which one. ` +
         `The result is compact: each new node's id, type, kind, name, parent and bounds (a count instead of points; an array's layout, item count and item lines).`,
       inputSchema: { shapes: z.array(ShapeInputSchema).min(1), verbose: VERBOSE },
     },
     async ({ shapes, verbose }) => {
       const created = guided(() => store().drawShapes(shapes, "agent"));
-      const refs = refWarnings(created.flatMap((c) => (c.type === "note" ? [{ id: c.id, description: c.text }] : [])));
+      const refs = refWarnings(created.flatMap((c) => (c.type === "note" ? [{ id: c.id, description: c.text }] : c.type === "group" ? [{ id: c.id, description: c.description }] : [])));
+      // Each batch ref's ID (the entries are created in order).
+      const named = shapes.flatMap((sh, i) => (sh.ref !== undefined ? [[sh.ref, created[i].id] as const] : []));
+      const batchRefs = named.length > 0 ? { refs: Object.fromEntries(named) } : {};
       const all = store().getScene().nodes;
       // Rooms, volumes and holes of every closed shape; a ramp counts as a ramp.
       const count = (kind: string) => all.filter((n) => isShape(n) && isClosed(n) && n.kind === kind).length;
@@ -341,8 +376,8 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
         groups: all.filter(isGroup).length,
       };
       const warnings = refs.length > 0 ? { warnings: refs } : {};
-      if (!verbose) return json(warned({ created: compactNodes(all, created.map((c) => c.id)), ...warnings }));
-      return json(warned({ created, totals, ...warnings }));
+      if (!verbose) return json(warned({ ...batchRefs, created: compactNodes(all, created.map((c) => c.id)), ...warnings }));
+      return json(warned({ ...batchRefs, created, totals, ...warnings }));
     },
   );
 
