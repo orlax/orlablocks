@@ -1,5 +1,5 @@
 import { arrayItems } from "./arrays";
-import { moveShape, rotateShape, scaleShape, tiltShape } from "./geometry";
+import { boundsOf, moveShape, rotateShape, scaleShape, tiltShape } from "./geometry";
 import { orientationYXZ } from "./rotation3";
 import type { ArrayNode, Group, Instance, SceneNode, Shape } from "./scene.types";
 
@@ -149,3 +149,23 @@ export const expandNodes = (nodes: SceneNode[]): SceneNode[] =>
 /** Shapes with every instance and array replaced by its own shapes (no groups). */
 export const expandShapes = (shapes: Shape[]): Shape[] =>
   shapes.flatMap((s) => (s.type === "instance" ? instanceShapes(s) : s.type === "array" ? arrayShapes(s) : [s]));
+
+/**
+ * Where an entity's shapes are centered on the ground (14.2), for the off-center warning: their bounds' middle, with
+ * each box's and cylinder's bounds made symmetric about its own center first, so a 7-sided cylinder (whose bounds
+ * lean toward its pointed side) centered on the origin counts as centered.
+ */
+export function entityMiddle(shapes: Shape[]): { x: number; z: number } {
+  let [minX, maxX, minZ, maxZ] = [Infinity, -Infinity, Infinity, -Infinity];
+  for (const s of shapes) {
+    const b = boundsOf([s]);
+    if (s.type === "box" || s.type === "cylinder") {
+      const hx = Math.max(s.x - b.minX, b.maxX - s.x);
+      const hz = Math.max(s.z - b.minZ, b.maxZ - s.z);
+      [minX, maxX, minZ, maxZ] = [Math.min(minX, s.x - hx), Math.max(maxX, s.x + hx), Math.min(minZ, s.z - hz), Math.max(maxZ, s.z + hz)];
+    } else {
+      [minX, maxX, minZ, maxZ] = [Math.min(minX, b.minX), Math.max(maxX, b.maxX), Math.min(minZ, b.minZ), Math.max(maxZ, b.maxZ)];
+    }
+  }
+  return { x: (minX + maxX) / 2, z: (minZ + maxZ) / 2 };
+}

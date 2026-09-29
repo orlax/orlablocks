@@ -155,6 +155,25 @@ const CHECKS = {
     human.send({ type: "rendered", requestId: asked.requestId, result: { image: png, width: 1, height: 1, text: "slice" } });
     await rendering;
   },
+
+  // Measuring a flight path, and the lint pass.
+  async "14.8"({ call }) {
+    await call("define_entity", { name: "ring", shapes: [{ type: "cylinder", kind: "room", x: 0, z: 0, width: 6, depth: 1, height: 6, wall: 0.5 }] });
+    const drawn = await call("draw_shapes", {
+      shapes: [
+        { kind: "volume", name: "peak", x: 60, z: 4, width: 4, depth: 4, height: 60 },
+        { type: "line", ref: "route", points: [{ x: 0, y: 20, z: 0 }, { x: 100, y: 20, z: 0 }, { x: 140, y: 60, z: 0 }] },
+        { type: "instance", entity: "ring", x: 30, y: 122, z: 0, name: "typo ring" },
+        { type: "note", x: 0, z: 0, text: "rings between array_7/3 and box_1" },
+      ],
+    });
+    const m = await call("measure_path", { id: drawn.refs.route, speed: 16, climb_rate: 6, probe: 5 });
+    check(Math.round(m.length) === 157 && Math.round(m.time * 10) === 98, "the route's length and time at 16 m/s");
+    check(m.overClimbRate.length === 1 && m.clearance.against === "box_1" && m.clearance.tightest < 3, "its climb over 6 m/s, and its tightest clearance against the peak");
+    const lint = await call("check_scene");
+    const ids = lint.findings.map((f) => `${f.check}:${f.id}`);
+    check(ids.includes("floating:instance_1") && ids.includes("stale_notes:note_1"), "the lint finds the ring at y 122 and the note naming array_7");
+  },
 };
 
 for (const [name, run] of Object.entries(CHECKS)) {

@@ -499,3 +499,17 @@ Proposed in this plan, to confirm:
   - **Slices** (`src/shared/slice.ts`): mesh sections at a height chained into loops by owner, holes kept apart. Gaps are pairs of outlines within `gap` (2 m by default) that neither cross nor contain each other, at their closest points.
   - **`render_view`:** `slice` (1–4 heights) and `gap` on plans. `prepareRender` works out the sections into the job, and `slicePlan` draws each panel: the plan clipped at the height, a pale wash, bold outlines, dashed holes, gaps ringed with their widths, and the text lists them.
   - MCP version 0.0.35. Tests: `enclosure.test.ts` (4: a sealed room, a door leak with its width and room, a ring of cones sealed low and leaking high, a start inside a solid) and `slice.test.ts` (3; 523 in all). `check-14.mjs 14.7`: an array of peaks sealed below 4 m and leaking between two items at 30 m in 0.4 s, and a slice job with no gaps at 2 m and 8 at 20 m. The slice images themselves draw in a browser: §15 item 9.
+- **2026-09-29:** **14.8 built.**
+  - **`measure_path`** (`src/shared/measure.ts`) samples a line's polyline or a ramp's stations every probe / 2 (at most 400 samples).
+    - It gives the length, the time, the height range, the steepest climb and descent (degrees), and the fastest climb and sink (m/s) with where.
+    - It finds the stretches over the climb rate, sink rate, slope and `max_y`.
+    - With `probe`, it gives the clearance: the point-to-triangle distance to each solid near the path (0 inside one, found by the parity of a vertical ray), the tightest with its owner, and the stretches closer than the probe.
+  - **`check_scene`** (`src/server/lint.ts`) checks for five things:
+    - floating instances, and arrays whose items float in part (every item floating is taken as platforms on purpose), measured against the surface under the pivot, slopes included;
+    - stale notes (the IDs and items in an open note's text);
+    - entities in use that are off their pivot or off y 0;
+    - holes that cut nothing;
+    - duplicates.
+    It lists at most 25 findings per check, then a count.
+  - **Changed while building:** there's no "over the ceiling" check (the ceiling was dropped), and no "links" check: a lost stop, `on` target or `along` target is already unlinked by `refollow` in the same step. Floating volumes aren't flagged (a platformer's slabs float on purpose), only instances and items. `entityMiddle` moved to `src/shared/entities.ts`, so the lint can use it without importing the workspace.
+  - MCP version 0.0.36. Tests: `measure.test.ts` (2) and `lint.test.ts` (2; 527 in all). `check-14.mjs 14.8`: a 157 m route takes 9.8 s at 16 m/s, one climb over 6 m/s, the tightest clearance against the peak; the lint finds a ring at y 122 and a note naming `array_7/3`.

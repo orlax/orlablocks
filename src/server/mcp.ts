@@ -34,6 +34,8 @@ import { prepareRender, type RenderBroker } from "./render";
 import { compactNodes } from "./results";
 import { checkSight } from "../shared/sight";
 import { checkEnclosure } from "../shared/enclosure";
+import { measurePath } from "../shared/measure";
+import { LINT_CHECKS, lintScene } from "./lint";
 import { expandShapes } from "../shared/entities";
 import { surfaceAt, topOf } from "../shared/surfaces";
 import { SceneError } from "./scene";
@@ -148,7 +150,7 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
   /** Runs an edit tool's body for real, or as a dry run (14.2): the same result, marked, with nothing changed. */
   const edit = <T extends object>(dryRun: boolean | undefined, run: () => T) =>
     dryRun ? { dryRun: "nothing was changed: this is what the call would do", ...store().dryRun(run) } : run();
-  const server = new McpServer({ name: "orlablocks", version: "0.0.35" }, { instructions: INSTRUCTIONS });
+  const server = new McpServer({ name: "orlablocks", version: "0.0.36" }, { instructions: INSTRUCTIONS });
   // Every tool reads or edits the open scene, and fails with a clear message while nothing is open.
   // The agent's scene (14.5): its own while the human is in another one, else the human's open document.
   const store = () => workspace.requireAgentScene();
@@ -746,6 +748,63 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
       } catch (err) {
         throw new SceneError(`${(err as Error).message}. Nothing was checked.`);
       }
+    },
+  );
+
+  server.registerTool(
+    "measure_path",
+    {
+      title: "Measure path",
+      description:
+        "Measure a line (a route, a flight path, a through line) or a ramp, in text, instead of working it out by hand: its " +
+        "3D length and, with `speed`, the time; the height range; the steepest climb and descent (degrees) and, with speed, " +
+        "the fastest climb and sink (m/s), each with where; every stretch over `climb_rate`, `sink_rate` (m/s), " +
+        "`max_slope` (degrees) or above `max_y`; and with `probe` (a radius, m) the tightest CLEARANCE to any solid, where " +
+        "and against what (inside a solid is 0), and every stretch closer than the probe. Places are given as the distance " +
+        "along and a point. Take the numbers from the design guide's game facts.",
+      inputSchema: {
+        id: z.string().describe("A line's or ramp's ID"),
+        speed: z.number().positive().optional().describe("Meters per second along the path: gives the time and the climb and sink rates"),
+        climb_rate: z.number().positive().optional().describe("With speed: the fastest climb allowed, m/s"),
+        sink_rate: z.number().positive().optional().describe("With speed: the fastest sink allowed, m/s"),
+        max_slope: z.number().positive().max(90).optional().describe("The steepest allowed, degrees either way"),
+        probe: z.number().positive().optional().describe("The player's radius, m: measures the clearance to the solids around"),
+        max_y: z.number().optional().describe("The highest the path may go (a ceiling): the stretches above it"),
+        ignore: z.array(z.string()).optional().describe("Nodes that don't count for clearance (decor, light, the rings it flies through)"),
+      },
+    },
+    async ({ id, speed, climb_rate, sink_rate, max_slope, probe, max_y, ignore }) => {
+      const nodes = store().getScene().nodes;
+      try {
+        return json(measurePath(nodes, id, { speed, climbRate: climb_rate, sinkRate: sink_rate, maxSlope: max_slope, probe, maxY: max_y, ignore }));
+      } catch (err) {
+        throw new SceneError(`${(err as Error).message}. Nothing was measured.`);
+      }
+    },
+  );
+
+  server.registerTool(
+    "check_scene",
+    {
+      title: "Check scene",
+      description:
+        "A LINT pass over the scene (or `root`'s part of it), in text, changing nothing: likely mistakes, each with the ID " +
+        "to fix. floating: an instance (or some of an array's items) more than 0.5 m above whatever is under it, not " +
+        "standing on it (a y typo; pass `floats` for things that float on purpose); stale_notes: an open note naming a " +
+        "node or item that's gone; off_center: an entity in use built off its pivot or its bottom off y 0; holes: holes " +
+        "that cut nothing; duplicates: the same node twice in the same place. Run it after big batches and at the end of " +
+        "a session.",
+      inputSchema: {
+        root: z.string().optional().describe("A group's ID: only what's in it"),
+        checks: z.array(z.enum(LINT_CHECKS)).min(1).optional().describe(`Which checks (default all: ${LINT_CHECKS.join(", ")})`),
+        floats: z.array(z.string()).optional().describe("Nodes that float on purpose (a floating island, a flying ring)"),
+      },
+    },
+    async ({ root, checks, floats }) => {
+      const nodes = store().getScene().nodes;
+      if (root !== undefined && !nodes.some((n) => n.id === root)) throw new SceneError(`root: no node "${root}". Nothing was checked.`);
+      const result = lintScene(nodes, { root, checks, floats });
+      return json(result.findings.length === 0 ? { findings: [], summary: "nothing found" } : result);
     },
   );
 
