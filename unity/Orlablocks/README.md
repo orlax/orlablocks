@@ -56,6 +56,27 @@ rev is the same is left alone.
 - A level's meshes are split over up to 16 files (`Levels/<scene>/meshes-*.asset`), and a sync writes only the
   files it changed, so syncing a big level after a small change stays quick.
 
+## In the Scene view
+
+- **Notes:** a pin and a flag in the note's color, faint when done, with its label and the start of its text (all of
+  it when selected). **Show notes** on the Level turns the text off.
+- **Lines:** the curve in its color and width, dashed or not, with arrowheads. `OrlaLine.WorldPoints()` gives a
+  route to editor tools.
+- **Holes:** a wireframe of the hole's solid, when selected or with **Show holes** on.
+
+## Claim as ProBuilder
+
+With ProBuilder installed (5.0 or later), **GameObject → Orlablocks → Claim as ProBuilder** turns selected synced shapes
+into ProBuilder meshes you can edit, and claims them, so syncs leave them alone. It's one undo step. Faces meeting at
+under 30° are smoothed, as in orlablocks, and batching static is turned off (ProBuilder can't edit a batched
+renderer). Instances' parts belong to their prefab, so they're left out. Without ProBuilder, the menu item isn't there.
+
+## Baked lighting
+
+**Lightmap UVs** on the Level generates a second UV set on the meshes and adds Contribute GI to the shapes. It makes
+syncs slower, and turning it on remakes every mesh once. Turning it off stops generating them, but doesn't take
+Contribute GI back off.
+
 ## Mappings
 
 An **Orlablocks Mappings** asset turns orlablocks' things into your game's. Make one with **New** next to the Level's

@@ -60,10 +60,32 @@ namespace Orlablocks.Editor
             public Dictionary<string, GameObject> Prefabs = new Dictionary<string, GameObject>();
             public Dictionary<string, string[]> EntityTags = new Dictionary<string, string[]>();
             public MappingSet Mappings;
+            public bool LightmapUVs;
             public Result Result;
 
-            /// <summary>A record's rev with the mappings' fingerprint: a changed mapping makes every object apply it once.</summary>
-            public string Rev(string rev) => string.IsNullOrEmpty(Mappings?.Fingerprint) ? rev ?? "" : $"{rev}|{Mappings.Fingerprint}";
+            /// <summary>
+            /// A record's rev with what else shapes the objects (the mappings' fingerprint, lightmap UVs): changing
+            /// either makes every object apply it once.
+            /// </summary>
+            public string Rev(string rev)
+            {
+                var salt = (Mappings?.Fingerprint ?? "") + (LightmapUVs ? ":uv2" : "");
+                return salt.Length == 0 ? rev ?? "" : $"{rev}|{salt}";
+            }
+
+            /// <summary>A mesh from the binary, by its hash (with lightmap UVs, another mesh: its own key).</summary>
+            public Mesh Mesh(string hash, params MeshRange[] parts)
+            {
+                var key = LightmapUVs ? $"{hash}~uv2" : hash;
+                return Store.Get(key, () =>
+                {
+                    var mesh = Bin.Build(key, parts);
+                    if (LightmapUVs) Unwrapping.GenerateSecondaryUVSet(mesh);
+                    return mesh;
+                });
+            }
+
+            public StaticEditorFlags Flags => Static | (LightmapUVs ? StaticEditorFlags.ContributeGI : 0);
 
             public Material Body(string color)
             {
@@ -104,6 +126,7 @@ namespace Orlablocks.Editor
                 Palette = m.palette.ToDictionary(p => p.key, p => ColorUtility.TryParseHtmlString(p.color, out var c) ? c : Color.white),
                 Result = result,
                 Mappings = new MappingSet(level.mappings, result.Warnings),
+                LightmapUVs = level.lightmapUVs,
             };
             foreach (var e in m.entities) ctx.EntityTags[e.id] = e.tags ?? new string[0];
 
@@ -185,6 +208,7 @@ namespace Orlablocks.Editor
                     Palette = ctx.Palette,
                     EntityTags = ctx.EntityTags,
                     Mappings = ctx.Mappings,
+                    LightmapUVs = ctx.LightmapUVs,
                     Result = new Result(),
                 };
                 new Reconciler(contents.transform, entityCtx, new Edit(false, "Sync"), false).Run(e.nodes);
@@ -509,7 +533,7 @@ namespace Orlablocks.Editor
             void ApplyShape(GameObject go, NodeRecord r)
             {
                 if (!r.HasMesh) return;
-                var mesh = ctx.Store.Get(r.hash, () => ctx.Bin.Build(r.hash, r.body, r.floor));
+                var mesh = ctx.Mesh(r.hash, r.body, r.floor);
                 var filter = Ensure<MeshFilter>(go);
                 if (filter.sharedMesh != mesh)
                 {
@@ -563,10 +587,10 @@ namespace Orlablocks.Editor
                     Drop<MeshCollider>(go);
                 }
                 var flags = GameObjectUtility.GetStaticEditorFlags(go);
-                if ((flags & Static) != Static)
+                if ((flags & ctx.Flags) != ctx.Flags)
                 {
                     edit.Record(go);
-                    GameObjectUtility.SetStaticEditorFlags(go, flags | Static);
+                    GameObjectUtility.SetStaticEditorFlags(go, flags | ctx.Flags);
                 }
             }
 
@@ -590,6 +614,7 @@ namespace Orlablocks.Editor
                 for (int i = 0; i < line.points.Length; i++) line.points[i] = new Vector3(pts[i * 3], pts[i * 3 + 1], pts[i * 3 + 2]);
                 if (ctx.Palette.TryGetValue(r.color ?? "", out var c)) line.color = c;
                 line.dashed = r.dashed;
+                line.thickness = r.thickness > 0 ? r.thickness : 2f;
                 line.arrow = string.IsNullOrEmpty(r.arrow) ? "none" : r.arrow;
                 EditorOnly(go, KeptInBuilds(go));
             }
@@ -721,7 +746,7 @@ namespace Orlablocks.Editor
                 {
                     var child = children.FirstOrDefault(c => c.id == cut.shape);
                     if (child == null) continue;
-                    var mesh = ctx.Store.Get(cut.hash, () => ctx.Bin.Build(cut.hash, cut.body, cut.floor));
+                    var mesh = ctx.Mesh(cut.hash, cut.body, cut.floor);
                     var filter = child.GetComponent<MeshFilter>();
                     if (filter != null && filter.sharedMesh != mesh)
                     {

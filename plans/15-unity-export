@@ -531,3 +531,20 @@ Proposed in this plan, to confirm:
   - MCP version unchanged (only a topic's text).
   - Tests: `library.test.ts` (built in, refused, description editable, added to an older project; 19) and `export.test.ts` (the rule for shapes, groups, entities and instances; 10; 546 in all).
   - `compile-unity.sh` passes.
+- **2026-09-30:** **15.6 written** (15.5, the faster syncs and `#no-collisions` are committed as `7cd88c6`; Orlando's check in Unity is next).
+  - **Gizmos** (`Editor/OrlaGizmos.cs`, `DrawGizmo` methods, so they can use `Handles`; the runtime components no longer draw):
+    - notes: a pin and a flag, faint when done, and the label and first line of the text (all of it when selected) unless the Level's **Show notes** is off;
+    - lines: the curve at its width (`OrlaLine.thickness`, now synced), dashed with `DrawDottedLine`, with cone arrowheads for `end` and `both`;
+    - holes: `Gizmos.DrawWireMesh` of their mesh, when selected or with **Show holes** on.
+  - **Claim as ProBuilder** (`Editor/ProBuilderClaim.cs`, under `ORLA_PROBUILDER`, which the editor asmdef's `versionDefines` sets from `com.unity.probuilder` ≥ 5.0; its references to `Unity.ProBuilder` and `Unity.ProBuilder.Editor` are ignored without the package):
+    - it claims the selected synced shapes (not an instance's parts), turns off batching static, and imports each mesh with `MeshImporter` (quads, 30° smoothing), as ProBuilder's own ProBuilderize does (`ToMesh`, `Refresh`, `Optimize`);
+    - the mesh collider takes the new mesh; one undo step.
+  - **Lightmap UVs** on the Level: meshes get `Unwrapping.GenerateSecondaryUVSet` under their own key (`<hash>~uv2`), and shapes get Contribute GI. The setting joins every rev, so turning it on remakes everything once.
+  - **`compile-unity.sh`:** `PROBUILDER=<project>/Library/ScriptAssemblies` also compiles the ProBuilder code against a project's ProBuilder (with Unity's `mscorlib` shim, which ProBuilder's editor DLL needs). It passes without ProBuilder and with 6.1.2 (from "Adventure in Hender's Castle", on the same Unity 6000.5.9f1).
+  - **Unity (Orlando):**
+    1. Notes show as flags with their text, and selecting one shows all of it; **Show notes** off hides the text.
+    2. A route line has its color, width and arrow; a dashed one is dashed.
+    3. **Show holes** shows the doors' wireframes.
+    4. **Claim as ProBuilder** on the lake: it's a ProBuilder mesh, editable, and later syncs leave it alone; ⌘Z undoes it.
+    5. **Lightmap UVs**, sync, then bake lighting: no "missing lightmap UVs" warnings.
+- **2026-09-30:** **Phase 15 done.** Orlando checked it in Unity: the flight level imported correctly and works mostly well (15.7). Nothing specific came up to log; what does, in use, goes in a follow-up.

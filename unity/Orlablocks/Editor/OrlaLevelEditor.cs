@@ -56,6 +56,12 @@ namespace Orlablocks.Editor
                 if (level.mappings == null && GUILayout.Button(new GUIContent("New", "Make a mappings asset for this Level's project"), GUILayout.Width(50))) SetMappings(level, NewMappings(level));
             }
 
+            EditorGUILayout.Space();
+            EditorGUILayout.LabelField("View", EditorStyles.boldLabel);
+            Toggle(level, "Show notes", "Notes' text in the Scene view (a selected note always shows it)", level.showNotes, v => level.showNotes = v, true);
+            Toggle(level, "Show holes", "Holes as wireframes in the Scene view (a selected hole always shows)", level.showHoles, v => level.showHoles = v, true);
+            Toggle(level, "Lightmap UVs", "Lightmap UVs on the meshes and Contribute GI on the shapes, for baked lighting (syncs are slower; turning it on remakes every mesh once)", level.lightmapUVs, v => level.lightmapUVs = v, false);
+
             if (level.exportId >= 0)
             {
                 EditorGUILayout.Space();
@@ -93,6 +99,16 @@ namespace Orlablocks.Editor
                     if (GUILayout.Button("Revert all", GUILayout.Width(80))) Nodes.Revert(live);
                     if (GUILayout.Button("Claim all", GUILayout.Width(80))) Nodes.Claim(live, true);
                 }
+        }
+
+        static void Toggle(OrlaLevel level, string label, string tip, bool value, Action<bool> set, bool view)
+        {
+            var now = EditorGUILayout.ToggleLeft(new GUIContent(label, tip), value);
+            if (now == value) return;
+            Undo.RecordObject(level, label);
+            set(now);
+            EditorUtility.SetDirty(level);
+            if (view) SceneView.RepaintAll();
         }
 
         static void SetMappings(OrlaLevel level, OrlaMappings mappings)

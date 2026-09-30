@@ -20,6 +20,16 @@ namespace Orlablocks
         [Tooltip("Entities as your prefabs, tags as layers and components, colors as your materials (optional)")]
         public OrlaMappings mappings;
 
+        [Header("View")]
+        [Tooltip("Notes' text in the Scene view (a selected note always shows it)")]
+        public bool showNotes = true;
+        [Tooltip("Holes as wireframes in the Scene view (a selected hole always shows)")]
+        public bool showHoles;
+
+        [Header("Lighting")]
+        [Tooltip("Lightmap UVs on the meshes, and Contribute GI on the shapes, for baked lighting. Slower syncs")]
+        public bool lightmapUVs;
+
         [Header("Last sync")]
         public string project = "";
         public string sceneId = "";

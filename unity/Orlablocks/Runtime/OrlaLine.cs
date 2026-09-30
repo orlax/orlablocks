@@ -12,6 +12,8 @@ namespace Orlablocks
         public Vector3[] points = new Vector3[0];
         public Color color = Color.white;
         public bool dashed;
+        [Tooltip("Its width in the Scene view, in pixels")]
+        public float thickness = 2f;
         [Tooltip("none, end or both")]
         public string arrow = "none";
 
@@ -21,15 +23,6 @@ namespace Orlablocks
             var w = new Vector3[points.Length];
             for (int i = 0; i < points.Length; i++) w[i] = transform.TransformPoint(points[i]);
             return w;
-        }
-
-        void OnDrawGizmos()
-        {
-            if (points.Length < 2) return;
-            Gizmos.color = color;
-            var w = WorldPoints();
-            for (int i = 1; i < w.Length; i++)
-                if (!dashed || i % 2 == 1) Gizmos.DrawLine(w[i - 1], w[i]);
         }
     }
 }

@@ -5,6 +5,8 @@
 #
 #   scripts/compile-unity.sh                        (Unity 6000.5.9f1, output in a temp folder)
 #   UNITY=/Applications/Unity/Hub/Editor/<version>/Unity.app scripts/compile-unity.sh
+#   PROBUILDER=<a Unity project>/Library/ScriptAssemblies scripts/compile-unity.sh
+#                                                   (also compiles Claim as ProBuilder against that project's ProBuilder)
 set -euo pipefail
 UNITY="${UNITY:-/Applications/Unity/Hub/Editor/6000.5.9f1/Unity.app}"
 S="$UNITY/Contents/Resources/Scripting"
@@ -18,4 +20,10 @@ EDITOR=(); for f in "$S"/Managed/UnityEngine/UnityEditor*.dll; do EDITOR+=("-r:$
 BASE=(-nologo -noconfig -nostdlib -langversion:9.0 -target:library -warn:4 -nowarn:1701,1702 "-r:$S/NetStandard/ref/2.1.0/netstandard.dll")
 "${CSC[@]}" "${BASE[@]}" "${ENGINE[@]}" -out:"$OUT/Orlablocks.Runtime.dll" "$SRC"/Runtime/*.cs
 "${CSC[@]}" "${BASE[@]}" "${ENGINE[@]}" "${EDITOR[@]}" -r:"$OUT/Orlablocks.Runtime.dll" -out:"$OUT/Orlablocks.Editor.dll" "$SRC"/Editor/*.cs
+if [[ -n "${PROBUILDER:-}" ]]; then
+  # ProBuilder is built against mscorlib: Unity resolves it through its netstandard shims.
+  PB=("-r:$S/NetStandard/compat/2.1.0/shims/netfx/mscorlib.dll"); for f in "$PROBUILDER"/Unity.ProBuilder*.dll; do PB+=("-r:$f"); done
+  "${CSC[@]}" "${BASE[@]}" "${ENGINE[@]}" "${EDITOR[@]}" "${PB[@]}" -define:ORLA_PROBUILDER -r:"$OUT/Orlablocks.Runtime.dll" -out:"$OUT/Orlablocks.Editor.ProBuilder.dll" "$SRC"/Editor/*.cs
+  echo "unity/Orlablocks compiles with ProBuilder (from $PROBUILDER)"
+fi
 echo "unity/Orlablocks compiles against Unity $(basename "$(dirname "$UNITY")")"
