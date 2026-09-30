@@ -17,6 +17,9 @@ namespace Orlablocks
         [Tooltip("Sync on its own when orlablocks exports this scene again (at most once a second, never in Play mode)")]
         public bool autoSync;
 
+        [Tooltip("Entities as your prefabs, tags as layers and components, colors as your materials (optional)")]
+        public OrlaMappings mappings;
+
         [Header("Last sync")]
         public string project = "";
         public string sceneId = "";

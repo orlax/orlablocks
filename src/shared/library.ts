@@ -20,6 +20,19 @@ export type Library = { tags: Tag[]; skills: Skill[]; entities: EntityMeta[]; gu
 export const EMPTY_LIBRARY: Library = { tags: [], skills: [], entities: [], guide: "" };
 export const SIGIL: Record<LibraryKind, "#" | "@"> = { tag: "#", skill: "@" };
 
+/** A tag every project has (15): what carries it gets no collider in the Unity export. */
+export const NO_COLLISIONS = "no-collisions";
+
+/** The tags built into every project: added when a project opens, and never removed or renamed (their descriptions can change). */
+export const BUILT_IN_TAGS: Tag[] = [
+  {
+    name: NO_COLLISIONS,
+    description:
+      "Built in. What carries it, and everything in a group or entity that carries it, gets no collider in the Unity export: decoration, grass, far scenery, things the player never touches.",
+  },
+];
+export const isBuiltInTag = (name: string) => BUILT_IN_TAGS.some((t) => t.name === name);
+
 /** An entity's record by its ID. */
 export const entityMeta = (lib: Library, id: string) => lib.entities.find((e) => e.id === id);
 export const MAX_NAME = 40;

@@ -6,7 +6,7 @@ import { bakeShape, type Baked, type DrawMesh } from "../shared/bake";
 import { bakeScene, type SceneBake } from "../shared/bakeScene";
 import { definitionOf, itemInstance } from "../shared/entities";
 import { isFootprinted, isSolid, isTilted, polyline, shapeFrame } from "../shared/geometry";
-import { entityMeta, type Library } from "../shared/library";
+import { entityMeta, NO_COLLISIONS, type Library } from "../shared/library";
 import { apply, orientationYXZ, type Vec3 } from "../shared/rotation3";
 import { PALETTE, type Box, type ExportSummary, type Instance, type SceneNode, type Solid } from "../shared/scene.types";
 import { isShape, tagsOf } from "../shared/tree";
@@ -52,6 +52,8 @@ export type NodeRecord = {
   body: MeshRange;
   floor: MeshRange;
   collider: "box" | "mesh" | "none";
+  /** An instance or item in something carrying #no-collisions: Unity turns its entity's colliders off, for this one only. */
+  noColliders: boolean;
   boxCenter: V3;
   boxSize: V3;
   entity: string;
@@ -223,6 +225,7 @@ const blank = (id: string, type: NodeRecord["type"], parent: string): NodeRecord
   body: NO_MESH,
   floor: NO_MESH,
   collider: "none",
+  noColliders: false,
   boxCenter: [0, 0, 0],
   boxSize: [0, 0, 0],
   entity: "",
@@ -253,13 +256,24 @@ type Context = {
  * meshes; `pivot` is each node's place in three.js coordinates, and a record's position is its pivot minus its
  * parent's (groups and arrays aren't turned, so that's all there is to it).
  */
-function records(nodes: SceneNode[], baked: Map<string, Baked>, cutIds: Set<string>, ctx: Context, bake: SceneBake | null): NodeRecord[] {
+/**
+ * Records for a list of nodes (a scene's, or an entity's definition), parents first. `quiet`: everything in it
+ * carries #no-collisions (an entity tagged with it).
+ */
+function records(nodes: SceneNode[], baked: Map<string, Baked>, cutIds: Set<string>, ctx: Context, bake: SceneBake | null, quiet = false): NodeRecord[] {
   const byParent = new Map<string, SceneNode[]>();
   for (const n of nodes) {
     const k = n.parent ?? "";
     byParent.set(k, [...(byParent.get(k) ?? []), n]);
   }
   const byId = new Map(nodes.map((n) => [n.id, n]));
+  /** Whether the node, or anything it's in, carries #no-collisions: no collider in Unity. */
+  const noCollisions = (n: SceneNode): boolean => {
+    if (quiet) return true;
+    for (let at: SceneNode | undefined = n; at; at = at.parent !== undefined ? byId.get(at.parent) : undefined)
+      if (tagsOf(at)?.includes(NO_COLLISIONS)) return true;
+    return false;
+  };
   const pivots = new Map<string, Vec3>();
   const pivotOf = (n: SceneNode): Vec3 => {
     const hit = pivots.get(n.id);
@@ -285,12 +299,12 @@ function records(nodes: SceneNode[], baked: Map<string, Baked>, cutIds: Set<stri
     if (n.type === "array")
       for (const item of arrayItems(n)) {
         const inst = itemInstance(n, item);
-        out.push({ ...instanceRecord(inst, sub({ x: inst.x, y: inst.y, z: inst.z }, pivotOf(n))), type: "item", parent: n.id, hidden: false });
+        out.push({ ...instanceRecord(inst, sub({ x: inst.x, y: inst.y, z: inst.z }, pivotOf(n)), noCollisions(n)), type: "item", parent: n.id, hidden: false });
       }
     for (const c of byParent.get(n.id) ?? []) visit(c);
   };
 
-  const instanceRecord = (inst: Instance, local: Vec3): NodeRecord => {
+  const instanceRecord = (inst: Instance, local: Vec3, quietHere: boolean): NodeRecord => {
     const r = blank(inst.id, "instance", inst.parent ?? "");
     const cuts: CutRecord[] = [];
     const variant = bake?.variants.get(inst.id);
@@ -315,6 +329,7 @@ function records(nodes: SceneNode[], baked: Map<string, Baked>, cutIds: Set<stri
       scale: inst.scale ?? 1,
       hidden: !!inst.hidden,
       entity: inst.entity,
+      noColliders: quietHere,
       cuts,
       hash: cuts.map((c) => c.hash).join(""),
     };
@@ -324,7 +339,7 @@ function records(nodes: SceneNode[], baked: Map<string, Baked>, cutIds: Set<stri
     const base = { ...blank(n.id, n.type as NodeRecord["type"], n.parent ?? ""), name: n.name ?? "", hidden: !!n.hidden, tags: tagsOf(n) ?? [] };
     if (n.type === "group") return { ...base, description: n.description ?? "", position: toUnity(local) };
     if (n.type === "array") return { ...base, position: toUnity(local) };
-    if (n.type === "instance") return instanceRecord(n, local);
+    if (n.type === "instance") return instanceRecord(n, local, noCollisions(n));
     if (n.type === "note") return { ...base, position: toUnity(local), color: n.color, text: n.text, label: n.label ?? "", status: n.status };
     if (n.type === "line") {
       const first = n.points[0] ?? ZERO;
@@ -338,7 +353,8 @@ function records(nodes: SceneNode[], baked: Map<string, Baked>, cutIds: Set<stri
     const floor = ctx.meshes.add(b.floor, pl.shift);
     const cut = cutIds.has(n.id);
     const hole = n.kind === "hole";
-    const box = !hole && n.type === "box" && boxFits(n, cut) ? n : null;
+    const silent = noCollisions(n);
+    const box = !hole && !silent && n.type === "box" && boxFits(n, cut) ? n : null;
     return {
       ...base,
       kind: n.kind,
@@ -348,7 +364,7 @@ function records(nodes: SceneNode[], baked: Map<string, Baked>, cutIds: Set<stri
       body: body.range,
       floor: floor.range,
       hash: `${body.hash}${floor.hash}`,
-      collider: hole ? "none" : box ? "box" : "mesh",
+      collider: hole || silent ? "none" : box ? "box" : "mesh",
       boxCenter: box ? [0, box.height / 2, 0] : [0, 0, 0],
       boxSize: box ? [box.width, box.height, box.depth] : [0, 0, 0],
     };
@@ -384,7 +400,7 @@ export function buildExport(input: Omit<ExportInput, "dir">, warnings: string[] 
       const recs = records(MISSING, new Map([["missing", bakeShape(MISSING[0] as Box)]]), new Set(), ctx, null);
       return { id, name: `missing entity ${id}`, description: "", tags: [], hash: hash16(JSON.stringify(recs)), nodes: recs };
     }
-    const recs = records(def, bake.entities.get(id) ?? new Map(), bake.entityCut.get(id) ?? new Set(), ctx, null);
+    const recs = records(def, bake.entities.get(id) ?? new Map(), bake.entityCut.get(id) ?? new Set(), ctx, null, !!meta?.tags?.includes(NO_COLLISIONS));
     return { id, name: meta?.name ?? id, description: meta?.description ?? "", tags: meta?.tags ?? [], hash: hash16(JSON.stringify(recs)), nodes: recs };
   });
 

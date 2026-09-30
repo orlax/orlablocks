@@ -125,6 +125,7 @@ namespace Orlablocks.Editor
         public MeshRange body;
         public MeshRange floor;
         public string collider;
+        public bool noColliders;
         public float[] boxCenter;
         public float[] boxSize;
         public string entity;

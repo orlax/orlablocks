@@ -2,6 +2,7 @@ import {
   applyLibraryOp,
   EMPTY_LIBRARY,
   invertLibraryOp,
+  isBuiltInTag,
   LibraryEditSchema,
   NAME_PATTERN,
   resolveRef,
@@ -85,6 +86,7 @@ export function createLibraryStore() {
         const at = `rename[${i}]`;
         const record = resolveRef(draft, kind, from);
         if (!record) return void errors.push(`${at}.from: no ${kind} ${ref(kind, from)}`);
+        if (kind === "tag" && isBuiltInTag(record.name)) return void errors.push(`${at}: ${ref(kind, record.name)} is built in, so it can't be renamed`);
         const problem = nameProblem(to);
         if (problem) return void errors.push(`${at}.to: ${problem}`);
         if (to === record.name) return;
@@ -172,6 +174,7 @@ export function createLibraryStore() {
         }
         const record = resolveRef(draft, kind, name);
         if (!record) return void errors.push(`remove[${i}]: no ${kind} ${ref(kind, name)}`);
+        if (kind === "tag" && isBuiltInTag(record.name)) return void errors.push(`remove[${i}]: ${ref(kind, record.name)} is built in, so it can't be deleted`);
         push({ op: kind, name: record.name, value: null } as LibraryOp);
         labels.push(`delete ${ref(kind, record.name)}`);
         changed.push(ref(kind, record.name));

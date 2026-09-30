@@ -48,6 +48,14 @@ namespace Orlablocks.Editor
             }
             if (!string.IsNullOrEmpty(error)) EditorGUILayout.HelpBox(error, MessageType.Error);
 
+            EditorGUILayout.Space();
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                var picked = (OrlaMappings)EditorGUILayout.ObjectField(new GUIContent("Mappings", "Entities as your prefabs, tags as layers and components, colors as your materials"), level.mappings, typeof(OrlaMappings), false);
+                if (picked != level.mappings) SetMappings(level, picked);
+                if (level.mappings == null && GUILayout.Button(new GUIContent("New", "Make a mappings asset for this Level's project"), GUILayout.Width(50))) SetMappings(level, NewMappings(level));
+            }
+
             if (level.exportId >= 0)
             {
                 EditorGUILayout.Space();
@@ -85,6 +93,25 @@ namespace Orlablocks.Editor
                     if (GUILayout.Button("Revert all", GUILayout.Width(80))) Nodes.Revert(live);
                     if (GUILayout.Button("Claim all", GUILayout.Width(80))) Nodes.Claim(live, true);
                 }
+        }
+
+        static void SetMappings(OrlaLevel level, OrlaMappings mappings)
+        {
+            Undo.RecordObject(level, "Mappings");
+            level.mappings = mappings;
+            EditorUtility.SetDirty(level);
+        }
+
+        /// <summary>A new mappings asset in Assets/, named for the Level's project (not in the generated folder: it's yours).</summary>
+        static OrlaMappings NewMappings(OrlaLevel level)
+        {
+            var name = string.IsNullOrEmpty(level.project) ? "Orlablocks Mappings" : $"Orlablocks Mappings ({level.project})";
+            var path = AssetDatabase.GenerateUniqueAssetPath($"Assets/{name}.asset");
+            var mappings = CreateInstance<OrlaMappings>();
+            AssetDatabase.CreateAsset(mappings, path);
+            AssetDatabase.SaveAssets();
+            EditorGUIUtility.PingObject(mappings);
+            return mappings;
         }
 
         void Run(OrlaLevel level, bool rebuildMaterials)

@@ -17,7 +17,7 @@ import {
 } from "../shared/scene.types";
 import { arrayItems } from "../shared/arrays";
 import { boundsOf, round2 } from "../shared/geometry";
-import { applyLibraryOp, entityMeta, findRefs, resolveRef, type EntityMeta, type Library, type LibraryEdit, type Uses } from "../shared/library";
+import { applyLibraryOp, BUILT_IN_TAGS, entityMeta, findRefs, resolveRef, type EntityMeta, type Library, type LibraryEdit, type Uses } from "../shared/library";
 import { allDefinitions, entityMiddle, setDefinition, setDefinitions } from "../shared/entities";
 import { firstIds, type AppFile, type LibraryFile, type NextId, type SceneFile } from "../shared/project.types";
 import { isGroup, tagsOf } from "../shared/tree";
@@ -385,7 +385,10 @@ export function createWorkspace(data: DataDir) {
       loaded = applyLibraryOp(loaded, { op: "entity", name: id, value: { id, name: "human", description: HUMAN_DESCRIPTION } });
       seeded.push("human");
     }
-    const seed = seedGuide || seedHuman;
+    // The built-in tags (15): every project has them, always (they can't be deleted, so this adds them to older projects).
+    const missingTags = BUILT_IN_TAGS.filter((t) => !resolveRef(loaded, "tag", t.name));
+    for (const t of missingTags) loaded = applyLibraryOp(loaded, { op: "tag", name: t.name, value: t });
+    const seed = seedGuide || seedHuman || missingTags.length > 0;
     // The definitions, for every instance in the project's scenes (a folder that doesn't load shows as missing).
     const { entities, errors } = data.readEntities(project);
     errors.forEach((e) => console.warn(`Skipping an entity that didn't load: ${e}`));

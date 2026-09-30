@@ -142,6 +142,28 @@ describe("the Unity export", () => {
     expect(JSON.parse(JSON.stringify(one))).toEqual(one);
   });
 
+  it("gives no collider to what carries #no-collisions, or is in a group or entity that does", () => {
+    const grass: Library = { ...LIBRARY, entities: [...LIBRARY.entities, { id: "grass", name: "Grass", tags: ["no-collisions"] }] };
+    setDefinitions({ pillar: PILLAR, grass: [box("box_1", { width: 0.2, depth: 0.2, height: 0.4 })] });
+    const nodes: SceneNode[] = [
+      group("decor", { tags: ["no-collisions"] }),
+      box("box_2", { parent: "decor" }),
+      inst("instance_1", { parent: "decor" }),
+      box("box_3", { tags: ["no-collisions"] }),
+      box("box_4"),
+      inst("instance_2", { entity: "grass" }),
+      inst("instance_3"),
+    ];
+    const { manifest } = buildExport({ project: { id: "p", name: "P", description: "" }, scene: { id: "s", name: "S" }, seq: 1, nodes, library: grass });
+    const byId = (id: string) => manifest.nodes.find((r) => r.id === id)!;
+    expect(["box_2", "box_3"].map((id) => byId(id).collider)).toEqual(["none", "none"]);
+    expect(byId("box_4").collider).toBe("box");
+    // An instance in a tagged group has its colliders turned off in Unity; one of a tagged entity has none to start with.
+    expect([byId("instance_1").noColliders, byId("instance_2").noColliders, byId("instance_3").noColliders]).toEqual([true, false, false]);
+    expect(manifest.entities.find((e) => e.id === "grass")!.nodes[0].collider).toBe("none");
+    expect(manifest.entities.find((e) => e.id === "pillar")!.nodes[0].collider).toBe("box");
+  });
+
   it("exports a missing entity's instances as red blocks, with a warning", () => {
     const warnings: string[] = [];
     const { manifest } = buildExport({ project: { id: "p", name: "P", description: "" }, scene: { id: "s", name: "S" }, seq: 1, nodes: [inst("instance_1", { entity: "gone" })], library: LIBRARY }, warnings);

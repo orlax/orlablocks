@@ -26,7 +26,8 @@ Copy (or symlink) this `Orlablocks` folder into your project's `Assets/`. It has
 - **Under the Level:** one GameObject per orlablocks node, in the same groups (a group sits at its parent's
   origin), named `name (id)`, each with an `OrlaNode` (its ID, type, tags, description).
   - Shapes have their mesh, a collider (a box collider for plain boxes, a mesh collider otherwise) and the static
-    flags for batching and occlusion.
+    flags for batching and occlusion. What carries orlablocks' built-in `#no-collisions` tag, and everything in a
+    group or entity that does, gets no collider (an instance in such a group has its entity's colliders turned off).
   - Instances and array items are instances of a generated prefab per entity.
   - Notes (`OrlaNote`) and lines (`OrlaLine`) are tagged EditorOnly, so they never reach a build.
   - Hidden nodes arrive disabled.
@@ -51,6 +52,26 @@ rev is the same is left alone.
   it, and the Level lists claimed objects that orlablocks changed or removed.
 - **Update available** shows on the Level, and in the Scene view's corner, when orlablocks exports the scene again.
   With **Auto sync** on, the Level syncs itself (never in Play mode).
-- A sync is one undo step.
+- A sync is one undo step. The report says how long each part took (read, entities, objects, meshes).
+- A level's meshes are split over up to 16 files (`Levels/<scene>/meshes-*.asset`), and a sync writes only the
+  files it changed, so syncing a big level after a small change stays quick.
 
-Mapping entities to your own prefabs and tags to layers or components comes next (plan 15, §9).
+## Mappings
+
+An **Orlablocks Mappings** asset turns orlablocks' things into your game's. Make one with **New** next to the Level's
+**Mappings** field (or **Create → Orlablocks → Mappings**). Give all of a project's Levels the same one, since they
+share the project's entity prefabs.
+- **Entities:** an entity's instances and array items become your prefab, with a scale factor, an optional
+  position and rotation offset from the entity's pivot (a broom whose pivot is its middle, not the floor; the
+  offset grows with the instance's scale), and the generated blockout **replaced**, **kept hidden** under it (to
+  compare), or **kept**. The blockout stays at orlablocks' place whatever the offset. Your prefab's root gets the `OrlaNode`.
+  When you change the mapping, the next sync swaps the instances, and whatever you added under them moves across.
+- **Tags:** what carries a tag, and everything in a tagged group, gets a layer (on an instance, its parts too, where
+  its colliders are), a Unity tag (it must exist in Tags and Layers), components (added if missing, never removed)
+  and static flags. **Keep notes and lines in builds** is for a route the game reads.
+- **Colors:** a palette color uses your body and floor materials instead of the generated `orla-*` ones.
+
+The entity and tag pickers search (type to filter) what the exports of the Levels using the mappings have, and a
+search field filters the entity rows once there are more than a few. The next sync applies a change to
+every object once. A mapping that can't apply (no prefab, a missing script, an unknown Unity tag) is listed in the
+Level's report, and the blockout stays.

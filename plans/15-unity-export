@@ -498,3 +498,36 @@ Proposed in this plan, to confirm:
     5. Swap an instance's entity: it becomes the other prefab, and what you added to it moves across.
     6. **Auto sync** on, with Export on every step in orlablocks: moving a shape shows up in Unity within a couple of seconds.
     7. ⌘Z undoes a whole sync.
+- **2026-09-30:** **15.5 written** (Orlando's check in Unity is next; 15.3 and 15.4 are committed as `7a27d9d`).
+  - **`Runtime/OrlaMappings.cs`:** the asset, with entity mappings (prefab, scale, blockout replace / keep hidden / keep), tag mappings (layer, Unity tag, components by type name, static flags as a number, keep in builds) and color mappings (body, floor). `OrlaLevel.mappings` points at one.
+  - **`Editor/Mappings.cs`** (`MappingSet`): the lookups, component types resolved once, Unity tags checked against Tags and Layers, warnings reported once, and a **fingerprint** of the whole set (prefabs and materials by GUID, so it holds across editor restarts).
+  - **In the sync:**
+    - The fingerprint joins every object's stored rev and every entity prefab's hash, so a changed mapping is applied everywhere on the next sync. Claimed objects compare only the orlablocks part, so a mapping change doesn't list them as changed.
+    - **A mapped instance** is your prefab, with the `OrlaNode` added to its root and its scale times the mapping's. Its kept blockout is the generated prefab under it, at 1 / scale, shown or turned off. Cuts go on the blockout's parts, or on nothing when it's replaced. Switching mapping swaps the instance and moves what you added across; a kept blockout goes with the old one.
+    - **Tags:** what an object carries is its own tags, those of everything it's in, and, for an instance, its entity's. Rules add a layer (on an instance's parts too, where its colliders are), a Unity tag (notes and lines stay EditorOnly unless a rule keeps them in builds), components and static flags. Nothing is ever removed, so taking a mapping away leaves what it added.
+    - **Colors:** a mapped body material, and floor material (the body's if none), instead of `orla-*`.
+  - **`OrlaMappingsEditor.cs`:** rows per entity, tag and color. The dropdowns come from the exports of the Levels using the asset (a typed ID when none is open), scripts are picked as scripts, and static flags and layers use Unity's own fields. **New** on the Level makes an asset in `Assets/` named for the project.
+  - **Compile:** `compile-unity.sh` passes with no errors and no warnings.
+  - **Unity (Orlando):**
+    1. **New** mappings on the Level; map `ring` to a prefab of yours, sync: every ring is yours, in place. Something added under a ring moves to the new one.
+    2. Keep hidden, then Keep: the blockout is under it, off, then on, at orlablocks' size.
+    3. Map `#boundary` to a layer and a component, sync: tagged things (and what's in a tagged group) get both. Remove the mapping: the component stays.
+    4. Map a color to your material: shapes of that color use it.
+    5. A mapped prefab you delete, or a script you rename, shows in the report, and the blockout stays.
+- **2026-09-30:** From Orlando's first use of the mappings, and a slow sync:
+  - **Slow syncs:** `MeshStore.Prune` marked the level's `.meshes.asset` dirty every time, and `AssetDatabase.SaveAssets()` then rewrote it, with every mesh in the level (YAML under text serialization), even when nothing changed. That's the likely cause; it wasn't measured in Unity. Now:
+    - a store only marks and saves (`SaveAssetIfDirty`) the files it added to or removed from, and `SaveAssets()` runs only for **Rebuild materials**;
+    - a level's meshes are split over up to 16 files by their hash's first character (`Levels/<scene>/meshes-<c>.asset`), so one changed mesh rewrites about a sixteenth. The one-file store from before is still read and reused, and deleted once it's empty. An entity's store stays one file;
+    - the report gives each part's time (read, entities, objects, meshes), to check it.
+  - **Mappings:**
+    - an entity mapping has an optional **position offset** (meters, in the entity's frame, scaled with the instance) and **rotation offset** (degrees). The kept blockout undoes both, so it stays where orlablocks has it;
+    - the entity and tag pickers are Unity's `AdvancedDropdown`, with its search box, and a `SearchField` filters the entity rows past 5.
+  - Compiles with no errors or warnings. **Unity (Orlando):** a sync after a one-shape change reports a small `meshes` time; the broom sits at its offset; typing in the entity picker filters it.
+- **2026-09-30:** From Orlando: not everything in a blockout should collide. **`#no-collisions`**, a built-in tag:
+  - **Library:** `BUILT_IN_TAGS` in `src/shared/library.ts`. It's added to a project's library whenever it opens (so older projects get it) outside the history, so undo never removes it. Removing or renaming it is refused, but its description can change. The Library panel shows its name read-only and "built in" instead of Delete.
+  - **Export:** a shape that carries it, or is in a group that does (at any depth), or is in an entity tagged with it, has `collider: "none"`. An instance or item in a tagged group has `noColliders: true`.
+  - **Unity:** a `noColliders` instance has its entity's colliders turned off (overrides, for that instance only), and on again when it isn't. A cut child's box collider stays off.
+  - The `export` guide topic says so.
+  - MCP version unchanged (only a topic's text).
+  - Tests: `library.test.ts` (built in, refused, description editable, added to an older project; 19) and `export.test.ts` (the rule for shapes, groups, entities and instances; 10; 546 in all).
+  - `compile-unity.sh` passes.

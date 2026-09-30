@@ -29,6 +29,8 @@ namespace Orlablocks.Editor
             public readonly List<GameObject> ClaimedChanged = new List<GameObject>();
             public readonly List<GameObject> Gone = new List<GameObject>();
             public readonly List<string> Warnings = new List<string>();
+            // How long each part took (ms), for the report.
+            public readonly List<(string part, long ms)> Timings = new List<(string, long)>();
 
             public string Report(Manifest m)
             {
@@ -41,6 +43,8 @@ namespace Orlablocks.Editor
                 if (Moved.Count > 0) lines.Add($"{Moved.Count} moved in Unity: left where they are (Revert or Claim them)");
                 if (ClaimedChanged.Count > 0) lines.Add($"{ClaimedChanged.Count} claimed here changed in orlablocks: not updated");
                 if (Gone.Count > 0) lines.Add($"{Gone.Count} claimed here are gone from orlablocks: kept");
+                if (Timings.Count > 0)
+                    lines.Add($"took {Timings.Sum(t => t.ms) / 1000.0:0.00} s: " + string.Join(", ", Timings.Select(t => $"{t.part} {t.ms / 1000.0:0.00}")));
                 lines.AddRange(Warnings);
                 return string.Join("\n", lines);
             }
@@ -54,7 +58,24 @@ namespace Orlablocks.Editor
             public Look Look;
             public Dictionary<string, Color> Palette;
             public Dictionary<string, GameObject> Prefabs = new Dictionary<string, GameObject>();
+            public Dictionary<string, string[]> EntityTags = new Dictionary<string, string[]>();
+            public MappingSet Mappings;
             public Result Result;
+
+            /// <summary>A record's rev with the mappings' fingerprint: a changed mapping makes every object apply it once.</summary>
+            public string Rev(string rev) => string.IsNullOrEmpty(Mappings?.Fingerprint) ? rev ?? "" : $"{rev}|{Mappings.Fingerprint}";
+
+            public Material Body(string color)
+            {
+                var own = Mappings?.Body(color);
+                return own != null ? own : Look.Body(color);
+            }
+
+            public Material Floor(string color)
+            {
+                var own = Mappings?.Floor(color);
+                return own != null ? own : Look.Floor(color);
+            }
         }
 
         const StaticEditorFlags Static = StaticEditorFlags.BatchingStatic | StaticEditorFlags.OccluderStatic | StaticEditorFlags.OccludeeStatic | StaticEditorFlags.ReflectionProbeStatic;
@@ -62,6 +83,7 @@ namespace Orlablocks.Editor
         /// <param name="force">Sync even if the Level already has this export (it still leaves unchanged objects alone).</param>
         public static Result Run(OrlaLevel level, bool force = true, bool rebuildMaterials = false)
         {
+            var clock = System.Diagnostics.Stopwatch.StartNew();
             var folder = Assets.FullPath(level.folder);
             if (string.IsNullOrEmpty(folder)) throw new Exception("Choose the scene's export folder first.");
             if (!force && Manifest.PeekExportId(folder) == level.exportId) return new Result { UpToDate = true };
@@ -70,25 +92,39 @@ namespace Orlablocks.Editor
             var bin = new MeshBinary(folder, m.meshes);
             var root = Assets.ProjectRoot(m.project.id);
             var result = new Result();
+            void Lap(string part)
+            {
+                result.Timings.Add((part, clock.ElapsedMilliseconds));
+                clock.Restart();
+            }
             var ctx = new Context
             {
                 Bin = bin,
                 Look = new Look(root, m, rebuildMaterials),
                 Palette = m.palette.ToDictionary(p => p.key, p => ColorUtility.TryParseHtmlString(p.color, out var c) ? c : Color.white),
                 Result = result,
+                Mappings = new MappingSet(level.mappings, result.Warnings),
             };
+            foreach (var e in m.entities) ctx.EntityTags[e.id] = e.tags ?? new string[0];
 
             Undo.IncrementCurrentGroup();
             var group = Undo.GetCurrentGroup();
             Undo.SetCurrentGroupName($"Sync {m.scene.name}");
             try
             {
+                Lap("read");
                 foreach (var e in m.entities) ctx.Prefabs[e.id] = EntityPrefab(e, root, ctx);
+                Lap("entities");
 
-                ctx.Store = new MeshStore($"{root}/Levels/{Assets.Safe(m.scene.id)}.meshes.asset");
+                ctx.Store = new MeshStore($"{root}/Levels/{Assets.Safe(m.scene.id)}", true);
                 new Reconciler(level.transform, ctx, new Edit(true, $"Sync {m.scene.name}"), true).Run(m.nodes);
+                Lap("objects");
                 ctx.Store.KeepReferenced(level.gameObject);
                 ctx.Store.Prune();
+                ctx.Store.Save();
+                // Rebuilt materials are the only other assets changed in place (new ones are written as they're made).
+                if (rebuildMaterials) AssetDatabase.SaveAssets();
+                Lap("meshes");
                 result.MeshesMade += ctx.Store.Made;
                 result.Warnings.AddRange(ctx.Look.Warnings);
 
@@ -108,7 +144,6 @@ namespace Orlablocks.Editor
                     level.gameObject.name = $"Orlablocks Level · {m.scene.name}";
                 }
                 EditorUtility.SetDirty(level);
-                AssetDatabase.SaveAssets();
             }
             finally
             {
@@ -126,7 +161,9 @@ namespace Orlablocks.Editor
             var path = $"{root}/Entities/{Assets.Safe(e.id)}.prefab";
             var existing = AssetDatabase.LoadAssetAtPath<GameObject>(path);
             var known = existing != null ? existing.GetComponent<OrlaNode>() : null;
-            if (known != null && known.hash == e.hash) return existing;
+            // Its hash with the mappings' fingerprint: a color or tag mapping changes what's in it.
+            var hash = ctx.Rev(e.hash);
+            if (known != null && known.hash == hash) return existing;
 
             Assets.EnsureFolder($"{root}/Entities");
             var contents = existing != null ? PrefabUtility.LoadPrefabContents(path) : new GameObject();
@@ -139,18 +176,21 @@ namespace Orlablocks.Editor
                 own.type = "entity";
                 own.description = e.description ?? "";
                 own.tags = e.tags ?? new string[0];
-                own.hash = e.hash;
+                own.hash = hash;
                 var entityCtx = new Context
                 {
                     Bin = ctx.Bin,
-                    Store = new MeshStore($"{root}/Entities/{Assets.Safe(e.id)}.meshes.asset"),
+                    Store = new MeshStore($"{root}/Entities/{Assets.Safe(e.id)}", false),
                     Look = ctx.Look,
                     Palette = ctx.Palette,
+                    EntityTags = ctx.EntityTags,
+                    Mappings = ctx.Mappings,
                     Result = new Result(),
                 };
                 new Reconciler(contents.transform, entityCtx, new Edit(false, "Sync"), false).Run(e.nodes);
                 entityCtx.Store.KeepReferenced(contents);
                 entityCtx.Store.Prune();
+                entityCtx.Store.Save();
                 ctx.Result.MeshesMade += entityCtx.Store.Made;
                 ctx.Result.Warnings.AddRange(entityCtx.Result.Warnings);
                 ctx.Result.EntitiesBuilt++;
@@ -181,6 +221,8 @@ namespace Orlablocks.Editor
             }
 
             public T Add<T>(GameObject go) where T : Component => Undoable ? Undo.AddComponent<T>(go) : go.AddComponent<T>();
+
+            public Component Add(GameObject go, Type type) => Undoable ? Undo.AddComponent(go, type) : go.AddComponent(type);
 
             public void Destroy(UnityEngine.Object o)
             {
@@ -242,7 +284,8 @@ namespace Orlablocks.Editor
             {
                 foreach (var n in root.GetComponentsInChildren<OrlaNode>(true))
                 {
-                    if (n.transform == root || string.IsNullOrEmpty(n.id) || IsPrefabContent(n.gameObject)) continue;
+                    // (An entity's root under an instance is a mapped instance's kept blockout: part of that instance.)
+                    if (n.transform == root || string.IsNullOrEmpty(n.id) || n.type == "entity" || IsPrefabContent(n.gameObject)) continue;
                     if (level && InOrphans(n.transform)) continue;
                     if (index.ContainsKey(n.id))
                     {
@@ -301,7 +344,7 @@ namespace Orlablocks.Editor
                     if (r.IsPlacement) Result.Instances++;
                     if (level && Claimed(n))
                     {
-                        if (n.rev != r.rev) Result.ClaimedChanged.Add(n.gameObject);
+                        if (n.rev.Split('|')[0] != (r.rev ?? "")) Result.ClaimedChanged.Add(n.gameObject);
                         return;
                     }
                     if (level && !n.revert && Drifted(n))
@@ -309,7 +352,7 @@ namespace Orlablocks.Editor
                         Result.Moved.Add(n.gameObject);
                         return;
                     }
-                    if (n.rev == r.rev && !n.revert && !MissingMesh(n, r))
+                    if (n.rev == ctx.Rev(r.rev) && !n.revert && !MissingMesh(n, r))
                     {
                         Result.Unchanged++;
                         return;
@@ -340,7 +383,7 @@ namespace Orlablocks.Editor
             {
                 var node = go.GetComponent<OrlaNode>();
                 edit.Record(node);
-                node.rev = r.rev ?? "";
+                node.rev = ctx.Rev(r.rev);
                 node.revert = false;
                 node.syncedParent = r.parent ?? "";
                 node.syncedPosition = go.transform.localPosition;
@@ -354,7 +397,8 @@ namespace Orlablocks.Editor
                 if (wasPlacement != r.IsPlacement) return true;
                 if (!r.IsPlacement) return false;
                 // Its entity was swapped: another prefab.
-                return ctx.Prefabs.TryGetValue(r.entity ?? "", out var prefab) && prefab != null && PrefabUtility.GetCorrespondingObjectFromSource(n.gameObject) != prefab;
+                var prefab = PrefabFor(r, out _);
+                return prefab != null && PrefabUtility.GetCorrespondingObjectFromSource(n.gameObject) != prefab;
             }
 
             GameObject Create(NodeRecord r, Transform parent)
@@ -362,7 +406,8 @@ namespace Orlablocks.Editor
                 GameObject go = null;
                 if (r.IsPlacement)
                 {
-                    if (ctx.Prefabs.TryGetValue(r.entity ?? "", out var prefab) && prefab != null) go = (GameObject)PrefabUtility.InstantiatePrefab(prefab, parent);
+                    var prefab = PrefabFor(r, out _);
+                    if (prefab != null) go = (GameObject)PrefabUtility.InstantiatePrefab(prefab, parent);
                     else Result.Warnings.Add($"{r.id}: no entity {r.entity} in the export; it's an empty object.");
                 }
                 if (go == null)
@@ -382,7 +427,7 @@ namespace Orlablocks.Editor
                 var old = n.gameObject;
                 var go = Create(r, parent);
                 foreach (var child in old.transform.Cast<Transform>().ToList())
-                    if (!IsPrefabContent(child.gameObject)) edit.SetParent(child, go.transform);
+                    if (!IsPrefabContent(child.gameObject) && !IsBlockout(child)) edit.SetParent(child, go.transform);
                 var fresh = go.GetComponent<OrlaNode>();
                 index[r.id] = fresh;
                 seen.Add(fresh);
@@ -396,7 +441,16 @@ namespace Orlablocks.Editor
                 edit.Record(go.transform);
                 go.transform.localPosition = NodeRecord.V(r.position);
                 go.transform.localEulerAngles = NodeRecord.V(r.euler);
-                go.transform.localScale = Vector3.one * (r.scale > 0 ? r.scale : 1f);
+                var mapping = r.IsPlacement ? ctx.Mappings.Entity(r.entity) : null;
+                var scale = r.scale > 0 ? r.scale : 1f;
+                go.transform.localScale = Vector3.one * scale * (mapping != null && mapping.scale > 0 ? mapping.scale : 1f);
+                if (mapping != null)
+                {
+                    // Your prefab offset and turned from the entity's pivot, in the entity's frame (scaled with the instance).
+                    var turn = go.transform.localRotation;
+                    go.transform.localPosition += turn * (mapping.offset * scale);
+                    go.transform.localRotation = turn * Quaternion.Euler(mapping.rotation);
+                }
                 if (go.name != r.GameObjectName)
                 {
                     edit.Record(go);
@@ -410,7 +464,9 @@ namespace Orlablocks.Editor
                 node.kind = r.kind ?? "";
                 node.color = r.color ?? "";
                 node.entity = r.entity ?? "";
-                node.tags = r.tags ?? new string[0];
+                // An instance carries its entity's tags as well as its own.
+                var own = r.tags ?? new string[0];
+                node.tags = r.IsPlacement && ctx.EntityTags.TryGetValue(r.entity ?? "", out var entityTags) ? entityTags.Union(own).ToArray() : own;
                 // An instance keeps its entity's description (the prefab's), unless it has one of its own.
                 if (!r.IsPlacement || !string.IsNullOrEmpty(r.description)) node.description = r.description ?? "";
                 node.hash = r.hash ?? "";
@@ -418,7 +474,17 @@ namespace Orlablocks.Editor
                 if (r.IsShape) ApplyShape(go, r);
                 else if (r.type == "note") ApplyNote(go, r);
                 else if (r.type == "line") ApplyLine(go, r);
-                if (r.IsPlacement) ApplyCuts(go, node, r);
+                if (r.IsPlacement)
+                {
+                    // Cuts go on the generated blockout: the instance itself, or the one kept under a mapped prefab.
+                    var blockout = mapping != null ? ApplyBlockout(go, r, mapping) : go;
+                    if (blockout != null)
+                    {
+                        ApplyCuts(blockout, node, r);
+                        ApplyColliders(blockout, node, r.noColliders);
+                    }
+                }
+                ApplyRules(go, r);
 
                 var active = !r.hidden;
                 if (go.activeSelf != active)
@@ -460,8 +526,8 @@ namespace Orlablocks.Editor
                 }
                 var renderer = Ensure<MeshRenderer>(go);
                 var materials = new List<Material>();
-                if (r.body.vertices > 0) materials.Add(ctx.Look.Body(r.color));
-                if (r.floor.vertices > 0) materials.Add(ctx.Look.Floor(r.color));
+                if (r.body.vertices > 0) materials.Add(ctx.Body(r.color));
+                if (r.floor.vertices > 0) materials.Add(ctx.Floor(r.color));
                 if (!renderer.sharedMaterials.SequenceEqual(materials))
                 {
                     edit.Record(renderer);
@@ -512,7 +578,7 @@ namespace Orlablocks.Editor
                 note.label = r.label ?? "";
                 note.status = string.IsNullOrEmpty(r.status) ? "open" : r.status;
                 if (ctx.Palette.TryGetValue(r.color ?? "", out var c)) note.color = c;
-                EditorOnly(go);
+                EditorOnly(go, KeptInBuilds(go));
             }
 
             void ApplyLine(GameObject go, NodeRecord r)
@@ -525,14 +591,122 @@ namespace Orlablocks.Editor
                 if (ctx.Palette.TryGetValue(r.color ?? "", out var c)) line.color = c;
                 line.dashed = r.dashed;
                 line.arrow = string.IsNullOrEmpty(r.arrow) ? "none" : r.arrow;
-                EditorOnly(go);
+                EditorOnly(go, KeptInBuilds(go));
             }
 
-            void EditorOnly(GameObject go)
+            /// <summary>Notes and lines are EditorOnly, unless a tag they're under keeps them in builds.</summary>
+            void EditorOnly(GameObject go, bool kept)
             {
-                if (go.CompareTag("EditorOnly")) return;
+                if (kept == !go.CompareTag("EditorOnly")) return;
                 edit.Record(go);
-                go.tag = "EditorOnly";
+                go.tag = kept ? "Untagged" : "EditorOnly";
+            }
+
+            /// <summary>The tags something carries: its own and those of everything it's in (up to the root, whose own count too).</summary>
+            IEnumerable<string> Carried(GameObject go)
+            {
+                for (var t = go.transform; t != null; t = t.parent)
+                {
+                    var n = t.GetComponent<OrlaNode>();
+                    if (n != null && n.tags != null) foreach (var tag in n.tags) yield return tag;
+                    if (t == root) yield break;
+                }
+            }
+
+            bool KeptInBuilds(GameObject go) => ctx.Mappings.HasTagRules && ctx.Mappings.Rules(Carried(go)).Any(rule => rule.keepInBuilds);
+
+            /// <summary>
+            /// The tag mappings for what it carries: a layer (on an instance, on its parts too, where its colliders
+            /// are), a Unity tag, components (added if missing, never removed) and static flags (added).
+            /// </summary>
+            void ApplyRules(GameObject go, NodeRecord r)
+            {
+                if (!ctx.Mappings.HasTagRules) return;
+                var rules = ctx.Mappings.Rules(Carried(go));
+                if (rules.Count == 0) return;
+                var parts = r.IsPlacement ? go.GetComponentsInChildren<Transform>(true).Select(t => t.gameObject).Where(g => g == go || PrefabUtility.IsPartOfPrefabInstance(g)).ToList() : new List<GameObject> { go };
+                var noteOrLine = r.type == "note" || r.type == "line";
+                foreach (var rule in rules)
+                {
+                    if (rule.setLayer)
+                        foreach (var g in parts)
+                            if (g.layer != rule.layer)
+                            {
+                                edit.Record(g);
+                                g.layer = rule.layer;
+                            }
+                    // A note or line stays EditorOnly unless the tag keeps it in builds.
+                    if (!string.IsNullOrEmpty(rule.unityTag) && (!noteOrLine || KeptInBuilds(go)) && !go.CompareTag(rule.unityTag) && ctx.Mappings.TagExists(rule.unityTag))
+                    {
+                        edit.Record(go);
+                        go.tag = rule.unityTag;
+                    }
+                    foreach (var name in rule.components ?? new List<string>())
+                    {
+                        var type = ctx.Mappings.Component(name);
+                        if (type != null && go.GetComponent(type) == null) edit.Add(go, type);
+                    }
+                    if (rule.staticFlags != 0)
+                        foreach (var g in parts)
+                        {
+                            var flags = GameObjectUtility.GetStaticEditorFlags(g);
+                            var want = flags | (StaticEditorFlags)rule.staticFlags;
+                            if (want == flags) continue;
+                            edit.Record(g);
+                            GameObjectUtility.SetStaticEditorFlags(g, want);
+                        }
+                }
+            }
+
+            /// <summary>The prefab an instance or item places: its entity's mapped prefab, or the generated one.</summary>
+            GameObject PrefabFor(NodeRecord r, out OrlaMappings.EntityMapping mapping)
+            {
+                mapping = ctx.Mappings.Entity(r.entity);
+                if (mapping != null) return mapping.prefab;
+                return ctx.Prefabs.TryGetValue(r.entity ?? "", out var generated) ? generated : null;
+            }
+
+            /// <summary>A mapped instance's kept blockout: the generated prefab under it (its root has the entity's OrlaNode).</summary>
+            static bool IsBlockout(Transform t)
+            {
+                var n = t.GetComponent<OrlaNode>();
+                return n != null && n.type == "entity";
+            }
+
+            /// <summary>
+            /// Under a mapped instance: the generated blockout kept (shown or turned off, at orlablocks' size) or
+            /// removed, as the mapping says. Returns the blockout, or null.
+            /// </summary>
+            GameObject ApplyBlockout(GameObject go, NodeRecord r, OrlaMappings.EntityMapping mapping)
+            {
+                var existing = go.transform.Cast<Transform>().FirstOrDefault(IsBlockout);
+                if (mapping.blockout == OrlaMappings.Blockout.Replace || !ctx.Prefabs.TryGetValue(r.entity ?? "", out var generated) || generated == null)
+                {
+                    if (existing != null) edit.Destroy(existing.gameObject);
+                    return null;
+                }
+                GameObject blockout;
+                if (existing != null) blockout = existing.gameObject;
+                else
+                {
+                    blockout = (GameObject)PrefabUtility.InstantiatePrefab(generated, go.transform);
+                    blockout.name = $"blockout ({r.entity})";
+                    if (!created.Contains(go)) edit.Created(blockout);
+                }
+                // Back at the entity's pivot, turn and size: the mapping's offset, turn and scale undone.
+                var m = mapping.scale > 0 ? mapping.scale : 1f;
+                var undo = Quaternion.Inverse(Quaternion.Euler(mapping.rotation));
+                edit.Record(blockout.transform);
+                blockout.transform.localPosition = -(undo * mapping.offset) / m;
+                blockout.transform.localRotation = undo;
+                blockout.transform.localScale = Vector3.one / m;
+                var shown = mapping.blockout == OrlaMappings.Blockout.Keep;
+                if (blockout.activeSelf != shown)
+                {
+                    edit.Record(blockout);
+                    blockout.SetActive(shown);
+                }
+                return blockout;
             }
 
             /// <summary>An instance's cut children: their own meshes, and the prefab's back on the ones no longer cut.</summary>
@@ -570,6 +744,25 @@ namespace Orlablocks.Editor
                     }
                 }
                 node.cutShapes = now;
+            }
+
+            /// <summary>
+            /// An instance in something carrying #no-collisions: its entity's colliders off, for this instance only
+            /// (and on again when it no longer is). A cut child's box collider stays off either way.
+            /// </summary>
+            void ApplyColliders(GameObject blockout, OrlaNode node, bool off)
+            {
+                var cut = node.cutShapes ?? new string[0];
+                foreach (var col in blockout.GetComponentsInChildren<Collider>(true))
+                {
+                    if (!IsPrefabContent(col.gameObject)) continue;
+                    var part = col.GetComponent<OrlaNode>();
+                    var cutBox = col is BoxCollider && part != null && cut.Contains(part.id);
+                    var want = !off && !cutBox;
+                    if (col.enabled == want) continue;
+                    edit.Record(col);
+                    col.enabled = want;
+                }
             }
 
             void RevertCut(GameObject child)
@@ -622,7 +815,7 @@ namespace Orlablocks.Editor
             {
                 foreach (var child in t.Cast<Transform>().ToList())
                 {
-                    if (IsPrefabContent(child.gameObject)) continue;
+                    if (IsPrefabContent(child.gameObject) || IsBlockout(child)) continue;
                     var n = child.GetComponent<OrlaNode>();
                     if (n != null && gone.Contains(n) && !Claimed(n))
                     {

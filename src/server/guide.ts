@@ -363,7 +363,9 @@ const GUIDE: Record<Exclude<GuideTopic, "design">, string> = {
     "also have it export after every step, or save the scene as a .glb for Blender. In Unity each " +
     "node becomes a GameObject named `name (id)` under the level, and a sync matches them by ID, so an ID is how a " +
     "thing keeps what the human added to it in Unity: move or change a node rather than removing and redrawing it. " +
-    "Shapes arrive as drawn (holes cut, a collider on each), with no outlines. Each entity becomes one generated prefab " +
+    "Shapes arrive as drawn (holes cut, a collider on each), with no outlines; what carries the built-in " +
+    "#no-collisions (and everything in a group or entity that does) gets no collider: tag decoration, grass and far " +
+    "scenery with it. Each entity becomes one generated prefab " +
     "and its instances and array items prefab instances; the human maps an entity to a real prefab (a ring to their " +
     "RaceRing), and a tag to a Unity layer, tag or component (#boundary to a Boundary layer), so give entities clear " +
     "names and tag what the game treats specially. Groups keep their description. Notes and lines arrive as editor-only " +

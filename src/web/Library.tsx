@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { BookOpen, Plus, Redo2, Trash2, Undo2, X } from "lucide-react";
-import { NAME_PATTERN, SIGIL, type EntityMeta, type Library, type LibraryEdit, type LibraryKind, type Skill, type Tag, type Uses } from "../shared/library";
+import { isBuiltInTag, NAME_PATTERN, SIGIL, type EntityMeta, type Library, type LibraryEdit, type LibraryKind, type Skill, type Tag, type Uses } from "../shared/library";
 import type { ClientMessage, HistorySummary } from "../shared/scene.types";
 import { typingInField } from "./keys";
 import { RefTextArea, TagsField } from "./RefText";
@@ -224,6 +224,8 @@ function RecordEditor({
   const [name, setName] = useState(record.name);
   useEffect(() => setName(record.name), [record.name]);
   const valid = NAME_PATTERN.test(name);
+  // A built-in tag (#no-collisions) keeps its name and can't be deleted; its description can change.
+  const builtIn = kind === "tag" && isBuiltInTag(record.name);
   const rename = () => {
     if (name === record.name) return;
     if (!valid) return setName(record.name);
@@ -237,7 +239,12 @@ function RecordEditor({
         <input
           className={valid ? undefined : "invalid"}
           value={name}
-          title="Lowercase letters, digits, _ and -, starting with a letter. Renaming keeps the old name as an alias, so what refers to it still works"
+          readOnly={builtIn}
+          title={
+            builtIn
+              ? "Built in: every project has it, and it keeps its name"
+              : "Lowercase letters, digits, _ and -, starting with a letter. Renaming keeps the old name as an alias, so what refers to it still works"
+          }
           onChange={(e) => setName(e.target.value.toLowerCase())}
           onBlur={rename}
           onKeyDown={(e) => {
@@ -272,9 +279,13 @@ function RecordEditor({
             also {record.aliases.map((a) => `${SIGIL[kind]}${a}`).join(", ")}
           </span>
         )}
-        <button type="button" className="labeled danger" title={`Delete ${SIGIL[kind]}${record.name}: what refers to it stays, unresolved (undo brings it back)`} onClick={() => edit({ remove: [{ kind, name: record.name }] })}>
-          <Trash2 size={13} /> Delete
-        </button>
+        {builtIn ? (
+          <span className="aliases">built in</span>
+        ) : (
+          <button type="button" className="labeled danger" title={`Delete ${SIGIL[kind]}${record.name}: what refers to it stays, unresolved (undo brings it back)`} onClick={() => edit({ remove: [{ kind, name: record.name }] })}>
+            <Trash2 size={13} /> Delete
+          </button>
+        )}
       </div>
     </div>
   );

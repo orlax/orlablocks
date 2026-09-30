@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using UnityEditor;
 using UnityEngine;
 
@@ -50,27 +51,64 @@ namespace Orlablocks.Editor
     }
 
     /// <summary>
-    /// A .meshes.asset: meshes as sub-assets of one file, named by the export's hash of each. A mesh whose hash is
-    /// already there is reused as it is; Prune removes the ones this sync didn't use.
+    /// Meshes as sub-assets, named by the export's hash of each: a mesh whose hash is already there is reused as it
+    /// is, and Prune removes the ones this sync didn't use. A level's meshes are split over up to 16 files by their
+    /// hash's first character (<c>Levels/&lt;scene&gt;/meshes-a.asset</c>), so a change rewrites one file, not all of
+    /// them; an entity's are one file. Only files that changed are written (Save).
     /// </summary>
     public class MeshStore
     {
-        readonly OrlaMeshes main;
+        readonly string basePath;
+        readonly bool sharded;
+        readonly Dictionary<string, OrlaMeshes> files = new Dictionary<string, OrlaMeshes>();
         readonly Dictionary<string, Mesh> byName = new Dictionary<string, Mesh>();
+        readonly Dictionary<string, string> fileOf = new Dictionary<string, string>();
         readonly HashSet<string> used = new HashSet<string>();
+        readonly HashSet<string> dirty = new HashSet<string>();
         public int Made { get; private set; }
+        public int Removed { get; private set; }
 
-        public MeshStore(string path)
+        /// <param name="basePath">Without extension: Levels/&lt;scene&gt; or Entities/&lt;entity&gt;.</param>
+        /// <param name="sharded">Split over files by hash (a level); one file otherwise (an entity).</param>
+        public MeshStore(string basePath, bool sharded)
         {
-            main = AssetDatabase.LoadAssetAtPath<OrlaMeshes>(path);
-            if (main == null)
-            {
-                Assets.EnsureFolder(Path.GetDirectoryName(path).Replace('\\', '/'));
-                main = ScriptableObject.CreateInstance<OrlaMeshes>();
-                AssetDatabase.CreateAsset(main, path);
-            }
+            this.basePath = basePath;
+            this.sharded = sharded;
+            // The one-file store (every store before 15.5, and an entity's): read, reused, emptied as it's pruned.
+            Load($"{basePath}.meshes.asset");
+            if (sharded && AssetDatabase.IsValidFolder(basePath))
+                foreach (var guid in AssetDatabase.FindAssets("t:OrlaMeshes", new[] { basePath }))
+                    Load(AssetDatabase.GUIDToAssetPath(guid));
+        }
+
+        void Load(string path)
+        {
+            var main = AssetDatabase.LoadAssetAtPath<OrlaMeshes>(path);
+            if (main == null) return;
+            files[path] = main;
             foreach (var o in AssetDatabase.LoadAllAssetsAtPath(path))
-                if (o is Mesh m && !byName.ContainsKey(m.name)) byName[m.name] = m;
+                if (o is Mesh m && !byName.ContainsKey(m.name))
+                {
+                    byName[m.name] = m;
+                    fileOf[m.name] = path;
+                }
+        }
+
+        string FileFor(string key)
+        {
+            if (!sharded) return $"{basePath}.meshes.asset";
+            var c = key.Length > 0 && Uri.IsHexDigit(key[0]) ? char.ToLowerInvariant(key[0]) : '_';
+            return $"{basePath}/meshes-{c}.asset";
+        }
+
+        OrlaMeshes Open(string path)
+        {
+            if (files.TryGetValue(path, out var main) && main != null) return main;
+            Assets.EnsureFolder(Path.GetDirectoryName(path).Replace('\\', '/'));
+            main = ScriptableObject.CreateInstance<OrlaMeshes>();
+            AssetDatabase.CreateAsset(main, path);
+            files[path] = main;
+            return main;
         }
 
         public Mesh Get(string key, Func<Mesh> make)
@@ -79,8 +117,11 @@ namespace Orlablocks.Editor
             if (byName.TryGetValue(key, out var known) && known != null) return known;
             var mesh = make();
             mesh.name = key;
-            AssetDatabase.AddObjectToAsset(mesh, main);
+            var path = FileFor(key);
+            AssetDatabase.AddObjectToAsset(mesh, Open(path));
             byName[key] = mesh;
+            fileOf[key] = path;
+            dirty.Add(path);
             Made++;
             return mesh;
         }
@@ -95,6 +136,7 @@ namespace Orlablocks.Editor
             foreach (var c in root.GetComponentsInChildren<MeshCollider>(true)) if (Holds(c.sharedMesh)) used.Add(c.sharedMesh.name);
         }
 
+        /// <summary>Removes the meshes nothing uses, and files left empty.</summary>
         public void Prune()
         {
             foreach (var pair in byName)
@@ -102,8 +144,29 @@ namespace Orlablocks.Editor
                 if (used.Contains(pair.Key) || pair.Value == null) continue;
                 AssetDatabase.RemoveObjectFromAsset(pair.Value);
                 UnityEngine.Object.DestroyImmediate(pair.Value, true);
+                dirty.Add(fileOf[pair.Key]);
+                Removed++;
             }
-            EditorUtility.SetDirty(main);
+            var left = new HashSet<string>(used.Where(fileOf.ContainsKey).Select(k => fileOf[k]));
+            foreach (var path in dirty.ToList())
+                if (!left.Contains(path) && files.ContainsKey(path))
+                {
+                    AssetDatabase.DeleteAsset(path);
+                    files.Remove(path);
+                    dirty.Remove(path);
+                }
+        }
+
+        /// <summary>Writes the files that changed (and only those).</summary>
+        public void Save()
+        {
+            foreach (var path in dirty)
+                if (files.TryGetValue(path, out var main) && main != null)
+                {
+                    EditorUtility.SetDirty(main);
+                    AssetDatabase.SaveAssetIfDirty(main);
+                }
+            dirty.Clear();
         }
     }
 }

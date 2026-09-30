@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { EMPTY_LIBRARY, findRefs, resolveRef, unknownRefs } from "../shared/library";
+import { EMPTY_LIBRARY, findRefs, isBuiltInTag, resolveRef, unknownRefs } from "../shared/library";
 import type { OpenScene } from "../shared/scene.types";
 import { DEFAULT_GUIDE } from "./defaultGuide";
 import { createLibraryStore } from "./library";
@@ -210,6 +210,9 @@ describe("the outline with a library", () => {
   });
 });
 
+/** A project's tags without the built-in ones. */
+const ownTags = (tags: { name: string }[]) => tags.filter((t) => !isBuiltInTag(t.name));
+
 describe("the library in the data folder", () => {
   const roots: string[] = [];
   const releases: (() => void)[] = [];
@@ -254,14 +257,16 @@ describe("the library in the data folder", () => {
     workspace.library.undo();
     const log = fs.readFileSync(path.join(projectDir(root), "library-history.jsonl"), "utf8").trimEnd().split("\n").map((l) => JSON.parse(l));
     expect(log.map((l) => l.type)).toEqual(["commit", "commit", "undo"]);
-    expect(JSON.parse(fs.readFileSync(path.join(projectDir(root), "library.json"), "utf8"))).toMatchObject({ seq: 3, tags: [{ name: "light" }] });
+    const saved = JSON.parse(fs.readFileSync(path.join(projectDir(root), "library.json"), "utf8"));
+    expect(saved.seq).toBe(3);
+    expect(ownTags(saved.tags)).toEqual([{ name: "light" }]);
 
     releases.splice(0).forEach((r) => r());
     const again = start(root).workspace;
-    expect(again.library.get().tags).toEqual([{ name: "light" }]);
+    expect(ownTags(again.library.get().tags)).toEqual([{ name: "light" }]);
     expect(again.library.getHistory()).toMatchObject({ canUndo: true, canRedo: true, redoLabel: "Agent: rename #light to #liftable" });
     again.library.redo();
-    expect(again.library.get().tags[0].name).toBe("liftable");
+    expect(ownTags(again.library.get().tags)[0].name).toBe("liftable");
   });
 
   it("catches up a log one step ahead of library.json", () => {
@@ -274,8 +279,25 @@ describe("the library in the data folder", () => {
     fs.writeFileSync(file, JSON.stringify({ ...JSON.parse(fs.readFileSync(file, "utf8")), seq: 0, tags: [] }));
     releases.splice(0).forEach((r) => r());
     const again = start(root).workspace;
-    expect(again.library.get().tags).toEqual([{ name: "light" }]);
+    expect(ownTags(again.library.get().tags)).toEqual([{ name: "light" }]);
     expect(JSON.parse(fs.readFileSync(file, "utf8"))).toMatchObject({ seq: 1 });
+  });
+
+  it("gives every project the built-in #no-collisions, which can't be deleted or renamed", () => {
+    const root = tempRoot();
+    const { workspace } = start(root);
+    workspace.createProject({ name: "Castle", sceneName: "Entrance" });
+    expect(workspace.library.get().tags.map((t) => t.name)).toContain("no-collisions");
+    expect(() => workspace.editLibrary({ remove: [{ kind: "tag", name: "no-collisions" }] }, "human")).toThrow(/built in, so it can't be deleted/);
+    expect(() => workspace.editLibrary({ rename: [{ kind: "tag", from: "no-collisions", to: "decor" }] }, "agent")).toThrow(/built in, so it can't be renamed/);
+    // Its description can change.
+    workspace.editLibrary({ upsert: [{ kind: "tag", name: "no-collisions", description: "grass and far hills" }] }, "human");
+    expect(workspace.library.get().tags.find((t) => t.name === "no-collisions")?.description).toBe("grass and far hills");
+    // An older project without it gets it when it opens.
+    const file = path.join(projectDir(root), "library.json");
+    fs.writeFileSync(file, JSON.stringify({ ...JSON.parse(fs.readFileSync(file, "utf8")), tags: [] }));
+    releases.splice(0).forEach((r) => r());
+    expect(start(root).workspace.library.get().tags.map((t) => t.name)).toEqual(["no-collisions"]);
   });
 
   it("keeps the scene's history and the library's apart, and counts uses across scenes", () => {
