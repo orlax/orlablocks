@@ -4,13 +4,14 @@ import { z } from "zod";
 import { NO_USES } from "../shared/library";
 import { ClientMessageSchema, type ServerMessage } from "../shared/scene.types";
 import { SceneError } from "./scene";
+import type { Exports } from "./exports";
 import type { RenderBroker, RenderTab } from "./render";
 import type { Workspace } from "./workspace";
 
 /** The message minus its `type`: the store's input schemas are strict, so the envelope field must go. */
 const withoutType = <T extends { type: string }>({ type: _type, ...rest }: T) => rest;
 
-export function attachWebSocket(httpServer: Server, workspace: Workspace, renders: RenderBroker) {
+export function attachWebSocket(httpServer: Server, workspace: Workspace, renders: RenderBroker, exports: Exports) {
   const { store } = workspace;
   const wss = new WebSocketServer({ noServer: true });
 
@@ -63,6 +64,7 @@ export function attachWebSocket(httpServer: Server, workspace: Workspace, render
   workspace.shots.onChange(() => broadcast({ type: "shots", shots: workspace.shots.list() }));
   workspace.onPlayerChanged((player) => broadcast({ type: "player", player }));
   workspace.onAgentChanged((agent) => broadcast({ type: "agent", agent }));
+  exports.onStatus((status) => broadcast({ type: "export", export: status }));
 
   wss.on("connection", (ws) => {
     // This tab can render for the agent (09.3).
@@ -79,6 +81,7 @@ export function attachWebSocket(httpServer: Server, workspace: Workspace, render
     send(ws, { type: "shots", shots: workspace.shots.list() });
     send(ws, { type: "player", player: workspace.player() });
     send(ws, { type: "agent", agent: workspace.getAgent() });
+    send(ws, { type: "export", export: exports.status() });
 
     ws.on("message", (raw) => {
       let data: unknown;
@@ -103,6 +106,13 @@ export function attachWebSocket(httpServer: Server, workspace: Workspace, render
         if (msg.type === "open_scene") return workspace.openScene(withoutType(msg));
         if (msg.type === "invite_agent") return workspace.inviteAgent();
         if (msg.type === "stop_agent") return workspace.stopAgent();
+        if (msg.type === "pick_export_folder")
+          return void exports.pickFolder().catch((err: Error) => send(ws, { type: "error", message: err.message }));
+        if (msg.type === "set_export_folder") return exports.setFolder(msg.dir);
+        if (msg.type === "set_export_auto") return exports.setAuto(msg.auto);
+        // The result reaches every tab as the export status; a failure is also this tab's error.
+        if (msg.type === "export_scene")
+          return void exports.exportOpen().catch((err: Error) => send(ws, { type: "error", message: err.message }));
         if (msg.type === "update_library") return void workspace.editLibrary(withoutType(msg), "human");
         if (msg.type === "library_undo") return void workspace.requireLibrary().undo();
         if (msg.type === "library_redo") return void workspace.requireLibrary().redo();

@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
 import express from "express";
+import { createExports } from "./exports";
 import { mountMcp } from "./mcp";
 import { LockedError, openDataDir } from "./persist";
 import { createRenderBroker } from "./render";
@@ -50,7 +51,9 @@ const httpServer = createHttpServer(app);
 
 // render_view (09.3): the editor tabs render for the agent.
 const renders = createRenderBroker();
-mountMcp(app, workspace, renders);
+// The Unity export (15.2): each scene's folder, Export now, and exporting after every step.
+const exports = createExports(workspace, dataDir);
+mountMcp(app, workspace, renders, exports);
 
 const distWeb = path.resolve(fileURLToPath(new URL("../../dist/web", import.meta.url)));
 const isProd = process.env.NODE_ENV === "production" || (fs.existsSync(distWeb) && process.env.NODE_ENV !== "development");
@@ -79,7 +82,17 @@ app.get("/shots/:project/:kind/:doc/:file", (req, res) => {
   if (!found) return void res.status(404).send("No such shot");
   res.sendFile(found, { headers: { "Cache-Control": "no-cache" } });
 });
-attachWebSocket(httpServer, workspace, renders);
+// The open scene as a 3D file (15.2), for the editor to save where the human says.
+app.get("/api/export.glb", async (_req, res) => {
+  try {
+    const { name, glb } = await exports.glbOpen();
+    res.set({ "Content-Type": "model/gltf-binary", "Content-Disposition": `attachment; filename="${name}"`, "Cache-Control": "no-store" });
+    res.send(glb);
+  } catch (err) {
+    res.status(409).type("text/plain").send((err as Error).message);
+  }
+});
+attachWebSocket(httpServer, workspace, renders, exports);
 
 if (isProd && fs.existsSync(distWeb)) {
   app.use(express.static(distWeb));

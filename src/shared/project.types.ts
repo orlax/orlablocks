@@ -22,6 +22,9 @@ export const ProjectFileSchema = z.object({
   name: z.string(),
   description: z.string().default(""),
   createdAt: z.string(),
+  // The Unity export (15.2): the folder the human picked for the project (each scene exports into a folder of its own
+  // in it, named by the scene's ID), and the scenes exported after every step.
+  unity: z.object({ dir: z.string(), auto: z.array(z.string()).optional() }).optional(),
 });
 export type ProjectFile = z.infer<typeof ProjectFileSchema>;
 

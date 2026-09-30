@@ -111,7 +111,7 @@ import { isFollowing, layoutAnchor, layoutGuide, withFollowed } from "../shared/
 import { arrayHandles, dragArrayHandle, hitArrayHandle, hitItemDot, itemDots, toggleSkips, type ArrayHandle, type ArrayPart, type ItemDot } from "./arrayEdit";
 import { pickHit, pickLine, pickNote, surfaceUnder, type Surface } from "./pick";
 import { NoteMesh } from "./NoteMesh";
-import { expandNodes, expandShapes, ownerOf } from "../shared/entities";
+import { expandNodes, expandShapes, inEntityRoot, ownerOf } from "../shared/entities";
 import {
   handleEnd,
   hitPoints,
@@ -211,13 +211,6 @@ const withEditedPoints = (s: Shape, points: EditPoint[]): Shape =>
       : ({ ...s, points } as Shape);
 /** A scatter array's area: a closed outline on the ground at its height, edited like a free-form's. */
 const isScatterArea = (s: Shape | undefined) => s?.type === "array" && s.layout.type === "scatter";
-
-/** An entity's definition as its instances hold it: the top level in a group, so its top-level holes cut there. */
-const ENTITY_ROOT = "entity:root";
-const inEntityRoot = (nodes: SceneNode[]): SceneNode[] => [
-  { id: ENTITY_ROOT, type: "group", createdBy: "human" },
-  ...nodes.map((n) => (n.parent === undefined ? ({ ...n, parent: ENTITY_ROOT } as SceneNode) : n)),
-];
 
 /** The drag-and-drop type of an entity dragged from the Library (its ID). */
 export const ENTITY_DRAG = "application/x-dungeon-entity";

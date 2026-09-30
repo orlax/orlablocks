@@ -4,6 +4,7 @@ import { setDefinitions } from "../shared/entities";
 import {
   DEFAULT_PLAYER,
   type AgentInfo,
+  type ExportStatus,
   type ClientMessage,
   type EditorRestore,
   type HistorySummary,
@@ -33,6 +34,8 @@ export function useScene(renderer?: { current: RenderHandler | null }) {
   const [player, setPlayer] = useState<PlayerCamera>(DEFAULT_PLAYER);
   // The scene the agent was invited to (14.5), or null.
   const [agent, setAgent] = useState<AgentInfo | null>(null);
+  // The open scene's export for Unity (15.2), or null with nothing open.
+  const [exportStatus, setExportStatus] = useState<ExportStatus | null>(null);
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   // undefined until the server says; null = nothing is open.
   const [open, setOpen] = useState<OpenScene | null | undefined>(undefined);
@@ -88,6 +91,8 @@ export function useScene(renderer?: { current: RenderHandler | null }) {
           setPlayer(msg.player);
         } else if (msg.type === "agent") {
           setAgent(msg.agent);
+        } else if (msg.type === "export") {
+          setExportStatus(msg.export);
         } else if (msg.type === "render") {
           const answer = (m: ClientMessage) => ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify(m));
           const run = renderer?.current;
@@ -132,5 +137,5 @@ export function useScene(renderer?: { current: RenderHandler | null }) {
     if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
   }, []);
 
-  return { scene, history, seq, shots, player, agent, projects, open, restore, library, definitionsVersion, connected, error, clearError, send };
+  return { scene, history, seq, shots, player, agent, exportStatus, projects, open, restore, library, definitionsVersion, connected, error, clearError, send };
 }

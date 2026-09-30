@@ -115,7 +115,8 @@ export function arrayItemInstance(array: ArrayNode, index: number): Instance | u
   return item && itemInstance(array, item);
 }
 
-const itemInstance = (array: ArrayNode, item: ReturnType<typeof arrayItems>[number]): Instance => ({
+/** An array's item as the instance it is (`array_3/7`), in the array's place. */
+export const itemInstance = (array: ArrayNode, item: ReturnType<typeof arrayItems>[number]): Instance => ({
   id: `${array.id}/${item.index}`,
   type: "instance",
   entity: item.entity,
@@ -138,6 +139,13 @@ export function expandArray(array: ArrayNode): SceneNode[] {
   arrayCache.set(array, expanded);
   return expanded;
 }
+
+/** An entity's definition as its instances hold it: the top level in a group, so its top-level holes cut there. */
+const ENTITY_ROOT = "entity:root";
+export const inEntityRoot = (nodes: SceneNode[]): SceneNode[] => [
+  { id: ENTITY_ROOT, type: "group", createdBy: "human" },
+  ...nodes.map((n) => (n.parent === undefined ? ({ ...n, parent: ENTITY_ROOT } as SceneNode) : n)),
+];
 
 /** An array's shapes in world space (no groups). */
 export const arrayShapes = (array: ArrayNode): Shape[] => expandArray(array).filter((n): n is Shape => n.type !== "group");

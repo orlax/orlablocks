@@ -14,7 +14,7 @@
 
 The flight level, taken to Unity:
 
-1. Orlando opens `valley_human` and, in **Export**, sets the folder to `~/Unity/Flight/Orlablocks/valley`, next to the Unity project's `Assets/`, and turns on **Export on every step**.
+1. Orlando opens `valley_human` and, in **Export → Unity**, chooses the project's folder, `~/Unity/Flight/Orlablocks`, next to the Unity project's `Assets/`, in the system's folder dialog. The scene will export to `Orlablocks/valley_human/`. Orlando turns on **Export this scene on every step**.
 2. In Unity, Orlando adds an **Orlablocks Level** (menu **GameObject → Orlablocks Level**), points it at that folder and presses **Sync**. The valley appears with each shape as a GameObject named `hall (box_12)`, the palette colors on a 1 m tile, and a collider on everything. Each race ring is a prefab instance of the generated `ring` prefab. Holes are cut. Notes show as labels in the Scene view, and none of it reaches a build.
 3. In the Orlablocks mappings, Orlando maps the `ring` entity to their real `RaceRing.prefab` and `#boundary` to the `Boundary` layer. After **Sync**, the rings are the real prefab, in the same places.
 4. Orlando plays the level, adds a trigger under `box_40` and a spawn point under the start platform, and **claims** `freeform_7` (the lake), whose shore they reshape in Unity.
@@ -28,7 +28,8 @@ The flight level, taken to Unity:
 ### In
 
 - **The bake (15.1):** what the editor draws for each shape (body and a room's floor; holes cut; creased normals; tile UVs) as plain arrays, computed in `src/shared/` and used by both the editor and the export. The boolean library also runs on the server.
-- **The export (15.2):** a manifest and a mesh binary per scene, in Unity's frame, written atomically to an **export folder** chosen per scene. Written from an **Export** dialog in the editor, by the agent (`export_scene`), or after every step (**Export on every step**).
+- **The export (15.2):** a manifest and a mesh binary per scene, in Unity's frame, written atomically to the scene's own folder (its ID) in the project's **export folder**, which the human chooses in the system's folder dialog. Written from the **Export** dialog's Unity tab, by the agent (`export_scene`), or after every step (**Export this scene on every step**).
+- **A 3D file (15.2):** the same scene as one `.glb` (glTF binary, for Blender and other tools), saved where the human says with the browser's save dialog.
 - **The Unity code and its look (15.3):** runtime components (`OrlaLevel`, `OrlaNode`, `OrlaNote`, `OrlaLine`), the materials made by code (URP Lit with the palette and the tile), and a first **Sync** that builds the level and the entity prefabs.
 - **Refresh (15.4):** matching by node ID, only rebuilding what changed, keeping what the user added, **claims**, **drift** (moved in Unity), deletion rules, one undo step per sync, and **Update available** when the export folder changes (or **Auto sync**).
 - **Mappings (15.5):** entity → prefab, tag → layer / Unity tag / components / static flags, palette color → material, all in an `OrlaMappings` asset in Unity.
@@ -38,7 +39,7 @@ The flight level, taken to Unity:
 
 - **Anything from Unity back to orlablocks.** Claims and drift keep Unity's work safe without writing back. A later phase could send playtest findings back as notes.
 - **A Unity package** (`package.json`, UPM, a git URL). Orlando makes it once the files work.
-- **Other engines.** The bake makes a `.glb` export easy (Blender, Godot, Unreal), but it's a later phase.
+- **A `.glb` that keeps what glTF can't hold:** holes, lines and hidden nodes are left out of it, and it has plain palette colors (no tile texture).
 - **A custom URP shader** (a procedural grid, a triplanar look). URP Lit with the tile texture matches the editor and survives URP updates. See §15, decision 4.
 - **Lightmaps and NavMesh baking.** The meshes are ready for both (static, colliders), and lightmap UVs are one sync option (§8). Baking stays the user's job in Unity.
 - **The built-in and HDRP pipelines.** URP only. The code finds URP Lit by name and warns if it's missing.
@@ -55,7 +56,7 @@ The flight level, taken to Unity:
 |---|---|
 | **bake** | a shape turned into the meshes the editor draws: body and a room's floor, with holes cut, normals and UVs (`src/shared/bake.ts`) |
 | **export** | a scene written for Unity: `level.json` (the manifest) and `meshes-<hash>.bin`, in the scene's export folder |
-| **export folder** | where a scene is exported, an absolute path set by the human per scene, kept in `project.json` |
+| **export folder** | the project's folder for Unity exports, chosen by the human in the system's folder dialog and kept in `project.json`; each scene exports into a folder of its own in it, named by the scene's ID |
 | **Orlablocks Level** | the Unity GameObject (with `OrlaLevel`) that a scene syncs into: its export folder, its mappings and its sync options |
 | **sync** | building or updating an Orlablocks Level from its export, one Unity undo step |
 | **managed** | what a sync owns on a node's GameObject: its transform, meshes, materials, collider and `OrlaNode` fields. Everything else is the user's |
@@ -66,21 +67,21 @@ The flight level, taken to Unity:
 ### The export folder, on disk
 
 ```
-<export folder>/
+<export folder>/<scene ID>/
   level.json             the manifest (written last, atomically)
   meshes-<hash>.bin      every mesh the manifest points into; the previous one is kept until the next export
 ```
 
-- The folder is meant to be **outside `Assets/`** (e.g. `<UnityProject>/Orlablocks/<scene>/`), so Unity doesn't import it as assets and make `.meta` files. The Unity project's git can commit it, so a teammate without orlablocks can still sync.
+- The folder is meant to be **outside `Assets/`** (e.g. `<UnityProject>/Orlablocks/`, each scene in `Orlablocks/<scene ID>/`), so Unity doesn't import it as assets and make `.meta` files. The Unity project's git can commit it, so a teammate without orlablocks can still sync.
 - **Consistency:** the binary is written first, under a name with its content hash, then `level.json` goes through a temp file and a rename. A reader never sees a manifest pointing at a half-written binary. The binary before the last one is deleted.
-- `project.json` gains `exports?: { [scene: string]: { dir: string; auto?: boolean } }`. Only the human sets a folder: the agent's `export_scene` writes only to a folder the human chose (§5).
+- `project.json` gains `unity?: { dir: string; auto?: string[] }`: the folder, and the scenes exported after every step. The scene's folder is named by its ID, so renaming the scene doesn't move it. Only the human sets the folder: the agent's `export_scene` writes only into the folder the human chose (§5).
 
 ### The manifest (`level.json`)
 
 Plain arrays of plain objects, with no unions or dictionaries, so Unity's `JsonUtility` reads it without Newtonsoft. Every field is present on every record, with an empty or zero value where it doesn't apply.
 
 - **Header:** `format: "orlablocks-unity"`, `version: 1`, `exportId` (the history seq of the step exported), `exportedAt`, `project { id, name, description }`, `scene { id, name }`, `meshes` (the binary's file name, byte length and hash).
-- **Look:** `palette [{ key, color }]` (linear and sRGB hex), `floorShade` (0.94): the editor's values from `ShapeMesh.tsx`, so tuning the palette flows to Unity.
+- **Look:** `palette [{ key, color }]` (sRGB hex), `floorShade` (0.94): the editor's values from `ShapeMesh.tsx`, so tuning the palette flows to Unity.
 - **Library:** `tags [{ name, description }]` and `skills [{ name, description }]`, for tooltips and mappings.
 - **Entities:** `[{ id, name, description, tags, hash, nodes: [NodeRecord] }]`, only the entities this scene uses, each baked around its pivot.
 - **Nodes:** `[NodeRecord]`, the scene's nodes in tree order (parents first), then each array's items.
@@ -98,9 +99,9 @@ Plain arrays of plain objects, with no unions or dictionaries, so Unity's `JsonU
 | `body`, `floor` | mesh ranges in the binary (vertex and index offsets and counts), or empty. A hole's `body` is only for its gizmo |
 | `collider` | `box` (with `boxCenter`, `boxSize`), `mesh`, or `none` |
 | `entity` | instances and items: the entity's ID. Holes: "" |
-| `cutBody`, `cutFloor` | items and instances cut by a scene hole: their own meshes for the one shape cut (`cutShape`, the definition node's ID) |
+| `cuts` | items and instances cut by a scene hole: `[{ shape, body, floor, hash }]`, their own meshes for each definition shape cut differently (`shape`, its ID) |
 | `text`, `label`, `status` | notes |
-| `points`, `lineColor`, `thickness`, `dashed`, `arrow` | lines (points flattened x, y, z) |
+| `points`, `thickness`, `dashed`, `arrow` | lines (the curve sampled, flattened x, y, z, relative to the first point; `color` is the line's) |
 
 The binary is little-endian: for each mesh, positions (float32 × 3), normals (float32 × 3), UVs (float32 × 2) and indices (uint32).
 
@@ -150,19 +151,18 @@ The export has to produce exactly steps 1–6, so they move to one place. The ed
 - **Scene-level bake** (`bakeScene(nodes, definitions)`) holds these rules:
   - Cuts are worked out on the expanded nodes (`cutters(expandNodes(nodes))`), as the editor does.
   - Each entity is baked **once, around its pivot**, with the cuts its own holes make on its own shapes.
-  - An instance or item that a scene hole also cuts (or whose holes are cut differently because a scene shape is in scope) gets `cutBody` / `cutFloor` for that shape. It's cut in the entity's frame, the hole brought in by the instance's inverse transform.
+  - An instance or item that a scene hole also cuts (or whose holes are cut differently because a scene shape is in scope) gets a `cuts` entry for that shape. It's cut in the entity's frame, the hole brought in by the instance's inverse transform.
   - Holes are baked uncut, for Unity's hole gizmo only (§6): no renderer, no collider.
 - **Cache:** baked parts are kept per shape by the key `useShapeGeometry` already builds (geometry key + cut key), so an export after a step rebakes only what the step changed.
 
 ### The export (15.2)
 
 - **`src/server/export.ts`:** `exportScene(doc, dir)` bakes, converts (§4), writes the binary and then the manifest (§3), and returns a summary: nodes by type, entities, meshes, bytes, milliseconds and **warnings**. Warnings cover a cut that failed (drawn uncut, as in the editor), an instance of a missing entity (exported as the editor's red block), and a mesh that isn't closed.
-- **Where it can write:** only to a folder in `project.json`'s `exports`, which the human sets. The folder must be absolute and must exist (or its parent must); the server creates the folder itself but not the path above it.
-- **The editor:** **Export…** in the project bar's menu opens a small dialog:
-  - the folder (a text field, since a browser can't pick one; the Tauri app can later);
-  - **Export now**, with the last export's time and summary;
-  - **Export on every step**, which exports about 1 s after the last step, never while one is running.
-- **The agent:** `export_scene {}` exports the open scene (or the agent's scene, 14.5) to its folder and returns the summary. Without a folder, it errors: "No export folder for this scene. Ask the human to set one in the editor (Export…)." A short `get_guide export` topic says what reaches Unity:
+- **Where it can write:** only into the project's folder in `project.json`'s `unity`, which the human sets. It must be absolute and exist; the server makes the scene's folder in it.
+- **The editor:** the top bar's export button opens **Export**, with two tabs:
+  - **Unity:** the project's folder with **Choose…** (the server opens the system's folder dialog: `osascript` on macOS, the Forms dialog on Windows, zenity or kdialog on Linux, because a browser can't give a folder's path and the export runs on the server). Below that: where this scene goes, **Export this scene on every step** (about 1 s after the last step, never while one is running), **Export now**, and the last export's time and summary.
+  - **3D file (.glb):** **Save .glb…** opens the browser's save dialog (Chrome and Edge; elsewhere it downloads), then fetches `/api/export.glb`. That's the open scene as one glTF binary, written from the Unity export flipped back to orlablocks' frame, which is glTF's. It keeps the groups, names every node `name (id)` with its ID, tags and description as extras, shares each entity's meshes between its instances, and uses the palette's colors as matte materials.
+- **The agent:** `export_scene {}` exports the open scene (or the agent's scene, 14.5) to its folder and returns the summary. Without a folder, it errors: "No Unity export folder for this project. Ask the human to choose one in the editor (Export → Unity)." A short `get_guide export` topic says what reaches Unity:
   - entity names and tags are what mappings use, so name them well;
   - hidden nodes arrive disabled;
   - notes and lines are editor-only there.
@@ -219,7 +219,7 @@ For each record, in order: find or create the GameObject under the Level, parent
 - **A closed shape or ramp:**
   - `MeshFilter` + `MeshRenderer` with submeshes [body, floor] and materials [color, color-floor];
   - a collider: `BoxCollider` for an untilted, untapered, unbevelled, uncut box volume, else a `MeshCollider` of body + floor.
-- **An instance or item:** a prefab instance of the generated entity prefab. With `cutBody`, the one child's `MeshFilter.sharedMesh` is overridden with the cut mesh.
+- **An instance or item:** a prefab instance of the generated entity prefab. With `cuts`, each cut child's `MeshFilter.sharedMesh` is overridden with its cut mesh, and its collider becomes a `MeshCollider` of it.
 - **A group or array:** an empty.
 - **A note or line:** the `OrlaNote` / `OrlaLine` component.
 
@@ -343,7 +343,7 @@ The gizmos, keep-in-builds, **Claim as ProBuilder** and lightmap UVs. Unity (Orl
   - `bakeShape` per type matches today's `useShapeGeometry` (same arrays);
   - a room cut by a door has the door's hole, and its floor is only cut by a floor hole;
   - an instance baked around its pivot, placed by its transform, equals its expanded shapes' bake (scale and tilt included);
-  - a cut item gets `cutBody` and an uncut one doesn't;
+  - a cut item gets `cuts` and an uncut one doesn't;
   - the z flip (§4) for a tilted, turned box and a ramp: corners match, and normals point outward (positive signed volume after the winding swap);
   - the manifest round-trips through `JSON.parse` with every field present on every record;
   - hashes change when a shape's geometry or its cuts change, and not when only its name does.
@@ -377,15 +377,76 @@ Decided with Orlando:
 4. **Ready-made materials, no edges:** made by code on first sync from URP Lit (palette and tile), rather than a custom shader, so they match the editor and survive URP updates. The editor's outlines aren't exported.
 5. **Code files, not a package:** Orlando imports them to test and makes the package later. Chisel is out of the picture.
 6. **Nothing flows back** from Unity to orlablocks. Claims and drift protect Unity's work instead.
+7. **Export has two kinds** (Orlando, after using 15.2): Unity, into a folder chosen with the system's folder dialog (one per project, a folder per scene in it), and a 3D file (`.glb`) saved with a save dialog.
 
 Proposed in this plan, to confirm:
 
-7. **The export is in Unity's frame** (z flipped in TypeScript), so the C# only copies numbers. A `.glb` export later would flip back.
-8. **The export folder sits outside `Assets/`** and is committed with the Unity project. Only the human sets it; the agent can export to it but not choose it.
-9. **Group and array pivots** are their bounds' bottom center, so they're easy to move in Unity once claimed.
-10. **Hidden nodes arrive disabled,** not left out.
-11. **Generated entity prefabs are overwritten** by syncs. Unity additions to an entity go in a Prefab Variant mapped in `OrlaMappings`.
+8. **The export is in Unity's frame** (z flipped in TypeScript), so the C# only copies numbers. The `.glb` is written from it, flipped back.
+9. **The export folder sits outside `Assets/`** and is committed with the Unity project. It's one folder per project, with a folder per scene named by its ID. Only the human sets it, in the system's folder dialog; the agent can export to it but not choose it.
+10. **Group and array pivots** are their bounds' bottom center, so they're easy to move in Unity once claimed.
+11. **Hidden nodes arrive disabled,** not left out.
+12. **Generated entity prefabs are overwritten** by syncs. Unity additions to an entity go in a Prefab Variant mapped in `OrlaMappings`.
 
 ---
 
 ## 16. Progress
+
+- **2026-09-30:** **15.1 built.**
+  - **`src/shared/bake.ts`:** `bakeShape(shape, cuts)` → `{ body, floor }` as plain arrays (unshared triangles, UVs, creased normals), cached per shape object and its cuts. `drawMesh`, `uvOffset` and `toBufferGeometry` are the steps `useShapeGeometry` took, moved as they were. The editor now draws from them, and makes the edges from the body as before.
+  - **The boolean library in halves:**
+    - `src/shared/csg.ts` holds `holeInFrameOf`, `subtract` and `cutParts` over the module `setManifold` hands it;
+    - `src/web/csg.ts` loads it in the browser;
+    - `src/server/manifold.ts` loads it in Node on first use.
+    - `scripts/build-server.mjs` copies `manifold.wasm` next to the bundled `main.js`.
+  - **`src/shared/bakeScene.ts`:** `bakeScene(nodes)` gives the scene's own shapes, each entity once around its pivot (cut by its own holes, by the rule `inEntityRoot` now shares from `entities.ts`), and **variants** for instances and items whose real cuts differ from their entity's, cut in the definition's frame. Holes are baked uncut, and hidden holes cut nothing.
+  - **Found on the way:** a tilted instance's shapes are rounded to 0.01 m and 0.01° (`tiltShape`), so a Unity transform, which is exact, can sit up to about 1 cm from what the editor draws. That's fine for a blockout.
+  - Tests: `bake.test.ts` (4; 532 in all):
+    - the bake equals the editor's old steps for a room, a tapered rotated volume, a tilted tapered cylinder, a free-form room and a stepped ramp;
+    - a door cuts a room's walls and not its floor, and the cache hits;
+    - an entity baked around its pivot, placed by a scaled, tilted instance's transform, lands on the instance's own shapes;
+    - a scene hole gives a variant for the one shape it crosses, and a hidden hole gives none.
+  - **Browser (Orlando):** the editor should draw exactly as before: a room with a door, a tilted tapered volume, a ramp, an array with a cut item.
+- **2026-09-30:** **15.2 built.**
+  - **`src/server/export.ts`:** `buildExport` makes the manifest and binary, and `exportScene` writes them.
+    - The binary goes first, under a name with its hash; then `level.json` through a rename. The previous binary is kept and older ones are deleted.
+    - Meshes are welded (same position, normal and UV) and written once each: 300 shapes of a few sizes came to 12 meshes.
+    - `placementOf` is §4's pivots. Plain box volumes get box colliders; holes get none.
+    - A missing entity is exported as a red block entity, with a warning.
+  - **Changed while building:** an instance's cut meshes are a `cuts` list (a shape ID and its meshes, one per cut shape), not `cutBody` / `cutFloor`, since a hole can cut several of an entity's shapes. The palette is sRGB hex only. A line's points are its sampled curve (the handles applied), relative to its first point.
+  - **`src/server/exports.ts`:**
+    - each scene's folder and auto setting, in `project.json`'s `exports`;
+    - **Export now**, for the human and for the agent's scene (`export_scene`);
+    - exporting 1 s after the last step (the workspace's new `onSceneChanged`: the human's steps, the agent's own store's, and opening a scene, e.g. back from editing an entity);
+    - never two exports of one scene at once.
+    - A scene that isn't in a store is read from disk (`sceneSnapshot`).
+  - **The editor:** an export button in the top bar (highlighted while exporting on every step) opens **Export to Unity**: the folder, **Export on every step**, **Export now**, and the last export's summary or error.
+  - **The agent:** `export_scene`, and `get_guide export` (IDs are how Unity keeps its additions, so move rather than redraw; name entities and tag things for the mappings).
+  - MCP version 0.0.39. Tests: `export.test.ts` (8; 540 in all):
+    - a turned, tilted, tapered box lands where it is in Unity's frame, with outward faces;
+    - free-form and ramp pivots;
+    - group-relative positions and box colliders;
+    - entities, instances, items and a variant;
+    - every field on every record, and hashes;
+    - missing entities;
+    - writing and pruning binaries;
+    - bad folders.
+  - **`scripts/check-15.mjs 15.2`** (spare server): the folder rules, the agent's export and what it wrote, and a human step exported after a second. The speed check: 300 shapes and 200 items export in 47 ms the first time, and in 29 ms after one step. The bundled server (`dist/server`) exports with `node_modules`' wasm hidden, so the copied `manifold.wasm` is what it loads.
+  - **Browser (Orlando):** in **Export to Unity**, set a folder: a relative one is refused. **Export now** shows the summary. With **Export on every step**, move a shape: the time updates about a second later.
+- **2026-09-30:** From Orlando's first use of 15.2:
+  - **The dialog is now Export,** with two tabs:
+    - **Unity:** the project's folder, chosen with **Choose…** in the system's folder dialog, which the server opens (`src/server/picker.ts`). A browser can't give a folder's path, and the export runs on the server. Each scene exports into a folder named by its ID.
+    - **3D file (.glb):** **Save .glb…** opens the browser's save dialog and saves the open scene as one glTF binary.
+  - **Settings:** `project.json` now holds `unity: { dir, auto: [scene IDs] }`. That replaces 15.2's per-scene `exports`, which is dropped: a folder set that way has to be chosen again.
+  - **Messages:** `pick_export_folder`, `set_export_folder` (a path, for scripts; the dialog sends `pick_export_folder`) and `set_export_auto`. MCP version 0.0.40 (`export_scene`'s description changed).
+  - **`src/server/gltf.ts`:** `glbFromExport` writes the glb from the Unity export, flipped back:
+    - nodes in their groups, named `name (id)`, with extras;
+    - entity meshes shared by their instances;
+    - palette materials, a room's floor as its own primitive;
+    - holes, lines and hidden nodes left out, and notes as empties.
+    - `/api/export.glb` serves it.
+  - Tests: `gltf.test.ts` (2: a turned, tilted, tapered box's corners where orlablocks has them, groups, instances sharing a mesh; an instance's scale and turn) and `gltf.loader.test.ts` (1: three.js's GLTFLoader reads it, a room's walls and floor as two materials; 543 in all). `check-15.mjs 15.2`: the new folder rules and `/api/export.glb`.
+  - **Not tried:** the folder dialog itself (it would open on Orlando's screen; its AppleScript compiles), and opening the .glb in Blender.
+  - **Browser (Orlando):**
+    - **Export → Unity → Choose…** opens the macOS folder dialog in front of the browser, and the path shows with where this scene goes.
+    - **3D file → Save .glb…** opens Chrome's save dialog.
+    - The file opens in Blender with the groups and colors.

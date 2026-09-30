@@ -229,6 +229,9 @@ export function createWorkspace(data: DataDir) {
       })
     | null = null;
   const openedListeners = new Set<(open: OpenScene | null, restore?: EditorRestore) => void>();
+  // After a scene's step (the human's or the agent's own store) and when a scene opens: the export follows (15.2).
+  const sceneListeners = new Set<(project: string, scene: string) => void>();
+  const sceneChanged = (project: string, scene: string) => sceneListeners.forEach((l) => l(project, scene));
   const projectsListeners = new Set<(projects: ProjectSummary[]) => void>();
 
   const publicOpen = (): OpenScene | null =>
@@ -290,6 +293,7 @@ export function createWorkspace(data: DataDir) {
         humanLog.record(loggedStep(open.seq, step), store.getScene().nodes);
       }
       writeScene();
+      if (!open.entity) sceneChanged(open.project.id, open.scene.id);
     } catch (err) {
       console.error("Saving the scene failed", err);
       throw new SceneError(`The change was made but not saved: ${(err as Error).message}`);
@@ -521,6 +525,7 @@ export function createWorkspace(data: DataDir) {
         data.appendHistory(project, scene, lineOf(doc.seq, step));
         doc.log.record(loggedStep(doc.seq, step), own.getScene().nodes);
         writeAgentScene(doc);
+        sceneChanged(project, scene);
       } catch (err) {
         console.error("Saving the agent's scene failed", err);
         throw new SceneError(`The change was made but not saved: ${(err as Error).message}`);
@@ -598,9 +603,28 @@ export function createWorkspace(data: DataDir) {
     readOtherScenes();
     openedChanged(restoreOf());
     agentChanged();
+    sceneChanged(project, scene);
   };
 
   return {
+    /** After a step in a scene (in the human's store or the agent's own) and when a scene opens (15.2). */
+    onSceneChanged(listener: (project: string, scene: string) => void): () => void {
+      sceneListeners.add(listener);
+      return () => sceneListeners.delete(listener);
+    },
+
+    /**
+     * A scene of the open project as it is now (15.2: what an export writes): from the store that holds it, or from
+     * disk (every step is saved) while the human edits an entity or works in another scene.
+     */
+    sceneSnapshot(project: string, scene: string): { project: OpenScene["project"]; scene: OpenScene["scene"]; seq: number; nodes: SceneNode[] } {
+      if (!open || open.project.id !== project) throw new SceneError(`Only a scene of the open project can be exported.`);
+      if (!open.entity && open.scene.id === scene) return { project: open.project, scene: open.scene, seq: open.seq, nodes: store.getScene().nodes };
+      if (agentDoc && agentDoc.scene.id === scene) return { project: agentDoc.project, scene: agentDoc.scene, seq: agentDoc.seq, nodes: agentDoc.store.getScene().nodes };
+      const file = fileOp("The scene didn't load.", () => data.readScene(project, scene));
+      return { project: open.project, scene: { id: scene, name: file.name }, seq: file.seq, nodes: file.nodes };
+    },
+
     /** The store behind the open scene. Always exists (view and selection reports go to it even with nothing open). */
     store,
 

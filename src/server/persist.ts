@@ -280,8 +280,8 @@ export function openDataDir(root: string) {
       return readJson(path.join(projectDir(project), "project.json"), ProjectFileSchema);
     },
 
-    /** Changes a project's name and/or description. Throws (writing nothing) if `project.json` doesn't load. */
-    updateProject(project: string, changes: { name?: string; description?: string }): void {
+    /** Changes a project's name, description or export folders. Throws (writing nothing) if `project.json` doesn't load. */
+    updateProject(project: string, changes: Partial<Omit<ProjectFile, "createdAt">>): void {
       const file = readJson(path.join(projectDir(project), "project.json"), ProjectFileSchema);
       writeJson(path.join(projectDir(project), "project.json"), { ...file, ...changes });
     },

@@ -30,6 +30,7 @@ import { isGroup, isShape } from "../shared/tree";
 import { GUIDE_TOPICS, guideTopic, INSTRUCTIONS, topicList } from "./guide";
 import { describeScene, entitySize, findNodes, FULL_SCENE_MAX, MAX_MATCHES } from "./outline";
 import { definitionOf } from "../shared/entities";
+import type { Exports } from "./exports";
 import { prepareRender, type RenderBroker } from "./render";
 import { compactNodes } from "./results";
 import { checkSight } from "../shared/sight";
@@ -114,7 +115,7 @@ const RENDER_INPUT = {
   gap: R.gap.describe("slice: how wide a gap between two solids is still reported, in meters (default 2)"),
 };
 
-function buildServer(workspace: Workspace, renders: RenderBroker) {
+function buildServer(workspace: Workspace, renders: RenderBroker, exports: Exports) {
   /** A result with the scene's hole warnings added (holes that cut nothing), when there are any. */
   const warned = <T extends object>(result: T) => {
     const own = (result as { warnings?: string[] }).warnings ?? [];
@@ -150,7 +151,7 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
   /** Runs an edit tool's body for real, or as a dry run (14.2): the same result, marked, with nothing changed. */
   const edit = <T extends object>(dryRun: boolean | undefined, run: () => T) =>
     dryRun ? { dryRun: "nothing was changed: this is what the call would do", ...store().dryRun(run) } : run();
-  const server = new McpServer({ name: "orlablocks", version: "0.0.38" }, { instructions: INSTRUCTIONS });
+  const server = new McpServer({ name: "orlablocks", version: "0.0.40" }, { instructions: INSTRUCTIONS });
   // Every tool reads or edits the open scene, and fails with a clear message while nothing is open.
   // The agent's scene (14.5): its own while the human is in another one, else the human's open document.
   const store = () => workspace.requireAgentScene();
@@ -809,6 +810,25 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
   );
 
   server.registerTool(
+    "export_scene",
+    {
+      title: "Export scene",
+      description:
+        "Export your scene for Unity now, into its own folder (named by the scene's ID) in the folder the human chose in " +
+        "the editor (Export → Unity): every shape baked as the " +
+        "editor draws it (holes cut), each entity once, instances and array items as its placements, notes and lines. " +
+        "The human syncs it into Unity. Returns where and what was written (counts, size, time) and any warnings. You can't " +
+        "choose the folder: with none chosen, ask the human to choose one. get_guide export says what reaches Unity.",
+      inputSchema: {},
+    },
+    async () => {
+      store();
+      const s = await exports.exportAgent();
+      return json({ ...s, bytes: undefined, size: `${(s.bytes / 1024).toFixed(0)} kB`, ...(s.warnings.length === 0 ? { warnings: undefined } : {}) });
+    },
+  );
+
+  server.registerTool(
     "get_shots",
     {
       title: "Get shots",
@@ -858,9 +878,9 @@ function buildServer(workspace: Workspace, renders: RenderBroker) {
 }
 
 /** Stateless Streamable HTTP: a fresh server + transport per request, all sharing one scene store(). */
-export function mountMcp(app: Express, workspace: Workspace, renders: RenderBroker) {
+export function mountMcp(app: Express, workspace: Workspace, renders: RenderBroker, exports: Exports) {
   app.post("/mcp", async (req, res) => {
-    const server = buildServer(workspace, renders);
+    const server = buildServer(workspace, renders, exports);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     res.on("close", () => {
       transport.close();

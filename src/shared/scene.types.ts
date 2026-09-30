@@ -1589,8 +1589,44 @@ export const ClientMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("tab"), visible: z.boolean(), focused: z.boolean() }),
   // A render the server asked for (09.3): its image and text, or why it failed.
   z.object({ type: z.literal("rendered"), requestId: z.number().int(), result: RenderResultSchema.optional(), error: z.string().optional() }),
+  // The Unity export (15.2): pick the project's folder (the server opens the system's folder dialog), whether the
+  // open scene is exported after every step, and Export now.
+  z.object({ type: z.literal("pick_export_folder") }),
+  // The folder as a path ("" clears it): what the dialog sets, for scripts and tools with no dialog to click.
+  z.object({ type: z.literal("set_export_folder"), dir: z.string().max(1000) }),
+  z.object({ type: z.literal("set_export_auto"), auto: z.boolean() }),
+  z.object({ type: z.literal("export_scene") }),
 ]);
 export type ClientMessage = z.input<typeof ClientMessageSchema>;
+
+/** What an export wrote (15.2): node counts by type, array items, entities, distinct meshes, the binary's size. */
+export type ExportSummary = {
+  dir: string;
+  exportId: number;
+  nodes: Record<string, number>;
+  items: number;
+  entities: number;
+  meshes: number;
+  bytes: number;
+  ms: number;
+  warnings: string[];
+};
+
+/**
+ * The open scene's Unity export (15.2): the project's folder ("" when none is picked), the scene's own folder in it,
+ * whether the scene is exported after every step, whether a folder dialog or an export is running, and how the last
+ * export went (this server's run).
+ */
+export type ExportStatus = {
+  project: string;
+  scene: string;
+  dir: string;
+  sceneDir: string;
+  auto: boolean;
+  picking: boolean;
+  running: boolean;
+  last?: { at: string; summary?: ExportSummary; error?: string };
+};
 
 /**
  * Work with agent (14.5): the scene the human invited the agent to, its name, and whether the agent has it in a store
@@ -1616,4 +1652,6 @@ export type ServerMessage =
   // The agent's render_view (09.3), for this tab to render and answer with `rendered`.
   | { type: "render"; requestId: number; job: RenderJob }
   // The scene the agent works in (14.5): on connect and when it changes; null when it follows the human's.
-  | { type: "agent"; agent: AgentInfo | null };
+  | { type: "agent"; agent: AgentInfo | null }
+  // The open scene's export for Unity (15.2): on connect, when a scene opens, and when its settings or an export change.
+  | { type: "export"; export: ExportStatus | null };

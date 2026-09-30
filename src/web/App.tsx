@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps } from "react";
-import { ArrowLeft, BookOpen, ChevronDown, Map as MapIcon, Package } from "lucide-react";
+import { ArrowLeft, BookOpen, ChevronDown, Map as MapIcon, Package, Upload } from "lucide-react";
 import {
   DEFAULT_COLOR,
   DEFAULT_LINE_COLOR,
@@ -50,6 +50,7 @@ import { ProjectPicker, Welcome } from "./ProjectPicker";
 import { ContextualBar, EDIT_ARRAY_HINT, EDIT_POINTS_HINT, HINTS, TOOLS, ToolBar, ViewBar, WalkBar } from "./ToolBar";
 import { useScene, type RenderHandler } from "./useScene";
 import { AgentChip } from "./AgentChip";
+import { ExportDialog } from "./ExportDialog";
 import { Viewport, type CursorPoint, type KindFields, type LineStyle, type RampStyle, type Tool, type ViewportApi } from "./Viewport";
 import { blobToBase64 } from "./capture";
 import { ShotsPanel, ShutterFlash } from "./ShotsPanel";
@@ -239,7 +240,8 @@ function linksOf(node: SceneNode | null | undefined, nodes: SceneNode[], send: (
 export function App() {
   // The agent's renders are drawn by the view (09.3).
   const renderer = useRef<RenderHandler | null>(null);
-  const { scene, history, seq, shots, player: savedPlayer, agent, projects, open, restore, library: libraryState, connected, error, clearError, send } = useScene(renderer);
+  const { scene, history, seq, shots, player: savedPlayer, agent, exportStatus, projects, open, restore, library: libraryState, connected, error, clearError, send } =
+    useScene(renderer);
   const library = libraryState.library;
   // The Library panel, open or not, remembered per viewer.
   const [libraryOpen, setLibraryOpenState] = useState(() => {
@@ -258,6 +260,8 @@ export function App() {
     }
   };
   const [pickerOpen, setPickerOpen] = useState(false);
+  // The Export to Unity dialog (15.2).
+  const [exportOpen, setExportOpen] = useState(false);
   const [view, setView] = useState<View>(DEFAULT_VIEW);
   const [camera, setCamera] = useState<CameraState | null>(null);
   const [cursor, setCursor] = useState<CursorPoint | null>(null);
@@ -439,8 +443,8 @@ export function App() {
   useEffect(() => {
     if (followPick && !(selection.length === 1 && selection[0] === followPick)) setFollowPick(null);
   }, [followPick, selection]);
-  const state = useRef({ nodes, selection, context, open, pickerOpen, view, visible, isolated, placing, followPick });
-  state.current = { nodes, selection, context, open, pickerOpen, view, visible, isolated, placing, followPick };
+  const state = useRef({ nodes, selection, context, open, pickerOpen: pickerOpen || exportOpen, view, visible, isolated, placing, followPick });
+  state.current = { nodes, selection, context, open, pickerOpen: pickerOpen || exportOpen, view, visible, isolated, placing, followPick };
 
   /** Isolates a node (null ends it). Isolating a group enters it, so what's drawn next goes in it. */
   const isolate = useCallback(
@@ -1202,6 +1206,17 @@ export function App() {
           >
             <BookOpen size={14} />
           </button>
+          <button
+            type="button"
+            className={exportStatus?.auto ? "library-toggle active" : "library-toggle"}
+            title={exportStatus?.auto ? "Export: to Unity after every step" : "Export: to Unity, or as a 3D file"}
+            onClick={() => {
+              clearError();
+              setExportOpen(true);
+            }}
+          >
+            <Upload size={14} />
+          </button>
           <AgentChip
             agent={agent}
             here={!!agent && !editingEntity && agent.project === open.project.id && agent.scene === open.scene.id}
@@ -1315,6 +1330,7 @@ export function App() {
           agent={agent}
         />
       )}
+      {open && exportOpen && exportStatus && <ExportDialog status={exportStatus} error={error} send={send} onClose={() => setExportOpen(false)} />}
     </div>
   );
 }

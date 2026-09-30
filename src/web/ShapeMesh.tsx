@@ -1,11 +1,10 @@
 import { useEffect, useMemo } from "react";
 import * as THREE from "three";
-import { toCreasedNormals } from "three/examples/jsm/utils/BufferGeometryUtils.js";
-import { isFootprinted, localFootprint, shapeFrame, wallOf } from "../shared/geometry";
-import { cutsFloor } from "../shared/holes";
-import { shapeMesh, type Mesh } from "../shared/mesh";
+import { drawMesh, toBufferGeometry, uvOffset } from "../shared/bake";
+import { cutParts } from "../shared/csg";
+import { localFootprint, shapeFrame, wallOf } from "../shared/geometry";
 import { PALETTE, type ClosedShape, type ShapeColor, type Solid } from "../shared/scene.types";
-import { holeInFrameOf, subtract, useManifold } from "./csg";
+import { useManifold } from "./csg";
 import { VIEW_ACCENT } from "../ui/viewColors";
 
 type Props = {
@@ -109,56 +108,6 @@ export function colorMaterials(color: ShapeColor): ColorMaterials {
 }
 
 /**
- * Shape-aligned UVs (1 unit = 1 m), picked per face from its dominant normal axis in the shape's own frame, so
- * tiles follow its edges. `ox, oy, oz` offsets them (see `uvOffset`).
- */
-function applyBoxUVs(geometry: THREE.BufferGeometry, ox: number, oy: number, oz: number) {
-  const pos = geometry.getAttribute("position");
-  const nrm = geometry.getAttribute("normal");
-  const uv = new Float32Array(pos.count * 2);
-  for (let i = 0; i < pos.count; i++) {
-    const x = pos.getX(i) + ox;
-    const y = pos.getY(i) + oy;
-    const z = pos.getZ(i) + oz;
-    const nx = Math.abs(nrm.getX(i));
-    const ny = Math.abs(nrm.getY(i));
-    const nz = Math.abs(nrm.getZ(i));
-    const [u, v] = ny >= nx && ny >= nz ? [x, z] : nx >= nz ? [z, y] : [x, y];
-    uv[i * 2] = u;
-    uv[i * 2 + 1] = v;
-  }
-  geometry.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
-  return geometry;
-}
-
-/** A shared mesh as three.js geometry, unshared per face (so each face gets its own flat normal, for the UVs). */
-function toGeometry(mesh: Mesh) {
-  const indexed = new THREE.BufferGeometry();
-  indexed.setAttribute("position", new THREE.Float32BufferAttribute(mesh.positions, 3));
-  indexed.setIndex(mesh.indices);
-  const geometry = indexed.toNonIndexed();
-  indexed.dispose();
-  geometry.computeVertexNormals();
-  return geometry;
-}
-
-/**
- * Curved walls are many flat facets: faces that meet at less than this angle share their normals, so a round
- * tower or a curved cave wall lights as round, while a box's (or a hexagon's) corners stay sharp.
- */
-const CREASE = (30 * Math.PI) / 180;
-
-/**
- * The UV offset: the frame's world position for an unrotated shape (its tiles line up with the ground grid and
- * with other shapes), its half size for a rotated one (tiles start at a corner). A free-form's frame is the
- * world's, so its tiles always line up with the grid.
- */
-function uvOffset(shape: Solid): [number, number] {
-  if (!isFootprinted(shape)) return [0, 0];
-  return shape.rotation === 0 ? [shape.x, shape.z] : [shape.width / 2, shape.depth / 2];
-}
-
-/**
  * Graybox rendering of a closed shape, from its meshes (`shapeMesh`), minus the holes that cut it. A room is a floor
  * slab plus thick walls (the region between the footprint and the footprint shrunk by the wall thickness), with no
  * ceiling, so you see in from above. A volume is the footprint extruded to its height. Both cast and receive shadows
@@ -259,19 +208,9 @@ export function useShapeGeometry(shape: Solid, cuts?: ClosedShape[]) {
 
   // An outline with no area (a stored shape is never one, but a preview can be) has no meshes: nothing to draw.
   // Rooms too narrow to have an inside come out as solid blocks (walls with no inner ring).
-  const parts = useMemo(() => {
-    const p = shapeMesh(shape);
-    if (!cutKey || !cuts) return p;
-    const holes = cuts.map((h) => ({ hole: h, mesh: holeInFrameOf(shape, h) })).filter((h): h is { hole: ClosedShape; mesh: Mesh } => h.mesh !== null);
-    const floorHoles = shape.type === "ramp" ? [] : holes.filter((h) => cutsFloor(h.hole, shape)).map((h) => h.mesh);
-    return {
-      body: p.body && subtract(p.body, holes.map((h) => h.mesh)),
-      floor: p.floor && (floorHoles.length > 0 ? subtract(p.floor, floorHoles) : p.floor),
-    };
-  }, [key, cutKey]);
-  // UVs pick their plane from the flat normals, so they come first.
-  const solid = useMemo(() => (parts.body ? toCreasedNormals(applyBoxUVs(toGeometry(parts.body), ox, y, oz), CREASE) : null), [parts]);
-  const floor = useMemo(() => (parts.floor ? applyBoxUVs(toGeometry(parts.floor), ox, y, oz) : null), [parts]);
+  const parts = useMemo(() => cutParts(shape, cutKey ? cuts : undefined), [key, cutKey]);
+  const solid = useMemo(() => (parts.body ? toBufferGeometry(drawMesh(parts.body, ox, y, oz, true)) : null), [parts]);
+  const floor = useMemo(() => (parts.floor ? toBufferGeometry(drawMesh(parts.floor, ox, y, oz, false)) : null), [parts]);
 
   const edges = useMemo(() => (solid ? new THREE.EdgesGeometry(solid, 15) : null), [solid]);
 

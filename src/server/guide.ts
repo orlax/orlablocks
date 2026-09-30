@@ -19,7 +19,7 @@ import { FULL_SCENE_MAX } from "./outline";
  * topic, which `get_guide` returns on demand, so a session only pays for the topics it uses.
  */
 
-export const GUIDE_TOPICS = ["design", "review", "shapes", "volumes", "holes", "ramps", "lines", "notes", "groups", "library", "entities", "arrays"] as const;
+export const GUIDE_TOPICS = ["design", "review", "shapes", "volumes", "holes", "ramps", "lines", "notes", "groups", "library", "entities", "arrays", "export"] as const;
 export type GuideTopic = (typeof GUIDE_TOPICS)[number];
 
 /** One line per topic, for the core and for get_guide's description. */
@@ -36,6 +36,7 @@ const TOPIC_SUMMARIES: Record<GuideTopic, string> = {
   library: "the project's tags (#name) and skills (@name): what they mean, tagging nodes, referring to them",
   entities: "entities (prefabs): making them, placing instances, swapping, detaching; holes in and around them",
   arrays: "arrays: one node repeating entities along a path, around a circle, in a grid or scattered (battlements, windows, pillars, forests)",
+  export: "exporting a scene to Unity: what reaches it, and naming and tagging so the human's mappings work",
 };
 
 /**
@@ -356,6 +357,17 @@ const GUIDE: Record<Exclude<GuideTopic, "design">, string> = {
     "the camera's view): copy a wing with move_nodes, then mirror the copy, instead of computing reflected positions " +
     "by hand. rotate_nodes turns around the bounds' center by default and returns that `pivot`: pass it back to turn " +
     "something back exactly.",
+  export:
+    "EXPORT (export_scene) writes your scene for Unity into a folder of its own (the scene's ID) in the folder the " +
+    "human chose in the editor (Export → Unity; you can't choose it, and without one ask the human). The human may " +
+    "also have it export after every step, or save the scene as a .glb for Blender. In Unity each " +
+    "node becomes a GameObject named `name (id)` under the level, and a sync matches them by ID, so an ID is how a " +
+    "thing keeps what the human added to it in Unity: move or change a node rather than removing and redrawing it. " +
+    "Shapes arrive as drawn (holes cut, a collider on each), with no outlines. Each entity becomes one generated prefab " +
+    "and its instances and array items prefab instances; the human maps an entity to a real prefab (a ring to their " +
+    "RaceRing), and a tag to a Unity layer, tag or component (#boundary to a Boundary layer), so give entities clear " +
+    "names and tag what the game treats specially. Groups keep their description. Notes and lines arrive as editor-only " +
+    "gizmos (never in a build), and hidden nodes arrive disabled.",
 };
 
 /** A topic's text; `design` is the open project's own guide. */
