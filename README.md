@@ -14,6 +14,7 @@ The human draws in a browser editor. The agent (Claude Code, or any MCP client) 
 - **Notes**: post-its pinned in the scene, marked open or done. Open notes tell the agent what the human wants.
 - **Library** (per project): `#tags` (properties), `@skills` (player abilities) and a markdown **design guide** (taste, game facts, house rules).
 - **Projects → scenes**, saved to disk on every edit.
+- **Export to Unity**, kept in sync as you keep designing, or to a `.glb` for Blender and other tools.
 
 ## Download
 
@@ -59,6 +60,27 @@ Data is saved in `./data` (or set `DATA_DIR`). A lock file stops two servers fro
 
 Selecting nodes in the editor tells the agent what "this" means.
 
+## Export to Unity and Blender
+
+The top bar's **Export** button has two tabs:
+
+- **Unity:** choose a folder next to your Unity project's `Assets/` (not inside it). Each scene exports into a folder of its own there. Export now, or turn on **Export this scene on every step**. The agent can export too (`export_scene`), but only into the folder you chose.
+- **3D file (.glb):** saves the scene as one glTF binary, which Blender, Godot and most 3D tools open. It keeps the groups, names, and palette colors, and instances share their entity's meshes.
+
+On the Unity side (Unity 6, URP), copy [`unity/Orlablocks`](unity/Orlablocks) into your project's `Assets/`. Then choose **GameObject → Orlablocks Level** and pick a scene's export folder. The level is built as a blockout:
+
+- one GameObject per shape, with its holes cut, a collider, and matte materials with the 1 m tile;
+- entities as prefabs, with their instances as prefab instances;
+- notes and lines as editor-only gizmos.
+
+Syncing again changes only what changed in orlablocks:
+
+- **What you add in Unity stays.** Anything you move there is left alone until you revert or claim it, and a claimed object is yours for good.
+- **Mappings** turn an entity into your own prefab, a tag into a layer or components, and a color into your materials.
+- The built-in **`#no-collisions`** tag leaves decoration without colliders.
+
+[`unity/Orlablocks/README.md`](unity/Orlablocks/README.md) has the details, and [`plans/15-unity-export`](plans/15-unity-export) the design.
+
 ## Editor keys
 
 | Key | Tool | | Key | Action |
@@ -86,6 +108,7 @@ npm run typecheck
 - `src/web/`: React + three.js editor.
 - `src/ui/`: the theme, fonts and wordmark shared by the editor and the Control Panel.
 - `src/control-panel/` and `src-tauri/`: the desktop app (a Tauri 2 window).
+- `unity/Orlablocks/`: the Unity side of the export (C#, copied into a Unity project). `scripts/compile-unity.sh` compiles it against an installed Unity's own DLLs, without starting Unity.
 - `plans/`: design docs, one per phase, kept as the project's development record. `GLOSSARY.md`: the terms used.
 
 ### Build the desktop app
