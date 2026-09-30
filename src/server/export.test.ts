@@ -88,12 +88,26 @@ describe("the Unity export", () => {
     expect(rr.euler).toEqual([0, 0, 0]);
   });
 
-  it("places children relative to their group's bottom center, and fits plain box volumes with box colliders", () => {
+  it("puts a group at its parent's origin, so its children keep their places, and fits plain box volumes with box colliders", () => {
     const { manifest } = build([group("group_1", { description: "the hall" }), box("box_2", { parent: "group_1", x: 10, z: 4 }), box("box_3", { parent: "group_1", x: 14, z: 4, y: 1 })]);
     const [g, a, b] = manifest.nodes;
-    expect(g).toMatchObject({ id: "group_1", position: [12, 0, -4], description: "the hall" });
-    expect(a).toMatchObject({ parent: "group_1", position: [-2, 0, 0], collider: "box", boxCenter: [0, 1.5, 0], boxSize: [2, 3, 1] });
-    expect(b.position).toEqual([2, 1, 0]);
+    expect(g).toMatchObject({ id: "group_1", position: [0, 0, 0], description: "the hall" });
+    expect(a).toMatchObject({ parent: "group_1", position: [10, 0, -4], collider: "box", boxCenter: [0, 1.5, 0], boxSize: [2, 3, 1] });
+    expect(b.position).toEqual([14, 1, -4]);
+  });
+
+  it("gives every record a rev that changes only when the record does", () => {
+    const nodes = (x: number) => [group("group_1"), box("box_2", { parent: "group_1", x }), box("box_3", { parent: "group_1", x: 14 })];
+    const before = build(nodes(10)).manifest.nodes;
+    const after = build(nodes(11)).manifest.nodes;
+    const rev = (list: NodeRecord[], id: string) => list.find((r) => r.id === id)!.rev;
+    expect(rev(before, "box_2")).not.toBe(rev(after, "box_2"));
+    // Moving one member changes nothing else: not its group, not its sibling.
+    expect(rev(before, "group_1")).toBe(rev(after, "group_1"));
+    expect(rev(before, "box_3")).toBe(rev(after, "box_3"));
+    const renamed = build([group("group_1"), box("box_2", { parent: "group_1", x: 10, name: "pillar" }), box("box_3", { parent: "group_1", x: 14 })]).manifest.nodes;
+    expect(rev(renamed, "box_2")).not.toBe(rev(before, "box_2"));
+    expect(renamed.find((r) => r.id === "box_2")!.hash).toBe(before.find((r) => r.id === "box_2")!.hash);
   });
 
   it("writes each entity once, instances and items with their transforms, and a variant where a hole cuts one", () => {
@@ -114,8 +128,8 @@ describe("the Unity export", () => {
     expect(byId("hole_1")).toMatchObject({ collider: "none", kind: "hole" });
     const items = manifest.nodes.filter((r) => r.type === "item");
     expect(items.map((i) => [i.id, i.parent])).toEqual([["array_1/0", "array_1"], ["array_1/1", "array_1"], ["array_1/2", "array_1"]]);
-    // The array's pivot is its bounds' bottom center (x 20..26): its items sit around it.
-    expect(items.map((i) => i.position[0])).toEqual([-3, 0, 3]);
+    // The array is at its parent's origin: its items are where they are.
+    expect(items.map((i) => i.position[0])).toEqual([20, 23, 26]);
   });
 
   it("has every field on every record, and hashes what the meshes are made of, not names", () => {

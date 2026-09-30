@@ -121,7 +121,7 @@ orlablocks is right-handed (three.js), with y up, north −z and east +x. Unity 
 - **A box, cylinder or tilted free-form:** its bottom center, as `shapeMatrix` (`ShapeMesh.tsx`) places it: the tilt about the center is decomposed into one position and one rotation.
 - **An untilted free-form or a ramp** (their meshes are in world coordinates): the bottom center of their bounds. The mesh is offset by it.
 - **An instance or item:** its pivot (`x, y, z`), with its rotation, tilt and scale. Its shapes are the entity prefab's children.
-- **A group or array:** the bottom center of its bounds, with no rotation. Its children are placed relative to it.
+- **A group or array:** its parent's origin, with no rotation (15.4). A pivot from its bounds would move whenever a member did, and every other member's local position with it.
 - **A note:** its pin. **A line:** its first point.
 
 ---
@@ -254,7 +254,7 @@ Then, for each `OrlaNode` under the level with no record:
 
 ### Knowing there's something new
 
-- `Watcher.cs` keeps a `FileSystemWatcher` on each open Level's export folder and checks `level.json`'s `exportId` on the editor's main thread (`EditorApplication.update`).
+- `Watcher.cs` looks at each open Level's `level.json` about once a second: its modification time, then the `exportId` at its start (`Manifest.PeekExportId`, without reading the whole file). That's simpler than a `FileSystemWatcher` and just as quick for this.
 - A newer export shows **Update available** in the Level's inspector and as a small Scene-view overlay.
 - With the Level's **Auto sync** on, it syncs, at most once a second and never in Play mode.
 - A sync of an older or equal `exportId` does nothing unless forced (**Sync** always syncs).
@@ -383,7 +383,7 @@ Proposed in this plan, to confirm:
 
 8. **The export is in Unity's frame** (z flipped in TypeScript), so the C# only copies numbers. The `.glb` is written from it, flipped back.
 9. **The export folder sits outside `Assets/`** and is committed with the Unity project. It's one folder per project, with a folder per scene named by its ID. Only the human sets it, in the system's folder dialog; the agent can export to it but not choose it.
-10. **Group and array pivots** are their bounds' bottom center, so they're easy to move in Unity once claimed.
+10. **Group and array pivots are at their parent's origin** (changed in 15.4 from their bounds' bottom center, which made one member's move change all its siblings' records). A claimed group can be re-pivoted in Unity.
 11. **Hidden nodes arrive disabled,** not left out.
 12. **Generated entity prefabs are overwritten** by syncs. Unity additions to an entity go in a Prefab Variant mapped in `OrlaMappings`.
 
@@ -450,3 +450,51 @@ Proposed in this plan, to confirm:
     - **Export → Unity → Choose…** opens the macOS folder dialog in front of the browser, and the path shows with where this scene goes.
     - **3D file → Save .glb…** opens Chrome's save dialog.
     - The file opens in Blender with the groups and colors.
+- **2026-09-30:** **15.3 written** (Orlando's check in Unity is next).
+  - **`unity/Orlablocks/Runtime`** (`Orlablocks.Runtime`):
+    - `OrlaLevel`: the scene's folder and the last sync;
+    - `OrlaNode`: ID, type, kind, color, entity, tags, description, hash;
+    - `OrlaNote` and `OrlaLine`, with simple gizmos: a flag, a polyline (labels and arrows are 15.6);
+    - `OrlaMeshes`: the main object of a `.meshes.asset`.
+  - **`unity/Orlablocks/Editor`** (`Orlablocks.Editor`):
+    - `Manifest.cs`: `level.json` for JsonUtility, and the binary reader, a room's walls and floor as two submeshes;
+    - `Look.cs`: the tile drawn by code as the editor draws it, and `orla-<color>` / `-floor` URP Lit materials, matte, made only if missing;
+    - `Assets.cs`: the generated folders, and `MeshStore`: meshes as sub-assets named by the export's hash, reused when unchanged and pruned when unused;
+    - `Sync.cs`: entity prefabs, rebuilt only when the entity's hash changes, then the Level's objects in one undo step;
+    - `OrlaLevelEditor.cs`: **Choose…** (Unity's folder dialog, which warns when it's given the project's folder instead of a scene's), **Sync**, **Rebuild materials**, the report, and **GameObject → Orlablocks Level**, which asks for the folder and syncs.
+  - **Decided while writing:**
+    - A cut instance child's box collider is disabled and a mesh collider added, since a prefab instance's component can't simply be removed.
+    - Holes keep a `MeshFilter` (for 15.6's gizmo) with no renderer or collider.
+    - Static flags are batching, occluder, occludee and reflection probe. Navigation static is deprecated in Unity 6 (NavMesh is the AI Navigation package's), and contributing to GI waits for lightmap UVs.
+  - **`scripts/compile-unity.sh`:** compiles both assemblies against Unity 6000.5.9f1's own DLLs with its bundled Roslyn, without starting Unity. It compiles with no errors and no warnings. Unity itself hasn't run the code.
+  - **Unity (Orlando):**
+    1. Copy `unity/Orlablocks` into `Assets/`: it compiles with no warnings.
+    2. **GameObject → Orlablocks Level**, pick a scene's folder: it syncs. Compare with the editor: shapes, colors, the tile, cut doors, instances as prefab instances, north as +z, a tilted peak leaning the same way, notes and lines as gizmos.
+    3. Change something in orlablocks, **Export now**, **Sync**: it's updated, and ⌘Z undoes the sync.
+- **2026-09-30:** **15.4 written** (Orlando's check in Unity is next).
+  - **orlablocks:**
+    - Every record has a `rev`, a hash of the whole record, so a sync leaves a record it already has alone.
+    - **Groups and arrays now sit at their parent's origin** (decision 10 changed). With a pivot from their bounds, moving one member changed every sibling's local position, and so its record.
+    - Tests: a move changes only that node's rev, not its group's or its sibling's, and a rename changes its rev but not its mesh hash (`export.test.ts`, 9; 544 in all).
+  - **`Sync.cs`:** a `Reconciler` brings the objects under a root in line with records, matched by `OrlaNode.id`:
+    - unchanged revs are skipped; changed records are updated in place (parent, transform, name, fields, mesh, materials, collider, static flags, notes and lines, active); new ones are made;
+    - an instance whose entity was swapped is made again, with what was added to it moved across;
+    - removed ones are destroyed, top-most first, with what was added in Unity (and anything claimed under them) moved to `Orphaned (<id>)`, where it was;
+    - a copy made in Unity (a second object with an ID) becomes the user's.
+    - **Entity prefabs are edited in place** (`LoadPrefabContents`, reconciled, saved), so their children keep their fileIDs and the instances' overrides keep pointing at them.
+    - **Cut children** are reverted to the prefab when no longer cut (`OrlaNode.cutShapes`).
+    - **Meshes still in use** (unchanged, claimed, orphaned) are kept when the store is pruned.
+    - **Drift:** a synced object's transform or parent differs from what the last sync set (kept on `OrlaNode`). It's left alone and listed. Objects from a 15.3 sync have no rev, so they take orlablocks' version once.
+    - **Up to date:** Auto sync does nothing when `level.json`'s `exportId` is the Level's. **Sync** always runs, and still skips what hasn't changed.
+  - **The Level's inspector:** Update available, **Auto sync**, and the lists **Moved in Unity** (Revert, Claim, and all of them at once), **Claimed, changed in orlablocks** and **Claimed, gone from orlablocks**.
+  - **`OrlaNode`'s inspector:** Claim or Unclaim, and Revert when it was moved. **GameObject → Orlablocks → Claim / Unclaim / Revert to orlablocks** works on a selection.
+  - **`Watcher.cs`:** checks each open Level about once a second, shows an overlay in the Scene view with **Sync** for Levels without Auto sync, and auto-syncs, never in Play mode or while compiling.
+  - **Found by `compile-unity.sh`:** Unity 6.5 makes `GetInstanceID` an error and deprecates the sort-mode overload of `FindObjectsByType`. The watcher keys by the Level object instead. It compiles with no errors and no warnings.
+  - **Unity (Orlando):**
+    1. Sync, move one ring in orlablocks, export, **Sync**: the report says 1 updated and the rest unchanged.
+    2. Add a child under a box, change the box in orlablocks, sync: the child is still there.
+    3. Nudge a peak in Unity, sync: it's under Moved in Unity. **Revert** puts it back; **Claim** keeps it, and a later change in orlablocks lists it as claimed and changed.
+    4. Remove a group with a Unity-added child in orlablocks, sync: the child is in `Orphaned (group_N)`.
+    5. Swap an instance's entity: it becomes the other prefab, and what you added to it moves across.
+    6. **Auto sync** on, with Export on every step in orlablocks: moving a shape shows up in Unity within a couple of seconds.
+    7. ⌘Z undoes a whole sync.

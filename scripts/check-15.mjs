@@ -50,9 +50,10 @@ const CHECKS = {
     const inRange = [...m.nodes, ...m.entities.flatMap((e) => e.nodes)].every((r) => [r.body, r.floor].every((g) => g.offset + g.vertices * 32 + g.indices * 4 <= m.meshes.bytes));
     check(inRange, "every mesh range is inside the binary");
     const hall = m.nodes.find((r) => r.name === "hall" && r.type === "group");
-    check(hall.description === "the entry hall" && hall.position[2] === 6, "the group keeps its description, with z flipped (south of the origin in orlablocks is north in Unity: z 6)");
+    check(hall.description === "the entry hall" && hall.position.every((v) => v === 0), "the group keeps its description, at its parent's origin");
     const room = m.nodes.find((r) => r.type === "box" && r.kind === "room");
-    check(room.parent === hall.id && room.floor.vertices > 0 && room.collider === "mesh", "the room is in its group, with its floor and a mesh collider");
+    check(room.parent === hall.id && room.position[2] === 6, "the room is in its group, with z flipped (south of the origin in orlablocks is north in Unity: z 6)");
+    check(room.floor.vertices > 0 && room.collider === "mesh" && /^[0-9a-f]{16}$/.test(room.rev), "it has its floor, a mesh collider and a rev");
     const ring = m.nodes.find((r) => r.type === "instance");
     check(ring.euler[1] === -90 && ring.scale === 2, "the instance's turn changes sign, and its scale is kept");
 

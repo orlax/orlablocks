@@ -5,11 +5,11 @@ import { arrayItems } from "../shared/arrays";
 import { bakeShape, type Baked, type DrawMesh } from "../shared/bake";
 import { bakeScene, type SceneBake } from "../shared/bakeScene";
 import { definitionOf, itemInstance } from "../shared/entities";
-import { boundsOf, isFootprinted, isSolid, isTilted, polyline, shapeFrame } from "../shared/geometry";
+import { isFootprinted, isSolid, isTilted, polyline, shapeFrame } from "../shared/geometry";
 import { entityMeta, type Library } from "../shared/library";
 import { apply, orientationYXZ, type Vec3 } from "../shared/rotation3";
 import { PALETTE, type Box, type ExportSummary, type Instance, type SceneNode, type Solid } from "../shared/scene.types";
-import { isShape, shapesUnder, tagsOf } from "../shared/tree";
+import { isShape, tagsOf } from "../shared/tree";
 import { loadManifold, onCutError } from "./manifold";
 
 /**
@@ -47,6 +47,8 @@ export type NodeRecord = {
   scale: number;
   hidden: boolean;
   hash: string;
+  /** A hash of the whole record (15.4): a sync leaves a node whose rev it has already alone. */
+  rev: string;
   body: MeshRange;
   floor: MeshRange;
   collider: "box" | "mesh" | "none";
@@ -217,6 +219,7 @@ const blank = (id: string, type: NodeRecord["type"], parent: string): NodeRecord
   scale: 1,
   hidden: false,
   hash: "",
+  rev: "",
   body: NO_MESH,
   floor: NO_MESH,
   collider: "none",
@@ -262,22 +265,19 @@ function records(nodes: SceneNode[], baked: Map<string, Baked>, cutIds: Set<stri
     const hit = pivots.get(n.id);
     if (hit) return hit;
     let p: Vec3 = ZERO;
-    if (n.type === "group" || n.type === "array") {
-      const under = n.type === "group" ? shapesUnder(nodes, [n.id]) : [n];
-      if (under.length > 0) {
-        const b = boundsOf(under);
-        p = { x: (b.minX + b.maxX) / 2, y: b.minY, z: (b.minZ + b.maxZ) / 2 };
-      }
-    } else if (n.type === "instance" || n.type === "note") p = { x: n.x, y: n.y, z: n.z };
+    // A group or array sits at its parent's origin (15.4): a pivot from its bounds would move whenever one member
+    // did, and with it every other member's local position, so one edit would change them all.
+    if (n.type === "group" || n.type === "array") p = parentPivot(n);
+    else if (n.type === "instance" || n.type === "note") p = { x: n.x, y: n.y, z: n.z };
     else if (n.type === "line") p = n.points[0] ?? ZERO;
     else if (isSolid(n)) p = placementOf(n, baked.get(n.id) ?? { body: null, floor: null }).at;
     pivots.set(n.id, p);
     return p;
   };
-  const parentPivot = (n: SceneNode) => {
+  function parentPivot(n: SceneNode): Vec3 {
     const parent = n.parent !== undefined ? byId.get(n.parent) : undefined;
     return parent ? pivotOf(parent) : ZERO;
-  };
+  }
 
   const out: NodeRecord[] = [];
   const visit = (n: SceneNode) => {
@@ -354,6 +354,7 @@ function records(nodes: SceneNode[], baked: Map<string, Baked>, cutIds: Set<stri
     };
   };
   for (const n of byParent.get("") ?? []) visit(n);
+  for (const r of out) r.rev = hash16(JSON.stringify({ ...r, rev: "" }));
   return out;
 }
 

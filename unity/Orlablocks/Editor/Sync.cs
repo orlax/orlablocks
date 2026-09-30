@@ -1,0 +1,650 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using UnityEditor;
+using UnityEngine;
+
+namespace Orlablocks.Editor
+{
+    /// <summary>
+    /// Brings an Orlablocks Level up to date with its scene's export (plan 15 §6–§7), as one undo step.
+    ///
+    /// Each entity first, as a generated prefab: made when new, and edited in place (its children matched by ID)
+    /// when its hash changed, so the instances' overrides still point at the same children. Then the Level's own
+    /// objects, matched by ID:
+    /// - a record whose rev the object already has is left alone (nothing is touched);
+    /// - a changed one is updated in place: transform, parent, name, mesh, materials, collider;
+    /// - a new one is made; a removed one is destroyed, what was added to it in Unity moved to "Orphaned (id)" first;
+    /// - a claimed object (or anything under one) is never touched; one moved in Unity since the last sync (drift)
+    ///   is left where it is and listed, until it's reverted or claimed.
+    /// Everything is already in Unity's frame, so a sync only copies numbers.
+    /// </summary>
+    public static class Sync
+    {
+        public class Result
+        {
+            public bool UpToDate;
+            public int Created, Updated, Unchanged, Removed, Orphaned, Instances, EntitiesBuilt, MeshesMade;
+            public readonly List<GameObject> Moved = new List<GameObject>();
+            public readonly List<GameObject> ClaimedChanged = new List<GameObject>();
+            public readonly List<GameObject> Gone = new List<GameObject>();
+            public readonly List<string> Warnings = new List<string>();
+
+            public string Report(Manifest m)
+            {
+                var lines = new List<string>
+                {
+                    $"{m.scene.name} ({m.project.name}), step {m.exportId}, exported {m.exportedAt}",
+                    $"{Created} made, {Updated} updated, {Unchanged} unchanged, {Removed} removed" + (Orphaned > 0 ? $", {Orphaned} of your objects kept in Orphaned" : ""),
+                    $"{m.entities.Length} entities ({EntitiesBuilt} rebuilt), {MeshesMade} new meshes",
+                };
+                if (Moved.Count > 0) lines.Add($"{Moved.Count} moved in Unity: left where they are (Revert or Claim them)");
+                if (ClaimedChanged.Count > 0) lines.Add($"{ClaimedChanged.Count} claimed here changed in orlablocks: not updated");
+                if (Gone.Count > 0) lines.Add($"{Gone.Count} claimed here are gone from orlablocks: kept");
+                lines.AddRange(Warnings);
+                return string.Join("\n", lines);
+            }
+        }
+
+        /// <summary>What building records needs: where meshes go, the materials, the palette and the entity prefabs.</summary>
+        class Context
+        {
+            public MeshBinary Bin;
+            public MeshStore Store;
+            public Look Look;
+            public Dictionary<string, Color> Palette;
+            public Dictionary<string, GameObject> Prefabs = new Dictionary<string, GameObject>();
+            public Result Result;
+        }
+
+        const StaticEditorFlags Static = StaticEditorFlags.BatchingStatic | StaticEditorFlags.OccluderStatic | StaticEditorFlags.OccludeeStatic | StaticEditorFlags.ReflectionProbeStatic;
+
+        /// <param name="force">Sync even if the Level already has this export (it still leaves unchanged objects alone).</param>
+        public static Result Run(OrlaLevel level, bool force = true, bool rebuildMaterials = false)
+        {
+            var folder = Assets.FullPath(level.folder);
+            if (string.IsNullOrEmpty(folder)) throw new Exception("Choose the scene's export folder first.");
+            if (!force && Manifest.PeekExportId(folder) == level.exportId) return new Result { UpToDate = true };
+            var m = Manifest.Read(folder);
+            if (!force && m.exportId == level.exportId) return new Result { UpToDate = true };
+            var bin = new MeshBinary(folder, m.meshes);
+            var root = Assets.ProjectRoot(m.project.id);
+            var result = new Result();
+            var ctx = new Context
+            {
+                Bin = bin,
+                Look = new Look(root, m, rebuildMaterials),
+                Palette = m.palette.ToDictionary(p => p.key, p => ColorUtility.TryParseHtmlString(p.color, out var c) ? c : Color.white),
+                Result = result,
+            };
+
+            Undo.IncrementCurrentGroup();
+            var group = Undo.GetCurrentGroup();
+            Undo.SetCurrentGroupName($"Sync {m.scene.name}");
+            try
+            {
+                foreach (var e in m.entities) ctx.Prefabs[e.id] = EntityPrefab(e, root, ctx);
+
+                ctx.Store = new MeshStore($"{root}/Levels/{Assets.Safe(m.scene.id)}.meshes.asset");
+                new Reconciler(level.transform, ctx, new Edit(true, $"Sync {m.scene.name}"), true).Run(m.nodes);
+                ctx.Store.KeepReferenced(level.gameObject);
+                ctx.Store.Prune();
+                result.MeshesMade += ctx.Store.Made;
+                result.Warnings.AddRange(ctx.Look.Warnings);
+
+                Undo.RecordObject(level, "Sync");
+                level.project = m.project.id;
+                level.sceneId = m.scene.id;
+                level.sceneName = m.scene.name;
+                level.exportId = m.exportId;
+                level.syncedAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+                level.report = result.Report(m);
+                level.movedInUnity = result.Moved.ToArray();
+                level.claimedChanged = result.ClaimedChanged.ToArray();
+                level.goneFromOrlablocks = result.Gone.ToArray();
+                if (level.gameObject.name.StartsWith("Orlablocks Level"))
+                {
+                    Undo.RecordObject(level.gameObject, "Sync");
+                    level.gameObject.name = $"Orlablocks Level · {m.scene.name}";
+                }
+                EditorUtility.SetDirty(level);
+                AssetDatabase.SaveAssets();
+            }
+            finally
+            {
+                Undo.CollapseUndoOperations(group);
+            }
+            return result;
+        }
+
+        /// <summary>
+        /// An entity's generated prefab: its shapes around its pivot. Untouched while its hash is the same; edited in
+        /// place when it changed (so its children keep their identity, and the instances' overrides with them).
+        /// </summary>
+        static GameObject EntityPrefab(EntityRecord e, string root, Context ctx)
+        {
+            var path = $"{root}/Entities/{Assets.Safe(e.id)}.prefab";
+            var existing = AssetDatabase.LoadAssetAtPath<GameObject>(path);
+            var known = existing != null ? existing.GetComponent<OrlaNode>() : null;
+            if (known != null && known.hash == e.hash) return existing;
+
+            Assets.EnsureFolder($"{root}/Entities");
+            var contents = existing != null ? PrefabUtility.LoadPrefabContents(path) : new GameObject();
+            try
+            {
+                contents.name = string.IsNullOrEmpty(e.name) ? e.id : e.name;
+                var own = contents.GetComponent<OrlaNode>();
+                if (own == null) own = contents.AddComponent<OrlaNode>();
+                own.id = e.id;
+                own.type = "entity";
+                own.description = e.description ?? "";
+                own.tags = e.tags ?? new string[0];
+                own.hash = e.hash;
+                var entityCtx = new Context
+                {
+                    Bin = ctx.Bin,
+                    Store = new MeshStore($"{root}/Entities/{Assets.Safe(e.id)}.meshes.asset"),
+                    Look = ctx.Look,
+                    Palette = ctx.Palette,
+                    Result = new Result(),
+                };
+                new Reconciler(contents.transform, entityCtx, new Edit(false, "Sync"), false).Run(e.nodes);
+                entityCtx.Store.KeepReferenced(contents);
+                entityCtx.Store.Prune();
+                ctx.Result.MeshesMade += entityCtx.Store.Made;
+                ctx.Result.Warnings.AddRange(entityCtx.Result.Warnings);
+                ctx.Result.EntitiesBuilt++;
+                return PrefabUtility.SaveAsPrefabAsset(contents, path);
+            }
+            finally
+            {
+                if (existing != null) PrefabUtility.UnloadPrefabContents(contents);
+                else UnityEngine.Object.DestroyImmediate(contents);
+            }
+        }
+
+        /// <summary>Edits, recorded for undo in a Level (one step per sync), or plain inside a prefab being edited.</summary>
+        class Edit
+        {
+            public readonly bool Undoable;
+            readonly string name;
+
+            public Edit(bool undoable, string name)
+            {
+                Undoable = undoable;
+                this.name = name;
+            }
+
+            public void Record(UnityEngine.Object o)
+            {
+                if (Undoable) Undo.RecordObject(o, name);
+            }
+
+            public T Add<T>(GameObject go) where T : Component => Undoable ? Undo.AddComponent<T>(go) : go.AddComponent<T>();
+
+            public void Destroy(UnityEngine.Object o)
+            {
+                if (Undoable) Undo.DestroyObjectImmediate(o);
+                else UnityEngine.Object.DestroyImmediate(o);
+            }
+
+            public void SetParent(Transform t, Transform parent)
+            {
+                if (Undoable) Undo.SetTransformParent(t, parent, name);
+                else t.SetParent(parent, true);
+            }
+
+            public void Created(GameObject go)
+            {
+                if (Undoable) Undo.RegisterCreatedObjectUndo(go, name);
+            }
+
+            public InteractionMode Mode => Undoable ? InteractionMode.UserAction : InteractionMode.AutomatedAction;
+        }
+
+        /// <summary>Brings the objects under one root (a Level, or an entity prefab's contents) in line with records.</summary>
+        class Reconciler
+        {
+            readonly Transform root;
+            readonly Context ctx;
+            readonly Edit edit;
+            // In a Level: claims, drift and orphans count. In a generated prefab, the export is all there is.
+            readonly bool level;
+            readonly Dictionary<string, OrlaNode> index = new Dictionary<string, OrlaNode>();
+            readonly HashSet<OrlaNode> seen = new HashSet<OrlaNode>();
+            readonly Dictionary<string, Transform> placed = new Dictionary<string, Transform>();
+            readonly HashSet<GameObject> created = new HashSet<GameObject>();
+            Result Result => ctx.Result;
+
+            public Reconciler(Transform root, Context ctx, Edit edit, bool level)
+            {
+                this.root = root;
+                this.ctx = ctx;
+                this.edit = edit;
+                this.level = level;
+            }
+
+            public void Run(NodeRecord[] records)
+            {
+                Index();
+                foreach (var r in records) Process(r);
+                RemoveUnseen();
+            }
+
+            /// <summary>Part of a prefab instance's own contents (not its root, and not something added to it in Unity).</summary>
+            static bool IsPrefabContent(GameObject go) =>
+                PrefabUtility.IsPartOfPrefabInstance(go) && PrefabUtility.GetOutermostPrefabInstanceRoot(go) != go && !PrefabUtility.IsAddedGameObjectOverride(go);
+
+            static bool IsOrphans(Transform t) => t.name.StartsWith("Orphaned (", StringComparison.Ordinal);
+
+            /// <summary>The synced objects under the root, by ID: not an instance's contents, not what's kept in Orphaned.</summary>
+            void Index()
+            {
+                foreach (var n in root.GetComponentsInChildren<OrlaNode>(true))
+                {
+                    if (n.transform == root || string.IsNullOrEmpty(n.id) || IsPrefabContent(n.gameObject)) continue;
+                    if (level && InOrphans(n.transform)) continue;
+                    if (index.ContainsKey(n.id))
+                    {
+                        // A copy made in Unity (it has the same ID): it becomes the user's.
+                        edit.Record(n);
+                        Result.Warnings.Add($"{n.gameObject.name} is a copy of {n.id} made in Unity: it's yours now, and syncs leave it alone.");
+                        n.id = "";
+                        continue;
+                    }
+                    index[n.id] = n;
+                }
+            }
+
+            bool InOrphans(Transform t)
+            {
+                for (var p = t; p != null && p != root; p = p.parent)
+                    if (p.parent == root && IsOrphans(p)) return true;
+                return false;
+            }
+
+            /// <summary>Claimed itself, or under something claimed.</summary>
+            bool Claimed(OrlaNode n)
+            {
+                for (var t = n.transform; t != null && t != root; t = t.parent)
+                {
+                    var o = t.GetComponent<OrlaNode>();
+                    if (o != null && o.claimed) return true;
+                }
+                return false;
+            }
+
+            /// <summary>Moved, turned, scaled or reparented in Unity since the last sync set it.</summary>
+            bool Drifted(OrlaNode n)
+            {
+                // Made before syncs kept track (15.3): take orlablocks' version.
+                if (string.IsNullOrEmpty(n.rev)) return false;
+                var t = n.transform;
+                var parentNode = t.parent != null ? t.parent.GetComponent<OrlaNode>() : null;
+                var parentId = t.parent == root ? "" : parentNode != null ? parentNode.id : "?";
+                if (parentId != n.syncedParent) return true;
+                return (t.localPosition - n.syncedPosition).sqrMagnitude > 1e-8f
+                    || Quaternion.Angle(t.localRotation, n.syncedRotation) > 0.01f
+                    || (t.localScale - n.syncedScale).sqrMagnitude > 1e-8f;
+            }
+
+            Transform ParentFor(NodeRecord r) =>
+                !string.IsNullOrEmpty(r.parent) && placed.TryGetValue(r.parent, out var p) && p != null ? p : root;
+
+            void Process(NodeRecord r)
+            {
+                var parent = ParentFor(r);
+                if (index.TryGetValue(r.id, out var n) && n != null)
+                {
+                    seen.Add(n);
+                    placed[r.id] = n.transform;
+                    if (r.IsPlacement) Result.Instances++;
+                    if (level && Claimed(n))
+                    {
+                        if (n.rev != r.rev) Result.ClaimedChanged.Add(n.gameObject);
+                        return;
+                    }
+                    if (level && !n.revert && Drifted(n))
+                    {
+                        Result.Moved.Add(n.gameObject);
+                        return;
+                    }
+                    if (n.rev == r.rev && !n.revert && !MissingMesh(n, r))
+                    {
+                        Result.Unchanged++;
+                        return;
+                    }
+                    var go = NeedsReplace(n, r) ? Replace(n, r, parent) : n.gameObject;
+                    if (go == n.gameObject) Apply(go, r, parent);
+                    placed[r.id] = go.transform;
+                    Stamp(go, r);
+                    Result.Updated++;
+                    return;
+                }
+                var made = Create(r, parent);
+                if (r.IsPlacement) Result.Instances++;
+                placed[r.id] = made.transform;
+                Stamp(made, r);
+                Result.Created++;
+            }
+
+            static bool MissingMesh(OrlaNode n, NodeRecord r)
+            {
+                if (!r.IsShape || !r.HasMesh) return false;
+                var f = n.GetComponent<MeshFilter>();
+                return f == null || f.sharedMesh == null;
+            }
+
+            /// <summary>What the next sync compares against: the rev, the parent and the transform this sync set.</summary>
+            void Stamp(GameObject go, NodeRecord r)
+            {
+                var node = go.GetComponent<OrlaNode>();
+                edit.Record(node);
+                node.rev = r.rev ?? "";
+                node.revert = false;
+                node.syncedParent = r.parent ?? "";
+                node.syncedPosition = go.transform.localPosition;
+                node.syncedRotation = go.transform.localRotation;
+                node.syncedScale = go.transform.localScale;
+            }
+
+            bool NeedsReplace(OrlaNode n, NodeRecord r)
+            {
+                var wasPlacement = n.type == "instance" || n.type == "item";
+                if (wasPlacement != r.IsPlacement) return true;
+                if (!r.IsPlacement) return false;
+                // Its entity was swapped: another prefab.
+                return ctx.Prefabs.TryGetValue(r.entity ?? "", out var prefab) && prefab != null && PrefabUtility.GetCorrespondingObjectFromSource(n.gameObject) != prefab;
+            }
+
+            GameObject Create(NodeRecord r, Transform parent)
+            {
+                GameObject go = null;
+                if (r.IsPlacement)
+                {
+                    if (ctx.Prefabs.TryGetValue(r.entity ?? "", out var prefab) && prefab != null) go = (GameObject)PrefabUtility.InstantiatePrefab(prefab, parent);
+                    else Result.Warnings.Add($"{r.id}: no entity {r.entity} in the export; it's an empty object.");
+                }
+                if (go == null)
+                {
+                    go = new GameObject(r.GameObjectName);
+                    go.transform.SetParent(parent, false);
+                }
+                if (!created.Contains(parent.gameObject)) edit.Created(go);
+                created.Add(go);
+                Apply(go, r, parent);
+                return go;
+            }
+
+            /// <summary>A node whose kind of object changed (an instance's entity swapped): a new one, with what you added to the old.</summary>
+            GameObject Replace(OrlaNode n, NodeRecord r, Transform parent)
+            {
+                var old = n.gameObject;
+                var go = Create(r, parent);
+                foreach (var child in old.transform.Cast<Transform>().ToList())
+                    if (!IsPrefabContent(child.gameObject)) edit.SetParent(child, go.transform);
+                var fresh = go.GetComponent<OrlaNode>();
+                index[r.id] = fresh;
+                seen.Add(fresh);
+                edit.Destroy(old);
+                return go;
+            }
+
+            void Apply(GameObject go, NodeRecord r, Transform parent)
+            {
+                if (go.transform.parent != parent) edit.SetParent(go.transform, parent);
+                edit.Record(go.transform);
+                go.transform.localPosition = NodeRecord.V(r.position);
+                go.transform.localEulerAngles = NodeRecord.V(r.euler);
+                go.transform.localScale = Vector3.one * (r.scale > 0 ? r.scale : 1f);
+                if (go.name != r.GameObjectName)
+                {
+                    edit.Record(go);
+                    go.name = r.GameObjectName;
+                }
+                var node = go.GetComponent<OrlaNode>();
+                if (node == null) node = edit.Add<OrlaNode>(go);
+                edit.Record(node);
+                node.id = r.id;
+                node.type = r.type;
+                node.kind = r.kind ?? "";
+                node.color = r.color ?? "";
+                node.entity = r.entity ?? "";
+                node.tags = r.tags ?? new string[0];
+                // An instance keeps its entity's description (the prefab's), unless it has one of its own.
+                if (!r.IsPlacement || !string.IsNullOrEmpty(r.description)) node.description = r.description ?? "";
+                node.hash = r.hash ?? "";
+
+                if (r.IsShape) ApplyShape(go, r);
+                else if (r.type == "note") ApplyNote(go, r);
+                else if (r.type == "line") ApplyLine(go, r);
+                if (r.IsPlacement) ApplyCuts(go, node, r);
+
+                var active = !r.hidden;
+                if (go.activeSelf != active)
+                {
+                    edit.Record(go);
+                    go.SetActive(active);
+                }
+            }
+
+            T Ensure<T>(GameObject go) where T : Component
+            {
+                var c = go.GetComponent<T>();
+                return c != null ? c : edit.Add<T>(go);
+            }
+
+            void Drop<T>(GameObject go) where T : Component
+            {
+                var c = go.GetComponent<T>();
+                if (c != null) edit.Destroy(c);
+            }
+
+            void ApplyShape(GameObject go, NodeRecord r)
+            {
+                if (!r.HasMesh) return;
+                var mesh = ctx.Store.Get(r.hash, () => ctx.Bin.Build(r.hash, r.body, r.floor));
+                var filter = Ensure<MeshFilter>(go);
+                if (filter.sharedMesh != mesh)
+                {
+                    edit.Record(filter);
+                    filter.sharedMesh = mesh;
+                }
+                // A hole keeps its mesh (for its gizmo) but isn't drawn and has no collider.
+                if (r.kind == "hole")
+                {
+                    Drop<MeshRenderer>(go);
+                    Drop<BoxCollider>(go);
+                    Drop<MeshCollider>(go);
+                    return;
+                }
+                var renderer = Ensure<MeshRenderer>(go);
+                var materials = new List<Material>();
+                if (r.body.vertices > 0) materials.Add(ctx.Look.Body(r.color));
+                if (r.floor.vertices > 0) materials.Add(ctx.Look.Floor(r.color));
+                if (!renderer.sharedMaterials.SequenceEqual(materials))
+                {
+                    edit.Record(renderer);
+                    renderer.sharedMaterials = materials.ToArray();
+                }
+                if (r.collider == "box")
+                {
+                    Drop<MeshCollider>(go);
+                    var box = Ensure<BoxCollider>(go);
+                    var center = NodeRecord.V(r.boxCenter);
+                    var size = NodeRecord.V(r.boxSize);
+                    if (box.center != center || box.size != size || !box.enabled)
+                    {
+                        edit.Record(box);
+                        box.center = center;
+                        box.size = size;
+                        box.enabled = true;
+                    }
+                }
+                else if (r.collider == "mesh")
+                {
+                    Drop<BoxCollider>(go);
+                    var mc = Ensure<MeshCollider>(go);
+                    if (mc.sharedMesh != mesh)
+                    {
+                        edit.Record(mc);
+                        mc.sharedMesh = mesh;
+                    }
+                }
+                else
+                {
+                    Drop<BoxCollider>(go);
+                    Drop<MeshCollider>(go);
+                }
+                var flags = GameObjectUtility.GetStaticEditorFlags(go);
+                if ((flags & Static) != Static)
+                {
+                    edit.Record(go);
+                    GameObjectUtility.SetStaticEditorFlags(go, flags | Static);
+                }
+            }
+
+            void ApplyNote(GameObject go, NodeRecord r)
+            {
+                var note = Ensure<OrlaNote>(go);
+                edit.Record(note);
+                note.text = r.text ?? "";
+                note.label = r.label ?? "";
+                note.status = string.IsNullOrEmpty(r.status) ? "open" : r.status;
+                if (ctx.Palette.TryGetValue(r.color ?? "", out var c)) note.color = c;
+                EditorOnly(go);
+            }
+
+            void ApplyLine(GameObject go, NodeRecord r)
+            {
+                var line = Ensure<OrlaLine>(go);
+                edit.Record(line);
+                var pts = r.points ?? new float[0];
+                line.points = new Vector3[pts.Length / 3];
+                for (int i = 0; i < line.points.Length; i++) line.points[i] = new Vector3(pts[i * 3], pts[i * 3 + 1], pts[i * 3 + 2]);
+                if (ctx.Palette.TryGetValue(r.color ?? "", out var c)) line.color = c;
+                line.dashed = r.dashed;
+                line.arrow = string.IsNullOrEmpty(r.arrow) ? "none" : r.arrow;
+                EditorOnly(go);
+            }
+
+            void EditorOnly(GameObject go)
+            {
+                if (go.CompareTag("EditorOnly")) return;
+                edit.Record(go);
+                go.tag = "EditorOnly";
+            }
+
+            /// <summary>An instance's cut children: their own meshes, and the prefab's back on the ones no longer cut.</summary>
+            void ApplyCuts(GameObject go, OrlaNode node, NodeRecord r)
+            {
+                var cuts = r.cuts ?? new CutRecord[0];
+                var now = cuts.Select(c => c.shape).ToArray();
+                var children = go.GetComponentsInChildren<OrlaNode>(true).Where(c => c.gameObject != go && IsPrefabContent(c.gameObject)).ToList();
+                foreach (var child in children)
+                    if ((node.cutShapes ?? new string[0]).Contains(child.id) && !now.Contains(child.id)) RevertCut(child.gameObject);
+                foreach (var cut in cuts)
+                {
+                    var child = children.FirstOrDefault(c => c.id == cut.shape);
+                    if (child == null) continue;
+                    var mesh = ctx.Store.Get(cut.hash, () => ctx.Bin.Build(cut.hash, cut.body, cut.floor));
+                    var filter = child.GetComponent<MeshFilter>();
+                    if (filter != null && filter.sharedMesh != mesh)
+                    {
+                        edit.Record(filter);
+                        filter.sharedMesh = mesh;
+                    }
+                    // A box collider no longer fits a cut shape: the mesh's own collider instead. (A prefab
+                    // instance's component can't be removed, so the box is turned off.)
+                    var box = child.GetComponent<BoxCollider>();
+                    if (box != null && box.enabled)
+                    {
+                        edit.Record(box);
+                        box.enabled = false;
+                    }
+                    var mc = Ensure<MeshCollider>(child.gameObject);
+                    if (mc.sharedMesh != mesh)
+                    {
+                        edit.Record(mc);
+                        mc.sharedMesh = mesh;
+                    }
+                }
+                node.cutShapes = now;
+            }
+
+            void RevertCut(GameObject child)
+            {
+                var filter = child.GetComponent<MeshFilter>();
+                if (filter != null) PrefabUtility.RevertObjectOverride(filter, edit.Mode);
+                var box = child.GetComponent<BoxCollider>();
+                if (box != null) PrefabUtility.RevertObjectOverride(box, edit.Mode);
+                var mc = child.GetComponent<MeshCollider>();
+                if (mc == null) return;
+                if (PrefabUtility.IsAddedComponentOverride(mc)) edit.Destroy(mc);
+                else PrefabUtility.RevertObjectOverride(mc, edit.Mode);
+            }
+
+            /// <summary>
+            /// What orlablocks no longer has. Claimed objects stay (listed). The rest are destroyed, top-most first; in a
+            /// Level, what was added to them in Unity (and anything claimed or still synced under them) is moved to
+            /// "Orphaned (id)" first, where it was.
+            /// </summary>
+            void RemoveUnseen()
+            {
+                var gone = new HashSet<OrlaNode>(index.Values.Where(n => n != null && !seen.Contains(n)));
+                foreach (var n in gone.ToList())
+                {
+                    if (n == null) continue;
+                    if (level && Claimed(n))
+                    {
+                        Result.Gone.Add(n.gameObject);
+                        continue;
+                    }
+                    if (UnderGone(n, gone)) continue;
+                    if (level) Rescue(n.transform, n.id, gone);
+                    edit.Destroy(n.gameObject);
+                    Result.Removed++;
+                }
+            }
+
+            /// <summary>Under another object that's being removed (it goes with that one).</summary>
+            bool UnderGone(OrlaNode n, HashSet<OrlaNode> gone)
+            {
+                for (var t = n.transform.parent; t != null && t != root; t = t.parent)
+                {
+                    var o = t.GetComponent<OrlaNode>();
+                    if (o != null && gone.Contains(o) && !Claimed(o)) return true;
+                }
+                return false;
+            }
+
+            void Rescue(Transform t, string id, HashSet<OrlaNode> gone)
+            {
+                foreach (var child in t.Cast<Transform>().ToList())
+                {
+                    if (IsPrefabContent(child.gameObject)) continue;
+                    var n = child.GetComponent<OrlaNode>();
+                    if (n != null && gone.Contains(n) && !Claimed(n))
+                    {
+                        Rescue(child, id, gone);
+                        Result.Removed++;
+                        continue;
+                    }
+                    edit.SetParent(child, Orphans(id));
+                    Result.Orphaned++;
+                }
+            }
+
+            Transform Orphans(string id)
+            {
+                var name = $"Orphaned ({id})";
+                var found = root.Find(name);
+                if (found != null) return found;
+                var go = new GameObject(name);
+                go.transform.SetParent(root, false);
+                edit.Created(go);
+                return go.transform;
+            }
+        }
+    }
+}
