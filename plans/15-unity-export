@@ -1,0 +1,391 @@
+# 15 — Unity Export
+
+> **For the agent reading this:** Read `plans/thinking-08-unity-export.md` first. It holds Orlando's notes: why a level designed in orlablocks should reach Unity, the two options weighed (bake everything into one file, or rebuild the scene in Unity), and the flow Orlando wants: design to 90% in orlablocks, play it in Unity, keep working there, and refresh from orlablocks when a part needs redesigning. Background: `plans/07-geometry-tools` (holes, taper and bevel, tilt), `plans/08-semantics-and-entities` (tags, entities and instances), `plans/10-array-tools` (arrays and their items), `plans/14-real-work-improvements` (scale and tilt on instances and arrays).
+>
+> The phase takes Option 2's flow with one change: **Unity doesn't rebuild the geometry.** orlablocks bakes every mesh (holes cut, normals and UVs as the editor draws them), and Unity owns the structure: one GameObject per node, entities as prefabs, a refresh matched by node ID, and mappings kept in Unity. It has two halves:
+> - **orlablocks side:** the bake moves to `src/shared/` so the editor and the export draw the same thing, then an **export** writes a scene to a folder (a manifest and a binary of meshes), from the editor, the agent (`export_scene`) or on every step;
+> - **Unity side:** C# files (runtime components, editor code) that Orlando copies into a Unity 6 (6000.5) URP project to test. They're written so they can become a package later, which Orlando will make and add to this repo. **No package is made in this phase:** no `package.json`, no UPM setup.
+>
+> The work is split into small increments (§12). Each orlablocks increment ends with `npm test` and `npm run typecheck` passing and a scripted check against a spare server (`PORT=5171 DATA_DIR=<scratch>`). Each Unity increment ends with a checklist for Orlando, who imports the files into their project. The server's MCP version goes up one patch per increment that changes it, starting from 0.0.38. Add this phase's terms to `GLOSSARY.md` (marked "from 15") as they land. Log progress in §16 at the end of this file.
+
+---
+
+## 1. Goal
+
+The flight level, taken to Unity:
+
+1. Orlando opens `valley_human` and, in **Export**, sets the folder to `~/Unity/Flight/Orlablocks/valley`, next to the Unity project's `Assets/`, and turns on **Export on every step**.
+2. In Unity, Orlando adds an **Orlablocks Level** (menu **GameObject → Orlablocks Level**), points it at that folder and presses **Sync**. The valley appears with each shape as a GameObject named `hall (box_12)`, the palette colors on a 1 m tile, and a collider on everything. Each race ring is a prefab instance of the generated `ring` prefab. Holes are cut. Notes show as labels in the Scene view, and none of it reaches a build.
+3. In the Orlablocks mappings, Orlando maps the `ring` entity to their real `RaceRing.prefab` and `#boundary` to the `Boundary` layer. After **Sync**, the rings are the real prefab, in the same places.
+4. Orlando plays the level, adds a trigger under `box_40` and a spawn point under the start platform, and **claims** `freeform_7` (the lake), whose shore they reshape in Unity.
+5. Back in orlablocks, the agent moves the second ring cluster and grows a mountain. The export follows each step. In Unity, the Level says **Update available**, and **Sync** moves the rings and reshapes the mountain in one undo step. The trigger and the spawn point are still there, and the lake keeps Unity's edits, with a note that orlablocks changed it too.
+6. A peak Orlando nudged in Unity by mistake isn't overwritten: the sync lists it as **moved in Unity**, with **Revert** and **Claim** buttons.
+
+---
+
+## 2. Scope
+
+### In
+
+- **The bake (15.1):** what the editor draws for each shape (body and a room's floor; holes cut; creased normals; tile UVs) as plain arrays, computed in `src/shared/` and used by both the editor and the export. The boolean library also runs on the server.
+- **The export (15.2):** a manifest and a mesh binary per scene, in Unity's frame, written atomically to an **export folder** chosen per scene. Written from an **Export** dialog in the editor, by the agent (`export_scene`), or after every step (**Export on every step**).
+- **The Unity code and its look (15.3):** runtime components (`OrlaLevel`, `OrlaNode`, `OrlaNote`, `OrlaLine`), the materials made by code (URP Lit with the palette and the tile), and a first **Sync** that builds the level and the entity prefabs.
+- **Refresh (15.4):** matching by node ID, only rebuilding what changed, keeping what the user added, **claims**, **drift** (moved in Unity), deletion rules, one undo step per sync, and **Update available** when the export folder changes (or **Auto sync**).
+- **Mappings (15.5):** entity → prefab, tag → layer / Unity tag / components / static flags, palette color → material, all in an `OrlaMappings` asset in Unity.
+- **Notes, lines and ProBuilder (15.6):** notes and lines as editor-only gizmos, and **Claim as ProBuilder** when ProBuilder is installed.
+
+### Out (deliberately deferred)
+
+- **Anything from Unity back to orlablocks.** Claims and drift keep Unity's work safe without writing back. A later phase could send playtest findings back as notes.
+- **A Unity package** (`package.json`, UPM, a git URL). Orlando makes it once the files work.
+- **Other engines.** The bake makes a `.glb` export easy (Blender, Godot, Unreal), but it's a later phase.
+- **A custom URP shader** (a procedural grid, a triplanar look). URP Lit with the tile texture matches the editor and survives URP updates. See §15, decision 4.
+- **Lightmaps and NavMesh baking.** The meshes are ready for both (static, colliders), and lightmap UVs are one sync option (§8). Baking stays the user's job in Unity.
+- **The built-in and HDRP pipelines.** URP only. The code finds URP Lit by name and warns if it's missing.
+- **Merging a group into one mesh.** One GameObject per node, with static batching. Merging can be a sync option later if big levels need it.
+- **Exporting an entity edit** (Edit entity mode) on its own. Entities are exported with the scenes that use them.
+
+---
+
+## 3. Naming and data
+
+### Terms
+
+| Term | Meaning |
+|---|---|
+| **bake** | a shape turned into the meshes the editor draws: body and a room's floor, with holes cut, normals and UVs (`src/shared/bake.ts`) |
+| **export** | a scene written for Unity: `level.json` (the manifest) and `meshes-<hash>.bin`, in the scene's export folder |
+| **export folder** | where a scene is exported, an absolute path set by the human per scene, kept in `project.json` |
+| **Orlablocks Level** | the Unity GameObject (with `OrlaLevel`) that a scene syncs into: its export folder, its mappings and its sync options |
+| **sync** | building or updating an Orlablocks Level from its export, one Unity undo step |
+| **managed** | what a sync owns on a node's GameObject: its transform, meshes, materials, collider and `OrlaNode` fields. Everything else is the user's |
+| **claim** | marking a node (and what's under it) as Unity's: syncs stop changing it |
+| **drift** | a managed GameObject whose transform changed in Unity since the last sync. The sync leaves it alone and lists it |
+| **mapping** | a rule in `OrlaMappings`: an entity to a prefab, a tag to a layer, Unity tag, components or static flags, a palette color to a material |
+
+### The export folder, on disk
+
+```
+<export folder>/
+  level.json             the manifest (written last, atomically)
+  meshes-<hash>.bin      every mesh the manifest points into; the previous one is kept until the next export
+```
+
+- The folder is meant to be **outside `Assets/`** (e.g. `<UnityProject>/Orlablocks/<scene>/`), so Unity doesn't import it as assets and make `.meta` files. The Unity project's git can commit it, so a teammate without orlablocks can still sync.
+- **Consistency:** the binary is written first, under a name with its content hash, then `level.json` goes through a temp file and a rename. A reader never sees a manifest pointing at a half-written binary. The binary before the last one is deleted.
+- `project.json` gains `exports?: { [scene: string]: { dir: string; auto?: boolean } }`. Only the human sets a folder: the agent's `export_scene` writes only to a folder the human chose (§5).
+
+### The manifest (`level.json`)
+
+Plain arrays of plain objects, with no unions or dictionaries, so Unity's `JsonUtility` reads it without Newtonsoft. Every field is present on every record, with an empty or zero value where it doesn't apply.
+
+- **Header:** `format: "orlablocks-unity"`, `version: 1`, `exportId` (the history seq of the step exported), `exportedAt`, `project { id, name, description }`, `scene { id, name }`, `meshes` (the binary's file name, byte length and hash).
+- **Look:** `palette [{ key, color }]` (linear and sRGB hex), `floorShade` (0.94): the editor's values from `ShapeMesh.tsx`, so tuning the palette flows to Unity.
+- **Library:** `tags [{ name, description }]` and `skills [{ name, description }]`, for tooltips and mappings.
+- **Entities:** `[{ id, name, description, tags, hash, nodes: [NodeRecord] }]`, only the entities this scene uses, each baked around its pivot.
+- **Nodes:** `[NodeRecord]`, the scene's nodes in tree order (parents first), then each array's items.
+
+`NodeRecord`:
+
+| Field | For |
+|---|---|
+| `id`, `parent`, `name`, `description`, `tags` | every node (`parent` "" at the top; an item's parent is its array) |
+| `type` | `group`, `box`, `cylinder`, `freeform`, `ramp`, `instance`, `array`, `item`, `note`, `line` |
+| `kind`, `color` | closed shapes and ramps (`room`, `volume`, `hole`) |
+| `position`, `euler`, `scale` | the GameObject's local transform, in Unity's frame (§4) |
+| `hidden` | exported disabled (a hidden node in orlablocks is an inactive GameObject) |
+| `hash` | a hash of what the node's meshes are made from, so a sync rebuilds only what changed |
+| `body`, `floor` | mesh ranges in the binary (vertex and index offsets and counts), or empty. A hole's `body` is only for its gizmo |
+| `collider` | `box` (with `boxCenter`, `boxSize`), `mesh`, or `none` |
+| `entity` | instances and items: the entity's ID. Holes: "" |
+| `cutBody`, `cutFloor` | items and instances cut by a scene hole: their own meshes for the one shape cut (`cutShape`, the definition node's ID) |
+| `text`, `label`, `status` | notes |
+| `points`, `lineColor`, `thickness`, `dashed`, `arrow` | lines (points flattened x, y, z) |
+
+The binary is little-endian: for each mesh, positions (float32 × 3), normals (float32 × 3), UVs (float32 × 2) and indices (uint32).
+
+---
+
+## 4. Coordinates
+
+orlablocks is right-handed (three.js), with y up, north −z and east +x. Unity is left-handed with y up. **The export flips z**, so orlablocks' north becomes Unity's forward (+z), and east stays +x.
+
+- **Points and normals:** z → −z. **Triangles:** winding reversed, so faces still face out.
+- **Rotations:** a shape's orientation is three.js `Euler(pitch, rotation, roll, "YXZ")`, i.e. Ry · Rx · Rz. Flipping z negates rotations about x and y and keeps rotations about z. Unity's `Quaternion.Euler(x, y, z)` also applies z, then x, then y (Ry · Rx · Rz). So the Unity euler is **(−pitch, −rotation, roll)**.
+- **Scale:** uniform, unchanged.
+- **All of it happens in the TypeScript exporter** (`src/server/export.ts`), which is unit-tested. The C# only copies numbers. A test pins the rule: a tilted, turned box's world corners from `hitMesh`, flipped, equal its record's mesh transformed by its position and euler, done with Unity's convention in TypeScript.
+
+**Pivots (where a GameObject's origin is):**
+
+- **A box, cylinder or tilted free-form:** its bottom center, as `shapeMatrix` (`ShapeMesh.tsx`) places it: the tilt about the center is decomposed into one position and one rotation.
+- **An untilted free-form or a ramp** (their meshes are in world coordinates): the bottom center of their bounds. The mesh is offset by it.
+- **An instance or item:** its pivot (`x, y, z`), with its rotation, tilt and scale. Its shapes are the entity prefab's children.
+- **A group or array:** the bottom center of its bounds, with no rotation. Its children are placed relative to it.
+- **A note:** its pin. **A line:** its first point.
+
+---
+
+## 5. The bake and the export (orlablocks side)
+
+### The bake (15.1)
+
+Today the editor turns a shape into what it draws in `useShapeGeometry` (`src/web/ShapeMesh.tsx:244-281`):
+
+1. `shapeMesh`;
+2. minus its cutters (`holeInFrameOf` and `subtract`, `src/web/csg.ts`, floors only by holes that reach below them);
+3. unshared per face;
+4. flat normals;
+5. `applyBoxUVs` with `uvOffset`;
+6. `toCreasedNormals` at 30°;
+7. `EdgesGeometry` at 15°.
+
+The export has to produce exactly steps 1–6, so they move to one place. The edges (step 7) stay in the editor: they aren't exported (§15, decision 4).
+
+
+- **`src/shared/bake.ts`:** `bakeShape(shape, cuts, subtract)` → `{ body, floor }` as plain arrays (positions, normals, uvs, indices), in the shape's own frame. It uses three's `BufferGeometry` and `toCreasedNormals`, which run in Node (`src/shared/mesh.ts` already imports three). `useShapeGeometry` wraps its result in `BufferGeometry`s (and makes the edges from the body, as today), so the view and the export share one path.
+- **The boolean library in two halves:**
+  - `src/shared/csg.ts` holds `holeInFrameOf` and `subtract` over a `ManifoldToplevel` it's given;
+  - `src/web/csg.ts` keeps the browser loading (the `?url` wasm, `useManifold`);
+  - `src/server/manifold.ts` loads the same module in Node, once, when the first export needs it.
+- **Scene-level bake** (`bakeScene(nodes, definitions)`) holds these rules:
+  - Cuts are worked out on the expanded nodes (`cutters(expandNodes(nodes))`), as the editor does.
+  - Each entity is baked **once, around its pivot**, with the cuts its own holes make on its own shapes.
+  - An instance or item that a scene hole also cuts (or whose holes are cut differently because a scene shape is in scope) gets `cutBody` / `cutFloor` for that shape. It's cut in the entity's frame, the hole brought in by the instance's inverse transform.
+  - Holes are baked uncut, for Unity's hole gizmo only (§6): no renderer, no collider.
+- **Cache:** baked parts are kept per shape by the key `useShapeGeometry` already builds (geometry key + cut key), so an export after a step rebakes only what the step changed.
+
+### The export (15.2)
+
+- **`src/server/export.ts`:** `exportScene(doc, dir)` bakes, converts (§4), writes the binary and then the manifest (§3), and returns a summary: nodes by type, entities, meshes, bytes, milliseconds and **warnings**. Warnings cover a cut that failed (drawn uncut, as in the editor), an instance of a missing entity (exported as the editor's red block), and a mesh that isn't closed.
+- **Where it can write:** only to a folder in `project.json`'s `exports`, which the human sets. The folder must be absolute and must exist (or its parent must); the server creates the folder itself but not the path above it.
+- **The editor:** **Export…** in the project bar's menu opens a small dialog:
+  - the folder (a text field, since a browser can't pick one; the Tauri app can later);
+  - **Export now**, with the last export's time and summary;
+  - **Export on every step**, which exports about 1 s after the last step, never while one is running.
+- **The agent:** `export_scene {}` exports the open scene (or the agent's scene, 14.5) to its folder and returns the summary. Without a folder, it errors: "No export folder for this scene. Ask the human to set one in the editor (Export…)." A short `get_guide export` topic says what reaches Unity:
+  - entity names and tags are what mappings use, so name them well;
+  - hidden nodes arrive disabled;
+  - notes and lines are editor-only there.
+- **Speed:** an export blocks the server while it bakes. With the cache, a step's re-export should take well under 100 ms on the flight level. If a first export of a large scene takes over a second, the bake moves to a worker thread (measure first; see §13).
+
+---
+
+## 6. The Unity code (15.3)
+
+### Files and where they go
+
+The files live in this repo under `unity/Orlablocks/`. Orlando copies (or symlinks) the folder to `Assets/Orlablocks/` in their Unity project.
+
+```
+unity/Orlablocks/
+  Runtime/   Orlablocks.Runtime.asmdef
+    OrlaLevel.cs      the level root: export folder (relative to the Unity project), mappings, options, last sync
+    OrlaNode.cs       on every synced GameObject: id, type, kind, tags, description, entity, hash, claimed, last synced transform
+    OrlaNote.cs       text, label, status (tagged EditorOnly)
+    OrlaLine.cs       points, color, dashed, arrow (tagged EditorOnly)
+    OrlaMappings.cs   the ScriptableObject (§9)
+  Editor/    Orlablocks.Editor.asmdef (editor only)
+    Manifest.cs       the JsonUtility types for level.json, and the binary reader
+    Sync.cs           builds and updates a level (§7)
+    Look.cs           the tile texture and materials, made by code
+    OrlaLevelEditor.cs, OrlaNodeEditor.cs, OrlaMappingsEditor.cs   inspectors: Sync, Update available, drift list, claim
+    Gizmos.cs         notes, lines and holes in the Scene view
+    Watcher.cs        watches export folders (§7)
+```
+
+- **Generated assets go elsewhere,** in `Assets/OrlablocksGenerated/<project>/`, so the code folder stays clean and can become a package as it is:
+  - `Materials/`, `Textures/`;
+  - `Entities/<entity>.prefab` and `Entities/<entity>.meshes.asset`;
+  - `Levels/<scene>.meshes.asset` (every node's meshes as sub-assets of one file, not thousands of files).
+- Nothing in `Runtime/` depends on the editor, so levels with `OrlaNode` components build. Notes and lines are tagged `EditorOnly`, so Unity strips them from builds.
+- Namespaces: `Orlablocks` and `Orlablocks.Editor`. Target Unity 6000.5 and URP. No dependencies beyond URP (ProBuilder is optional, §8).
+
+### The look
+
+Orlando asked for ready-made materials. Sync makes them by code on first use and keeps them in `Assets/OrlablocksGenerated/<project>/Materials/`. The code files copy between projects with no binary assets and no GUIDs to break.
+
+- **The tile:** `OrlaTile.png`, drawn by `Look.cs` as the editor draws it (`tileTexture`, `ShapeMesh.tsx:26-45`): 256 px, white, a 3 px `#c4bfb5` border split across the edges, repeat, sRGB, anisotropy 8.
+- **Two materials per palette color:**
+  - `orla-<color>` (body): *Universal Render Pipeline/Lit*, base color from the manifest's palette, base map the tile. Smoothness 0, metallic 0, specular highlights and environment reflections off, which is as close to the editor's Lambert as URP Lit gets.
+  - `orla-<color>-floor`: the same color × `floorShade`.
+- **No edges.** The editor's faint outlines aren't exported: the tile and the lighting read well enough in Unity, and the outlines would need a transparent line material and a child GameObject per node.
+- **Holes:** no material. A hole is an empty GameObject with its mesh drawn as a wireframe gizmo (`Gizmos.DrawWireMesh`), only when selected or when the Level's **Show holes** is on.
+- A material is only made if missing. Once made, it's the user's to tune, and the palette in the manifest only applies to new ones. **Rebuild materials** on the Level remakes them. A color mapping (§9) replaces them per color.
+
+### A first sync (the build half of §7)
+
+For each record, in order: find or create the GameObject under the Level, parent it, set its transform, and then, by type:
+
+- **A closed shape or ramp:**
+  - `MeshFilter` + `MeshRenderer` with submeshes [body, floor] and materials [color, color-floor];
+  - a collider: `BoxCollider` for an untilted, untapered, unbevelled, uncut box volume, else a `MeshCollider` of body + floor.
+- **An instance or item:** a prefab instance of the generated entity prefab. With `cutBody`, the one child's `MeshFilter.sharedMesh` is overridden with the cut mesh.
+- **A group or array:** an empty.
+- **A note or line:** the `OrlaNote` / `OrlaLine` component.
+
+Plus, for every node: `OrlaNode` with its fields, the name `name (id)` or just `id`, `SetActive(!hidden)`, and static flags (Batching, Navigation, Occluder / Occludee) on shapes. Items and instances are static too unless a mapping says not.
+
+**Entity prefabs** are built first: one GameObject per definition shape under a root at the pivot, with the same components, saved with `PrefabUtility.SaveAsPrefabAsset`, and rebuilt only when the entity's `hash` changes. Instances in every scene update with it. To add things to an entity in Unity, make a **Prefab Variant** and map the entity to it (§9). Editing the generated prefab is overwritten by the next sync, and the prefab's inspector says so.
+
+---
+
+## 7. Refresh (15.4)
+
+### Matching
+
+A sync indexes the level's `OrlaNode`s by `id`. IDs are never reused in orlablocks, and an item's `array_3/7` stays until the array has fewer than 8 items. Then for each record:
+
+- **Found, not claimed, no drift:**
+  - update the managed parts;
+  - rebuild meshes only if `hash` changed;
+  - reparent if its group changed;
+  - keep every child and component the user added.
+- **Found, claimed** (on it or above it): skip. If its record changed, the Level's report lists "changed in orlablocks, claimed here".
+- **Found, drifted:** the transform differs from `OrlaNode`'s last synced one. Skip it and list it under **Moved in Unity**, with **Revert** (take orlablocks' transform on the next sync) and **Claim**.
+- **Not found:** create it.
+
+Then, for each `OrlaNode` under the level with no record:
+
+- **Claimed:** kept, and listed as "gone from orlablocks".
+- **Holding things the user added:** those are moved to an `Orphaned (<id>)` GameObject under the Level first, then the node is destroyed.
+- **Otherwise:** destroyed.
+
+**One undo step:** a sync runs inside one `Undo` group named `Sync <scene>`. A sync of more than about 2,000 changed nodes can skip undo (an option, off by default) if it's too slow.
+
+### Knowing there's something new
+
+- `Watcher.cs` keeps a `FileSystemWatcher` on each open Level's export folder and checks `level.json`'s `exportId` on the editor's main thread (`EditorApplication.update`).
+- A newer export shows **Update available** in the Level's inspector and as a small Scene-view overlay.
+- With the Level's **Auto sync** on, it syncs, at most once a second and never in Play mode.
+- A sync of an older or equal `exportId` does nothing unless forced (**Sync** always syncs).
+
+### The report
+
+After each sync, the Level's inspector lists:
+
+- the counts (created, updated, rebuilt, removed, orphaned);
+- the drift list;
+- the claimed nodes that changed in orlablocks;
+- missing mapped prefabs;
+- the export's own warnings.
+
+---
+
+## 8. Notes, lines and ProBuilder (15.6)
+
+- **Notes:** `Gizmos.cs` draws a flag at the pin with its label and color, and the text as a `Handles.Label` when selected or when the Level's **Show notes** is on. Done notes are faint. `EditorOnly`.
+- **Lines:** a polyline gizmo in the line's color (dashed and arrow as in orlablocks), with `OrlaLine.points` public so a tool can read a route (the race line) in the editor. `EditorOnly` by default. A tag mapping can keep one in builds, e.g. `#route` → not EditorOnly.
+- **Claim as ProBuilder:** with `com.unity.probuilder` installed (the editor asmdef's `versionDefines` sets `ORLA_PROBUILDER`), a node's context menu converts its body mesh to a `ProBuilderMesh`, keeping materials. The node is then claimed. Without ProBuilder, the menu item doesn't exist.
+- **Lightmap UVs:** a Level option generates UV2 (`Unwrapping.GenerateSecondaryUVSet`) on rebuilt meshes. Off by default because it's slow.
+
+---
+
+## 9. Mappings (15.5)
+
+`OrlaMappings` is a ScriptableObject that the Level points at. One can serve several levels of a project.
+
+- **Entities:** entity ID (picked from the last export's entities, shown by name) → a prefab, with `scale` (× the instance's, default 1) and `blockout`:
+  - `replace` (the default): the mapped prefab only;
+  - `keep hidden`: the generated prefab as a disabled child, to compare;
+  - `keep`.
+  The mapped prefab's root gets an `OrlaNode`, so matching (§7) works the same. Changing a mapping swaps the instances on the next sync, keeping the user's additions under them (moved to the new instance).
+- **Tags:** tag → any of a layer, a Unity tag, components (script types, picked as `MonoScript`s, stored as type names), static flags, and **keep in builds** (for lines). Applied to the tagged node and, for a group, to what's under it. Added components are the user's after that: a sync adds them if missing and never removes them.
+- **Colors:** palette key → body material and floor material, instead of the generated ones.
+- A missing mapped prefab or script is reported and falls back to the generated one.
+
+---
+
+## 10. Everyday use
+
+- **One Level per orlablocks scene.** A Unity scene can hold several Levels (the agent's version next to Orlando's, from 14.5). Entities of one project share generated prefabs.
+- **Moving a level in Unity:** move the Level's own GameObject. Its children are synced in its local space, so this isn't drift.
+- **Continuing in Unity** (Orlando's "work just continues in Unity"): claim what's being worked on, or stop syncing (**Auto sync** off). **Disconnect** removes every `OrlaNode` and leaves plain GameObjects and prefab instances.
+
+---
+
+## 11. Risks
+
+- **Prefab overrides on items:** a cut item overrides one child's mesh. If an entity's definition later drops that shape, the override is dead. Sync clears overrides it no longer needs.
+- **Big levels:** thousands of GameObjects. Measure on the flight level; the fallback is the merging deferred in §2.
+- **Export on every step during a fast drag:** the export waits for the step to finish and debounces 1 s, and the watcher throttles in Unity.
+- **The bake refactor could change what the editor draws.** `useShapeGeometry`'s output is compared before and after in a unit test (same vertices, normals, UVs) for each shape type.
+
+---
+
+## 12. Increments
+
+### 15.1 — The bake
+`src/shared/bake.ts` with `bakeShape` and `bakeScene`, the boolean library split into shared, web and server halves, the editor on the shared bake, and the cache. Check: unit tests below, and the editor draws exactly as before (browser: a room with a door, a tilted tapered volume, a ramp, an array with a cut item).
+
+### 15.2 — The export
+The manifest and binary (§3), the z flip (§4), `exportScene` and its summary, `exports` in `project.json`, the Export dialog with **Export on every step**, `export_scene` and `get_guide export`. Check: `scripts/check-15.mjs` exports a scripted scene on the spare server and reads it back (counts, ranges within the binary, a box's corners in Unity's frame, the atomic rename leaving the old binary until the next export).
+
+### 15.3 — Unity: the look and a first sync
+`unity/Orlablocks/` with the runtime components, `Manifest.cs`, `Look.cs`, the build half of `Sync.cs`, entity prefabs and the Level's inspector with **Sync**. Unity (Orlando): import, sync the flight level, compare with the editor side by side.
+
+### 15.4 — Unity: refresh
+Matching, rebuild by hash, claims, drift, orphans, deletion, the undo group, the watcher, **Update available**, **Auto sync** and the report. Unity (Orlando): §14, items 3–6.
+
+### 15.5 — Unity: mappings
+`OrlaMappings` and its inspector: entities, tags, colors. Unity (Orlando): §14, items 7–8.
+
+### 15.6 — Unity: notes, lines and ProBuilder
+The gizmos, keep-in-builds, **Claim as ProBuilder** and lightmap UVs. Unity (Orlando): §14, items 9–10.
+
+### 15.7 — The flight level
+§1 end to end with Orlando, with the times (a full export, a step's export, a full sync, a step's sync) and anything that got in the way logged here.
+
+---
+
+## 13. Checks between increments
+
+- **Unit tests (orlablocks):**
+  - `bakeShape` per type matches today's `useShapeGeometry` (same arrays);
+  - a room cut by a door has the door's hole, and its floor is only cut by a floor hole;
+  - an instance baked around its pivot, placed by its transform, equals its expanded shapes' bake (scale and tilt included);
+  - a cut item gets `cutBody` and an uncut one doesn't;
+  - the z flip (§4) for a tilted, turned box and a ramp: corners match, and normals point outward (positive signed volume after the winding swap);
+  - the manifest round-trips through `JSON.parse` with every field present on every record;
+  - hashes change when a shape's geometry or its cuts change, and not when only its name does.
+- **`scripts/check-15.mjs`** on the spare server, as in §12. Timing the first export and a one-step re-export of `scripts/eval-temple.mjs`'s scene guards speed.
+- **C#:** if a Unity license allows it, a batchmode compile in a scratch URP project (`Unity -batchmode -quit -projectPath <scratch> -logFile -`) catches compile errors before Orlando imports. Otherwise Orlando's import is the compile check.
+
+---
+
+## 14. Unity acceptance (Orlando)
+
+1. Copy `unity/Orlablocks/` into a URP project: it compiles with no warnings, and **GameObject → Orlablocks Level** exists.
+2. Sync the flight level: shapes, colors, tile, cut holes and colliders look like the editor; north is Unity's +z; a tilted peak leans the same way.
+3. Move a ring in orlablocks with **Export on every step**: **Update available** shows, and **Sync** moves it in one undo step (⌘Z puts it back).
+4. Add a child under a box, then change the box in orlablocks and sync: the child is still there.
+5. Nudge a peak in Unity and sync: it's listed as moved, not overwritten. **Revert** and **Claim** both work.
+6. Remove a group in orlablocks that has a Unity-added child: the child ends up in `Orphaned (group_N)`.
+7. Map `ring` to a real prefab: every ring is the prefab, in place and scaled. A Unity-added child under a ring moves to the new one.
+8. Map `#boundary` to a layer and a component: tagged nodes get both, and removing the mapping leaves the component.
+9. Notes and lines show in the Scene view and are gone in a build.
+10. With ProBuilder installed, **Claim as ProBuilder** on the lake: it's editable and later syncs leave it alone.
+
+---
+
+## 15. Decisions
+
+Decided with Orlando:
+
+1. **orlablocks bakes the geometry, and Unity owns the structure:** no C# port of the shapes, no ProBuilder rebuild (thinking-08's Option 2, with baked meshes).
+2. **One GameObject per node,** with static batching.
+3. **URP only,** on Unity 6000.5.
+4. **Ready-made materials, no edges:** made by code on first sync from URP Lit (palette and tile), rather than a custom shader, so they match the editor and survive URP updates. The editor's outlines aren't exported.
+5. **Code files, not a package:** Orlando imports them to test and makes the package later. Chisel is out of the picture.
+6. **Nothing flows back** from Unity to orlablocks. Claims and drift protect Unity's work instead.
+
+Proposed in this plan, to confirm:
+
+7. **The export is in Unity's frame** (z flipped in TypeScript), so the C# only copies numbers. A `.glb` export later would flip back.
+8. **The export folder sits outside `Assets/`** and is committed with the Unity project. Only the human sets it; the agent can export to it but not choose it.
+9. **Group and array pivots** are their bounds' bottom center, so they're easy to move in Unity once claimed.
+10. **Hidden nodes arrive disabled,** not left out.
+11. **Generated entity prefabs are overwritten** by syncs. Unity additions to an entity go in a Prefab Variant mapped in `OrlaMappings`.
+
+---
+
+## 16. Progress
