@@ -477,7 +477,7 @@ export function elevationTargets(moving: Bounds, others: Shape[]): number[] {
   const targets = [0];
   for (const box of others) {
     // Nothing stands on a line or a hole.
-    if (box.type === "line" || box.type === "note" || box.type === "instance" || box.type === "array" || box.kind === "hole") continue;
+    if (box.type === "terrain" || box.type === "line" || box.type === "note" || box.type === "instance" || box.type === "array" || box.kind === "hole") continue;
     const f = footprintBounds(box);
     const overlaps = f.minX < moving.maxX && f.maxX > moving.minX && f.minZ < moving.maxZ && f.maxZ > moving.minZ;
     if (overlaps) targets.push(round2(topOf(box)));

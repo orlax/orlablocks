@@ -1,3 +1,4 @@
+import { evaluateTerrain, terrainInputIds } from "../shared/terrain";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -21,7 +22,7 @@ import { loadManifold, onCutError } from "./manifold";
  */
 
 export const EXPORT_FORMAT = "orlablocks-unity";
-export const EXPORT_VERSION = 1;
+export const EXPORT_VERSION = 2;
 
 type V3 = [number, number, number];
 
@@ -35,7 +36,7 @@ export type CutRecord = { shape: string; body: MeshRange; floor: MeshRange; hash
 /** One node, every field present (Unity's JsonUtility reads plain records). Positions are local to the parent's. */
 export type NodeRecord = {
   id: string;
-  type: "group" | "box" | "cylinder" | "freeform" | "ramp" | "instance" | "array" | "item" | "note" | "line";
+  type: "terrain" | "group" | "box" | "cylinder" | "freeform" | "ramp" | "instance" | "array" | "item" | "note" | "line";
   kind: string;
   parent: string;
   name: string;
@@ -51,7 +52,8 @@ export type NodeRecord = {
   rev: string;
   body: MeshRange;
   floor: MeshRange;
-  collider: "box" | "mesh" | "none";
+  collider: "terrain" | "box" | "mesh" | "none";
+  terrain: { offset: number; resolution: number; size: V3 };
   /** An instance or item in something carrying #no-collisions: Unity turns its entity's colliders off, for this one only. */
   noColliders: boolean;
   boxCenter: V3;
@@ -225,6 +227,7 @@ const blank = (id: string, type: NodeRecord["type"], parent: string): NodeRecord
   body: NO_MESH,
   floor: NO_MESH,
   collider: "none",
+  terrain: { offset: 0, resolution: 0, size: [0, 0, 0] },
   noColliders: false,
   boxCenter: [0, 0, 0],
   boxSize: [0, 0, 0],
@@ -247,6 +250,7 @@ const MISSING: SceneNode[] = [{ id: "missing", type: "box", kind: "volume", x: 0
 
 type Context = {
   meshes: MeshWriter;
+  sourceNodes?: SceneNode[];
   library: Library;
   warnings: string[];
 };
@@ -282,6 +286,7 @@ function records(nodes: SceneNode[], baked: Map<string, Baked>, cutIds: Set<stri
     // A group or array sits at its parent's origin (15.4): a pivot from its bounds would move whenever one member
     // did, and with it every other member's local position, so one edit would change them all.
     if (n.type === "group" || n.type === "array") p = parentPivot(n);
+    else if (n.type === "terrain") { const f = evaluateTerrain(n, ctx.sourceNodes ?? nodes); p = { x: n.x - n.width / 2, y: f.min, z: n.z + n.depth / 2 }; }
     else if (n.type === "instance" || n.type === "note") p = { x: n.x, y: n.y, z: n.z };
     else if (n.type === "line") p = n.points[0] ?? ZERO;
     else if (isSolid(n)) p = placementOf(n, baked.get(n.id) ?? { body: null, floor: null }).at;
@@ -337,6 +342,16 @@ function records(nodes: SceneNode[], baked: Map<string, Baked>, cutIds: Set<stri
 
   const record = (n: SceneNode, local: Vec3): NodeRecord => {
     const base = { ...blank(n.id, n.type as NodeRecord["type"], n.parent ?? ""), name: n.name ?? "", hidden: !!n.hidden, tags: tagsOf(n) ?? [] };
+    if (n.type === "terrain") {
+      const f = evaluateTerrain(n, ctx.sourceNodes ?? nodes), size: V3 = [n.width, Math.max(1, f.max - f.min), n.depth];
+      const samples = Buffer.alloc(n.resolution * n.resolution * 4);
+      for (let z = 0; z < n.resolution; z++) for (let x = 0; x < n.resolution; x++)
+        samples.writeFloatLE((f.heights[(n.resolution - 1 - z) * n.resolution + x] - f.min) / size[1], (z * n.resolution + x) * 4);
+      const offset = ctx.meshes.bytes;
+      ctx.meshes.chunks.push(samples); ctx.meshes.bytes += samples.length;
+      return { ...base, position: toUnity(local), color: n.color, collider: noCollisions(n) ? "none" : "terrain",
+        terrain: { offset, resolution: n.resolution, size }, hash: hash16(samples.toString("base64")) };
+    }
     if (n.type === "group") return { ...base, description: n.description ?? "", position: toUnity(local) };
     if (n.type === "array") return { ...base, position: toUnity(local) };
     if (n.type === "instance") return instanceRecord(n, local, noCollisions(n));
@@ -387,9 +402,11 @@ export type ExportInput = {
 
 /** The manifest and binary for a scene (nothing written). Needs the boolean library loaded, or holes stay uncut. */
 export function buildExport(input: Omit<ExportInput, "dir">, warnings: string[] = []): { manifest: Manifest; binary: Buffer; meshes: number } {
-  const bake = bakeScene(input.nodes);
-  const ctx: Context = { meshes: new MeshWriter(), library: input.library, warnings };
-  const nodes = records(input.nodes, bake.shapes, bake.cut, ctx, bake);
+  const inputs = terrainInputIds(input.nodes);
+  const exported = input.nodes.filter((n) => !inputs.has(n.id));
+  const bake = bakeScene(exported);
+  const ctx: Context = { meshes: new MeshWriter(), library: input.library, warnings, sourceNodes: input.nodes };
+  const nodes = records(exported, bake.shapes, bake.cut, ctx, bake);
 
   const used = [...new Set(nodes.filter((r) => r.type === "instance" || r.type === "item").map((r) => r.entity))];
   const entities = used.map((id): EntityRecord => {

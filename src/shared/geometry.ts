@@ -59,11 +59,11 @@ export const isFootprinted = (shape: Shape): shape is Box | Cylinder => shape.ty
 
 /** Boxes, cylinders and free-forms: a footprint, a kind, an elevation and a height (lines and ramps have none). */
 export const isClosed = (shape: Shape): shape is ClosedShape =>
-  shape.type !== "line" && shape.type !== "ramp" && shape.type !== "note" && shape.type !== "instance" && shape.type !== "array";
+  shape.type !== "line" && shape.type !== "ramp" && shape.type !== "note" && shape.type !== "instance" && shape.type !== "array" && shape.type !== "terrain";
 
 /** Closed shapes and ramps: a kind and a mesh, so holes cut them (only closed shapes can be holes). */
 export const isSolid = (shape: Shape): shape is Solid =>
-  shape.type !== "line" && shape.type !== "note" && shape.type !== "instance" && shape.type !== "array";
+  shape.type !== "line" && shape.type !== "note" && shape.type !== "instance" && shape.type !== "array" && shape.type !== "terrain";
 
 /** Instances and arrays: nodes that show entities (their shapes are the entities', expanded). */
 export const showsEntities = (shape: Shape): shape is Extract<Shape, { type: "instance" | "array" }> => shape.type === "instance" || shape.type === "array";
@@ -267,6 +267,7 @@ export const footprint = (shape: ClosedShape): Point[] => {
  * seen from above), a line's polyline.
  */
 export const groundPoints = (shape: Shape): Point[] =>
+  shape.type === "terrain" ? [{ x: shape.x - shape.width / 2, z: shape.z - shape.depth / 2 }, { x: shape.x + shape.width / 2, z: shape.z + shape.depth / 2 }] :
   shape.type === "instance"
     ? instanceShapes(shape).flatMap(groundPoints)
     : shape.type === "array"
@@ -684,7 +685,7 @@ export function verticalRange(shape: Shape): [number, number] {
   }
   if (isClosed(shape)) return [shape.y, shape.y + shape.height];
   if (shape.type === "ramp") return rampRange(shape);
-  if (shape.type === "note") return [shape.y, shape.y];
+  if (shape.type === "note" || shape.type === "terrain") return [shape.y, shape.y];
   if (shape.type === "instance" || shape.type === "array") {
     const ranges = (shape.type === "instance" ? instanceShapes(shape) : arrayShapes(shape)).map(verticalRange);
     if (ranges.length > 0) return [Math.min(...ranges.map((r) => r[0])), Math.max(...ranges.map((r) => r[1]))];
@@ -707,7 +708,7 @@ export function handleFrame(shape: Shape): Frame {
  * a drag took it.
  */
 export const anchorOf = (shape: Shape) => {
-  if (isFootprinted(shape) || shape.type === "note" || shape.type === "instance") return { x: shape.x, y: shape.y, z: shape.z };
+  if (isFootprinted(shape) || shape.type === "terrain" || shape.type === "note" || shape.type === "instance") return { x: shape.x, y: shape.y, z: shape.z };
   if (shape.type === "array") return layoutAnchor(shape.layout);
   const p = shape.points[0];
   return { x: p.x, y: shape.type === "freeform" ? shape.y : shape.points[0].y, z: p.z };
@@ -877,7 +878,7 @@ export function lineProblem(points: LinePoint[]): string | null {
 export function moveShape(shape: Shape, dx: number, dy: number, dz: number): ShapePatch {
   if (shape.type === "array") return moveArray(shape, dx, dy, dz);
   const patch: ShapePatch = {};
-  if (shape.type === "note" || shape.type === "instance") {
+  if (shape.type === "terrain" || shape.type === "note" || shape.type === "instance") {
     if (dx !== 0) patch.x = round2(shape.x + dx);
     if (dy !== 0) patch.y = round2(shape.y + dy);
     if (dz !== 0) patch.z = round2(shape.z + dz);
@@ -903,6 +904,7 @@ export function moveShape(shape: Shape, dx: number, dy: number, dz: number): Sha
  * pivot and the angle adds to its rotation; a free-form's points orbit it and their handles turn with them.
  */
 export function rotateShape(shape: Shape, pivot: Point, degrees: number): ShapePatch {
+  if (shape.type === "terrain") throw new Error("Terrain rotation and tilt are not supported");
   // A tilted free-form's or array's tilt is around the world's axes (14.4), so a turn changes it: turn it rigidly.
   if ((shape.type === "freeform" || shape.type === "array") && (shape.pitch || shape.roll)) {
     return tiltShape(shape, rotY(degrees), { x: pivot.x, y: 0, z: pivot.z });
@@ -940,7 +942,7 @@ export function rotateAround(shapes: Shape[], pivot: Point, degrees: number): Re
  */
 export function resizeShape(shape: Shape, from: Frame, to: { x: number; z: number; width: number; depth: number }): ShapePatch {
   if (isFootprinted(shape)) return { x: to.x, z: to.z, width: to.width, depth: to.depth };
-  if (shape.type === "line" || shape.type === "ramp" || shape.type === "note" || shape.type === "instance" || shape.type === "array") return {}; // these have no scale handles
+  if (shape.type === "terrain" || shape.type === "line" || shape.type === "ramp" || shape.type === "note" || shape.type === "instance" || shape.type === "array") return {}; // these have no scale handles
   const sx = from.width > 0 ? to.width / from.width : 1;
   const sz = from.depth > 0 ? to.depth / from.depth : 1;
   const target = { ...to, rotation: from.rotation };
@@ -978,6 +980,7 @@ export function scaleShape(shape: Shape, factor: number, pivot: Pivot3): ShapePa
   const pz = (z: number) => round2(pivot.z + (z - pivot.z) * f);
   const len = (n: number) => round2(n * f);
   const scaleOf = (s: number | undefined) => round2((s ?? 1) * f);
+  if (shape.type === "terrain") return { x: px(shape.x), y: py(shape.y), z: pz(shape.z), width: len(shape.width), depth: len(shape.depth) };
   if (shape.type === "array") return scaleArray(shape, f, pivot);
   if (shape.type === "note") return { x: px(shape.x), y: py(shape.y), z: pz(shape.z) };
   if (shape.type === "instance") return { x: px(shape.x), y: py(shape.y), z: pz(shape.z), scale: scaleOf(shape.scale) };
@@ -986,7 +989,7 @@ export function scaleShape(shape: Shape, factor: number, pivot: Pivot3): ShapePa
     return { points: scaledPoints3(shape.points, f, pivot) as RampPoint[], width: len(shape.width), ...(shape.step !== undefined ? { step: len(shape.step) } : {}) };
   }
   const wall = shape.kind === "room" ? { wall: len(wallOf(shape)) } : {};
-  const vertical = { y: py(shape.y), height: len(shape.height), ...wall };
+  const vertical = { y: py(shape.y), height: len(shape.height), ...wall, ...("terrain" in shape && shape.terrain ? { terrain: { ...shape.terrain, fade: len(shape.terrain.fade) } } : {}) };
   if (!isFootprinted(shape)) {
     return {
       ...vertical,
@@ -1021,6 +1024,7 @@ const tiltAngle = (d: number) => {
  *   level across), so a tilted ramp is only roughly one. A note's point orbits.
  */
 export function tiltShape(shape: Shape, m: Mat3, pivot: Pivot3): ShapePatch {
+  if (shape.type === "terrain") throw new Error("Terrain rotation and tilt are not supported");
   const round3 = (p: Pivot3) => ({ x: round2(p.x), y: round2(p.y), z: round2(p.z) });
   if (shape.type === "note") return round3(orbit3(m, pivot, shape));
   if (shape.type === "line" || shape.type === "ramp") {
@@ -1141,7 +1145,7 @@ export function mirrorShape(shape: Shape, axis: MirrorAxis, sum: number): ShapeP
     return v ? { [f]: v === 180 ? 180 : -v } : {};
   };
   if (shape.type === "array") return { ...mirrorArray(shape, axis, sum), ...flipTilt(shape) };
-  if (shape.type === "note") return axis === "x" ? { x: round2(sum - shape.x) } : { z: round2(sum - shape.z) };
+  if (shape.type === "note" || shape.type === "terrain") return axis === "x" ? { x: round2(sum - shape.x) } : { z: round2(sum - shape.z) };
   // An instance moves to its mirrored point and turns to face the mirrored way; the entity itself isn't flipped.
   if (shape.type === "instance") {
     return axis === "x"

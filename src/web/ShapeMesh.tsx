@@ -8,6 +8,7 @@ import { useManifold } from "./csg";
 import { VIEW_ACCENT } from "../ui/viewColors";
 
 type Props = {
+  authoring?: boolean;
   shape: Solid;
   /** The live preview while drawing: translucent blue, so it reads as not-yet-placed. */
   draft?: boolean;
@@ -113,10 +114,10 @@ export function colorMaterials(color: ShapeColor): ColorMaterials {
  * ceiling, so you see in from above. A volume is the footprint extruded to its height. Both cast and receive shadows
  * and have faint outlined edges. A hole is a translucent ghost with dashed edges.
  */
-export function ShapeMesh({ shape, draft = false, highlight, cuts, walkable = true }: Props) {
+export function ShapeMesh({ shape, draft = false, highlight, cuts, walkable = true, authoring = false }: Props) {
   const { kind, color } = shape;
   const { solid, floor, edges, frame, y, height, tilt } = useShapeGeometry(shape, cuts);
-  const hole = kind === "hole" && !draft;
+  const hole = (kind === "hole" || authoring) && !draft;
 
   const s = getShared();
   const c = colorMaterials(color);

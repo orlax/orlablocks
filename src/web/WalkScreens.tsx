@@ -132,7 +132,7 @@ export function avatarShapes(human: string | null, eyeHeight: number, at: { x: n
 export function Avatar({ shapes, group }: { shapes: Shape[]; group: RefObject<THREE.Group | null> }) {
   return (
     <group ref={group}>
-      {shapes.map((s) => (s.type === "line" || s.type === "note" || s.type === "instance" || s.type === "array" ? null : <ShapeMesh key={s.id} shape={s} walkable={false} />))}
+      {shapes.map((s) => (s.type === "line" || s.type === "note" || s.type === "terrain" || s.type === "instance" || s.type === "array" ? null : <ShapeMesh key={s.id} shape={s} walkable={false} />))}
     </group>
   );
 }

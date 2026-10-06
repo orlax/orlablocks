@@ -781,7 +781,7 @@ describe("scene store cylinders", () => {
     expect(round).toMatchObject({ type: "cylinder", height: 3, name: "shrine" });
     expect(round).not.toHaveProperty("sides");
     expect(octagon).toMatchObject({ type: "cylinder", sides: 8, height: 0.25 });
-    expect(store.getNextId()).toEqual({ box: 2, group: 1, cylinder: 3, freeform: 1, line: 1, ramp: 1, note: 1, instance: 1, array: 1 });
+    expect(store.getNextId()).toEqual({ terrain: 1, box: 2, group: 1, cylinder: 3, freeform: 1, line: 1, ramp: 1, note: 1, instance: 1, array: 1 });
     expect(store.getHistory().undoLabel).toBe("Agent: draw box_1, cylinder_1, cylinder_2");
   });
 

@@ -1459,3 +1459,11 @@ summary:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
 .modal label.check { flex-direction: row; align-items: center; gap: 8px; font-weight: 700; }
 .modal label.check input { width: auto; }
 .modal .export-last { overflow-wrap: anywhere; }
+
+/* Terrain's first authoring controls (16.1), beside the existing inspector. */
+.terrain-panel { position: absolute; right: 16px; bottom: 52px; z-index: 12; width: 224px; max-height: 48vh; overflow: auto; padding: 10px; background: var(--paper, #fff); color: var(--ink, #222); border: 2px solid var(--ink, #222); box-shadow: 3px 3px 0 var(--ink, #222); font-size: 12px; }
+.terrain-panel summary { cursor: pointer; font-weight: bold; }
+.terrain-panel label { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; }
+.terrain-panel input[type=number] { width: 90px; }
+.terrain-panel button { margin-top: 8px; }
+.terrain-panel small { display: block; margin-top: 8px; }

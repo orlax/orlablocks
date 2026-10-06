@@ -1,3 +1,4 @@
+import { TerrainPanel } from "./TerrainPanel";
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps } from "react";
 import { ArrowLeft, BookOpen, ChevronDown, Map as MapIcon, Package, Upload } from "lucide-react";
 import {
@@ -136,6 +137,7 @@ const details = (s: Shape, library: Library | null) => {
     const size = `${round2(b.maxX - b.minX)} × ${round2(b.maxZ - b.minZ)} × ${round2(b.maxY - b.minY)} m`;
     return `${meta ? meta.name : `missing entity ${s.entity}`} · ${size} · y ${s.y} · ${s.rotation}°${tags}`;
   }
+  if (s.type === "terrain") return `${s.width} × ${s.depth} m · base ${s.y} · ${s.resolution} samples`;
   if (s.type === "note") return `note${s.label ? ` · ${s.label}` : ""} · ${s.status} · by ${s.createdBy} · y ${s.y}`;
   if (s.type === "line") {
     const path = polyline(s);
@@ -304,6 +306,7 @@ export function App() {
   // The Ramp tool's next ramp.
   const [nextRamp, setNextRamp] = useState<RampStyle>({ kind: "volume", width: DEFAULT_RAMP_WIDTH, base: "solid", color: DEFAULT_COLOR });
   // The view bar: whether holes show as ghosts (off: only what they cut away shows), and the grid.
+  const [showModifiers, setShowModifiers] = useState(true);
   const [showHoles, setShowHoles] = useViewToggle("holes");
   const [showNotes, setShowNotes] = useViewToggle("notes");
   const [showLines, setShowLines] = useViewToggle("lines");
@@ -967,7 +970,7 @@ export function App() {
                     })()
                   : undefined,
               makeEntity:
-                !editingEntity && selectedShapes.length > 0 && !selectedShapes.some((b) => b.type === "instance" || b.type === "array" || b.type === "note")
+                !editingEntity && selectedShapes.length > 0 && !selectedShapes.some((b) => b.type === "instance" || b.type === "array" || b.type === "note" || b.type === "terrain")
                   ? {
                       suggested: (single && isGroup(single) ? single.name : undefined) ?? "entity",
                       onMake: (name) => {
@@ -1043,6 +1046,7 @@ export function App() {
         nextFields={nextFields}
         nextLine={nextLine}
         nextRamp={nextRamp}
+        showModifiers={showModifiers}
         showHoles={showHoles}
         showGrid={showGrid}
         visible={visible}
@@ -1297,6 +1301,9 @@ export function App() {
         />
       </div>
 
+      {open && !editingEntity && <TerrainPanel nodes={nodes} selection={selection} show={showModifiers} toggle={() => setShowModifiers(!showModifiers)} focus={view.focus}
+        create={(shapes) => { pendingSelect.current = { before: new Set(nodes.map((n) => n.id)), pick: (added) => added.filter((n) => n.type === "terrain").map((n) => n.id) }; send({ type: "add_shapes", shapes }); }}
+        update={(changes) => send({ type: "update_nodes", changes })} enter={(id) => { setContext(id); setSelection([]); setNextKind("volume"); setTool("box"); }} />}
       {inspector && <Inspector {...inspector} />}
 
       <div className="top-right">

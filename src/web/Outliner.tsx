@@ -35,7 +35,7 @@ const SHAPE_ICONS = {
 } as const;
 /** The icon for a node: a folder for a group, a line's own, a closed shape's by type and kind. */
 const iconOf = (node: SceneNode) =>
-  isGroup(node)
+  node.type === "terrain" ? Grid3x3 : isGroup(node)
     ? Folder
     : node.type === "line"
       ? Waypoints

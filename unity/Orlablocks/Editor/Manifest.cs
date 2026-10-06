@@ -27,7 +27,7 @@ namespace Orlablocks.Editor
         public NodeRecord[] nodes;
 
         public const string Format = "orlablocks-unity";
-        public const int Version = 1;
+        public const int Version = 2;
 
         /// <summary>
         /// The exportId in a scene folder's level.json without reading the whole file (the watcher's cheap check), or
@@ -125,6 +125,7 @@ namespace Orlablocks.Editor
         public MeshRange body;
         public MeshRange floor;
         public string collider;
+        public TerrainRecord terrain;
         public bool noColliders;
         public float[] boxCenter;
         public float[] boxSize;
@@ -149,6 +150,8 @@ namespace Orlablocks.Editor
     /// The export's mesh binary: each mesh is its positions (float × 3), normals (float × 3), UVs (float × 2) and
     /// indices (uint), little-endian, from its range's offset.
     /// </summary>
+    [Serializable] public class TerrainRecord { public int offset; public int resolution; public float[] size; }
+
     public class MeshBinary
     {
         readonly byte[] bytes;
@@ -159,6 +162,21 @@ namespace Orlablocks.Editor
             if (!File.Exists(file)) throw new Exception($"{file} is missing: export the scene again.");
             bytes = File.ReadAllBytes(file);
             if (bytes.Length != info.bytes) throw new Exception($"{file} is {bytes.Length} bytes, not the {info.bytes} level.json says: export the scene again.");
+        }
+
+        public float[,] Heights(TerrainRecord terrain)
+        {
+            int n = terrain.resolution;
+            if ((n != 129 && n != 257 && n != 513 && n != 1025) || terrain.offset < 0 || (long)terrain.offset + (long)n * n * 4 > bytes.Length)
+                throw new Exception("Invalid terrain height payload; export the scene again.");
+            var result = new float[n, n];
+            var samples = Floats(terrain.offset, n * n);
+            for (int z = 0; z < n; z++) for (int x = 0; x < n; x++) {
+                float h = samples[z * n + x];
+                if (float.IsNaN(h) || float.IsInfinity(h) || h < 0 || h > 1) throw new Exception("Invalid terrain height sample.");
+                result[z, x] = h;
+            }
+            return result;
         }
 
         float[] Floats(int offset, int count)

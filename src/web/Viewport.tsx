@@ -1,3 +1,6 @@
+import { rayMeshFirst, type Ray } from "../shared/ray";
+import { TerrainMesh } from "./TerrainMesh";
+import { evaluateTerrain, terrainInputIds } from "../shared/terrain";
 import { useEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent, type RefObject } from "react";
 import { Canvas, invalidate, useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
@@ -307,7 +310,7 @@ const footprintKey = (shapes: Shape[]) =>
     shapes.map((s) =>
       isFootprinted(s)
         ? [s.x, s.z, s.width, s.depth, s.rotation, s.type === "cylinder" ? s.sides : 0]
-        : s.type === "note"
+        : s.type === "note" || s.type === "terrain"
           ? [s.x, s.z]
           : s.type === "instance"
             ? [s.x, s.z, s.rotation, s.entity]
@@ -362,6 +365,7 @@ type Props = {
   /** How the Ramp tool draws the next ramp. */
   nextRamp: RampStyle;
   /** Whether holes show as ghosts (off: only the result shows, and hidden holes can't be clicked). */
+  showModifiers?: boolean;
   showHoles: boolean;
   /** Whether the grid shows (the view bar). */
   showGrid: boolean;
@@ -480,6 +484,7 @@ export function Viewport({
   nextFields,
   nextLine,
   nextRamp,
+  showModifiers = true,
   showHoles,
   showGrid,
   showNotes,
@@ -574,7 +579,8 @@ export function Viewport({
         <>
           <Lighting cam={light} />
           <Boxes
-            boxes={shapes}
+            nodes={from}
+            boxes={shapes.filter((s) => !terrainInputIds(from).has(s.id))}
             arrays={from.filter((b): b is ArrayNode => b.type === "array" && !hiddenNow.has(b.id))}
             entityMode={entityNow}
             cuts={cutsNow}
@@ -1046,7 +1052,9 @@ export function Viewport({
   const onViewRef = useRef(onView);
   onViewRef.current = onView;
   // What's drawn: each instance as its entity's shapes (IDs like `instance_4/box_2`; `ownerOf` maps a hit back).
-  const drawn = expandShapes(onView);
+  const sourceIds = terrainInputIds(nodes);
+  const terrainNodes = nodes.map((n) => unfollowed.find((s) => s.id === n.id) ?? n);
+  const drawn = expandShapes(onView).filter((s) => showModifiers || !sourceIds.has(s.id));
   const drawnArrays = useMemo(() => onView.filter((b): b is ArrayNode => b.type === "array"), [onView]);
   const pickable = showHoles ? drawn : drawn.filter((b) => !isHole(b) || selectedIds.has(b.id) || selectedIds.has(ownerOf(b.id)));
   // Locked nodes (and what's in them) can't be clicked, hovered or marquee-selected, unless selected from the
@@ -1170,11 +1178,24 @@ export function Viewport({
    * The shape under the cursor and the point where it's hit: a line first (they're drawn over everything, picked
    * within a few px of their path on screen), else the first closed shape the ray hits.
    */
+  const pickWithTerrain = (ray: Ray, shapes: Shape[]) => {
+    let best = pickHit(ray, shapes);
+    let distance = best ? Math.hypot(best.point.x - ray.origin.x, best.point.y - ray.origin.y, best.point.z - ray.origin.z) : Infinity;
+    for (const s of shapes) {
+      if (s.type !== "terrain") continue;
+      const f = evaluateTerrain(s, terrainNodes);
+      const mesh = { ...f.mesh, min: [s.x - s.width / 2, f.min, s.z - s.depth / 2] as [number, number, number], max: [s.x + s.width / 2, f.max, s.z + s.depth / 2] as [number, number, number] };
+      const hit = rayMeshFirst(ray, mesh);
+      const d = hit ? hit.t * Math.hypot(ray.dir.x, ray.dir.y, ray.dir.z) : Infinity;
+      if (hit && d < distance) { distance = d; best = { id: s.id, normal: hit.normal, point: { x: ray.origin.x + ray.dir.x * hit.t, y: ray.origin.y + ray.dir.y * hit.t, z: ray.origin.z + ray.dir.z * hit.t } }; }
+    }
+    return best;
+  };
   const hitAt = (sx: number, sy: number, size: Size) => {
     const hit =
       pickNote(cam.current, size, sx, sy, selectable) ??
       pickLine(cam.current, size, sx, sy, selectable) ??
-      pickHit(screenRay(cam.current, size, sx, sy), selectable);
+      pickWithTerrain(screenRay(cam.current, size, sx, sy), selectable);
     // A part of an instance picks the instance.
     return hit && { ...hit, id: ownerOf(hit.id) };
   };
@@ -2054,7 +2075,8 @@ export function Viewport({
         {showCursor && !walk && !drag?.active && <Cursor3D at={cursorRef} />}
         {!walk && <OriginAxes />}
         <Boxes
-          boxes={[...drawn, ...expandShapes(ghosts)]}
+          nodes={terrainNodes}
+          boxes={[...drawn.filter((s) => showModifiers || !terrainInputIds(nodes).has(s.id)), ...expandShapes(ghosts)]}
           arrays={drawnArrays}
           entityMode={entityMode}
           cuts={cuts}
@@ -2214,6 +2236,7 @@ export function Viewport({
  * but not when they're removed (Clear, a cancelled draft), so request a frame after every change.
  */
 function Boxes({
+  nodes,
   boxes: all,
   arrays = NO_ARRAYS,
   entityMode,
@@ -2223,6 +2246,7 @@ function Boxes({
   selected,
   hovered,
 }: {
+  nodes: SceneNode[];
   boxes: Shape[];
   /** The arrays among what's drawn, as shown: their items (in `boxes`) are drawn instanced where they can be (10.5). */
   arrays?: ArrayNode[];
@@ -2237,6 +2261,7 @@ function Boxes({
   selected: Set<string>;
   hovered: Set<string>;
 }) {
+  const modifierIds = terrainInputIds(nodes);
   const selectedKey = [...selected].join(",");
   const hoveredKey = [...hovered].join(",");
   const { boxes, groups } = useMemo(() => splitInstanced(all, arrays, cuts), [all, arrays, cuts]);
@@ -2250,6 +2275,7 @@ function Boxes({
         // A part of an instance lights up with it.
         const owner = ownerOf(b.id);
         const highlight = selected.has(b.id) || selected.has(owner) ? "selected" : hovered.has(b.id) || hovered.has(owner) ? "hover" : undefined;
+        if (b.type === "terrain") return <TerrainMesh key={b.id} terrain={b} nodes={nodes} selected={!!highlight} />;
         if (b.type === "line") return <LineMesh key={b.id} line={b} highlight={highlight} />;
         if (b.type === "note") return <NoteMesh key={b.id} note={b} highlight={highlight} />;
         // Instances and arrays arrive expanded; one here would be a bug upstream.
@@ -2257,7 +2283,7 @@ function Boxes({
         if (isHole(b) && !showHoles && !highlight) return null;
         return (
           <group key={b.id}>
-            <ShapeMesh shape={b} highlight={highlight} cuts={cuts.get(b.id)} />
+            <ShapeMesh shape={b} authoring={modifierIds.has(b.id)} highlight={highlight} cuts={modifierIds.has(b.id) ? undefined : cuts.get(b.id)} />
             {isHole(b) && b.parent === undefined && !entityMode && <HoleWarning hole={b} />}
           </group>
         );

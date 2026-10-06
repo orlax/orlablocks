@@ -1,3 +1,4 @@
+import { terrainProblems } from "../shared/terrain";
 import type { z } from "zod";
 import {
   boundsOf,
@@ -99,6 +100,7 @@ export class SceneError extends Error {}
 function resolveBatchRefs(input: ShapeInput, lookup: (ref: string, where: string) => string): ShapeInput {
   const resolve = (value: unknown, where: string) => (typeof value === "string" && value.startsWith("$") ? lookup(value.slice(1), where) : value);
   const out = { ...input } as Record<string, unknown>;
+  if ("source" in out) out.source = resolve(out.source, "source");
   if ("parent" in out) out.parent = resolve(out.parent, "parent");
   const layout = out.layout as { along?: { id?: unknown } } | undefined;
   if (layout?.along?.id !== undefined) out.layout = { ...layout, along: { ...layout.along, id: resolve(layout.along.id, "layout.along.id") } };
@@ -167,6 +169,7 @@ const scaleField = (scale: number | undefined) => (scale !== undefined && round2
 const GROUP_FIELDS: readonly string[] = ["name", "description", "tags", "parent", "locked", "hidden"];
 
 const FIELD_VERBS: Record<keyof NodePatch, string> = {
+  terrain: "shape terrain", source: "set source", resolution: "resample",
   name: "rename",
   description: "describe",
   tags: "tag",
@@ -268,7 +271,7 @@ export function createSceneStore({
   // What the store holds: a scene, or an entity's definition (08.5), which can't hold notes or instances.
   let document: "scene" | "entity" = "scene";
   const entityProblem = (n: { type?: string }) =>
-    document === "entity" && (n.type === "note" || n.type === "instance" || n.type === "array")
+    document === "entity" && (n.type === "terrain" || n.type === "note" || n.type === "instance" || n.type === "array")
       ? `an entity can't hold ${n.type === "note" ? "notes (put them in the scene)" : n.type === "array" ? "arrays (no nested entities)" : "instances (no nested entities)"}`
       : null;
 
@@ -313,6 +316,11 @@ export function createSceneStore({
   const commit = (label: string, actor: Actor, ops: Op[]) => {
     const all = [...ops];
     let { nodes, inverse } = runOps(scene.nodes, ops);
+    // A deleted source releases its terrain; explicit bad references still fail validation.
+    const gone = nodes.flatMap((n) => n.type === "terrain" && n.source && !nodes.some((g) => g.id === n.source) && scene.nodes.some((g) => g.id === n.source)
+      ? [{ id: n.id, patch: { source: undefined } }] : []);
+    if (gone.length) { const op: Op = { op: "update", changes: gone }; inverse = [invertOp(nodes, op), ...inverse]; nodes = applyOp(nodes, op); all.push(op); }
+    failIf(terrainProblems(nodes), "Nothing was changed.");
     // Arrays that follow a node (10.3) take its path as it is now, in the same step: a follower whose target is
     // gone is unlinked, keeping the path it had.
     const follow = refollow(nodes);
@@ -322,7 +330,7 @@ export function createSceneStore({
       all.push(follow);
     }
     for (;;) {
-      const empty = nodes.filter((n) => isGroup(n) && !nodes.some((c) => c.parent === n.id)).map((n) => n.id);
+      const empty = nodes.filter((n) => isGroup(n) && !nodes.some((c) => c.parent === n.id || (c.type === "terrain" && c.source === n.id))).map((n) => n.id);
       if (empty.length === 0) break;
       const prune: Op = { op: "remove", ids: empty };
       inverse = [invertOp(nodes, prune), ...inverse];
@@ -1019,6 +1027,11 @@ export function createSceneStore({
             ...standOnFrom(`${prefix}.on`, d.on, predicted[i], errors),
           });
         }
+        if (d.type === "terrain") {
+          checkSizes(prefix, d, errors);
+          if (document === "entity") errors.push(`${prefix}: terrains cannot be entity definitions`);
+          return { ...d, type: "terrain" as const, y: d.y ?? 0, color: d.color ?? "green", resolution: d.resolution ?? 129 };
+        }
         if (d.type === "note") {
           return {
             type: "note" as const,
@@ -1061,6 +1074,7 @@ export function createSceneStore({
           ...(name ? { name } : {}),
           ...withTags(tagList(prefix, d.tags, errors)),
           ...(d.parent !== undefined ? { parent: d.parent } : {}),
+          ...("terrain" in d && d.terrain ? { terrain: d.terrain } : {}),
           kind: d.kind,
           y: round2(d.y ?? 0),
           height: round2(height),
@@ -1109,6 +1123,7 @@ export function createSceneStore({
       const failing = new Set(errors.map((e) => /^shapes\[(\d+)\]/.exec(e)?.[1]).filter(Boolean)).size;
       failIf(named, failing > 1 ? `Nothing was drawn: ${failing} entries have problems.` : "Nothing was drawn.");
 
+      failIf(terrainProblems([...scene.nodes, ...valid.map((b, i) => ({ ...b!, id: predicted[i], createdBy: actor }) as SceneNode)]), "Nothing was drawn.");
       const created = valid.map((b) => ({ id: newId(b!.type), ...b!, createdBy: actor }) as SceneNode);
       const ids = created.map((b) => b.id);
       commit(label("draw", listIds(ids, "shapes"), actor), actor, [{ op: "add", nodes: created }]);
@@ -1177,6 +1192,12 @@ export function createSceneStore({
             errors.push(`changes[${i}]: "${id}" is a group; only name, description, parent, locked and hidden can change (not ${shapeOnly.join(", ")})`);
           }
         } else if (node) {
+          if (node.type === "terrain") {
+            const allowed = ["x", "y", "z", "width", "depth", "resolution", "source", "color", "name", "parent", "locked", "hidden", "tags"];
+            const bad = Object.keys(fields).filter((k) => !allowed.includes(k));
+            if (bad.length) errors.push(`${id}: terrain has no ${bad.join(", ")}`);
+          } else if (fields.source !== undefined || fields.resolution !== undefined) errors.push(`${id}: source and resolution belong to terrains`);
+          if (fields.terrain !== undefined && node.type !== "box" && node.type !== "cylinder") errors.push(`${id}: terrain modifiers must be boxes or cylinders`);
           if (fields.description !== undefined) errors.push(`changes[${i}].description: only a group has a description ("${id}" is a ${node.type})`);
           if (fields.tags !== undefined && node.type === "line") errors.push(`changes[${i}].tags: a line has no tags (it's an annotation)`);
           const noteOnly = (["text", "label", "status"] as const).filter((k) => fields[k] !== undefined);
@@ -1250,7 +1271,7 @@ export function createSceneStore({
               );
             }
           }
-          if (node.type !== "line" && node.type !== "ramp" && node.type !== "note" && node.type !== "instance" && node.type !== "array") {
+          if (isClosed(node)) {
             const kind = fields.kind ?? node.kind;
             for (const f of Object.keys(KIND_FIELDS) as KindField[]) {
               if (fields[f] !== undefined && fields[f] !== null && !kindAllows(f, kind)) {
@@ -1277,6 +1298,9 @@ export function createSceneStore({
         if (!node) return null;
 
         const patch: NodePatch = {};
+        if (fields.source !== undefined) patch.source = fields.source || undefined;
+        if (fields.resolution !== undefined) patch.resolution = fields.resolution;
+        if (fields.terrain !== undefined) patch.terrain = fields.terrain ?? undefined;
         for (const key of ["x", "z", "y", "width", "depth", "height"] as const) {
           if (fields[key] !== undefined) patch[key] = round2(fields[key]);
         }
@@ -1547,7 +1571,7 @@ export function createSceneStore({
           return { ...(rest as typeof n), ...kept, thickness: round2(n.thickness), points: checkLinePoints(`nodes[${i}]`, n.points, errors) };
         }
         if (n.type === "ramp") return { ...(rest as typeof n), ...kept, ...checkRamp(`nodes[${i}]`, n, errors) };
-        if (n.type === "note") return { ...(rest as typeof n), ...kept, x: round2(n.x), y: round2(n.y), z: round2(n.z) };
+        if (n.type === "note" || n.type === "terrain") return { ...(rest as typeof n), ...kept, x: round2(n.x), y: round2(n.y), z: round2(n.z) };
         if (n.type === "instance") return { ...(rest as typeof n), ...kept, x: round2(n.x), y: round2(n.y), z: round2(n.z), rotation: normalizeRotation(n.rotation) };
         if (n.type === "array") return { ...(rest as typeof n), ...kept };
         const shape = { ...(rest as ClosedShape), ...kept, height: round2(n.height) } as ClosedShape;
@@ -1750,7 +1774,7 @@ export function createSceneStore({
       const roots = topmost(scene.nodes, ids);
       const inside = new Set(roots.flatMap((id) => [...subtreeIds(scene.nodes, id)]));
       const taken = scene.nodes.filter((n) => inside.has(n.id));
-      const bad = taken.filter((n) => n.type === "instance" || n.type === "array" || n.type === "note");
+      const bad = taken.filter((n) => n.type === "instance" || n.type === "array" || n.type === "note" || n.type === "terrain");
       if (bad.length > 0) {
         const what = bad.some((n) => n.type === "instance") ? "instances (no nested entities)" : bad.some((n) => n.type === "array") ? "arrays (no nested entities)" : "notes";
         throw new SceneError(`An entity can't hold ${what}: ${listIds(bad.map((n) => n.id))}. No entity was made.`);

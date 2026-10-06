@@ -35,7 +35,16 @@ export const DEFAULT_COLOR: ShapeColor = "almost-white";
  * 0 = on the ground, negative = below) to `y + height`. `rotation` turns it around the vertical axis through its
  * center, in degrees, counterclockwise seen from above (a right-handed turn about +y); 0 = grid-aligned.
  */
+export type TerrainModifier = { operation: "raise" | "lower" | "set"; fade: number };
+
+export type Terrain = {
+  id: string; type: "terrain"; name?: string; parent?: string; locked?: true; hidden?: true; tags?: string[];
+  x: number; y: number; z: number; width: number; depth: number; color: ShapeColor;
+  resolution: 129 | 257 | 513 | 1025; source?: string; createdBy: Actor;
+};
+
 type Footprinted = {
+  terrain?: TerrainModifier;
   id: string; // server-assigned, "box_1", "cylinder_1", ... never reused
   name?: string; // for people and the agent ("lobby"); not unique
   tags?: string[]; // library tag names ("climbable"), from 08
@@ -332,7 +341,7 @@ export type ClosedShape = Box | Cylinder | Freeform;
 /** A solid: a shape with a kind and a mesh, that holes cut (a closed shape or a ramp; only closed shapes are holes). */
 export type Solid = ClosedShape | Ramp;
 /** Anything drawn: every node that isn't a group. */
-export type Shape = ClosedShape | Line | Ramp | Note | Instance | ArrayNode;
+export type Shape = ClosedShape | Line | Ramp | Note | Instance | ArrayNode | Terrain;
 export type ShapeType = Shape["type"];
 
 /**
@@ -362,6 +371,9 @@ export type SceneNode = Shape | Group;
  * `step` and `base` for ramps (whose `width` is their own).
  */
 export type ShapePatch = Partial<Pick<Footprinted, "name" | "kind" | "x" | "z" | "y" | "width" | "depth" | "height" | "rotation" | "color" | "wall" | "taper" | "bevel" | "pitch" | "roll">> & {
+  terrain?: TerrainModifier;
+  resolution?: 129 | 257 | 513 | 1025;
+  source?: string;
   sides?: number;
   points?: FootPoint[] | LinePoint[] | RampPoint[];
   step?: number;
@@ -502,6 +514,9 @@ export const MAX_NOTE_LABEL = 3;
 export const ShapeKindSchema = z.enum(["room", "volume", "hole"]);
 export const ShapeColorSchema = z.enum(SHAPE_COLORS);
 
+export const TerrainModifierSchema = z.strictObject({ operation: z.enum(["raise", "lower", "set"]), fade: z.number().finite().min(0) });
+export const TerrainResolutionSchema = z.union([z.literal(129), z.literal(257), z.literal(513), z.literal(1025)]);
+
 const field = {
   kind: ShapeKindSchema.describe("room = hollow (floor + walls, no ceiling); volume = solid; hole = cuts the shapes in its group and its sibling groups"),
   x: z.number().describe("Footprint center x, meters"),
@@ -543,6 +558,7 @@ const ActorSchema = z.enum(["human", "agent"]);
 const TagsSchema = z.array(z.string());
 
 const footprinted = {
+  terrain: TerrainModifierSchema.optional(),
   id: z.string(),
   name: z.string().optional(),
   tags: TagsSchema.optional(),
@@ -749,10 +765,22 @@ const GroupSchema = z.object({
   createdBy: ActorSchema,
 });
 
+export const TerrainInputSchema = z.strictObject({
+  type: z.literal("terrain"), x: field.x, z: field.z, y: field.y.optional(),
+  width: field.width, depth: field.depth, color: field.color.optional(),
+  resolution: TerrainResolutionSchema.optional(), source: z.string().optional(),
+  name: field.name.optional(), parent: field.parent.optional(), tags: field.tags.optional(),
+});
+const TerrainSchema = TerrainInputSchema.extend({
+  id: z.string(), y: z.number(), color: ShapeColorSchema, resolution: TerrainResolutionSchema,
+  locked: z.literal(true).optional(), hidden: z.literal(true).optional(), createdBy: ActorSchema,
+});
+
 /** A stored node, as in `scene.json` (and on the clipboard). */
-export const NodeSchema: z.ZodType<SceneNode> = z.discriminatedUnion("type", [BoxSchema, CylinderSchema, FreeformSchema, LineSchema, RampSchema, NoteSchema, InstanceSchema, ArraySchema, GroupSchema]);
+export const NodeSchema: z.ZodType<SceneNode> = z.discriminatedUnion("type", [TerrainSchema, BoxSchema, CylinderSchema, FreeformSchema, LineSchema, RampSchema, NoteSchema, InstanceSchema, ArraySchema, GroupSchema]);
 
 export const BoxInputSchema = z.strictObject({
+  terrain: TerrainModifierSchema.optional(),
   kind: field.kind,
   x: field.x,
   z: field.z,
@@ -1100,11 +1128,15 @@ export const ShapeInputSchema = z.discriminatedUnion("type", [
   InstanceInputSchema.extend(refField),
   ArrayInputSchema.extend(refField),
   GroupInputSchema.extend(refField),
+  TerrainInputSchema.extend(refField),
 ]);
 export type ShapeInput = z.input<typeof ShapeInputSchema>;
 
 /** A change to an existing node, by ID: any of a shape's editable fields; for a group only `name` and `parent`. */
 export const NodeUpdateSchema = z.strictObject({
+  terrain: TerrainModifierSchema.nullable().optional(),
+  resolution: TerrainResolutionSchema.optional(),
+  source: z.string().nullable().optional(),
   id: z.string().describe("ID of an existing node, e.g. box_3 or group_1"),
   type: z
     .literal("freeform")

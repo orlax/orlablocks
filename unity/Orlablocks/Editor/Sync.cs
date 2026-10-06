@@ -54,6 +54,7 @@ namespace Orlablocks.Editor
         class Context
         {
             public MeshBinary Bin;
+            public string TerrainFolder;
             public MeshStore Store;
             public Look Look;
             public Dictionary<string, Color> Palette;
@@ -164,6 +165,7 @@ namespace Orlablocks.Editor
                 Lap("entities");
 
                 ctx.Store = new MeshStore($"{root}/Levels/{Assets.Safe(m.scene.id)}", true);
+                ctx.TerrainFolder = $"{root}/Levels/{Assets.Safe(m.scene.id)}/Terrains";
                 new Reconciler(level.transform, ctx, new Edit(true, $"Sync {m.scene.name}"), true).Run(m.nodes);
                 Lap("objects");
                 ctx.Store.KeepReferenced(level.gameObject);
@@ -529,7 +531,8 @@ namespace Orlablocks.Editor
                 if (!r.IsPlacement || !string.IsNullOrEmpty(r.description)) node.description = r.description ?? "";
                 node.hash = r.hash ?? "";
 
-                if (r.IsShape) ApplyShape(go, r);
+                if (r.type == "terrain") ApplyTerrain(go, r);
+                else if (r.IsShape) ApplyShape(go, r);
                 else if (r.type == "note") ApplyNote(go, r);
                 else if (r.type == "line") ApplyLine(go, r);
                 if (r.IsPlacement)
@@ -562,6 +565,45 @@ namespace Orlablocks.Editor
             {
                 var c = go.GetComponent<T>();
                 if (c != null) edit.Destroy(c);
+            }
+
+            void ApplyTerrain(GameObject go, NodeRecord r)
+            {
+                if (r.terrain == null) throw new Exception("Terrain record is missing its height payload.");
+                var heights = ctx.Bin.Heights(r.terrain);
+                Assets.EnsureFolder(ctx.TerrainFolder);
+                var path = $"{ctx.TerrainFolder}/{Assets.Safe(r.id)}.asset";
+                var data = AssetDatabase.LoadAssetAtPath<TerrainData>(path);
+                if (data == null) { data = new TerrainData { name = r.GameObjectName }; AssetDatabase.CreateAsset(data, path); }
+                Undo.RegisterCompleteObjectUndo(data, "Sync terrain");
+                data.heightmapResolution = r.terrain.resolution;
+                data.size = NodeRecord.V(r.terrain.size);
+                data.SetHeights(0, 0, heights);
+                // Each terrain owns its generated assets: claiming one cannot mutate another through a shared cache.
+                var layerPath = $"{ctx.TerrainFolder}/{Assets.Safe(r.id)}-layer.terrainlayer";
+                var layer = AssetDatabase.LoadAssetAtPath<TerrainLayer>(layerPath);
+                if (layer == null) { layer = new TerrainLayer(); AssetDatabase.CreateAsset(layer, layerPath); }
+                var texturePath = $"{ctx.TerrainFolder}/{Assets.Safe(r.id)}-color.asset";
+                var texture = AssetDatabase.LoadAssetAtPath<Texture2D>(texturePath);
+                if (texture == null) { texture = new Texture2D(2, 2); AssetDatabase.CreateAsset(texture, texturePath); }
+                edit.Record(texture); edit.Record(layer);
+                var color = ctx.Palette.TryGetValue(r.color ?? "", out var c) ? c : Color.white;
+                texture.SetPixels(new[] { color, color, color, color }); texture.Apply();
+                layer.diffuseTexture = texture; layer.tileSize = Vector2.one;
+                data.terrainLayers = new[] { layer };
+                // A single layer defaults to full weight; no painted alphamap is authored in 16.1.
+                var terrain = Ensure<Terrain>(go); edit.Record(terrain); terrain.terrainData = data;
+                var shader = Shader.Find("Universal Render Pipeline/Terrain/Lit") ?? Shader.Find("Nature/Terrain/Standard");
+                if (shader != null) {
+                    var matPath = $"{ctx.TerrainFolder}/{Assets.Safe(r.id)}.mat";
+                    var material = AssetDatabase.LoadAssetAtPath<Material>(matPath);
+                    if (material == null) { material = new Material(shader); AssetDatabase.CreateAsset(material, matPath); }
+                    terrain.materialTemplate = material;
+                }
+                if (r.collider == "terrain") { var collider = Ensure<TerrainCollider>(go); edit.Record(collider); collider.terrainData = data; }
+                else Drop<TerrainCollider>(go);
+                EditorUtility.SetDirty(data); EditorUtility.SetDirty(layer); EditorUtility.SetDirty(texture);
+                terrain.Flush();
             }
 
             void ApplyShape(GameObject go, NodeRecord r)

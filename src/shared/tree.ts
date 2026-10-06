@@ -89,6 +89,7 @@ export function copyNodes(
   const ids = new Map(source.map((n) => [n.id, newId(n.type)]));
   return source.map((n) => {
     const copy: SceneNode = isShape(n) ? ({ ...n, ...moveShape(n, dx, dy, dz), id: ids.get(n.id)! } as SceneNode) : { ...n, id: ids.get(n.id)! };
+    if (copy.type === "terrain" && copy.source && ids.has(copy.source)) copy.source = ids.get(copy.source);
     if (n.parent !== undefined && ids.has(n.parent)) copy.parent = ids.get(n.parent);
     return copy;
   });
@@ -123,6 +124,7 @@ export function countsText(nodes: SceneNode[]): string {
     ["instance", 0],
     ["array", 0],
     ["group", 0],
+    ["terrain", 0],
   ];
   let items = 0;
   const bump = (key: string) => counts.find(([k]) => k === key)![1]++;

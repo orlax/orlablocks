@@ -111,7 +111,7 @@ export function marqueeHits(cam: CameraState, size: Size, boxes: Shape[], rect: 
     .filter((b) => {
       if (isSolid(b)) return shapeTouches(cam, size, b, rect);
       // Instances and arrays come expanded into their shapes.
-      if (b.type === "instance" || b.type === "array") return false;
+      if (b.type === "terrain" || b.type === "instance" || b.type === "array") return false;
       if (b.type === "note") {
         // A note's pin overlapping the rectangle.
         const at = worldToScreen(cam, size, b);
