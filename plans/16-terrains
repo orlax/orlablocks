@@ -1,0 +1,285 @@
+# 16 — Terrains
+
+> **For the agent reading this:** Read `plans/thinking-09-terrains.md` first. It holds the reference discussion and Orlando's idea: a terrain plane shaped by existing orlablocks shapes, with a fade distance, exported as a native Unity Terrain. Background: `07-geometry-tools` and `07B-geometry-refinements` (geometry and editing), `10-array-tools` (generated geometry), and `15-unity-export` (shared baking, export and Unity sync).
+>
+> Start with **16.1: the tiniest usable terrain editor and a first Unity export test**. Do not build a complete terrain framework before proving this loop. Orlando has delegated the smoothing experiments to the implementing agent: run them, compare the results and record the choice here. Operation order is the hierarchy outliner's order, top to bottom. Contributing shapes stay visible/editable in orlablocks and are omitted from the Unity export. Walking and other terrain-aware gameplay queries come after this feature; live terrain evaluation in Unity is also deferred.
+>
+> Each increment ends with the relevant tests and `npm run typecheck`, a scripted check on a spare server where useful (`PORT=5171 DATA_DIR=<scratch>`), and a browser/Unity checklist. Never use the main data folder for fixtures. Bump the MCP version by one patch for each increment that changes its contract. Keep `GLOSSARY.md` aligned with implemented behavior and log progress in §13. This is a finalized implementation plan; no increment has been built yet.
+
+---
+
+## 1. Goal
+
+1. Orlando draws a **Terrain**, a rectangle of flat ground, and gives it a size and base elevation.
+2. In its source group, Orlando draws a box and a cylinder. Their upper surfaces raise the terrain. Changing their height or moving them updates the ground.
+3. Increasing a shape's **Fade** grows the transition around it. A box can keep a flat top with soft slopes around its edge; a tapered or beveled cylinder can make a hill.
+4. A later box set to **Set** flattens a courtyard. Dragging it above a hill in the outliner changes the result; moving it back down restores the courtyard. A **Lower** shape sets the bottom of a depression.
+5. The shapes remain visible and editable in orlablocks. **Show modifiers** can be switched off to inspect just the generated terrain.
+6. **Export → Unity**, then **Sync**, makes a native Terrain with a collider. The contributing shapes are absent. Ordinary buildings and props still export normally.
+7. Orlando moves a hill in orlablocks, exports and syncs again. The same terrain updates. The authored shapes remain available for the next edit.
+
+The first working loop is steps 1–3 and 6–7 with a small set of shapes. A winding ramp/path, richer editing and sync polish follow it. Walking in orlablocks is not an acceptance condition for this phase.
+
+---
+
+## 2. Scope
+
+### In
+
+- A terrain node: rectangular footprint, base elevation, width/depth, palette color and sample resolution; generated from a source group.
+- Existing volumes as modifiers, starting with boxes and cylinders, then free-forms and smooth ramps. Raise, Lower and Set, with Fade in meters.
+- Evaluation in outliner order, including nested groups. Existing reorder commands and undo drive it.
+- Visible source geometry in the editor and a local Show modifiers toggle. Clean captures show the generated result.
+- A shared deterministic heightfield evaluator for the browser and server; editable scene parameters stay the source of truth.
+- Ordinary selection, source editing, bounds, move, copy, scale, mirror, persistence, undo and MCP support within the transform limits below.
+- Native Unity Terrain export from the first increment. Later increments finish refresh, claims/content drift and a GLB mesh export.
+- Experiments, measured performance and browser/Unity acceptance.
+
+### Out (deliberately deferred)
+
+- **Walking on terrain**, drawing/standing on its surface, `on` arrays and terrain-aware sight, clearance, slice, enclosure and lint checks. Track the integration work in §10; do not let it delay terrain authoring/export.
+- **Live evaluation in Unity.** Unity imports evaluated heights. No source modifiers, runtime generator or second implementation of the terrain algorithm there.
+- Terrain holes, caves, overhangs, bridges as heightfields, seamless tile stitching and infinite terrain. Ordinary meshes still cover bridges and overhangs.
+- Painting, splat maps, biomes, erosion, noise, water, brush sculpting and procedural vegetation.
+- Instances and arrays as terrain modifiers, terrains inside entity definitions, and nested/dependent terrains. These can extend the established evaluator later.
+- Terrain yaw, pitch or roll. Source yaw is allowed; source tilt is deferred. No new GPU pipeline as a prerequisite.
+
+---
+
+## 3. Naming and data
+
+### Terms
+
+| Term | Meaning |
+|---|---|
+| **terrain** | a rectangular ground surface with one generated height at each x/z sample (`terrain_N`) |
+| **terrain modifier** | an existing volume or smooth ramp used to change a terrain's height; still an editable shape |
+| **terrain source group** | the ordinary group whose eligible descendants contribute to one terrain |
+| **fade (terrain)** | the distance in meters over which a modifier's influence falls away outside its footprint |
+| **heightfield** | the generated grid of heights, used for the preview and export; not the editable source |
+
+### Nodes
+
+Add `Terrain` to the node union without treating it as a closed shape or CSG solid. It has common identity/name/parent/visibility fields, `x`, `z`, `y` (base elevation), `width`, `depth`, `color`, `resolution`, and `source` (a group ID). Permit no source for an empty terrain. Terrain dimensions must be positive; resolution is an allowed sample count.
+
+Eligible shapes gain optional `terrain` settings: `{ operation: "raise" | "lower" | "set", fade: number }`. Within a terrain source group, omitted settings mean Raise and Fade 0. Settings outside a source group are dormant and shown as such. Fade is nonnegative and scales with geometry. It is not a fraction like taper or bevel.
+
+Use a regular source group, not a new container type. A terrain references one source group; a source subtree belongs to one terrain only. Reject overlap between two terrains' source subtrees, references to nonexistent/non-group nodes, and a terrain inside a source subtree. Keep absolute world coordinates as elsewhere in the project.
+
+**Terrain** creation makes an ordinary assembly group containing the terrain and an empty source group. This lets the user move or copy the whole assembly with existing group tools. **Make terrain**, added after the first increment, wraps selected eligible shapes into a source group, preserving their positions; computes an initial rectangle including their fades; creates the terrain and assembly; and records one undo step. The human can resize that rectangle afterwards. Do not resize it automatically whenever a modifier moves.
+
+No height arrays in scene JSON or undo records. Derived heights, mesh and bounds are cache data. Old scenes without terrain retain their behavior.
+
+### Hierarchy order
+
+Evaluate the source group's descendants in the order the outliner would show them if fully expanded: depth first, siblings top to bottom. Groups organize modifiers and have no height operation themselves. Collapsing a group does not disable it or change evaluation.
+
+The existing flat list supplies **sibling** order (`childrenOf`); filtering it globally is not sufficient to reproduce nested outliner order. Share a traversal helper between the evaluator and any order reporting. There is no extra layer list, priority field or terrain-specific reorder UI. Moving rows before/after/into groups changes the result through existing scene commands and undo.
+
+Hidden source nodes, including inherited hidden state, do not contribute. Locking or isolating a node does not change evaluation. Show modifiers changes only editor visibility, not contribution or saved hidden flags.
+
+---
+
+## 4. The heightfield and smoothing experiment (16.1)
+
+Start from the terrain's base elevation at every grid sample. Each modifier produces an upper-surface target height `s` and influence `w` between 0 and 1, applied to the current height `h`:
+
+| Operation | Baseline formula | Result |
+|---|---|---|
+| Raise | `h + w * max(0, s - h)` | can only lift ground |
+| Lower | `h + w * min(0, s - h)` | can only lower ground |
+| Set | `h + w * (s - h)` | can raise or lower ground to match the surface |
+
+Inside the projected footprint, `w = 1`. Outside, use a smooth falloff to zero at Fade meters, extending target height from the nearest boundary. Fade 0 has no influence outside the footprint. Clip evaluation to the terrain rectangle. A finite heightfield cannot represent a vertical discontinuity exactly.
+
+Lower uses the same visible upper surface as Raise: lower the shape's top to the intended valley floor. Shape thickness does not become a hidden negative-height parameter. Set applied last preserves an exact flat courtyard interior. All operations, including overlapping Raises, follow outliner order.
+
+### Experiment owned by the implementing agent
+
+Compare the baseline against a distance-based soft join that still respects sequential operations. Use:
+
+1. Two unequal overlapping hills, with narrow and broad fades.
+2. A flat courtyard applied after those hills, then moved earlier in the outliner.
+3. A depression below the base elevation.
+4. A zero-fade edge and a modifier partly outside the terrain.
+5. A rising smooth path when ramp support lands in 16.2.
+
+Record images/sections and numbers: interior target error, height changes at overlap, influence beyond the fade boundary, path/plateau width retention and rebuild time. Boundary fade is not the same as smoothing the join between two hills. Do not use an unconditional global blur that destroys intentional flat areas. Do not replace outliner order with a commutative union to make the implementation easier.
+
+The agent chooses the simplest behavior that preserves deliberate heights, gives useful transitions and remains explainable. Record the algorithm, limitations and fixture results in §12–13; pin them with tests. A separate join-smoothing parameter is allowed only if the experiment demonstrates a clear need. Orlando has delegated this choice: the experiment is work to perform, not an unanswered permission question. Do not claim the experiment has run in the planning handoff.
+
+A 2D distance calculation around projected outlines is sufficient for the baseline. A full 3D SDF/voxel/marching-cubes system is outside this phase.
+
+---
+
+## 5. Supported geometry and shared evaluation
+
+### Shapes
+
+16.1 supports untilted box and cylinder volumes, including taper and bevel, so the experiment can compare actual hills. Reuse existing geometry to find the upper surface; do not replace a cone or rounded top with constant `y + height`.
+
+16.2 adds concave/curved free-form volumes and smooth ramps. Ramps use their upper surface and width; stepped ramps and tilted sources are rejected for now. Rooms and holes are unsupported as modifiers, with a clear validation error rather than an accidental roof or CSG effect. Notes and lines may annotate the source group but never contribute heights. Instances/arrays cannot be modifiers in this phase. Unsupported additions/conversions into an owned source group fail atomically with an explanation.
+
+Modifier shapes are authoring inputs, not ordinary exported solids. Their terrain evaluation is not changed by scene hole scope, and they do not cut/export neighboring geometry. A cave or cutout remains separate mesh work.
+
+### Implementation
+
+- Add a shared pure evaluator (e.g. `src/shared/terrain.ts`) with source collection, height sampling and mesh generation separated. Rendering and server export use the same canonical grid.
+- Begin at 129 or 257 samples per side in the first increment; choose and record the default after measuring. Expose 129, 257, 513 and 1025 only as they meet the measured limits. Display cell spacing in meters in both axes: a 256 m square at 257 samples has 1 m cells.
+- Cache by geometry, operations, fades, hierarchy order, relevant hidden state, terrain rectangle/base and resolution. Color changes should not resample heights.
+- Start with bounded CPU work: evaluate only a modifier's projected bounds plus Fade; cache/rasterize source upper surfaces where useful. Avoid every sample testing every scene triangle.
+- Add worker evaluation, coarse drag previews and finer-grained invalidation only when measurements justify them. These are not prerequisites for the tiny first editor. Any asynchronous result must carry its revision so an old drag cannot overwrite a newer result.
+- Captures and exports use the canonical result for the requested revision, never an unfinished/coarse preview. Export remains possible without an editor tab.
+- Picking and bounds use generated terrain geometry. Keep it outside the current watertight closed-shape CSG path.
+
+Measure 20 and 100 modifiers at supported resolutions: rebuild time, drag responsiveness, memory and export time. Record the machine and scene sizes. Establish practical limits from those results instead of claiming unmeasured performance.
+
+---
+
+## 6. Editor and transforms
+
+The Terrain tool draws its rectangle like a box footprint, with the familiar snap and center-drawing conventions. 16.1 may use a simple creation button and inspector dimensions instead of a finished drawing tool. The inspector shows size, base elevation, resolution, sample spacing and color. Selecting a source shows Raise/Lower/Set and Fade alongside its existing geometry controls.
+
+Contributing shapes stay visible, recognizable and selectable in orlablocks. Distinguish them as authoring geometry (outline/translucent overlay as needed to avoid z-fighting); do not secretly set `hidden`. A local **Show modifiers** toggle reveals the generated ground alone. Clean captures, shots and `render_view` omit modifier overlays. The outliner still lists the shapes and is the operation stack.
+
+Moving the assembly moves both ground and inputs. Moving a terrain alone moves its sampling rectangle and base; it does not move its source group. Resizing the rectangle changes coverage, not the shapes. Moving a modifier changes only its contribution. Scaling an assembly scales source geometry, base/positions about the chosen pivot, dimensions and Fade; sample count stays fixed. Mirroring an assembly mirrors its sources and rectangle. Reject transforms that would yaw or tilt a terrain, explaining the restriction before committing any partial edit.
+
+Copying a complete assembly remaps its source reference and preserves outliner order. Copying a bare terrain also clones its source subtree and places it beside the copy; it must never unexpectedly share editable inputs. Clipboard operations use the same dependency rule. Copying a modifier alone follows normal destination-group behavior. Deleting a terrain leaves the source shapes as ordinary geometry; deleting its source group clears the reference and leaves a flat terrain. Undo restores both. Ungrouping the owned source root clears its binding in the same step; its released shapes become ordinary geometry. Nested grouping/ungrouping preserves flattened traversal order unless the user explicitly moves rows.
+
+---
+
+## 7. MCP, scene store and captures
+
+Extend existing draw/update/read tools for terrain nodes and modifier settings, with validation, batch refs, compact results and dry runs. Resolve `source` references on creation/copy like other node dependencies. Reordering must be available to the agent through the existing store's placement operation; expose that operation through MCP if it is not already available, rather than inventing a second ordering system.
+
+`get_scene` and `find_nodes` show terrain identity, source group, bounds, resolution, cell spacing and generated elevation range. Source modifier settings remain readable in their outliner order. Never return the full sample array in ordinary tool responses. Add `get_guide terrains`, documenting order, visibility/export behavior, supported geometry and deferred surface queries.
+
+The store remains the source of truth. One draw/update/reorder/copy action is one undo step; regeneration does not add a second history entry. Persistence, reload, hidden nodes and failed/dry-run edits need coverage.
+
+Captures and `render_view` display the generated mesh without source overlays by the end of the phase. Until terrain-aware query integration lands, tools that cannot account for terrain must explicitly report that limitation when it affects their result; do not present checks against source shapes as verified terrain checks. Avoid changing query algorithms as part of this authoring phase.
+
+---
+
+## 8. Unity export and refresh
+
+### First import in 16.1
+
+Extend the versioned manifest and atomic export payload with a terrain record: ID, rectangle, sample count, vertical origin/range, heights and revision. Write the data before the manifest using the existing atomic pattern. Update both producer and Unity reader with explicit format compatibility checks; do not reinterpret a new payload as the old format.
+
+The exporter evaluates the terrain in TypeScript. Unity creates a `TerrainData` asset, a Terrain and a TerrainCollider. Source shapes and their authoring-only group subtree do not become mesh objects, colliders or entity dependencies in the export. A source-only group containing annotations is omitted as well. Ordinary nodes outside it keep existing behavior.
+
+Use a basic URP Terrain-compatible material/layer with the chosen palette color. Ordinary mesh materials are not automatically Terrain materials. Respect `#no-collisions` by omitting the TerrainCollider.
+
+Unity heights are normalized 0..1, indexed [row,column]. Its supported square heightmap resolutions include 129, 257, 513 and 1025; physical width and depth may differ. Preserve negative world elevations with the exported vertical origin/range, and use a nonzero range for a flat terrain. Reverse sample rows for the existing z flip and place the Terrain origin at the appropriate minimum corner. Terrain output remains axis-aligned with unit transform scale; dimensions are baked into TerrainData.
+
+Test with an asymmetric fixture (different heights at each corner), a rectangular footprint, a nonzero position/base and a negative depression. Compare canonical grid samples with imported data, then inspect Unity rendering and collider heights at representative points. Native Terrain LOD/triangulation can differ from the browser mesh; establish a measured tolerance rather than promising identical triangles.
+
+16.1 includes a manual second export/sync updating the same terrain. It does not need a live link, Auto sync polish, GLB or the full material mapping workflow to prove the loop. Existing claims must still be honored from the first importer; document the early test's Claim-before-sculpting limitation until content drift detection lands.
+
+### Finished sync in 16.4
+
+Keep a stable TerrainData asset per scene terrain. Revision includes the evaluated content/settings, so reorder or a source edit updates only affected terrain records. Do not mutate a claimed terrain's asset through a cache shared with another terrain. Respect existing transform drift, deletion/orphans, Auto sync and Unity undo, including undo of asset changes.
+
+Add heightmap-content drift detection before overwriting locally sculpted TerrainData. Report the conflict with Revert/Claim choices, analogous to transform drift. This does not import Unity edits back into orlablocks. Define the managed fields explicitly (heights, size, generated material/layer and collider state); preserve unrelated Unity additions. Test a claimed asset and a locally sculpted unclaimed one on both changed and unchanged exports.
+
+GLB exports the evaluated terrain mesh, omitting source geometry. Terrain nodes do not participate in Claim as ProBuilder in this phase. Source removal must be distinguished from ordinary export deletion when existing scene shapes become terrain inputs: preserve user additions under those objects using the established orphan rules.
+
+---
+
+## 9. Increments
+
+### 16.1 — Tiny terrain editor, smoothing experiment and first Unity export
+
+- Terrain/source schemas and minimal persistence/history; boxes and cylinders as contributors; Raise/Lower/Set and Fade; outliner evaluation order.
+- Minimal creation and inspector controls, generated mesh, editable visible sources and Show modifiers. Use the existing reorder UI.
+- Perform §4's experiments, record the chosen behavior, and export/import a native Unity Terrain. Move a shape and manually sync again.
+- **Checks:** flat baseline, plateau interior, fade boundary/zero, overlap/reorder, negative heights, deterministic browser/server samples, Unity row direction/range and source omission; undo/reload of the small fixture.
+- **Browser/Unity:** create a hill, soften its edge, move it, inspect ground alone, export, and see the same ground as a native Terrain with a working collider. Repeat after an edit. No Walk integration, worker framework or full query integration in this increment.
+
+### 16.2 — Free-forms, smooth ramps and complete editing
+
+- Free-form and smooth-ramp projection; finish the rectangle drawing tool, Make terrain and influence outlines.
+- Complete nested hierarchy order, copy/clipboard reference remapping, group changes, transforms and deletion rules.
+- **Checks:** concave outline, curved path, reordered nested groups, collapse independence, hide versus Show modifiers, transform refusal without partial edits, clone independence and undo.
+- **Browser:** two hills, a courtyard and winding rising path; moving their existing handles reshapes the terrain. Reorder the courtyard above/below the hills and undo.
+
+### 16.3 — Agent workflow, captures and measured responsiveness
+
+- Complete MCP/read results, ordering access, dry runs and guide; clean captures/shot rendering.
+- Benchmark and implement only the caching/worker/preview work required for usable editing. Canonical results and revision handling are mandatory if previews become asynchronous.
+- **Checks:** batch refs, invalid ownership, failed/dry-run calls, rendered/exported parity, stale jobs if applicable, 20/100-modifier measurements.
+- **Browser/agent:** the agent makes and reorders a small terrain, the human edits it, and both inspect the generated result through captures.
+
+### 16.4 — Unity refresh, GLB and acceptance
+
+- Stable assets, content drift, full claims/deletion/undo/Auto sync handling, GLB mesh and export compatibility tests.
+- **Checks:** manual and automatic refresh, unmodified terrain untouched, claimed terrain preserved, local sculpt detected, removed source objects with Unity additions preserved appropriately, negative/nonzero coordinate fixture, GLB parity.
+- **Browser/Unity:** the full §1 loop and §11 checklist. Record any remaining limitations; terrain-aware walking is tracked separately, not a reason to leave this phase unfinished.
+
+---
+
+## 10. Follow-up: using terrain as ground
+
+After terrain authoring/export is in place, plan the following integration as a separate task/phase:
+
+- Walk floor-follow and drop point: replace the implicit y=0 ground within terrain coverage, including negative valleys. Source authoring geometry must not become the terrain's collision proxy.
+- Drawing on terrain, cursor and surface placement; define behavior outside coverage rather than falling back to the terrain's maximum bound.
+- `on` instances/arrays and through lines, with sources → terrain → placements evaluation and cycle rejection.
+- Sight, path clearance, slice, enclosure and lint over evaluated terrain. Define occupancy below the sampled surface for volume checks and use the query's vertical bounds.
+- Later still: repeated entities as modifiers, material masks and live modifier evaluation in Unity if real authoring experience warrants them.
+
+These are known limitations, not hidden acceptance requirements for 16.1 or the phase.
+
+---
+
+## 11. Checks and acceptance
+
+Each implementation increment runs `npm test` and `npm run typecheck`; use the spare server for scripted persistence/MCP checks. Unity changes compile through `scripts/compile-unity.sh` where available, followed by the actual Unity checklist. Record checks performed and checks still awaiting Orlando separately.
+
+1. **Empty terrain:** flat at its base elevation; save/reload and undo work.
+2. **Shape-driven terrain:** boxes, cylinders, free-forms and smooth ramps affect the surface as documented; taper/bevel remain recognizable.
+3. **Order:** top-to-bottom outliner order changes overlapping results predictably. Nested/collapsed groups preserve that order. Undo restores it.
+4. **Fade and smoothing:** the experiment's recorded fixtures pass, including exact flat interiors and useful hill joins or explicitly documented join limitations.
+5. **Editor inputs:** shapes remain visible/editable; Show modifiers leaves the terrain unchanged. Hidden source shapes stop contributing. Clean captures omit overlays.
+6. **Scene editing:** copy/paste does not share source groups accidentally; move/scale/mirror behave as specified; source/terrain deletion and undo preserve references.
+7. **Unity:** a native Terrain and collider at the right position/size/orientation, with negative elevations intact. No contributing meshes or colliders exported. Ordinary props still appear.
+8. **Refresh:** a source edit or reorder updates the same terrain asset; claims and local sculpt drift are respected, and Unity undo works.
+9. **Agent and GLB:** compact terrain results and editing/reordering work; GLB contains generated ground rather than source shapes.
+10. **Regression and performance:** old scenes/export behavior remain intact; measured limits are recorded. Deferred Walk/query limitations are explicit and do not block acceptance.
+
+---
+
+## 12. Decisions
+
+Settled with Orlando (2026-10-06):
+
+1. **Outliner order is operation order, top to bottom.** No separate terrain layer ordering.
+2. **The agent performs and chooses from the smoothing experiments.** Document evidence and behavior during implementation.
+3. **Build terrain first; integrate walking afterwards.** Its known breakage does not block the feature.
+4. **Design for native Unity Terrain from the beginning.** Contributing shapes are visible in orlablocks and absent from the Unity export.
+5. **Live terrain evaluation in Unity is later.** Export the evaluated heightfield now.
+6. **The first milestone is the tiniest possible terrain editor with a first Unity export test.**
+
+Implementation choices adopted for this plan:
+
+7. A terrain references an ordinary source group; an ordinary assembly group makes moving/copying the whole design straightforward.
+8. Source descendants evaluate depth first, in sibling order, independent of collapsed state.
+9. Raise, Lower and Set use visible upper-surface heights. Fade is an outward distance in meters; final join behavior is selected in 16.1.
+10. Axis-aligned rectangular terrain; source yaw allowed, terrain rotation/tilt and source tilt deferred.
+11. Shared CPU evaluation first, generated samples as cache/output, with optimization driven by measurement.
+12. Instances/arrays as modifiers and terrain-aware placement/checks are deferred to keep this phase focused.
+
+Reference material checked during planning:
+
+- [Alba environment art](https://ustwogames.co.uk/news/the-environment-art-of-alba-a-wildlife-adventure/): Ridge, Valley and Level controls feeding a heightmap; inspiration for the workflow, not a specification of our math.
+- [Unity heightmapResolution](https://docs.unity3d.com/6000.0/Documentation/ScriptReference/TerrainData-heightmapResolution.html) and [SetHeights](https://docs.unity3d.com/6000.0/Documentation/ScriptReference/TerrainData.SetHeights.html): sample dimensions, normalization and indexing. Verify against the project's Unity version during implementation.
+
+---
+
+## 13. Progress
+
+### Planning — finalized (2026-10-06)
+
+- Read the thinking document, relevant earlier phases, and current geometry, tree/outliner, surface and export code.
+- Incorporated Orlando's hierarchy-order, source-visibility/export and scope decisions. Replaced `16-terrains-draft.md` with this phase plan.
+- 16.1–16.4 are **not started**. Smoothing experiments, performance measurements, browser acceptance and Unity validation remain implementation work. No application code or scene data changed during planning.

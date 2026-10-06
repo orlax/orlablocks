@@ -57,7 +57,7 @@ namespace Orlablocks.Editor
                 available[key] = last.exportId;
                 var now = Available(level);
                 if (now != was) changed = true;
-                if (now >= 0 && level.autoSync && !EditorApplication.isPlayingOrWillChangePlaymode && !EditorApplication.isCompiling && !EditorApplication.isUpdating)
+                if (now >= 0 && level.autoSync && !Sync.FailedOn(level, now) && !EditorApplication.isPlayingOrWillChangePlaymode && !EditorApplication.isCompiling && !EditorApplication.isUpdating)
                 {
                     try
                     {

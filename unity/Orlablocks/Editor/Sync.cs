@@ -102,8 +102,32 @@ namespace Orlablocks.Editor
 
         const StaticEditorFlags Static = StaticEditorFlags.BatchingStatic | StaticEditorFlags.OccluderStatic | StaticEditorFlags.OccludeeStatic | StaticEditorFlags.ReflectionProbeStatic;
 
+        // A Level's last sync, when it failed: the export it tried (-1 if it didn't get that far) and why.
+        static readonly Dictionary<OrlaLevel, (int exportId, string message)> failures = new Dictionary<OrlaLevel, (int, string)>();
+
+        /// <summary>Why the Level's last sync failed (however it was started), or null.</summary>
+        public static string Failure(OrlaLevel level) => level != null && failures.TryGetValue(level, out var f) ? f.message : null;
+
+        /// <summary>Whether the Level's last sync failed on this export (so Auto sync doesn't try it again every second).</summary>
+        public static bool FailedOn(OrlaLevel level, int exportId) => level != null && failures.TryGetValue(level, out var f) && f.exportId == exportId;
+
         /// <param name="force">Sync even if the Level already has this export (it still leaves unchanged objects alone).</param>
         public static Result Run(OrlaLevel level, bool force = true, bool rebuildMaterials = false)
+        {
+            try
+            {
+                var result = RunOnce(level, force, rebuildMaterials);
+                failures.Remove(level);
+                return result;
+            }
+            catch (Exception e)
+            {
+                if (!failures.TryGetValue(level, out var f) || f.message != e.Message) failures[level] = (-1, e.Message);
+                throw;
+            }
+        }
+
+        static Result RunOnce(OrlaLevel level, bool force, bool rebuildMaterials)
         {
             var clock = System.Diagnostics.Stopwatch.StartNew();
             var folder = Assets.FullPath(level.folder);
@@ -167,6 +191,14 @@ namespace Orlablocks.Editor
                     level.gameObject.name = $"Orlablocks Level · {m.scene.name}";
                 }
                 EditorUtility.SetDirty(level);
+            }
+            catch (Exception e)
+            {
+                // A sync that fails part way is taken back whole: the Level stays as the last sync left it (the
+                // entity prefabs already rebuilt are kept; they're right for this export either way).
+                Undo.RevertAllDownToGroup(group);
+                failures[level] = (m.exportId, e.Message);
+                throw;
             }
             finally
             {
@@ -381,8 +413,10 @@ namespace Orlablocks.Editor
                         Result.Unchanged++;
                         return;
                     }
-                    var go = NeedsReplace(n, r) ? Replace(n, r, parent) : n.gameObject;
-                    if (go == n.gameObject) Apply(go, r, parent);
+                    // (Replace destroys n: don't touch it after.)
+                    var replace = NeedsReplace(n, r);
+                    var go = replace ? Replace(n, r, parent) : n.gameObject;
+                    if (!replace) Apply(go, r, parent);
                     placed[r.id] = go.transform;
                     Stamp(go, r);
                     Result.Updated++;

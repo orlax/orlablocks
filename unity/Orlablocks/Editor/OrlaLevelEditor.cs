@@ -14,8 +14,6 @@ namespace Orlablocks.Editor
     [CustomEditor(typeof(OrlaLevel))]
     public class OrlaLevelEditor : UnityEditor.Editor
     {
-        string error;
-
         public override void OnInspectorGUI()
         {
             var level = (OrlaLevel)target;
@@ -46,7 +44,9 @@ namespace Orlablocks.Editor
                 level.autoSync = auto;
                 EditorUtility.SetDirty(level);
             }
-            if (!string.IsNullOrEmpty(error)) EditorGUILayout.HelpBox(error, MessageType.Error);
+            // The last sync's failure, from here, the Scene view's box or Auto sync (the Console has the details).
+            var failure = Sync.Failure(level);
+            if (!string.IsNullOrEmpty(failure)) EditorGUILayout.HelpBox($"The last sync failed and was undone: {failure}", MessageType.Error);
 
             EditorGUILayout.Space();
             using (new EditorGUILayout.HorizontalScope())
@@ -130,9 +130,8 @@ namespace Orlablocks.Editor
             return mappings;
         }
 
-        void Run(OrlaLevel level, bool rebuildMaterials)
+        static void Run(OrlaLevel level, bool rebuildMaterials)
         {
-            error = null;
             try
             {
                 var result = Sync.Run(level, true, rebuildMaterials);
@@ -140,7 +139,6 @@ namespace Orlablocks.Editor
             }
             catch (Exception e)
             {
-                error = e.Message;
                 Debug.LogException(e, level);
             }
         }
