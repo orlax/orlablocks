@@ -752,7 +752,7 @@ function scaleUpdate(
     return { patches: { [shape.id]: { x: round2(c.x), z: round2(c.z), y: round2(c.y - shape.height / 2), width, depth } }, label };
   }
   const c = fromShapeLocal(box, offset);
-  const to = isFootprinted(shape) ? { x: round2(c.x), z: round2(c.z), width, depth } : { x: c.x, z: c.z, width, depth };
+  const to = isFootprinted(shape) || shape.type === "terrain" ? { x: round2(c.x), z: round2(c.z), width, depth } : { x: c.x, z: c.z, width, depth };
   return { patches: { [shape.id]: resizeShape(shape, box, to) }, label };
 }
 

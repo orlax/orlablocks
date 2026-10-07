@@ -55,6 +55,8 @@ import {
   type ArrayPlace,
   type LineArrow,
   type NoteStatus,
+  type Terrain,
+  type TerrainModifier,
 } from "../shared/scene.types";
 import { currentTags, type EntityMeta, type Library } from "../shared/library";
 import { useFloating } from "./floating";
@@ -142,12 +144,32 @@ export type InspectorProps = {
   line?: { style: Partial<LineStyle>; onChange: (patch: Partial<LineStyle>) => void; onPreview?: Preview<{ thickness: number }>; onReverse?: () => void };
   /** Ramps: width, steps and base, and Reverse if given. */
   ramp?: { style: Partial<RampStyle>; onChange: (patch: Partial<RampStyle>) => void; onReverse?: () => void };
+  /** A terrain node: dimensions, base elevation, resolution and entering source group. */
+  terrain?: TerrainControls;
+  /** A terrain modifier shape inside a source group (or having modifier settings): operation and fade. */
+  terrainModifier?: TerrainModifierControls;
   /** The X / Z mirror buttons (the Select tool). */
   onMirror?: (axis: MirrorAxis) => void;
   /** Convert to free-form (the selection has boxes or cylinders). */
   onConvert?: () => void;
   /** Edit points (a single free-form, line or ramp): whether it's in point editing, and a toggle. */
   editPoints?: { active: boolean; onToggle: () => void; label?: string };
+};
+
+export type TerrainControls = {
+  width: number;
+  depth: number;
+  y: number;
+  resolution: Terrain["resolution"];
+  hasSource: boolean;
+  onChange: (patch: { width?: number; depth?: number; y?: number; resolution?: Terrain["resolution"] }) => void;
+  onEnterSource?: () => void;
+};
+
+export type TerrainModifierControls = {
+  operation: TerrainModifier["operation"];
+  fade: number;
+  onChange: (patch: { operation?: TerrainModifier["operation"]; fade?: number }) => void;
 };
 
 /** What the inspector's array section shows and changes (see `ArraySection`). */
@@ -188,7 +210,31 @@ export type ArrayControls = {
   onRestoreAll: () => void;
 };
 
-export function Inspector({ title, info, library = null, links, note, instance, array, makeEntity, description, tags, sides, wall, profile, scale, onScaleBy, tilt, line, ramp, onMirror, onConvert, editPoints }: InspectorProps) {
+export function Inspector({
+  title,
+  info,
+  library = null,
+  links,
+  note,
+  instance,
+  array,
+  terrain,
+  terrainModifier,
+  makeEntity,
+  description,
+  tags,
+  sides,
+  wall,
+  profile,
+  scale,
+  onScaleBy,
+  tilt,
+  line,
+  ramp,
+  onMirror,
+  onConvert,
+  editPoints,
+}: InspectorProps) {
   const { ref, header, style, collapsed, toggle } = useFloating("orlablocks.inspector", ".inspector-header");
   const actions = onMirror || onConvert || editPoints || makeEntity || onScaleBy;
   return (
@@ -290,6 +336,8 @@ export function Inspector({ title, info, library = null, links, note, instance, 
           {tilt && <TiltSection {...tilt} />}
           {ramp && <RampSection {...ramp} />}
           {line && <LineSection {...line} />}
+          {terrain && <TerrainSection {...terrain} />}
+          {terrainModifier && <TerrainModifierSection {...terrainModifier} />}
           {actions && (
             <Section label="Actions">
               <div className="inspector-actions">
@@ -1242,6 +1290,82 @@ function LineSection({ style, onChange, onPreview, onReverse }: NonNullable<Insp
           </button>
         </Row>
       )}
+    </Section>
+  );
+}
+
+const TERRAIN_RESOLUTIONS: Terrain["resolution"][] = [129, 257, 513, 1025];
+
+function TerrainSection({ width, depth, y, resolution, hasSource, onChange, onEnterSource }: TerrainControls) {
+  const cellX = (width / (resolution - 1)).toFixed(2);
+  const cellZ = (depth / (resolution - 1)).toFixed(2);
+  return (
+    <Section label="Terrain">
+      <Row label="width">
+        <NumberField title="Terrain width in meters along X" value={width} unit="m" step={0.5} min={0.5} fallback={40} onChange={(w) => onChange({ width: w })} />
+      </Row>
+      <Row label="depth">
+        <NumberField title="Terrain depth in meters along Z" value={depth} unit="m" step={0.5} min={0.5} fallback={40} onChange={(d) => onChange({ depth: d })} />
+      </Row>
+      <Row label="base y">
+        <NumberField title="Base elevation in meters" value={y} unit="m" step={0.5} fallback={0} onChange={(baseY) => onChange({ y: baseY })} />
+      </Row>
+      <Row label="samples">
+        <select
+          className="entity-picker"
+          value={resolution}
+          title="Grid sample resolution"
+          onChange={(e) => onChange({ resolution: Number(e.target.value) as Terrain["resolution"] })}
+        >
+          {TERRAIN_RESOLUTIONS.map((res) => (
+            <option key={res} value={res}>
+              {res} × {res}
+            </option>
+          ))}
+        </select>
+      </Row>
+      <Row label="grid">
+        <span className="value" title="Meters per grid cell">{cellX} × {cellZ} m / cell</span>
+      </Row>
+      {hasSource && onEnterSource && (
+        <Row label="">
+          <button className="labeled" title="Enter the terrain's source group to draw modifying shapes" onClick={onEnterSource}>
+            <PencilRuler size={16} /> Draw in sources
+          </button>
+        </Row>
+      )}
+    </Section>
+  );
+}
+
+function TerrainModifierSection({ operation, fade, onChange }: TerrainModifierControls) {
+  return (
+    <Section label="Terrain Modifier">
+      <Row label="operation">
+        <div className="segmented">
+          {(["raise", "lower", "set"] as const).map((op) => (
+            <button
+              key={op}
+              className={operation === op ? "active" : ""}
+              title={op === "raise" ? "Raise: lifts ground up to shape surface" : op === "lower" ? "Lower: lowers ground down to shape surface" : "Set: sets ground to shape surface"}
+              onClick={() => onChange({ operation: op })}
+            >
+              {op.charAt(0).toUpperCase() + op.slice(1)}
+            </button>
+          ))}
+        </div>
+      </Row>
+      <Row label="fade">
+        <NumberField
+          title="Fade distance in meters over which influence smoothly falls to zero"
+          value={fade}
+          unit="m"
+          step={0.5}
+          min={0}
+          fallback={0}
+          onChange={(f) => onChange({ fade: f })}
+        />
+      </Row>
     </Section>
   );
 }

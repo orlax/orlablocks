@@ -11,6 +11,7 @@ import {
   Images,
   Grid3x3,
   Hand,
+  Mountain,
   MousePointer2,
   PenTool,
   PersonStanding,
@@ -44,6 +45,7 @@ export const TOOLS: { tool: Tool; label: string; key: string; icon: LucideIcon }
   { tool: "box", label: "Box", key: "b", icon: BoxIcon },
   { tool: "cylinder", label: "Cylinder", key: "c", icon: Cylinder },
   { tool: "pen", label: "Pen (free-form)", key: "p", icon: PenTool },
+  { tool: "terrain", label: "Terrain", key: "t", icon: Mountain },
   { tool: "line", label: "Line", key: "l", icon: Waypoints },
   { tool: "ramp", label: "Ramp (and stairs)", key: "r", icon: Stairs },
   { tool: "note", label: "Note", key: "n", icon: StickyNote },
@@ -57,6 +59,7 @@ export const HINTS: Record<Tool, string> = {
   box: `drag to draw, on the surface under the cursor (a top, a floor, a wall top, else the ground) · Shift square · Alt from center · ${MOD} no snap · Esc to cancel`,
   cylinder: `drag to draw, on the surface under the cursor · Shift circle · Alt from center · ${MOD} no snap · Esc to cancel`,
   pen: `click for a corner (the first one sets the surface it stands on) · drag for a curve · click the first point or Enter to close · ⌫ removes the last point · ${MOD} no snap · Esc to cancel`,
+  terrain: `drag to draw terrain on the ground · Shift square · Alt from center · ${MOD} no snap · Esc to cancel`,
   line: `click to place a point on the surface under the cursor · drag for a curve · double-click or Enter to finish · ⌫ removes the last point · ${MOD} no snap · Esc to cancel`,
   ramp: `click on the floor, then on the top it climbs to (each point on the surface under the cursor) · drag for a curve · double-click or Enter to finish · ⌫ removes the last point · ${MOD} no snap · Esc to cancel`,
   note: "click to pin a note on the surface under the cursor, then write it in the inspector · a label (up to 3 letters) makes it a flag",
@@ -222,6 +225,7 @@ export function WalkBar({ preset, onPreset }: { preset: WalkPreset; onPreset: (p
  * Then the shutter (a shot of the view, `K`) and the Shots panel's button, with how many there are (09.1).
  */
 export function ViewBar({
+  modifiers,
   holes,
   grid,
   notes,
@@ -231,6 +235,7 @@ export function ViewBar({
   isolated,
   shots,
 }: {
+  modifiers?: { on: boolean; onToggle: () => void };
   holes: { on: boolean; onToggle: () => void };
   grid: { on: boolean; onToggle: () => void };
   notes: { on: boolean; onToggle: () => void };
@@ -252,6 +257,16 @@ export function ViewBar({
           </span>
           <span className="sep" />
         </>
+      )}
+      {modifiers && (
+        <button
+          type="button"
+          className={modifiers.on ? "toggle" : "toggle off"}
+          title={modifiers.on ? "Hide terrain modifiers (see only the generated terrain)" : "Show terrain modifiers"}
+          onClick={modifiers.onToggle}
+        >
+          <Mountain size={13} /> modifiers
+        </button>
       )}
       <button
         type="button"

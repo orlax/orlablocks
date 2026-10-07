@@ -1,4 +1,3 @@
-import { TerrainPanel } from "./TerrainPanel";
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps } from "react";
 import { ArrowLeft, BookOpen, ChevronDown, Map as MapIcon, Package, Upload } from "lucide-react";
 import {
@@ -32,7 +31,9 @@ import {
   type ShotCamera,
   type WalkPreset,
   type ClientMessage,
+  type Terrain,
 } from "../shared/scene.types";
+import { terrainInputIds } from "../shared/terrain";
 import { boundsOf, footprintBounds, isClosed, isTilted, polyline, rampStations, reversePoints, round2, wallOf } from "../shared/geometry";
 import { shapesUnder, childrenOf, countsText, isShape, isGroup, hiddenIds, lockedIds, subtreeIds, tagsOf } from "../shared/tree";
 import { definitionOf, expandShapes } from "../shared/entities";
@@ -1022,6 +1023,48 @@ export function App() {
                 : undefined,
               line: lineControls,
               ramp: rampControls,
+              terrain:
+                singleShape?.type === "terrain"
+                  ? {
+                      width: singleShape.width,
+                      depth: singleShape.depth,
+                      y: singleShape.y,
+                      resolution: singleShape.resolution,
+                      hasSource: !!singleShape.source,
+                      onChange: (patch) => send({ type: "update_nodes", changes: [{ id: singleShape.id, ...patch }] }),
+                      onEnterSource: singleShape.source
+                        ? () => {
+                            setContext(singleShape.source!);
+                            setSelection([]);
+                            setNextKind("volume");
+                            setTool("box");
+                          }
+                        : undefined,
+                    }
+                  : undefined,
+              terrainModifier:
+                singleShape &&
+                (singleShape.type === "box" || singleShape.type === "cylinder") &&
+                (singleShape.terrain || terrainInputIds(nodes).has(singleShape.id))
+                  ? {
+                      operation: singleShape.terrain?.operation ?? "raise",
+                      fade: singleShape.terrain?.fade ?? 0,
+                      onChange: (patch) =>
+                        send({
+                          type: "update_nodes",
+                          changes: [
+                            {
+                              id: singleShape.id,
+                              terrain: {
+                                operation: singleShape.terrain?.operation ?? "raise",
+                                fade: singleShape.terrain?.fade ?? 0,
+                                ...patch,
+                              },
+                            },
+                          ],
+                        }),
+                    }
+                  : undefined,
               onMirror: (axis) => send({ type: "mirror_nodes", ids: selection, axis }),
               onConvert: convertible.length > 0 ? convert : undefined,
               editPoints: editable
@@ -1083,6 +1126,33 @@ export function App() {
             },
           };
           send({ type: "add_shapes", shapes: [{ type: "note", ...at, text: "", color: nextNoteColor, ...(context !== null ? { parent: context } : {}) }] });
+          setTool("select");
+        }}
+        onCreateTerrain={(f, y) => {
+          pendingSelect.current = {
+            before: new Set(nodes.map((n) => n.id)),
+            pick: (added) => added.filter((n) => n.type === "terrain").map((n) => n.id),
+          };
+          send({
+            type: "add_shapes",
+            shapes: [
+              { type: "group", name: "Terrain assembly", ref: "assembly" },
+              { type: "group", name: "Terrain sources", parent: "$assembly", ref: "sources" },
+              {
+                type: "terrain",
+                name: "Terrain",
+                parent: "$assembly",
+                source: "$sources",
+                x: f.x,
+                z: f.z,
+                width: f.width,
+                depth: f.depth,
+                y,
+                resolution: 129,
+                color: nextColor ?? "green",
+              },
+            ],
+          });
           setTool("select");
         }}
         onDrawShape={(shape) =>
@@ -1301,14 +1371,12 @@ export function App() {
         />
       </div>
 
-      {open && !editingEntity && <TerrainPanel nodes={nodes} selection={selection} show={showModifiers} toggle={() => setShowModifiers(!showModifiers)} focus={view.focus}
-        create={(shapes) => { pendingSelect.current = { before: new Set(nodes.map((n) => n.id)), pick: (added) => added.filter((n) => n.type === "terrain").map((n) => n.id) }; send({ type: "add_shapes", shapes }); }}
-        update={(changes) => send({ type: "update_nodes", changes })} enter={(id) => { setContext(id); setSelection([]); setNextKind("volume"); setTool("box"); }} />}
       {inspector && <Inspector {...inspector} />}
 
       <div className="top-right">
         {open && (
           <ViewBar
+            modifiers={{ on: showModifiers, onToggle: () => setShowModifiers(!showModifiers) }}
             holes={{ on: showHoles, onToggle: () => setShowHoles(!showHoles) }}
             grid={{ on: showGrid, onToggle: () => setShowGrid(!showGrid) }}
             notes={{ on: showNotes, onToggle: () => setShowNotes(!showNotes) }}

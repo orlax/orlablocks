@@ -221,9 +221,9 @@ export const ENTITY_DRAG = "application/x-dungeon-entity";
 /** Where the pointer meets the scene (14.1): a point on a shape (`id`: the node it belongs to) or on the ground. */
 export type CursorPoint = { x: number; y: number; z: number; id?: string };
 
-export type Tool = "select" | "hand" | "box" | "cylinder" | "pen" | "line" | "ramp" | "note" | "walk";
+export type Tool = "select" | "hand" | "box" | "cylinder" | "pen" | "line" | "ramp" | "note" | "walk" | "terrain";
 /** The tools that drag a footprint on the ground, and the shape type each draws. */
-const DRAWS: Partial<Record<Tool, "box" | "cylinder">> = { box: "box", cylinder: "cylinder" };
+const DRAWS: Partial<Record<Tool, "box" | "cylinder" | "terrain">> = { box: "box", cylinder: "cylinder", terrain: "terrain" };
 
 /** A drawn footprint on the ground, by its center (like a box). */
 type Footprint = { x: number; z: number; width: number; depth: number };
@@ -239,7 +239,7 @@ const fieldsFor = (kind: ShapeKind, fields: KindFields): KindFields =>
     ),
   );
 
-type Draft = { type: "box" | "cylinder"; kind: ShapeKind; sides?: number } & KindFields;
+type Draft = ({ type: "box" | "cylinder"; kind: ShapeKind; sides?: number } & KindFields) | { type: "terrain" };
 
 /**
  * A gizmo drag in progress. A body drag only becomes `active` once the pointer moves past CLICK_PX: until then
@@ -401,6 +401,8 @@ type Props = {
   preview: Record<string, ShapePatch> | null;
   onSelect: (ids: string[]) => void;
   onDrawShape: (shape: ShapeInput) => void;
+  /** Creates a terrain assembly (assembly group + sources group + terrain node) from a drawn footprint. */
+  onCreateTerrain?: (footprint: { x: number; z: number; width: number; depth: number }, y: number) => void;
   /** One gizmo drag: one `update_nodes`, so one undo step. */
   onUpdate: (changes: NodeUpdate[]) => void;
   /** A short message for the status bar (the Pen's "the outline crosses itself"). */
@@ -501,6 +503,7 @@ export function Viewport({
   preview,
   onSelect,
   onDrawShape,
+  onCreateTerrain,
   onUpdate,
   onDuplicate,
   onNotice,
@@ -1113,10 +1116,11 @@ export function Viewport({
   // Height and scale handles and the profile knobs are for a single closed shape (a line has none; a tilted
   // shape's sit on its own tilted top). Tilt rings are for a single box or cylinder volume or hole.
   // (A tilted free-form has none: its handles would stretch it in the world's frame, not its own; 14.4.)
-  const scalable = single && isClosed(single) && !(single.type === "freeform" && isTilted(single)) ? single : undefined;
+  // Terrain has scale and move handles (no rotation, tilt or height handle; plan 16).
+  const scalable = single && ((isClosed(single) && !(single.type === "freeform" && isTilted(single))) || single.type === "terrain") ? single : undefined;
   // Tilt rings (14.4): a single box's or cylinder's own, or around the world's axes for anything else (a group,
   // several nodes, a free-form, an instance), which tilts it all as one.
-  const tiltable = selectedBoxes.some((b) => b.type !== "note");
+  const tiltable = selectedBoxes.some((b) => b.type !== "note" && b.type !== "terrain");
   // The selection frame turns with the selection: live while rotating, then as far as it was turned.
   const selectionKey = selection.join(",");
   const frameTurn = drag?.active && drag.turn !== undefined ? drag.turn : turn?.key === selectionKey ? turn.angle : 0;
@@ -1126,13 +1130,15 @@ export function Viewport({
       ? {
           anchor: gizmoAnchor(boundsOf(selectedBoxes), frame),
           parts: [
-            ...(scalable
-              ? ["x", "y", "z", "rotate", "height", ...SCALE_PARTS, ...profileParts(scalable)]
-              : selectedBoxes.every((b) => b.type === "note")
-                ? ["x", "y", "z"]
-                : ["x", "y", "z", "rotate"]),
+            ...(scalable?.type === "terrain"
+              ? ["x", "y", "z", ...SCALE_PARTS]
+              : scalable
+                ? ["x", "y", "z", "rotate", "height", ...SCALE_PARTS, ...profileParts(scalable)]
+                : selectedBoxes.every((b) => b.type === "note")
+                  ? ["x", "y", "z"]
+                  : ["x", "y", "z", "rotate"]),
             // Uniform scale (14.3): any selection with something that has a size.
-            ...(selectedBoxes.some((b) => b.type !== "note") ? ["uniform"] : []),
+            ...(selectedBoxes.some((b) => b.type !== "note" && b.type !== "terrain") ? ["uniform"] : []),
             ...(tiltable ? ["pitch", "roll"] : []),
           ] as GizmoPart[],
           boxes: selectedBoxes,
@@ -1610,6 +1616,12 @@ export function Viewport({
       const grabbed = screenToGround(cam.current, size, sx, sy);
       pan.current = { pointerId: e.pointerId, grabbed, sx, sy };
       setPanning(true);
+    } else if (tool === "terrain") {
+      const { point } = planeAt(e, 0);
+      setLanding(null);
+      const shape: Draft = { type: "terrain" };
+      drawing.current = { pointerId: e.pointerId, ...shape, start: point, y: 0, on: null };
+      setDraft({ ...shape, ...point, width: 0, depth: 0, sx, sy, y: 0, on: null });
     } else {
       const surface = surfaceFor(sx, sy, size);
       const y = surface?.y ?? 0;
@@ -1617,7 +1629,7 @@ export function Viewport({
       const on = surfaceText(surface);
       setLanding(null);
       const shape: Draft = {
-        type: draws!,
+        type: draws as "box" | "cylinder",
         kind: nextKind,
         ...(draws === "cylinder" && nextSides !== undefined ? { sides: nextSides } : {}),
         ...fieldsFor(nextKind, nextFields),
@@ -1695,7 +1707,7 @@ export function Viewport({
       setDraft({ ...d, ...footprintFrom(d.start, point, e.shiftKey, e.altKey), sx, sy });
       return;
     }
-    if (DRAWS[tool]) showLanding(sx, sy, size);
+    if (DRAWS[tool] && tool !== "terrain") showLanding(sx, sy, size);
     // Just hovering: in point editing, what a press would grab (for the cursor); otherwise highlight the gizmo
     // handle, or in the Select tool the box that a press would grab.
     if (editArray && !editShape) {
@@ -1799,17 +1811,21 @@ export function Viewport({
     if (d?.pointerId === e.pointerId) {
       const f = footprintFrom(d.start, planeAt(e, d.y).point, e.shiftKey, e.altKey);
       if (round2(f.width) > 0 && round2(f.depth) > 0) {
-        onDrawShape({
-          type: d.type,
-          ...(d.sides !== undefined ? { sides: d.sides } : {}),
-          ...fieldsFor(d.kind, d),
-          kind: d.kind,
-          ...(d.y !== 0 ? { y: round2(d.y) } : {}),
-          x: round2(f.x),
-          z: round2(f.z),
-          width: round2(f.width),
-          depth: round2(f.depth),
-        });
+        if (d.type === "terrain") {
+          onCreateTerrain?.({ x: round2(f.x), z: round2(f.z), width: round2(f.width), depth: round2(f.depth) }, round2(d.y));
+        } else {
+          onDrawShape({
+            type: d.type,
+            ...(d.sides !== undefined ? { sides: d.sides } : {}),
+            ...fieldsFor(d.kind, d),
+            kind: d.kind,
+            ...(d.y !== 0 ? { y: round2(d.y) } : {}),
+            x: round2(f.x),
+            z: round2(f.z),
+            width: round2(f.width),
+            depth: round2(f.depth),
+          });
+        }
       }
       cancelDrawing();
     }
@@ -2289,24 +2305,31 @@ function Boxes({
         );
       })}
       {draft && draft.width > 0 && draft.depth > 0 && (
-        <ShapeMesh
-          shape={{
-            id: "draft",
-            ...(draft.type === "cylinder" ? { type: "cylinder", sides: draft.sides } : { type: "box" }),
-            kind: draft.kind,
-            ...fieldsFor(draft.kind, draft),
-            x: draft.x,
-            z: draft.z,
-            width: draft.width,
-            depth: draft.depth,
-            y: draft.y,
-            height: DEFAULT_HEIGHT[draft.kind],
-            rotation: 0,
-            color: DEFAULT_COLOR,
-            createdBy: "human",
-          }}
-          draft
-        />
+        draft.type === "terrain" ? (
+          <mesh position={[draft.x, draft.y + 0.01, draft.z]} rotation={[-Math.PI / 2, 0, 0]}>
+            <planeGeometry args={[draft.width, draft.depth]} />
+            <meshBasicMaterial color="#3f9e4d" transparent opacity={0.4} side={THREE.DoubleSide} />
+          </mesh>
+        ) : (
+          <ShapeMesh
+            shape={{
+              id: "draft",
+              ...(draft.type === "cylinder" ? { type: "cylinder", sides: draft.sides } : { type: "box" }),
+              kind: draft.kind,
+              ...fieldsFor(draft.kind, draft),
+              x: draft.x,
+              z: draft.z,
+              width: draft.width,
+              depth: draft.depth,
+              y: draft.y,
+              height: DEFAULT_HEIGHT[draft.kind],
+              rotation: 0,
+              color: DEFAULT_COLOR,
+              createdBy: "human",
+            }}
+            draft
+          />
+        )
       )}
     </>
   );

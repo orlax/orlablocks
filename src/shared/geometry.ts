@@ -699,6 +699,7 @@ export function verticalRange(shape: Shape): [number, number] {
 /** The rectangle the gizmo's scale and rotate handles sit on: a box's or cylinder's own, a free-form's world-axis bounds. */
 export function handleFrame(shape: Shape): Frame {
   if (isFootprinted(shape)) return shape;
+  if (shape.type === "terrain") return { x: shape.x, z: shape.z, width: shape.width, depth: shape.depth, rotation: 0 };
   const b = footprintBounds(shape);
   return { x: (b.minX + b.maxX) / 2, z: (b.minZ + b.maxZ) / 2, width: b.maxX - b.minX, depth: b.maxZ - b.minZ, rotation: 0 };
 }
@@ -785,7 +786,7 @@ export function orientedFrame(shapes: Shape[], angle: number): Frame {
  * frame turned by `turn` (how far the editor has turned this selection so far; 0 = axis-aligned).
  */
 export function selectionFrame(shapes: Shape[], turn = 0): Frame {
-  if (shapes.length === 1 && isFootprinted(shapes[0])) return handleFrame(shapes[0]);
+  if (shapes.length === 1 && (isFootprinted(shapes[0]) || shapes[0].type === "terrain")) return handleFrame(shapes[0]);
   return orientedFrame(shapes, turn);
 }
 
@@ -941,8 +942,8 @@ export function rotateAround(shapes: Shape[], pivot: Point, degrees: number): Re
  * center and size; a free-form's points (and handles) stretch with the frame, along its own (possibly turned) axes.
  */
 export function resizeShape(shape: Shape, from: Frame, to: { x: number; z: number; width: number; depth: number }): ShapePatch {
-  if (isFootprinted(shape)) return { x: to.x, z: to.z, width: to.width, depth: to.depth };
-  if (shape.type === "terrain" || shape.type === "line" || shape.type === "ramp" || shape.type === "note" || shape.type === "instance" || shape.type === "array") return {}; // these have no scale handles
+  if (isFootprinted(shape) || shape.type === "terrain") return { x: to.x, z: to.z, width: to.width, depth: to.depth };
+  if (shape.type === "line" || shape.type === "ramp" || shape.type === "note" || shape.type === "instance" || shape.type === "array") return {}; // these have no scale handles
   const sx = from.width > 0 ? to.width / from.width : 1;
   const sz = from.depth > 0 ? to.depth / from.depth : 1;
   const target = { ...to, rotation: from.rotation };
