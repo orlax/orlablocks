@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { MAX_PASTE, NodeSchema, type SceneNode } from "../shared/scene.types";
-import { subtreeIds } from "../shared/tree";
+import { copySelection } from "../shared/tree";
 
 /**
  * The system clipboard format for copy, cut and paste: `{ "orlablocks": "nodes", "nodes": [...] }` as plain
@@ -13,8 +13,7 @@ const ClipboardSchema = z.object({
 
 /** The clipboard text for the selected nodes: each with its whole subtree, in list order. */
 export function clipboardText(nodes: SceneNode[], ids: string[]): string {
-  const all = new Set(ids.flatMap((id) => [...subtreeIds(nodes, id)]));
-  return JSON.stringify({ orlablocks: "nodes", nodes: nodes.filter((n) => all.has(n.id)) });
+  return JSON.stringify({ orlablocks: "nodes", nodes: copySelection(nodes, ids) });
 }
 
 /** Our nodes from clipboard text, or null for anything else (other text, other JSON, invalid nodes). */

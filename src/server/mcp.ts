@@ -12,6 +12,7 @@ import {
   DEFAULT_WALL,
   DuplicateNodesSchema,
   GroupNodesSchema,
+  MakeTerrainSchema,
   MAX_COPIES,
   MirrorNodesSchema,
   MoveNodesSchema,
@@ -151,7 +152,7 @@ function buildServer(workspace: Workspace, renders: RenderBroker, exports: Expor
   /** Runs an edit tool's body for real, or as a dry run (14.2): the same result, marked, with nothing changed. */
   const edit = <T extends object>(dryRun: boolean | undefined, run: () => T) =>
     dryRun ? { dryRun: "nothing was changed: this is what the call would do", ...store().dryRun(run) } : run();
-  const server = new McpServer({ name: "orlablocks", version: "0.0.41" }, { instructions: INSTRUCTIONS });
+  const server = new McpServer({ name: "orlablocks", version: "0.0.42" }, { instructions: INSTRUCTIONS });
   // Every tool reads or edits the open scene, and fails with a clear message while nothing is open.
   // The agent's scene (14.5): its own while the human is in another one, else the human's open document.
   const store = () => workspace.requireAgentScene();
@@ -604,6 +605,19 @@ function buildServer(workspace: Workspace, renders: RenderBroker, exports: Expor
           return warned({ [input.copy ? "copies" : "transformed"]: result, pivot, ...(copies ? { copies } : {}) });
         }),
       ),
+  );
+
+  server.registerTool(
+    "make_terrain",
+    {
+      title: "Make terrain",
+      description: "Make a terrain from selected untilted volumes and smooth ramps, including groups. Preserves world positions and wraps the inputs in an ordinary source/assembly group. Initial coverage includes fades; later source edits never resize it. One undo step.",
+      inputSchema: MakeTerrainSchema.extend({ dry_run: DRY_RUN }).shape,
+    },
+    async ({ dry_run, ...input }) => json(edit(dry_run, () => {
+      const terrain = guided(() => store().makeTerrain(input, "agent"));
+      return { terrain: compactNodes(store().getScene().nodes, [terrain.id])[0] };
+    })),
   );
 
   server.registerTool(

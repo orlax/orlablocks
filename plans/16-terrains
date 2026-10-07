@@ -4,7 +4,7 @@
 >
 > Start with **16.1: the tiniest usable terrain editor and a first Unity export test**. Do not build a complete terrain framework before proving this loop. Orlando has delegated the smoothing experiments to the implementing agent: run them, compare the results and record the choice here. Operation order is the hierarchy outliner's order, top to bottom. Contributing shapes stay visible/editable in orlablocks and are omitted from the Unity export. Walking and other terrain-aware gameplay queries come after this feature; live terrain evaluation in Unity is also deferred.
 >
-> Each increment ends with the relevant tests and `npm run typecheck`, a scripted check on a spare server where useful (`PORT=5171 DATA_DIR=<scratch>`), and a browser/Unity checklist. Never use the main data folder for fixtures. Bump the MCP version by one patch for each increment that changes its contract. Keep `GLOSSARY.md` aligned with implemented behavior and log progress in §13. This is a finalized implementation plan; no increment has been built yet.
+> Each increment ends with the relevant tests and `npm run typecheck`, a scripted check on a spare server where useful (`PORT=5171 DATA_DIR=<scratch>`), and a browser/Unity checklist. Never use the main data folder for fixtures. Bump the MCP version by one patch for each increment that changes its contract. Keep `GLOSSARY.md` aligned with implemented behavior and log progress in §13. 16.1 is accepted; see §13 for implementation progress.
 
 ---
 
@@ -282,4 +282,21 @@ Reference material checked during planning:
 
 - Read the thinking document, relevant earlier phases, and current geometry, tree/outliner, surface and export code.
 - Incorporated Orlando's hierarchy-order, source-visibility/export and scope decisions. Replaced `16-terrains-draft.md` with this phase plan.
-- 16.1–16.4 are **not started**. Smoothing experiments, performance measurements, browser acceptance and Unity validation remain implementation work. No application code or scene data changed during planning.
+- This entry records the planning handoff; implementation status follows below.
+
+
+### 16.1 — accepted (2026-10-06)
+
+- Initial terrain system landed in `c7b650f`; UI conventions integrated in `5b8e445`.
+- Orlando explicitly accepted 16.1. Retained sequential Raise/Lower/Set with outward smoothstep Fade, without a global blur or extra join parameter. No comparative experiment is claimed here.
+
+### 16.2 — Free-forms, smooth ramps and complete editing (2026-10-06)
+
+- Extended the shared upper-mesh projection to concave/curved free-form volumes and smooth ramps. Ramp fades extend the nearest boundary's interpolated surface height, preserving a rising path. Stairs, tilted sources, rooms, holes, instances and arrays remain unsupported.
+- Kept the existing toolbar rectangle drawing (snap, Shift square, Alt from center), Inspector fields and View bar. **Make terrain** is in Inspector Actions, uses an ordinary assembly/source group and fits the initial rectangle around source footprints plus fades; one undo step. Also available as `make_terrain` (with dry run); MCP patch 0.0.42.
+- Selected/hovered source inputs show dashed influence outlines on the generated ground with the existing annotation rendering. Corrected operation buttons to use the existing labeled segmented style.
+- Bare-terrain copies/clipboard snapshots include independent source subtrees. Whole assemblies and multiple selected roots remap source links together; copies keep the normal placement after each original. Uniform scaling scales Fade (including ramps), dimensions and elevations, keeping resolution. Terrain yaw/tilt and source tilt are refused before mutation.
+- Conversion preserves modifier settings. Dissolving nested groups preserves fully expanded operation order; grouping refuses an implicit operation reorder (group adjacent modifiers or explicitly reorder in the outliner first). Deleting/ungrouping the source root releases the binding; deleting terrain preserves source geometry; undo restores each action.
+- Validation: full unit suite and typecheck passed (564 tests). Added coverage for curved/concave input, rising/negative ramp heights, fade support/width, independent copies, clipboard across scenes, transforms/refusals, conversion and nested ungroup/deletion undo.
+- Browser smoke check on a separate temporary data folder: pasted two hills, a concave courtyard and curved rising path through the editor; Make terrain selected the generated terrain; ramp Fade edited the result and showed its influence outline; Show modifiers and undo worked; a ramp elevation-handle drag reshaped the ground, moving the courtyard above the hills through the outliner changed the result, and undo restored the order. Reload preserved geometry and modifier settings. No main project data touched. Unity importer unchanged in this increment; full Unity refresh/acceptance remains 16.4.
+- Next: **16.3 — Agent workflow, captures and measured responsiveness**.

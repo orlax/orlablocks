@@ -17,6 +17,7 @@ import {
   GripVertical,
   Minus,
   MoveHorizontal,
+  Mountain,
   MoveRight,
   Plus,
   Dices,
@@ -134,6 +135,7 @@ export type InspectorProps = {
   onScaleBy?: (factor: number) => void;
   /** Box and cylinder volumes and holes: pitch and roll, each undefined when they differ. */
   tilt?: {
+    levelOnly?: boolean;
     pitch: number | undefined;
     roll: number | undefined;
     onChange: (patch: { pitch?: number; roll?: number }) => void;
@@ -152,6 +154,7 @@ export type InspectorProps = {
   onMirror?: (axis: MirrorAxis) => void;
   /** Convert to free-form (the selection has boxes or cylinders). */
   onConvert?: () => void;
+  onMakeTerrain?: () => void;
   /** Edit points (a single free-form, line or ramp): whether it's in point editing, and a toggle. */
   editPoints?: { active: boolean; onToggle: () => void; label?: string };
 };
@@ -233,10 +236,11 @@ export function Inspector({
   ramp,
   onMirror,
   onConvert,
+  onMakeTerrain,
   editPoints,
 }: InspectorProps) {
   const { ref, header, style, collapsed, toggle } = useFloating("orlablocks.inspector", ".inspector-header");
-  const actions = onMirror || onConvert || editPoints || makeEntity || onScaleBy;
+  const actions = onMirror || onConvert || editPoints || makeEntity || onScaleBy || onMakeTerrain;
   return (
     <div className={collapsed ? "inspector collapsed" : "inspector"} ref={ref} style={style}>
       <div className="inspector-header" {...header} title="Drag to move the inspector · double-click to put it back">
@@ -363,6 +367,7 @@ export function Inspector({
                   </button>
                 )}
                 {onScaleBy && <ScaleBy onScale={onScaleBy} />}
+                {onMakeTerrain && <button className="labeled" title="Make terrain from the selected volumes and smooth ramps, preserving their positions" onClick={onMakeTerrain}><Mountain size={16} /> Make terrain</button>}
                 {makeEntity && <MakeEntity {...makeEntity} />}
               </div>
             </Section>
@@ -1168,15 +1173,16 @@ function SidesControl({ value, onChange }: { value: number | undefined; onChange
  * A box's or cylinder's tilt: pitch (around its own x axis, + leans the top toward its +z) and roll (around its own
  * z axis), in degrees with − / + in 15° steps (the rings' snap), and Reset tilt, which levels it in one step.
  */
-function TiltSection({ pitch, roll, onChange, yaw }: NonNullable<InspectorProps["tilt"]>) {
+function TiltSection({ pitch, roll, onChange, yaw, levelOnly }: NonNullable<InspectorProps["tilt"]>) {
   const level = pitch === 0 && roll === 0;
   return (
-    <Section label="Tilt">
+    <Section label={levelOnly ? "Rotation" : "Tilt"}>
       {yaw && (
         <Row label="yaw">
           <NumberField title="Yaw: degrees around the vertical, counterclockwise seen from above" value={yaw.value} unit="°" step={15} fallback={0} onChange={yaw.onChange} />
         </Row>
       )}
+      {!levelOnly && <>
       <Row label="pitch">
         <NumberField title="Pitch: degrees around the shape's own x axis (the red ring)" value={pitch} unit="°" step={15} fallback={0} onChange={(p) => onChange({ pitch: p })} />
       </Row>
@@ -1188,6 +1194,8 @@ function TiltSection({ pitch, roll, onChange, yaw }: NonNullable<InspectorProps[
           <Rotate3d size={16} /> Reset tilt
         </button>
       </Row>
+      </>}
+      {levelOnly && <span className="value">Terrain modifiers stay level</span>}
     </Section>
   );
 }
@@ -1342,7 +1350,7 @@ function TerrainModifierSection({ operation, fade, onChange }: TerrainModifierCo
   return (
     <Section label="Terrain Modifier">
       <Row label="operation">
-        <div className="segmented">
+        <div className="segmented labeled">
           {(["raise", "lower", "set"] as const).map((op) => (
             <button
               key={op}

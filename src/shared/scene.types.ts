@@ -92,6 +92,7 @@ export type FootPoint = { x: number; z: number; in?: Offset; out?: Offset };
  * change its points. The outline must not cross itself.
  */
 export type Freeform = {
+  terrain?: TerrainModifier;
   id: string; // "freeform_1", ...
   type: "freeform";
   name?: string;
@@ -156,6 +157,7 @@ export type RampBase = "solid" | "floating";
  * smooth). Always a volume: never a room, and never a hole (a hole that cuts stairs and floors at once cuts too much).
  */
 export type Ramp = {
+  terrain?: TerrainModifier;
   id: string; // "ramp_1", ...
   type: "ramp";
   name?: string;
@@ -589,6 +591,7 @@ const BoxSchema = z.object({ ...footprinted, type: z.literal("box") });
 const CylinderSchema = z.object({ ...footprinted, type: z.literal("cylinder"), sides: z.number().int().min(MIN_SIDES).max(MAX_SIDES).optional() });
 
 const FreeformSchema = z.object({
+  terrain: TerrainModifierSchema.optional(),
   id: z.string(),
   type: z.literal("freeform"),
   name: z.string().optional(),
@@ -627,6 +630,7 @@ const LineSchema = z.object({
 
 const RampPointSchema = z.object({ x: z.number(), y: z.number(), z: z.number(), in: OffsetSchema.optional(), out: OffsetSchema.optional() });
 const RampSchema = z.object({
+  terrain: TerrainModifierSchema.optional(),
   id: z.string(),
   type: z.literal("ramp"),
   name: z.string().optional(),
@@ -817,6 +821,7 @@ const PointsSchema = z
 
 /** A free-form for `draw_shapes`: its points, kind, and the optional fields a box has, minus the footprint ones. */
 export const FreeformInputSchema = z.strictObject({
+  terrain: TerrainModifierSchema.optional(),
   type: z.literal("freeform").describe("A closed outline of points, optionally curved with bezier handles"),
   kind: field.kind,
   points: PointsSchema,
@@ -910,6 +915,7 @@ const rampField = {
  * A ramp for `draw_shapes`: its path as points, or as a `spiral` the server turns into points; the rest optional.
  */
 export const RampInputSchema = z.strictObject({
+  terrain: TerrainModifierSchema.optional(),
   type: z.literal("ramp").describe("A path with a width: a ramp, stairs (with step), a landing, a walkway, a spiral stair"),
   kind: z.enum(["volume", "hole"]).optional().describe("always volume (the default): a ramp is never a hole"),
   points: z
@@ -1338,6 +1344,7 @@ export const GroupNodesSchema = z.strictObject({
   description: z.string().max(MAX_DESCRIPTION).optional().describe('What the group is, e.g. "entry hall, safe zone"'),
   tags: field.tags.optional(),
 });
+export const MakeTerrainSchema = z.strictObject({ ids: IdsSchema, name: field.name.optional() });
 export const UngroupSchema = z.strictObject({ ids: IdsSchema.describe("IDs of groups to dissolve; their contents stay") });
 /** The outliner's drag and drop: put nodes in `parent` (null = top level), just before sibling `before` (null = last). */
 export const PlaceNodesSchema = z.strictObject({
@@ -1582,6 +1589,7 @@ export const ClientMessageSchema = z.discriminatedUnion("type", [
   ConvertNodesSchema.extend({ type: z.literal("convert_nodes") }),
   PasteNodesSchema.extend({ type: z.literal("paste_nodes") }),
   GroupNodesSchema.extend({ type: z.literal("group_nodes") }),
+  MakeTerrainSchema.extend({ type: z.literal("make_terrain") }),
   UngroupSchema.extend({ type: z.literal("ungroup") }),
   PlaceNodesSchema.extend({ type: z.literal("place_nodes") }),
   z.object({ type: z.literal("set_selection"), ids: z.array(z.string()) }),

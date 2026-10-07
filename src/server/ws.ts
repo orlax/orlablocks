@@ -138,6 +138,7 @@ export function attachWebSocket(httpServer: Server, workspace: Workspace, render
         else if (msg.type === "rotate_nodes") scene.rotateNodes(withoutType(msg), "human");
         else if (msg.type === "transform_nodes") scene.transformNodes(withoutType(msg), "human");
         else if (msg.type === "convert_nodes") scene.convertNodes(withoutType(msg), "human");
+        else if (msg.type === "make_terrain") scene.makeTerrain(withoutType(msg), "human");
         else if (msg.type === "group_nodes") scene.groupNodes(withoutType(msg), "human");
         else if (msg.type === "ungroup") scene.ungroup(withoutType(msg), "human");
         else if (msg.type === "place_nodes") scene.placeNodes(withoutType(msg), "human");

@@ -1,6 +1,6 @@
 import { rayMeshFirst, type Ray } from "../shared/ray";
 import { TerrainMesh } from "./TerrainMesh";
-import { evaluateTerrain, terrainInputIds } from "../shared/terrain";
+import { evaluateTerrain, terrainInputIds, isTerrainSource, terrainInfluence } from "../shared/terrain";
 import { useEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent, type RefObject } from "react";
 import { Canvas, invalidate, useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
@@ -1120,7 +1120,8 @@ export function Viewport({
   const scalable = single && ((isClosed(single) && !(single.type === "freeform" && isTilted(single))) || single.type === "terrain") ? single : undefined;
   // Tilt rings (14.4): a single box's or cylinder's own, or around the world's axes for anything else (a group,
   // several nodes, a free-form, an instance), which tilts it all as one.
-  const tiltable = selectedBoxes.some((b) => b.type !== "note" && b.type !== "terrain");
+  const hasTerrain = selectedBoxes.some((b) => b.type === "terrain");
+  const tiltable = !hasTerrain && !selectedBoxes.some((b) => terrainInputIds(nodes).has(b.id)) && selectedBoxes.some((b) => b.type !== "note");
   // The selection frame turns with the selection: live while rotating, then as far as it was turned.
   const selectionKey = selection.join(",");
   const frameTurn = drag?.active && drag.turn !== undefined ? drag.turn : turn?.key === selectionKey ? turn.angle : 0;
@@ -1134,7 +1135,7 @@ export function Viewport({
               ? ["x", "y", "z", ...SCALE_PARTS]
               : scalable
                 ? ["x", "y", "z", "rotate", "height", ...SCALE_PARTS, ...profileParts(scalable)]
-                : selectedBoxes.every((b) => b.type === "note")
+                : hasTerrain || selectedBoxes.every((b) => b.type === "note")
                   ? ["x", "y", "z"]
                   : ["x", "y", "z", "rotate"]),
             // Uniform scale (14.3): any selection with something that has a size.
@@ -2300,6 +2301,7 @@ function Boxes({
         return (
           <group key={b.id}>
             <ShapeMesh shape={b} authoring={modifierIds.has(b.id)} highlight={highlight} cuts={modifierIds.has(b.id) ? undefined : cuts.get(b.id)} />
+            {highlight && modifierIds.has(b.id) && isTerrainSource(b) && <TerrainInfluence source={b} nodes={nodes} />}
             {isHole(b) && b.parent === undefined && !entityMode && <HoleWarning hole={b} />}
           </group>
         );
@@ -2349,6 +2351,32 @@ function HoleWarning({ hole }: { hole: ClosedShape }) {
       renderOrder={4}
     />
   );
+}
+
+/** Selected authoring input: its fade boundary draped on the generated ground, using annotation lines. */
+function TerrainInfluence({ source, nodes }: { source: import("../shared/terrain").TerrainSource; nodes: SceneNode[] }) {
+  const rings = useMemo(() => {
+    const t = nodes.find((n): n is import("../shared/scene.types").Terrain => n.type === "terrain" && !!n.source && subtreeIds(nodes, n.source).has(source.id));
+    if (!t) return [];
+    const field = evaluateTerrain(t, nodes), size = t.resolution;
+    const height = (x: number, z: number) => {
+      if (Math.abs(x - t.x) > t.width / 2 || Math.abs(z - t.z) > t.depth / 2) return t.y;
+      const ix = Math.max(0, Math.min(size - 1, Math.round((x - t.x + t.width / 2) / t.width * (size - 1))));
+      const iz = Math.max(0, Math.min(size - 1, Math.round((z - t.z + t.depth / 2) / t.depth * (size - 1))));
+      return field.heights[iz * size + ix];
+    };
+    return terrainInfluence(source).map((ring) => {
+      const points: Point3[] = [];
+      const spacing = Math.min(t.width, t.depth) / (size - 1);
+      for (let i = 0; i < ring.length; i++) {
+        const a = ring[i], b = ring[(i + 1) % ring.length];
+        const count = Math.max(1, Math.min(256, Math.ceil(Math.hypot(b.x - a.x, b.z - a.z) / spacing)));
+        for (let k = 0; k < count; k++) { const x = a.x + (b.x - a.x) * k / count, z = a.z + (b.z - a.z) * k / count; points.push({ x, z, y: height(x, z) }); }
+      }
+      return points.length ? [...points, points[0]] : [];
+    });
+  }, [source, nodes]);
+  return <>{rings.map((points, i) => points.length >= 2 && <LineMesh key={i} line={{ id: "terrain-influence", type: "line", points, color: "blue", thickness: 1.5, dashed: true, arrow: "none", createdBy: "human" }} />)}</>;
 }
 
 /** The Pen's outline in progress: blue, or red once it crosses itself. */

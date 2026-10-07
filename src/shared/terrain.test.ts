@@ -48,3 +48,30 @@ describe("terrain heightfield", () => {
     expect(sample([group, { ...box, x: 12 }], 0)).toBe(0);
   });
 });
+
+describe("free-form and ramp terrain inputs", () => {
+  it("keeps a concave cutout clear and extends the nearest boundary height into its fade", () => {
+    const shape: import("./scene.types").Freeform = { id: "freeform_1", type: "freeform", kind: "volume", parent: group.id, points: [{ x: -4, z: -4 }, { x: 4, z: -4 }, { x: 4, z: 0 }, { x: 0, z: 0 }, { x: 0, z: 4 }, { x: -4, z: 4 }], y: 0, height: 4, color: "green", createdBy: "human", terrain: { operation: "raise", fade: 2 } };
+    expect(terrainProblems([group, shape, terrain])).toEqual([]);
+    expect(sample([group, shape], -2, 2)).toBe(4);
+    expect(sample([group, shape], 3, 3)).toBe(0);
+    expect(sample([group, shape], 1, 2)).toBeCloseTo(2);
+  });
+  it("samples a curved free-form's upper surface", () => {
+    const shape: import("./scene.types").Freeform = { id: "freeform_1", type: "freeform", kind: "volume", parent: group.id, points: [{ x: -4, z: -4, out: { x: 2, z: -2 } }, { x: 4, z: -4, in: { x: -2, z: -2 } }, { x: 4, z: 4 }, { x: -4, z: 4 }], y: 0, height: 4, color: "green", createdBy: "human" };
+    expect(sample([group, shape], 0, -4.5)).toBe(4);
+    expect(sample([group, shape], 0, -6)).toBe(0);
+  });
+  it("retains ramp width and rising boundary heights, with finite outward fade", () => {
+    const ramp: import("./scene.types").Ramp = { id: "ramp_1", type: "ramp", kind: "volume", parent: group.id, points: [{ x: -4, y: 2, z: 0 }, { x: 4, y: 6, z: 0 }], width: 4, base: "solid", color: "green", createdBy: "human", terrain: { operation: "set", fade: 2 } };
+    expect(sample([group, ramp], 0)).toBeCloseTo(4);
+    expect(sample([group, ramp], 2, 2)).toBeCloseTo(5);
+    expect(sample([group, ramp], 2, 3)).toBeCloseTo(2.5);
+    expect(sample([group, ramp], 2, 4)).toBe(0);
+    expect(terrainProblems([group, ramp, terrain])).toEqual([]);
+    expect(terrainProblems([group, { ...ramp, step: 0.2 }, terrain])[0]).toContain("smooth ramps");
+    const curved = { ...ramp, points: [{ x: -4, y: 2, z: -2, out: { x: 2, z: 4 } }, { x: 4, y: 6, z: -2, in: { x: -2, z: 4 } }] };
+    expect(sample([group, curved], 0, 1)).toBeCloseTo(4, 1);
+    expect(sample([group, { ...ramp, points: [{ x: -4, y: -6, z: 0 }, { x: 4, y: -2, z: 0 }] }], 0)).toBeCloseTo(-4);
+  });
+});

@@ -33,7 +33,7 @@ import {
   type ClientMessage,
   type Terrain,
 } from "../shared/scene.types";
-import { terrainInputIds } from "../shared/terrain";
+import { terrainInputIds, isTerrainSource } from "../shared/terrain";
 import { boundsOf, footprintBounds, isClosed, isTilted, polyline, rampStations, reversePoints, round2, wallOf } from "../shared/geometry";
 import { shapesUnder, childrenOf, countsText, isShape, isGroup, hiddenIds, lockedIds, subtreeIds, tagsOf } from "../shared/tree";
 import { definitionOf, expandShapes } from "../shared/entities";
@@ -971,7 +971,7 @@ export function App() {
                     })()
                   : undefined,
               makeEntity:
-                !editingEntity && selectedShapes.length > 0 && !selectedShapes.some((b) => b.type === "instance" || b.type === "array" || b.type === "note" || b.type === "terrain")
+                !editingEntity && selectedShapes.length > 0 && !selectedShapes.some((b) => b.type === "instance" || b.type === "array" || b.type === "note" || b.type === "terrain" || terrainInputIds(nodes).has(b.id))
                   ? {
                       suggested: (single && isGroup(single) ? single.name : undefined) ?? "entity",
                       onMake: (name) => {
@@ -1013,7 +1013,7 @@ export function App() {
                   : undefined,
               wall: wallControl,
               profile: profileControl,
-              tilt: tiltControl && { ...tiltControl, ...(yawControl ? { yaw: yawControl } : {}) },
+              tilt: tiltControl && { ...tiltControl, levelOnly: tiltable.some((n) => terrainInputIds(nodes).has(n.id)), ...(yawControl ? { yaw: yawControl } : {}) },
               scale: scaleControl,
               onScaleBy: selectedShapes.some((s) => s.type !== "note")
                 ? (factor) => {
@@ -1044,7 +1044,7 @@ export function App() {
                   : undefined,
               terrainModifier:
                 singleShape &&
-                (singleShape.type === "box" || singleShape.type === "cylinder") &&
+                isTerrainSource(singleShape) &&
                 (singleShape.terrain || terrainInputIds(nodes).has(singleShape.id))
                   ? {
                       operation: singleShape.terrain?.operation ?? "raise",
@@ -1065,6 +1065,11 @@ export function App() {
                         }),
                     }
                   : undefined,
+              onMakeTerrain: !editingEntity && selectedShapes.some(isTerrainSource) && selectedShapes.every((n) => isTerrainSource(n) || n.type === "line" || n.type === "note") && !selectedShapes.some((n) => terrainInputIds(nodes).has(n.id))
+                ? () => {
+                    pendingSelect.current = { before: new Set(nodes.map((n) => n.id)), pick: (added) => added.filter((n) => n.type === "terrain").map((n) => n.id) };
+                    send({ type: "make_terrain", ids: selection });
+                  } : undefined,
               onMirror: (axis) => send({ type: "mirror_nodes", ids: selection, axis }),
               onConvert: convertible.length > 0 ? convert : undefined,
               editPoints: editable

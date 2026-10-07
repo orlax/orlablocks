@@ -76,6 +76,25 @@ export function topmost(nodes: SceneNode[], ids: string[]): string[] {
   return ids.filter((id) => !ancestry(nodes, id).slice(1).some((a) => listed.has(a)));
 }
 
+/** Copy dependencies: a terrain owns its inputs, including when only the terrain is selected. */
+export function copySelection(nodes: SceneNode[], ids: string[]): SceneNode[] {
+  const inside = new Set(ids.flatMap((id) => [...subtreeIds(nodes, id)]));
+  const parents = new Map<string, string | undefined>();
+  for (const n of nodes) if (inside.has(n.id) && n.type === "terrain" && n.source && !inside.has(n.source)) {
+    for (const id of subtreeIds(nodes, n.source)) inside.add(id);
+    parents.set(n.source, n.parent);
+  }
+  return nodes.filter((n) => inside.has(n.id)).map((n) => parents.has(n.id) ? { ...n, parent: parents.get(n.id) } : n);
+}
+
+/** Fully expanded outliner order, also used when dissolving a nested operation group. */
+export function outlineOrder(nodes: SceneNode[]): SceneNode[] {
+  const out: SceneNode[] = [];
+  const walk = (parent?: string) => { for (const n of childrenOf(nodes, parent)) { out.push(n); if (isGroup(n)) walk(n.id); } };
+  walk();
+  return out;
+}
+
 /**
  * Copies of `source` (a set of nodes, each root with its subtree) with fresh IDs from `newId`, in the same order.
  * `parent` references inside the set are remapped to the copies; the others are kept, so a copied root stays in

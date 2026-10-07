@@ -987,7 +987,7 @@ export function scaleShape(shape: Shape, factor: number, pivot: Pivot3): ShapePa
   if (shape.type === "instance") return { x: px(shape.x), y: py(shape.y), z: pz(shape.z), scale: scaleOf(shape.scale) };
   if (shape.type === "line") return { points: scaledPoints3(shape.points, f, pivot) };
   if (shape.type === "ramp") {
-    return { points: scaledPoints3(shape.points, f, pivot) as RampPoint[], width: len(shape.width), ...(shape.step !== undefined ? { step: len(shape.step) } : {}) };
+    return { points: scaledPoints3(shape.points, f, pivot) as RampPoint[], width: len(shape.width), ...(shape.terrain ? { terrain: { ...shape.terrain, fade: len(shape.terrain.fade) } } : {}), ...(shape.step !== undefined ? { step: len(shape.step) } : {}) };
   }
   const wall = shape.kind === "room" ? { wall: len(wallOf(shape)) } : {};
   const vertical = { y: py(shape.y), height: len(shape.height), ...wall, ...("terrain" in shape && shape.terrain ? { terrain: { ...shape.terrain, fade: len(shape.terrain.fade) } } : {}) };

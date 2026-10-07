@@ -1,4 +1,4 @@
-import { terrainProblems } from "../shared/terrain";
+import { terrainProblems, isTerrainSource, terrainSources, terrainInputIds } from "../shared/terrain";
 import type { z } from "zod";
 import {
   boundsOf,
@@ -42,6 +42,7 @@ import {
   DEFAULT_VIEW,
   DuplicateNodesSchema,
   GroupNodesSchema,
+  MakeTerrainSchema,
   MIN_HEIGHT,
   MIN_WALL,
   MIN_RAMP_WIDTH,
@@ -62,6 +63,7 @@ import {
   type RampBase,
   type RampPoint,
   type ShapeKind,
+  type Terrain,
   type Box,
   type ClosedShape,
   type Cylinder,
@@ -87,7 +89,7 @@ import { facingRotation, type FacingSpec } from "../shared/facing";
 import { arrayItems, followPath, isFollowing, tidyArrayPatch, withFollowed } from "../shared/arrays";
 import { standHeight, standPoses, standProblem, throughPoints } from "../shared/surfaces";
 import { definitionOf, expandInstance } from "../shared/entities";
-import { shapesUnder, commonParent, copyNodes, isShape, isGroup, subtreeIds, topmost } from "../shared/tree";
+import { shapesUnder, commonParent, copyNodes, copySelection, outlineOrder, isShape, isGroup, subtreeIds, topmost } from "../shared/tree";
 import { applyOp, createHistory, invertOp, runOps, type History, type HistoryEntry, type Op } from "./commands";
 
 export class SceneError extends Error {}
@@ -448,6 +450,22 @@ export function createSceneStore({
     });
   };
 
+  /** Keep each copied root immediately after its original, while sharing one dependency/ID map. */
+  const copyPlacements = (roots: string[], originals: SceneNode[], copies: SceneNode[]): Map<string, SceneNode[]> => {
+    const placements = new Map<string, SceneNode[]>();
+    const subtrees = roots.map((id) => subtreeIds(scene.nodes, id));
+    const owner = (n: SceneNode) => {
+      const direct = subtrees.findIndex((ids) => ids.has(n.id));
+      if (direct >= 0) return direct;
+      return subtrees.findIndex((ids) => originals.some((t) => t.type === "terrain" && ids.has(t.id) && t.source && subtreeIds(scene.nodes, t.source).has(n.id)));
+    };
+    for (let i = 0; i < roots.length; i++) {
+      const anchor = scene.nodes.filter((n) => subtrees[i].has(n.id)).at(-1)!.id;
+      placements.set(anchor, copies.filter((_, j) => owner(originals[j]) === i));
+    }
+    return placements;
+  };
+
   /**
    * The shapes a move, turn or mirror acts on, without following arrays (their paths come from what they follow, so
    * they go where it goes). Refused when an array that follows something that isn't moving is named on its own.
@@ -608,6 +626,7 @@ export function createSceneStore({
         ...(n.wall !== undefined ? { wall: n.wall } : {}),
         ...(n.taper !== undefined ? { taper: n.taper } : {}),
         ...(n.bevel !== undefined ? { bevel: n.bevel } : {}),
+        ...(n.terrain ? { terrain: n.terrain } : {}),
         points: outlines[i],
         createdBy: n.createdBy,
       }),
@@ -1052,6 +1071,7 @@ export function createSceneStore({
           const points = d.spiral ? spiralPoints(d.spiral) : (d.points ?? []);
           return {
             type: "ramp" as const,
+            ...(d.terrain ? { terrain: d.terrain } : {}),
             ...(name ? { name } : {}),
             ...withTags(tagList(prefix, d.tags, errors)),
             ...(d.parent !== undefined ? { parent: d.parent } : {}),
@@ -1197,7 +1217,7 @@ export function createSceneStore({
             const bad = Object.keys(fields).filter((k) => !allowed.includes(k));
             if (bad.length) errors.push(`${id}: terrain has no ${bad.join(", ")}`);
           } else if (fields.source !== undefined || fields.resolution !== undefined) errors.push(`${id}: source and resolution belong to terrains`);
-          if (fields.terrain !== undefined && node.type !== "box" && node.type !== "cylinder") errors.push(`${id}: terrain modifiers must be boxes or cylinders`);
+          if (fields.terrain !== undefined && node.type !== "box" && node.type !== "cylinder" && node.type !== "freeform" && node.type !== "ramp") errors.push(`${id}: terrain modifiers must be closed shapes or ramps`);
           if (fields.description !== undefined) errors.push(`changes[${i}].description: only a group has a description ("${id}" is a ${node.type})`);
           if (fields.tags !== undefined && node.type === "line") errors.push(`changes[${i}].tags: a line has no tags (it's an annotation)`);
           const noteOnly = (["text", "label", "status"] as const).filter((k) => fields[k] !== undefined);
@@ -1488,17 +1508,11 @@ export function createSceneStore({
       // After which original each root's copies go: the last node of its subtree in the list.
       const copiesAfter = new Map<string, SceneNode[]>();
       const copiedRoots: SceneNode[] = [];
-      const subtrees = roots.map((id) => {
-        const inside = subtreeIds(scene.nodes, id);
-        return { id, nodes: scene.nodes.filter((n) => inside.has(n.id)) };
-      });
+      const originals = copySelection(scene.nodes, roots);
       for (let i = 1; i <= count; i++) {
-        for (const { id, nodes } of subtrees) {
-          const copies = relinkCopies(nodes, copyNodes(nodes, newId, { dx: dx * i, dy: dy * i, dz: dz * i })).map((n) => ({ ...n, createdBy: actor }));
-          copiedRoots.push(copies[nodes.findIndex((n) => n.id === id)]);
-          const last = nodes.at(-1)!.id;
-          copiesAfter.set(last, [...(copiesAfter.get(last) ?? []), ...copies]);
-        }
+        const copies = relinkCopies(originals, copyNodes(originals, newId, { dx: dx * i, dy: dy * i, dz: dz * i })).map((n) => ({ ...n, createdBy: actor }));
+        copiedRoots.push(...copies.filter((_, j) => roots.includes(originals[j].id)));
+        for (const [anchor, batch] of copyPlacements(roots, originals, copies)) copiesAfter.set(anchor, [...(copiesAfter.get(anchor) ?? []), ...batch]);
       }
       const next = scene.nodes.flatMap((n) => [n, ...(copiesAfter.get(n.id) ?? [])]);
       const added = new Set([...copiesAfter.values()].flat().map((n) => n.id));
@@ -1521,6 +1535,8 @@ export function createSceneStore({
       checkIds("ids", ids, errors);
       failIf(errors, "Nothing was rotated.");
       const all = shapesUnder(scene.nodes, ids);
+      if (all.some((n) => n.type === "terrain")) throw new SceneError("Terrain rotation and tilt are not supported. Nothing was rotated.");
+      if (axis !== "y" && all.some((n) => terrainInputIds(scene.nodes).has(n.id))) throw new SceneError("Terrain modifiers cannot tilt. Nothing was rotated.");
       const boxes = withoutFollowers(ids, all, "turn");
       const b = boundsOf(all);
       if (axis !== "y") {
@@ -1641,7 +1657,9 @@ export function createSceneStore({
       }
       if (t.to && t.move) throw new SceneError("Give to or move, not both. Nothing was transformed.");
 
-      const all = shapesUnder(scene.nodes, t.ids);
+      const all = t.copy ? copySelection(scene.nodes, t.ids).filter(isShape) : shapesUnder(scene.nodes, t.ids);
+      if (all.some((n) => n.type === "terrain") && (t.rotate || t.tilt?.pitch || t.tilt?.roll)) throw new SceneError("Terrain rotation and tilt are not supported. Nothing was transformed.");
+      if ((t.tilt?.pitch || t.tilt?.roll) && all.some((n) => terrainInputIds(scene.nodes).has(n.id))) throw new SceneError("Terrain modifiers cannot tilt. Nothing was transformed.");
       const b = boundsOf(all);
       const pivot = { x: t.pivot?.x ?? round2((b.minX + b.maxX) / 2), y: t.pivot?.y ?? round2(b.minY), z: t.pivot?.z ?? round2((b.minZ + b.maxZ) / 2) };
       const move = t.to
@@ -1669,6 +1687,7 @@ export function createSceneStore({
         const patch = tidyTilt(s.type === "array" ? tidyArrayPatch(transformShape(s, transform)) : transformShape(s, transform));
         const next = { ...s, ...patch } as Shape;
         const prefix = `ids[${i}] › ${s.id}`;
+        if (next.type === "terrain") checkSizes(prefix, next, errors);
         if (isClosed(next)) {
           checkSizes(prefix, next, errors);
           if (next.kind === "room" && next.wall !== undefined) patch.wall = wallValue(`${prefix}.wall`, next.wall, errors);
@@ -1695,9 +1714,8 @@ export function createSceneStore({
       const roots = topmost(scene.nodes, t.ids);
       const copiesAfter = new Map<string, SceneNode[]>();
       const pairs: [string, string][] = [];
-      for (const id of roots) {
-        const inside = subtreeIds(scene.nodes, id);
-        const nodes = scene.nodes.filter((n) => inside.has(n.id));
+      {
+        const nodes = copySelection(scene.nodes, roots);
         const copies = relinkCopies(nodes, copyNodes(nodes, newId)).map((n, i) => {
           pairs.push([nodes[i].id, n.id]);
           if (!isShape(n)) return { ...n, createdBy: actor };
@@ -1705,7 +1723,7 @@ export function createSceneStore({
           const patch = isFollowing(n) ? {} : transformed(n as Shape, i);
           return { ...n, ...patch, createdBy: actor } as SceneNode;
         });
-        copiesAfter.set(nodes.at(-1)!.id, copies);
+        for (const [anchor, batch] of copyPlacements(roots, nodes, copies)) copiesAfter.set(anchor, batch);
       }
       failIf(errors, "Nothing was transformed.");
       const next = scene.nodes.flatMap((n) => [n, ...(copiesAfter.get(n.id) ?? [])]);
@@ -1732,6 +1750,38 @@ export function createSceneStore({
      * Puts nodes in a new group, as one step. The group goes where the first of them was in the list, inside the
      * deepest group that held them all. A node whose ancestor is also listed stays where it is (inside it).
      */
+    /** Wrap existing sources in an ordinary assembly; existing geometry stays at its world position. */
+    makeTerrain(input: z.input<typeof MakeTerrainSchema>, actor: Actor): Terrain {
+      const { ids, name } = parse(MakeTerrainSchema, input, "No terrain was made.");
+      const errors: string[] = [];
+      checkIds("ids", ids, errors);
+      if (document === "entity") errors.push("Terrains cannot be entity definitions");
+      failIf(errors, "No terrain was made.");
+      const roots = topmost(scene.nodes, ids);
+      const ordered = outlineOrder(scene.nodes);
+      const taken = ordered.filter((n) => roots.some((id) => subtreeIds(scene.nodes, id).has(n.id)));
+      const sources = taken.filter(isTerrainSource);
+      if (!sources.length) errors.push("Select volume shapes or smooth ramps");
+      for (const n of taken) if (n.type !== "group" && n.type !== "line" && n.type !== "note" && !isTerrainSource(n)) errors.push(`${n.id}: select untilted volumes or smooth ramps`);
+      const owned = new Set(scene.nodes.flatMap((n) => n.type === "terrain" && n.source ? [...subtreeIds(scene.nodes, n.source)] : []));
+      if (taken.some((n) => owned.has(n.id))) errors.push("These shapes already belong to a terrain");
+      failIf(errors, "No terrain was made.");
+      const extents = sources.map((n) => { const b = footprintBounds(n), f = n.terrain?.fade ?? 0; return { minX: b.minX - f, maxX: b.maxX + f, minZ: b.minZ - f, maxZ: b.maxZ + f }; });
+      const minX = Math.min(...extents.map((b) => b.minX)), maxX = Math.max(...extents.map((b) => b.maxX));
+      const minZ = Math.min(...extents.map((b) => b.minZ)), maxZ = Math.max(...extents.map((b) => b.maxZ));
+      const parent = commonParent(scene.nodes, roots);
+      const assembly: Group = { id: newId("group"), type: "group", name: name?.trim() || "Terrain assembly", parent, createdBy: actor };
+      const source: Group = { id: newId("group"), type: "group", name: "Terrain sources", parent: assembly.id, createdBy: actor };
+      const terrain: Terrain = { id: newId("terrain"), type: "terrain", name: name?.trim() || "Terrain", parent: assembly.id, source: source.id, x: round2((minX + maxX) / 2), z: round2((minZ + maxZ) / 2), y: 0, width: round2(maxX - minX), depth: round2(maxZ - minZ), resolution: 129, color: "green", createdBy: actor };
+      const at = Math.min(...roots.map((id) => ordered.findIndex((n) => n.id === id)));
+      commit(label("terrain", listIds(roots), actor), actor, [
+        { op: "order", ids: ordered.map((n) => n.id) },
+        { op: "add", nodes: [assembly, terrain, source], indices: [at, at + 1, at + 2] },
+        { op: "update", changes: roots.map((id) => ({ id, patch: { parent: source.id } })) },
+      ]);
+      return terrain;
+    },
+
     groupNodes(input: z.input<typeof GroupNodesSchema>, actor: Actor): Group {
       const { ids, name, description, tags } = parse(GroupNodesSchema, input, "Nothing was grouped.");
       const errors: string[] = [];
@@ -1743,7 +1793,7 @@ export function createSceneStore({
       const trimmed = name?.trim();
       const described = description?.trim();
       const group: Group = {
-        id: newId("group"),
+        id: `group_${nextId.group}`,
         type: "group",
         ...(trimmed ? { name: trimmed } : {}),
         ...(described ? { description: described } : {}),
@@ -1752,6 +1802,12 @@ export function createSceneStore({
         createdBy: actor,
       };
       const index = Math.min(...members.map((id) => scene.nodes.findIndex((n) => n.id === id)));
+      const grouped: SceneNode[] = scene.nodes.map((n) => members.includes(n.id) ? { ...n, parent: group.id } : n);
+      grouped.splice(index, 0, group);
+      const visible = (nodes: SceneNode[]) => nodes.map((n) => ({ ...n, hidden: undefined }));
+      for (const t of scene.nodes) if (t.type === "terrain" && terrainSources(t, visible(scene.nodes)).map((n) => n.id).join() !== terrainSources(t, visible(grouped)).map((n) => n.id).join())
+        throw new SceneError("Group adjacent terrain modifiers to preserve their operation order; use the outliner to reorder them first. Nothing was grouped.");
+      newId("group");
       commit(label("group", `${listIds(members)} as ${group.id}`, actor), actor, [
         { op: "add", nodes: [group], indices: [index] },
         { op: "update", changes: members.map((id) => ({ id, patch: { parent: group.id } })) },
@@ -1972,6 +2028,7 @@ export function createSceneStore({
       };
       const freed = scene.nodes.filter((n) => n.parent !== undefined && dissolved.has(n.parent) && !dissolved.has(n.id));
       commit(label("ungroup", listIds(ids), actor), actor, [
+        { op: "order", ids: outlineOrder(scene.nodes).map((n) => n.id) },
         { op: "update", changes: freed.map((n) => ({ id: n.id, patch: { parent: newParent(n.parent) } })) },
         { op: "remove", ids },
       ]);

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SceneNode } from "../shared/scene.types";
+import { createSceneStore } from "../server/scene";
 import { clipboardText, readClipboard } from "./clipboard";
 
 const box = (id: string, parent?: string): SceneNode => ({
@@ -35,4 +36,20 @@ describe("clipboard", () => {
     expect(readClipboard('{"orlablocks": "nodes", "nodes": []}')).toBeNull();
     expect(readClipboard(JSON.stringify({ orlablocks: "nodes", nodes: [{ ...nodes[2], width: -1 }] }))).toBeNull();
   });
+});
+
+it("copies a bare terrain with its source subtree and pastes independent inputs across scenes", () => {
+  const original = createSceneStore();
+  original.drawShapes([{ type: "box", kind: "volume", x: 0, z: 0, width: 4, depth: 4, terrain: { operation: "set", fade: 2 } }], "human");
+  const terrain = original.makeTerrain({ ids: ["box_1"] }, "human");
+  const snapshot = readClipboard(clipboardText(original.getScene().nodes, [terrain.id]))!;
+  expect(snapshot).toHaveLength(3);
+  const target = createSceneStore();
+  target.pasteNodes({ nodes: snapshot, focus: { x: 20, z: 20 }, parent: null }, "human");
+  const ground = target.getScene().nodes.find((n) => n.type === "terrain")!;
+  expect(ground).toHaveProperty("x", 20);
+  expect(ground).toHaveProperty("source", "group_1");
+  expect(target.getScene().nodes.find((n) => n.type === "box")).toMatchObject({ parent: "group_1", x: 20, z: 20, terrain: { operation: "set", fade: 2 } });
+  target.undo(); expect(target.getScene().nodes).toEqual([]);
+  target.redo(); expect(target.getScene().nodes).toHaveLength(3);
 });

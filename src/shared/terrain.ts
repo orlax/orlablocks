@@ -1,9 +1,33 @@
-import { footprint, pointInPolygon, volumeRings } from "./geometry";
+import { footprint, pointInPolygon, volumeRings, rampStations, offsetRings } from "./geometry";
 import { hitMesh, type Mesh } from "./mesh";
-import type { Box, Cylinder, SceneNode, Terrain } from "./scene.types";
+import type { Box, Cylinder, Freeform, Ramp, SceneNode, Terrain } from "./scene.types";
 import { childrenOf, hiddenIds, subtreeIds } from "./tree";
 
-export type TerrainSource = Box | Cylinder;
+export type TerrainSource = Box | Cylinder | Freeform | Ramp;
+/** Shared by validation, the Inspector and Make terrain. */
+export function isTerrainSource(n: SceneNode): n is TerrainSource {
+  return n.type === "ramp" ? n.step === undefined :
+    (n.type === "box" || n.type === "cylinder" || n.type === "freeform") && n.kind === "volume" && !n.pitch && !n.roll;
+}
+
+/** The upper boundary; ramp edges retain their height along a rising/curved path. */
+export function terrainBoundary(s: TerrainSource): { x: number; y: number; z: number }[] {
+  if (s.type === "ramp") {
+    const st = rampStations(s);
+    return [...st.map((p) => ({ ...p.left, y: p.y })), ...[...st].reverse().map((p) => ({ ...p.right, y: p.y }))];
+  }
+  const rings = volumeRings(s), base = rings[0].ring;
+  let y = s.y;
+  for (const r of rings) if (r.ring.every((v, i) => Math.hypot(v.x - base[i].x, v.z - base[i].z) < 1e-8)) y = s.y + r.y;
+  return footprint(s).map((p) => ({ ...p, y }));
+}
+
+/** A selected modifier's outer influence outline, using the existing polygon offset. */
+export function terrainInfluence(s: TerrainSource): { x: number; z: number }[][] {
+  const ring = terrainBoundary(s);
+  return s.terrain?.fade ? offsetRings(ring, s.terrain.fade, false) : [ring];
+}
+
 export type Heightfield = { heights: Float32Array; min: number; max: number; mesh: Mesh };
 
 /** Same depth-first order as the fully expanded outliner, independent of collapsed UI state. */
@@ -15,7 +39,7 @@ export function terrainSources(terrain: Terrain, nodes: SceneNode[]): TerrainSou
     for (const n of childrenOf(nodes, id)) {
       if (hidden.has(n.id)) continue;
       if (n.type === "group") walk(n.id);
-      else if (n.type === "box" || n.type === "cylinder") out.push(n);
+      else if (isTerrainSource(n)) out.push(n);
     }
   };
   if (terrain.source) walk(terrain.source);
@@ -44,8 +68,8 @@ export function terrainProblems(nodes: SceneNode[]): string[] {
       if (owned.has(n.id)) errors.push(`${t.id}: source overlaps ${owned.get(n.id)}`);
       owned.set(n.id, t.id);
       if (n.type === "group" || n.type === "note" || n.type === "line") continue;
-      if ((n.type !== "box" && n.type !== "cylinder") || n.kind !== "volume" || n.pitch || n.roll)
-        errors.push(`${n.id}: terrain sources currently support untilted box and cylinder volumes only`);
+      if (!isTerrainSource(n))
+        errors.push(`${n.id}: terrain sources support untilted box, cylinder and free-form volumes and smooth ramps only (no rooms, holes, stairs, instances or arrays)`);
     }
   }
   return errors;
@@ -68,7 +92,8 @@ export function evaluateTerrain(t: Terrain, nodes: SceneNode[]): Heightfield {
   const x0 = t.x - t.width / 2, z0 = t.z - t.depth / 2;
   const heights = new Float32Array(n * n).fill(t.y);
   for (const s of sources) {
-    const mesh = hitMesh(s)!;
+    const mesh = hitMesh(s);
+    if (!mesh) continue;
     const target = new Float64Array(n * n).fill(-Infinity);
     const p = mesh.positions;
     for (let k = 0; k < mesh.indices.length; k += 3) {
@@ -87,12 +112,7 @@ export function evaluateTerrain(t: Terrain, nodes: SceneNode[]): Heightfield {
           target[z * n + x] = Math.max(target[z * n + x], u * p[a + 1] + v * p[b + 1] + (1 - u - v) * p[c + 1]);
       }
     }
-    const ring = footprint(s), fade = s.terrain?.fade ?? 0;
-    // Untilting preserves a constant height along the outer boundary. A taper meets it at the base;
-    // a prism/bevel has vertical sides up to the highest ring that still matches its footprint.
-    const rings = volumeRings(s), base = rings[0].ring;
-    let edgeY = s.y;
-    for (const r of rings) if (r.ring.every((v, i) => Math.hypot(v.x - base[i].x, v.z - base[i].z) < 1e-8)) edgeY = s.y + r.y;
+    const ring = terrainBoundary(s), fade = s.terrain?.fade ?? 0;
     const minX = Math.max(0, Math.ceil((mesh.min[0] - fade - x0) / dx));
     const maxX = Math.min(n - 1, Math.floor((mesh.max[0] + fade - x0) / dx));
     const minZ = Math.max(0, Math.ceil((mesh.min[2] - fade - z0) / dz));
@@ -104,11 +124,12 @@ export function evaluateTerrain(t: Terrain, nodes: SceneNode[]): Heightfield {
         if (fade === 0) continue;
         const q = { x: x0 + x * dx, z: z0 + z * dz };
         if (pointInPolygon(ring, q)) continue;
-        let distance = Infinity;
+        let distance = Infinity, edgeY = 0;
         for (let j = 0; j < ring.length; j++) {
           const a = ring[j], b = ring[(j + 1) % ring.length], ex = b.x - a.x, ez = b.z - a.z;
           const u = Math.max(0, Math.min(1, ((q.x - a.x) * ex + (q.z - a.z) * ez) / (ex * ex + ez * ez || 1)));
-          distance = Math.min(distance, Math.hypot(q.x - a.x - u * ex, q.z - a.z - u * ez));
+          const d = Math.hypot(q.x - a.x - u * ex, q.z - a.z - u * ez);
+          if (d < distance) { distance = d; edgeY = a.y + u * (b.y - a.y); }
         }
         if (distance >= fade) continue;
         w = 1 - smooth(distance / fade); h = edgeY;
