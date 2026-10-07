@@ -17,7 +17,7 @@ namespace Orlablocks
     public class OrlaNode : MonoBehaviour
     {
         public string id = "";
-        [Tooltip("group, box, cylinder, freeform, ramp, instance, array, item, note, line, or entity (an entity prefab's root)")]
+        [Tooltip("group, box, cylinder, freeform, ramp, instance, array, item, terrain, note, line, or entity (an entity prefab's root)")]
         public string type = "";
         [Tooltip("room, volume or hole (closed shapes and ramps)")]
         public string kind = "";
@@ -36,6 +36,8 @@ namespace Orlablocks
 
         // What the last sync set, to tell a change made in Unity (drift) from one made in orlablocks.
         [HideInInspector] public string rev = "";
+        [HideInInspector] public string syncedTerrain = "";
+        [HideInInspector] public string terrainAssetPath = "";
         [HideInInspector] public string syncedParent = "";
         [HideInInspector] public Vector3 syncedPosition;
         [HideInInspector] public Quaternion syncedRotation = Quaternion.identity;

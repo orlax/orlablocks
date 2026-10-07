@@ -66,7 +66,9 @@ namespace Orlablocks.Editor
             if (!File.Exists(file)) throw new Exception($"No level.json in {folder}. Pick the scene's folder (it's named by the scene's ID), not the project's.");
             var m = JsonUtility.FromJson<Manifest>(File.ReadAllText(file));
             if (m == null || m.format != Format) throw new Exception($"{file} isn't an orlablocks export.");
+            if (m.version < 1) throw new Exception($"{file} has an unsupported export version {m.version}; export the scene again.");
             if (m.version > Version) throw new Exception($"{file} is export version {m.version}; these Orlablocks files read up to {Version}. Update them from the orlablocks repo.");
+            if (m.version == 1 && Array.Exists(m.nodes ?? new NodeRecord[0], n => n.type == "terrain")) throw new Exception("Terrain requires export version 2; export the scene again.");
             return m;
         }
     }
@@ -167,7 +169,7 @@ namespace Orlablocks.Editor
         public float[,] Heights(TerrainRecord terrain)
         {
             int n = terrain.resolution;
-            if ((n != 129 && n != 257 && n != 513 && n != 1025) || terrain.offset < 0 || (long)terrain.offset + (long)n * n * 4 > bytes.Length)
+            if ((n != 129 && n != 257 && n != 513 && n != 1025) || terrain.size == null || terrain.size.Length != 3 || Array.Exists(terrain.size, v => float.IsNaN(v) || float.IsInfinity(v) || v <= 0) || terrain.offset < 0 || terrain.offset % 4 != 0 || (long)terrain.offset + (long)n * n * 4 > bytes.Length)
                 throw new Exception("Invalid terrain height payload; export the scene again.");
             var result = new float[n, n];
             var samples = Floats(terrain.offset, n * n);

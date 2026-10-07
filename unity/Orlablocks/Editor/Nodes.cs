@@ -55,6 +55,7 @@ namespace Orlablocks.Editor
         static void Forget(OrlaLevel level, GameObject[] objects)
         {
             Undo.RecordObject(level, "Claim");
+            level.terrainChangedInUnity = level.terrainChangedInUnity.Where(o => o != null && !objects.Contains(o)).ToArray();
             level.movedInUnity = level.movedInUnity.Where(o => o != null && !objects.Contains(o)).ToArray();
             level.claimedChanged = level.claimedChanged.Where(o => o != null && !objects.Contains(o)).ToArray();
             EditorUtility.SetDirty(level);
@@ -91,14 +92,14 @@ namespace Orlablocks.Editor
                 if (node.claimed)
                 {
                     EditorGUILayout.HelpBox("Claimed: this and what's under it are yours. Syncs leave them alone.", MessageType.Info);
-                    if (GUILayout.Button("Unclaim (take orlablocks' version on the next sync)")) Nodes.Claim(gos, false);
+                    if (GUILayout.Button("Unclaim (resume sync; local edits may need Revert)")) Nodes.Claim(gos, false);
                 }
                 else
                 {
                     var level = node.GetComponentInParent<OrlaLevel>();
-                    if (level != null && level.movedInUnity.Contains(node.gameObject))
+                    if (level != null && (level.movedInUnity.Contains(node.gameObject) || level.terrainChangedInUnity.Contains(node.gameObject)))
                     {
-                        EditorGUILayout.HelpBox("Moved in Unity since the last sync: syncs leave it where it is.", MessageType.Warning);
+                        EditorGUILayout.HelpBox("Transform or terrain content edited in Unity since the last sync: syncs leave it alone.", MessageType.Warning);
                         using (new EditorGUILayout.HorizontalScope())
                         {
                             if (GUILayout.Button("Revert to orlablocks")) Nodes.Revert(gos);

@@ -385,7 +385,8 @@ function records(nodes: SceneNode[], baked: Map<string, Baked>, cutIds: Set<stri
     };
   };
   for (const n of byParent.get("") ?? []) visit(n);
-  for (const r of out) r.rev = hash16(JSON.stringify({ ...r, rev: "" }));
+  // A binary offset is packaging, not terrain content: inserting an unrelated mesh must not refresh it.
+  for (const r of out) r.rev = hash16(JSON.stringify({ ...r, rev: "", ...(r.type === "terrain" ? { terrain: { ...r.terrain, offset: 0 } } : {}) }));
   return out;
 }
 

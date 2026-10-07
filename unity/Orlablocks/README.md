@@ -36,7 +36,7 @@ Copy (or symlink) this `Orlablocks` folder into your project's `Assets/`. It has
     missing, so tune them freely. **Rebuild materials** on the Level makes them again.
   - `Textures/OrlaTile.png`: that tile.
   - `Entities/`: each entity's prefab and meshes. Don't edit these: a sync replaces them when the entity changes.
-  - `Levels/`: each scene's meshes.
+  - `Levels/`: each scene's meshes and `Terrains/<Level key>/`: stable TerrainData, layer, palette texture and Terrain-compatible material assets. New Levels own separate terrain assets; existing 16.1 assets keep their identity when safe.
 - **Coordinates:** orlablocks' north (-z there) is Unity's forward (+z), and east is +x in both. One unit is one meter.
 
 ## Syncing again
@@ -48,6 +48,8 @@ rev is the same is left alone.
   they're kept in `Orphaned (<id>)` under the Level, where they were.
 - **Moved in Unity:** a synced object you move, turn, scale or reparent is left where you put it and listed on the
   Level. **Revert** takes orlablocks' place back on the next sync; **Claim** makes it yours.
+- **Terrain edited in Unity:** sculpted heights or managed settings are left alone, even on an unchanged export. The Level and node inspectors offer the same **Revert**/**Claim** buttons. Sync owns heights, resolution, size, generated layer/diffuse texture/tile size, material reference/shader and TerrainCollider reference/enabled state. Trees, details, painted layer weights, extra components, children and other Terrain settings remain yours. Changing resolution can reset Unity's painted weights; claim before using Unity as the terrain authoring source. A deleted locally edited terrain is kept until you choose Revert (remove it) or Claim (keep it).
+- Terrain asset edits participate in Unity undo/redo. Claimed terrain assets cannot be modified through another Level's sync. The first 16.4 sync of a legacy terrain establishes a content baseline when the unchanged heights match; otherwise it asks for a one-time Revert/Claim decision, because the earlier importer did not record sculpt drift.
 - **Claim** (the object's inspector, or **GameObject → Orlablocks → Claim**): syncs stop changing it and what's under
   it, and the Level lists claimed objects that orlablocks changed or removed.
 - **Update available** shows on the Level, and in the Scene view's corner, when orlablocks exports the scene again.
@@ -96,3 +98,9 @@ The entity and tag pickers search (type to filter) what the exports of the Level
 search field filters the entity rows once there are more than a few. The next sync applies a change to
 every object once. A mapping that can't apply (no prefab, a missing script, an unknown Unity tag) is listed in the
 Level's report, and the blockout stays.
+
+## Terrain export verification
+
+Format 2 adds native Terrain height payloads; the reader accepts format 1 ordinary scenes and rejects terrain records in format 1 or newer unsupported formats. Unity imports the server's evaluated samples, not source shapes. GLB uses the same samples as a triangle mesh with the editor's diagonal layout; Unity's height storage/LOD can differ slightly.
+
+For a repeatable isolated check, run `node --import tsx scripts/terrain-export-fixtures.ts /private/tmp/terrain-fixtures`, copy this importer and `scripts/unity/TerrainAcceptance.cs` into a scratch Unity project's Assets (the latter under Editor), then launch Unity with `ORLA_TERRAIN_FIXTURES=/private/tmp/terrain-fixtures`, `-batchmode -nographics -projectPath <scratch> -executeMethod TerrainAcceptance.Run` (without `-quit`). The harness exits and writes `result.json`; it tests the real importer, asset undo, local sculpt protection, claims, deletion/orphans, compatibility and the Auto sync watcher. Never run fixtures in your real project.

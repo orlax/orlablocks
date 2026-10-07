@@ -56,6 +56,20 @@ try {
   await human.request({ type: "update_nodes", changes: [{ id: path, terrain: { operation: "raise", fade: 6 } }] }, (m) => m.type === "scene" && m.scene.nodes.find((n) => n.id === path)?.terrain?.fade === 6);
   check((await call("find_nodes", { type: "ramp" })).found[0].terrain.fade === 6, "human source edits are immediately readable by the agent");
   check((await call("check_scene")).warnings.some((w) => w.includes("do not verify generated terrain")), "deferred terrain-aware checks explicitly disclose their limitation");
+  const exportFolder = `/private/tmp/orlablocks-terrain-export-${Date.now()}`;
+  fs.mkdirSync(exportFolder, { recursive: true });
+  const status = await human.request({ type: "set_export_folder", dir: exportFolder }, (m) => m.type === "export" && m.export?.dir === exportFolder);
+  const exported = await call("export_scene");
+  const manifest = JSON.parse(fs.readFileSync(`${status.export.sceneDir}/level.json`, "utf8"));
+  check(manifest.version === 2 && manifest.nodes.some(n => n.id === ground && n.terrain.resolution === 513) && !manifest.nodes.some(n => [sources, hill, courtyard, path].includes(n.id)), "MCP Unity export writes native canonical terrain and omits inputs");
+  const glb = Buffer.from(await (await fetch(`http://127.0.0.1:${port}/api/export.glb`)).arrayBuffer());
+  check(glb.readUInt32LE(0) === 0x46546c67, "editor GLB download is a glTF binary");
+  const gltf = JSON.parse(glb.subarray(20, 20 + glb.readUInt32LE(12)).toString());
+  const terrainMesh = gltf.nodes.find(n => n.extras?.orlablocks?.id === ground)?.mesh;
+  check(terrainMesh !== undefined && gltf.accessors[gltf.meshes[terrainMesh].primitives[0].attributes.POSITION].count === 513 ** 2, "GLB download includes full canonical terrain mesh");
+  check(!gltf.nodes.some(n => [sources, hill, courtyard, path].includes(n.extras?.orlablocks?.id)), "GLB download omits authoring sources");
+  fs.writeFileSync(`${exportFolder}/terrain.glb`, glb);
+  console.log(`Export fixtures: ${exportFolder}, step ${exported.exportId}`);
   if (process.argv[3] === "render") {
     // The scripted human is not a renderer; leave only the real browser registered.
     human.close();
@@ -72,5 +86,5 @@ try {
       check((await call("get_shots")).shots.length > 0, "a clean canonical terrain capture is kept in Shots");
     } finally { await client.close(); }
   }
-  console.log(`Passed 16.3 on ${port}; ${ground}, ${sources}, ${hill}, ${courtyard}, ${path}`);
+  console.log(`Passed terrain authoring/export checks on ${port}; ${ground}, ${sources}, ${hill}, ${courtyard}, ${path}`);
 } finally { await session.close(); }

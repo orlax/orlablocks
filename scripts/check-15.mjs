@@ -45,7 +45,7 @@ const CHECKS = {
     const s = await call("export_scene");
     check(s.nodes.box === 2 && s.items === 6 && s.entities === 1 && s.nodes.note === 1, "the agent's export writes the room, the door, the ring's instance, the array's items and the note");
     const m = manifestIn(dir);
-    check(m.format === "orlablocks-unity" && m.version === 1 && m.exportId === s.exportId, "level.json is the manifest, at the step exported");
+    check(m.format === "orlablocks-unity" && m.version === 2 && m.exportId === s.exportId, "level.json is the manifest, at the step exported");
     check(fs.statSync(path.join(dir, m.meshes.file)).size === m.meshes.bytes, "its binary is there, the size it says");
     const inRange = [...m.nodes, ...m.entities.flatMap((e) => e.nodes)].every((r) => [r.body, r.floor].every((g) => g.offset + g.vertices * 32 + g.indices * 4 <= m.meshes.bytes));
     check(inRange, "every mesh range is inside the binary");

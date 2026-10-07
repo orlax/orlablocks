@@ -6,6 +6,9 @@ import { hitMesh } from "../shared/mesh";
 import type { Box, Group, Instance, SceneNode } from "../shared/scene.types";
 import { buildExport } from "./export";
 import { glbFromExport } from "./gltf";
+import { createSceneStore } from "./scene";
+import { evaluateTerrain } from "../shared/terrain";
+import type { Terrain } from "../shared/scene.types";
 import { loadManifold } from "./manifold";
 
 beforeAll(() => loadManifold());
@@ -80,6 +83,38 @@ describe("the .glb", () => {
     expect(pillars).toHaveLength(2);
     expect(pillars[0].mesh).toBe(pillars[1].mesh);
     expect(json.materials.map((mt: any) => mt.name)).toContain("orla-blue");
+  });
+
+  it("exports canonical terrain vertices and diagonals at a negative nonzero origin, omitting inputs", () => {
+    const store = createSceneStore();
+    store.drawShapes([
+      { type: "group", ref: "assembly" },
+      { type: "group", ref: "sources", parent: "$assembly" },
+      { type: "terrain", parent: "$assembly", source: "$sources", x: 10, z: 7, y: -2, width: 32, depth: 16 },
+      { type: "box", kind: "volume", parent: "$sources", x: 5, z: 3, y: -1, width: 8, depth: 6, height: 4 },
+      { type: "box", kind: "volume", parent: "$sources", x: 22, z: 1, y: -6, width: 4, depth: 4, height: 1, terrain: { operation: "lower", fade: 2 } },
+      { type: "box", kind: "volume", x: 50, z: 0, width: 2, depth: 2 },
+    ], "human");
+    const nodes = store.getScene().nodes, terrain = nodes.find((n): n is Terrain => n.type === "terrain")!;
+    const field = evaluateTerrain(terrain, nodes);
+    const { manifest, binary } = buildExport({ project: { id: "p", name: "P", description: "" }, scene: { id: "s", name: "S" }, seq: 1, nodes, library: EMPTY_LIBRARY });
+    const { json, bin } = parse(glbFromExport(manifest, binary));
+    expect(json.nodes.map((n: any) => n.name)).not.toEqual(expect.arrayContaining(["group_2", "box_1", "box_2"]));
+    const points = worldPoints(json, bin).get("terrain_1")!;
+    expect(points).toHaveLength(terrain.resolution ** 2);
+    let error = 0;
+    for (let i = 0; i < points.length; i++) for (let axis = 0; axis < 3; axis++) error = Math.max(error, Math.abs(points[i][axis] - field.mesh.positions[i * 3 + axis]));
+    expect(error).toBeLessThan(1e-5);
+    const node = json.nodes.find((n: any) => n.name === "terrain_1"), primitive = json.meshes[node.mesh].primitives[0];
+    const view = json.bufferViews[json.accessors[primitive.indices].bufferView];
+    const indices = new Uint32Array(bin.buffer.slice(bin.byteOffset + view.byteOffset, bin.byteOffset + view.byteOffset + view.byteLength));
+    expect(Array.from(indices)).toEqual(field.mesh.indices);
+    const normalsView = json.bufferViews[json.accessors[primitive.attributes.NORMAL].bufferView];
+    const normals = new Float32Array(bin.buffer.slice(bin.byteOffset + normalsView.byteOffset, bin.byteOffset + normalsView.byteOffset + normalsView.byteLength));
+    expect(Array.from(normals).every(Number.isFinite)).toBe(true);
+    expect(normals[1]).toBeGreaterThan(0);
+    manifest.nodes.find((n) => n.type === "terrain")!.terrain.offset = binary.length;
+    expect(() => glbFromExport(manifest, binary)).toThrow("payload");
   });
 
   it("scales and turns an instance as in orlablocks", () => {

@@ -25,6 +25,7 @@ namespace Orlablocks.Editor
         {
             public bool UpToDate;
             public int Created, Updated, Unchanged, Removed, Orphaned, Instances, EntitiesBuilt, MeshesMade;
+            public readonly List<GameObject> TerrainChanged = new List<GameObject>();
             public readonly List<GameObject> Moved = new List<GameObject>();
             public readonly List<GameObject> ClaimedChanged = new List<GameObject>();
             public readonly List<GameObject> Gone = new List<GameObject>();
@@ -40,6 +41,7 @@ namespace Orlablocks.Editor
                     $"{Created} made, {Updated} updated, {Unchanged} unchanged, {Removed} removed" + (Orphaned > 0 ? $", {Orphaned} of your objects kept in Orphaned" : ""),
                     $"{m.entities.Length} entities ({EntitiesBuilt} rebuilt), {MeshesMade} new meshes",
                 };
+                if (TerrainChanged.Count > 0) lines.Add($"{TerrainChanged.Count} terrains edited in Unity: left alone (Revert or Claim them)");
                 if (Moved.Count > 0) lines.Add($"{Moved.Count} moved in Unity: left where they are (Revert or Claim them)");
                 if (ClaimedChanged.Count > 0) lines.Add($"{ClaimedChanged.Count} claimed here changed in orlablocks: not updated");
                 if (Gone.Count > 0) lines.Add($"{Gone.Count} claimed here are gone from orlablocks: kept");
@@ -165,7 +167,8 @@ namespace Orlablocks.Editor
                 Lap("entities");
 
                 ctx.Store = new MeshStore($"{root}/Levels/{Assets.Safe(m.scene.id)}", true);
-                ctx.TerrainFolder = $"{root}/Levels/{Assets.Safe(m.scene.id)}/Terrains";
+                if (string.IsNullOrEmpty(level.terrainAssetKey) || UnityEngine.Object.FindObjectsByType<OrlaLevel>(FindObjectsInactive.Include).Any(other => other != level && other.terrainAssetKey == level.terrainAssetKey)) { Undo.RecordObject(level, "Terrain asset ownership"); level.terrainAssetKey = Guid.NewGuid().ToString("N"); }
+                ctx.TerrainFolder = $"{root}/Levels/{Assets.Safe(m.scene.id)}/Terrains/{level.terrainAssetKey}";
                 new Reconciler(level.transform, ctx, new Edit(true, $"Sync {m.scene.name}"), true).Run(m.nodes);
                 Lap("objects");
                 ctx.Store.KeepReferenced(level.gameObject);
@@ -185,6 +188,7 @@ namespace Orlablocks.Editor
                 level.syncedAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
                 level.report = result.Report(m);
                 level.movedInUnity = result.Moved.ToArray();
+                level.terrainChangedInUnity = result.TerrainChanged.ToArray();
                 level.claimedChanged = result.ClaimedChanged.ToArray();
                 level.goneFromOrlablocks = result.Gone.ToArray();
                 if (level.gameObject.name.StartsWith("Orlablocks Level"))
@@ -410,8 +414,14 @@ namespace Orlablocks.Editor
                         Result.Moved.Add(n.gameObject);
                         return;
                     }
+                    if (level && !n.revert && (TerrainSync.Drifted(n) || TerrainSync.LegacyDrifted(n, r, ctx.Bin)))
+                    {
+                        Result.TerrainChanged.Add(n.gameObject);
+                        return;
+                    }
                     if (n.rev == ctx.Rev(r.rev) && !n.revert && !MissingMesh(n, r))
                     {
+                        if (r.type == "terrain" && string.IsNullOrEmpty(n.syncedTerrain)) { edit.Record(n); n.syncedTerrain = TerrainSync.Fingerprint(n.gameObject); }
                         Result.Unchanged++;
                         return;
                     }
@@ -433,6 +443,7 @@ namespace Orlablocks.Editor
 
             static bool MissingMesh(OrlaNode n, NodeRecord r)
             {
+                if (r.type == "terrain") { var t = n.GetComponent<Terrain>(); return t == null || t.terrainData == null; }
                 if (!r.IsShape || !r.HasMesh) return false;
                 var f = n.GetComponent<MeshFilter>();
                 return f == null || f.sharedMesh == null;
@@ -449,6 +460,7 @@ namespace Orlablocks.Editor
                 node.syncedPosition = go.transform.localPosition;
                 node.syncedRotation = go.transform.localRotation;
                 node.syncedScale = go.transform.localScale;
+                node.syncedTerrain = r.type == "terrain" ? TerrainSync.Fingerprint(go) : "";
             }
 
             bool NeedsReplace(OrlaNode n, NodeRecord r)
@@ -573,34 +585,48 @@ namespace Orlablocks.Editor
                 var heights = ctx.Bin.Heights(r.terrain);
                 Assets.EnsureFolder(ctx.TerrainFolder);
                 var path = $"{ctx.TerrainFolder}/{Assets.Safe(r.id)}.asset";
+                var existing = go.GetComponent<Terrain>();
+                // Keep a 16.1 asset's identity when safe; otherwise isolate all generated assets for this Level.
+                var previous = existing != null ? existing.terrainData : null;
+                var previousPath = previous != null ? AssetDatabase.GetAssetPath(previous) : "";
+                if ((previousPath == path || previousPath == ctx.TerrainFolder.Substring(0, ctx.TerrainFolder.LastIndexOf('/')) + $"/{Assets.Safe(r.id)}.asset") && !TerrainSync.Protected(previous, existing != null ? existing.materialTemplate : null)) path = previousPath;
+                var node = go.GetComponent<OrlaNode>();
+                if (!string.IsNullOrEmpty(node.terrainAssetPath) && System.IO.Path.GetDirectoryName(node.terrainAssetPath) == ctx.TerrainFolder) path = node.terrainAssetPath;
+                var target = AssetDatabase.LoadAssetAtPath<TerrainData>(path);
+                var targetMaterial = AssetDatabase.LoadAssetAtPath<Material>(path.Substring(0, path.Length - 6) + ".mat");
+                if (TerrainSync.Protected(target, targetMaterial)) path = $"{ctx.TerrainFolder}/{Assets.Safe(r.id)}-{Guid.NewGuid():N}.asset";
+                node.terrainAssetPath = path;
+                var assetBase = path.Substring(0, path.Length - ".asset".Length);
                 var data = AssetDatabase.LoadAssetAtPath<TerrainData>(path);
-                if (data == null) { data = new TerrainData { name = r.GameObjectName }; AssetDatabase.CreateAsset(data, path); }
+                if (data == null) { data = previous != null ? UnityEngine.Object.Instantiate(previous) : new TerrainData(); data.name = r.GameObjectName; AssetDatabase.CreateAsset(data, path); }
                 Undo.RegisterCompleteObjectUndo(data, "Sync terrain");
-                data.heightmapResolution = r.terrain.resolution;
+                if (data.heightmapResolution != r.terrain.resolution) data.heightmapResolution = r.terrain.resolution;
                 data.size = NodeRecord.V(r.terrain.size);
                 data.SetHeights(0, 0, heights);
                 // Each terrain owns its generated assets: claiming one cannot mutate another through a shared cache.
-                var layerPath = $"{ctx.TerrainFolder}/{Assets.Safe(r.id)}-layer.terrainlayer";
+                var layerPath = $"{assetBase}-layer.terrainlayer";
                 var layer = AssetDatabase.LoadAssetAtPath<TerrainLayer>(layerPath);
                 if (layer == null) { layer = new TerrainLayer(); AssetDatabase.CreateAsset(layer, layerPath); }
-                var texturePath = $"{ctx.TerrainFolder}/{Assets.Safe(r.id)}-color.asset";
+                var texturePath = $"{assetBase}-color.asset";
                 var texture = AssetDatabase.LoadAssetAtPath<Texture2D>(texturePath);
                 if (texture == null) { texture = new Texture2D(2, 2); AssetDatabase.CreateAsset(texture, texturePath); }
-                edit.Record(texture); edit.Record(layer);
+                Undo.RegisterCompleteObjectUndo(texture, "Sync terrain color"); edit.Record(layer);
+                if (texture.width != 2 || texture.height != 2) texture.Reinitialize(2, 2);
                 var color = ctx.Palette.TryGetValue(r.color ?? "", out var c) ? c : Color.white;
                 texture.SetPixels(new[] { color, color, color, color }); texture.Apply();
                 layer.diffuseTexture = texture; layer.tileSize = Vector2.one;
-                data.terrainLayers = new[] { layer };
-                // A single layer defaults to full weight; no painted alphamap is authored in 16.1.
+                if (data.terrainLayers.Length != 1 || data.terrainLayers[0] != layer) data.terrainLayers = new[] { layer };
+                // Keep Unity painting, trees and details; sync owns the generated layer, not their contents.
                 var terrain = Ensure<Terrain>(go); edit.Record(terrain); terrain.terrainData = data;
                 var shader = Shader.Find("Universal Render Pipeline/Terrain/Lit") ?? Shader.Find("Nature/Terrain/Standard");
                 if (shader != null) {
-                    var matPath = $"{ctx.TerrainFolder}/{Assets.Safe(r.id)}.mat";
+                    var matPath = $"{assetBase}.mat";
                     var material = AssetDatabase.LoadAssetAtPath<Material>(matPath);
                     if (material == null) { material = new Material(shader); AssetDatabase.CreateAsset(material, matPath); }
+                    else if (material.shader != shader) { edit.Record(material); material.shader = shader; EditorUtility.SetDirty(material); }
                     terrain.materialTemplate = material;
                 }
-                if (r.collider == "terrain") { var collider = Ensure<TerrainCollider>(go); edit.Record(collider); collider.terrainData = data; }
+                if (r.collider == "terrain") { var collider = Ensure<TerrainCollider>(go); edit.Record(collider); collider.terrainData = data; collider.enabled = true; }
                 else Drop<TerrainCollider>(go);
                 EditorUtility.SetDirty(data); EditorUtility.SetDirty(layer); EditorUtility.SetDirty(texture);
                 terrain.Flush();
@@ -894,6 +920,7 @@ namespace Orlablocks.Editor
                         Result.Gone.Add(n.gameObject);
                         continue;
                     }
+                    if (level && !n.revert && TerrainSync.NeedsDecisionOnRemoval(n)) { Result.TerrainChanged.Add(n.gameObject); continue; }
                     if (UnderGone(n, gone)) continue;
                     if (level) Rescue(n.transform, n.id, gone);
                     edit.Destroy(n.gameObject);
@@ -918,7 +945,7 @@ namespace Orlablocks.Editor
                 {
                     if (IsPrefabContent(child.gameObject) || IsBlockout(child)) continue;
                     var n = child.GetComponent<OrlaNode>();
-                    if (n != null && gone.Contains(n) && !Claimed(n))
+                    if (n != null && gone.Contains(n) && !Claimed(n) && !(level && !n.revert && TerrainSync.NeedsDecisionOnRemoval(n)))
                     {
                         Rescue(child, id, gone);
                         Result.Removed++;

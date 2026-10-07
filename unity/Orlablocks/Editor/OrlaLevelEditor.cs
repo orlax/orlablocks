@@ -73,6 +73,7 @@ namespace Orlablocks.Editor
             }
 
             List(level, "Moved in Unity", "Left where you put them. Revert takes orlablocks' place on the next sync; Claim makes them yours.", level.movedInUnity, true);
+            List(level, "Terrain edited in Unity", "Local terrain edits, or an older import without a verified baseline. Revert takes the export; Claim preserves your terrain.", level.terrainChangedInUnity, true);
             List(level, "Claimed, changed in orlablocks", "Not updated, because they're claimed. Unclaim one to take orlablocks' version.", level.claimedChanged, false);
             List(level, "Claimed, gone from orlablocks", "Kept, because they're claimed.", level.goneFromOrlablocks, false);
         }

@@ -36,6 +36,23 @@ describe("terrain scene and export", () => {
     expect(store.getScene().nodes[0]).not.toHaveProperty("source");
     store.undo(); expect(store.getScene().nodes).toHaveLength(2);
   });
+  it("refreshes only changed terrain content, not unrelated binary packaging", () => {
+    const store = fixture();
+    store.drawShapes([{ type: "box", kind: "volume", parent: "group_1", x: 5, z: 3, width: 8, depth: 6, height: 4 }], "human");
+    const built = () => buildExport({ nodes: store.getScene().nodes, project: { id: "p", name: "P", description: "" }, scene: { id: "s", name: "S" }, seq: 1, library: EMPTY_LIBRARY });
+    const record = () => built().manifest.nodes.find((n) => n.type === "terrain")!;
+    const first = record();
+    store.drawShapes([{ type: "box", kind: "volume", x: 50, z: 0, width: 2, depth: 2 }], "human");
+    store.placeNodes({ ids: ["box_2"], parent: null, before: "terrain_1" }, "human");
+    const next = record();
+    expect(next.terrain.offset).not.toBe(first.terrain.offset);
+    expect(next.rev).toBe(first.rev);
+    store.updateNodes([{ id: "box_1", height: 5 }], "human");
+    expect(record().rev).not.toBe(first.rev);
+    store.undo(); expect(record().rev).toBe(first.rev);
+    store.updateNodes([{ id: "terrain_1", width: 33 }], "human");
+    expect(record().rev).not.toBe(first.rev);
+  });
   it("exports a native terrain with reversed z rows, negative origin and no source meshes", () => {
     const store = fixture();
     store.drawShapes([

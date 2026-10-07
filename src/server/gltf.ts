@@ -70,6 +70,42 @@ export function glbFromExport(m: Manifest, bin: Buffer): Buffer {
     return primitive;
   };
 
+  /** Native Unity terrain heights back into the canonical right-handed grid, with the editor's diagonals. */
+  const terrainMesh = (r: NodeRecord): number => {
+    const { resolution: n, offset, size } = r.terrain;
+    if (![129, 257, 513, 1025].includes(n) || offset < 0 || offset % 4 || offset + n * n * 4 > bin.length || size.some((v) => !Number.isFinite(v) || v <= 0))
+      throw new Error("Invalid terrain payload; export the scene again.");
+    const positions = new Float32Array(n * n * 3), uvs = new Float32Array(n * n * 2);
+    const indices = new Uint32Array((n - 1) * (n - 1) * 6);
+    const min = [0, Infinity, -size[2]], max = [size[0], -Infinity, 0];
+    let k = 0;
+    for (let z = 0; z < n; z++) for (let x = 0; x < n; x++) {
+      const i = z * n + x, h = bin.readFloatLE(offset + ((n - 1 - z) * n + x) * 4);
+      if (!Number.isFinite(h) || h < 0 || h > 1) throw new Error("Invalid terrain height sample.");
+      positions[i * 3] = x * size[0] / (n - 1);
+      positions[i * 3 + 1] = h * size[1];
+      positions[i * 3 + 2] = -size[2] + z * size[2] / (n - 1);
+      uvs[i * 2] = x / (n - 1); uvs[i * 2 + 1] = z / (n - 1);
+      min[1] = Math.min(min[1], positions[i * 3 + 1]); max[1] = Math.max(max[1], positions[i * 3 + 1]);
+      if (x < n - 1 && z < n - 1) for (const v of [i, i + n, i + 1, i + 1, i + n, i + n + 1]) indices[k++] = v;
+    }
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    geometry.setIndex(new THREE.BufferAttribute(indices, 1)); geometry.computeVertexNormals();
+    const normals = geometry.getAttribute("normal").array as Float32Array;
+    meshes.push({ name: r.name || r.id, primitives: [{
+      attributes: {
+        POSITION: accessor({ bufferView: view(Buffer.from(positions.buffer), 34962), componentType: 5126, count: n * n, type: "VEC3", min, max }),
+        NORMAL: accessor({ bufferView: view(Buffer.from(normals.buffer), 34962), componentType: 5126, count: n * n, type: "VEC3" }),
+        TEXCOORD_0: accessor({ bufferView: view(Buffer.from(uvs.buffer), 34962), componentType: 5126, count: n * n, type: "VEC2" }),
+      },
+      indices: accessor({ bufferView: view(Buffer.from(indices.buffer), 34963), componentType: 5125, count: indices.length, type: "SCALAR" }),
+      material: material(r.color, false),
+    }] });
+    geometry.dispose();
+    return meshes.length - 1;
+  };
+
   /** The palette's materials: a body and a (slightly darker) floor per color, made on first use. */
   const palette = new Map(m.palette.map((p) => [p.key, p.color]));
   const materialIds = new Map<string, number>();
@@ -122,7 +158,7 @@ export function glbFromExport(m: Manifest, bin: Buffer): Buffer {
   /** A record as a node (and what's under it); `override` is an instance's cut meshes by its entity's shape ID. */
   const node = (r: NodeRecord, children: Map<string, NodeRecord[]>, override?: Map<string, NodeRecord["cuts"][number]>): number => {
     const cut = override?.get(r.id);
-    const meshId = r.body.vertices || r.floor.vertices ? mesh(r.name || r.id, cut?.body ?? r.body, cut?.floor ?? r.floor, r.color) : undefined;
+    const meshId = r.type === "terrain" ? terrainMesh(r) : r.body.vertices || r.floor.vertices ? mesh(r.name || r.id, cut?.body ?? r.body, cut?.floor ?? r.floor, r.color) : undefined;
     let kids: number[] = (children.get(r.id) ?? []).filter((c) => !skipped(c)).map((c) => node(c, children, override));
     if (r.type === "instance" || r.type === "item") {
       const e = entities.get(r.entity);

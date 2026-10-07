@@ -42,6 +42,9 @@ namespace Orlablocks
 
         [Tooltip("Moved in Unity since the last sync: left where they are. Revert them or claim them.")]
         public GameObject[] movedInUnity = new GameObject[0];
+        [Tooltip("Terrain content changed in Unity: Revert or Claim before updating")]
+        public GameObject[] terrainChangedInUnity = new GameObject[0];
+        [HideInInspector] public string terrainAssetKey = "";
         [Tooltip("Claimed here, and changed in orlablocks since")]
         public GameObject[] claimedChanged = new GameObject[0];
         [Tooltip("Claimed here, and removed in orlablocks")]

@@ -22,7 +22,7 @@ namespace Orlablocks.Editor
                 .Where(g =>
                 {
                     var n = g.GetComponent<OrlaNode>();
-                    return n != null && n.kind != "hole" && g.GetComponent<MeshFilter>() != null && g.GetComponent<MeshRenderer>() != null
+                    return n != null && n.type != "terrain" && n.kind != "hole" && g.GetComponent<MeshFilter>() != null && g.GetComponent<MeshRenderer>() != null
                         && g.GetComponent<ProBuilderMesh>() == null && !PrefabUtility.IsPartOfPrefabInstance(g);
                 })
                 .ToArray();
