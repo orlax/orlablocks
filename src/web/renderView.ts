@@ -1,3 +1,4 @@
+import { boundsWithTerrain, terrainQueryWarnings } from "../shared/terrain";
 import * as THREE from "three";
 import { definitionOf, expandShapes, ownerOf } from "../shared/entities";
 import { boundsOf, polyline, rampStations } from "../shared/geometry";
@@ -17,6 +18,7 @@ import { framedCamera, FOV_DEG, MAX_DISTANCE, type Box3, type CameraState } from
 import { blobToBase64, editorView, makeCamera, type CaptureView } from "./capture";
 import {
   drawnShapes,
+  cleanShapes,
   gridLayout,
   labelTargets,
   legendLine,
@@ -66,16 +68,17 @@ export async function renderJob(job: RenderJob, ctx: RenderContext): Promise<Ren
   const size = job.size ?? DEFAULT_RENDER_SIZE;
   const labels = job.labels ?? true;
   const shown = (s: Shape) => !ctx.hidden.has(ownerOf(s.id)) && !ctx.hidden.has(s.id) && s.type !== "note";
-  const scope = (job.ids ? job.ids.flatMap((id) => drawnShapes(ctx.nodes, id)) : expandShapes(ctx.nodes.filter(isShape))).filter(shown);
+  const scope = (job.ids ? job.ids.flatMap((id) => drawnShapes(ctx.nodes, id)) : cleanShapes(ctx.nodes)).filter(shown);
   const hiddenCount = ctx.nodes.filter((n) => n.hidden).length;
   const notes: string[] = [];
   if (hiddenCount > 0) notes.push(`${hiddenCount} hidden node${hiddenCount === 1 ? "" : "s"} left out.`);
   if (job.hide) notes.push(`For this render only, ${job.hide.join(", ")} (and what's in ${job.hide.length === 1 ? "it" : "them"}) left out.`);
   if (job.clip !== undefined) notes.push(`Everything above y ${job.clip} cut away (a section).`);
+  if (job.slice !== undefined || job.view === "walk" || job.view === "eye") notes.push(...terrainQueryWarnings(ctx.nodes));
   const scopeText = job.ids ? job.ids.join(", ") : "everything";
   const needShapes = () => {
     if (scope.length === 0) throw new Error(job.ids ? `${scopeText} draw${job.ids.length === 1 ? "s" : ""} nothing to render.` : "The document is empty: nothing to render.");
-    return boundsOf(scope);
+    return boundsWithTerrain(scope, ctx.nodes);
   };
   const targets = (): LabelTarget[] => (labels ? labelTargets(ctx.nodes, job.ids, ctx.hidden) : []);
   const legend = (t: LabelTarget[]) => (t.length > 0 ? [`Labels: ${t.map(legendLine).join(", ")}.`] : []);
@@ -319,7 +322,7 @@ function eyeOfJob(job: RenderJob, ctx: RenderContext): Eye {
   if (job.at !== undefined) {
     let target: Vec3;
     if (typeof job.at === "string") {
-      const b = boundsOf(drawnShapes(ctx.nodes, job.at));
+      const b = boundsWithTerrain(drawnShapes(ctx.nodes, job.at), ctx.nodes);
       target = { x: (b.minX + b.maxX) / 2, y: (b.minY + b.maxY) / 2, z: (b.minZ + b.maxZ) / 2 };
     } else target = job.at;
     look = lookAt(eye, target);

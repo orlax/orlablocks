@@ -1,6 +1,7 @@
-import { rayMeshFirst, type Ray } from "../shared/ray";
+import { cleanShapes } from "./renders";
+import { type Ray } from "../shared/ray";
 import { TerrainMesh } from "./TerrainMesh";
-import { evaluateTerrain, terrainInputIds, isTerrainSource, terrainInfluence } from "../shared/terrain";
+import { evaluateTerrain, terrainInputIds, isTerrainSource, terrainInfluence, previewTerrain, rayTerrainFirst } from "../shared/terrain";
 import { useEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent, type RefObject } from "react";
 import { Canvas, invalidate, useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
@@ -562,7 +563,7 @@ export function Viewport({
     const from = source ?? nodesRef.current;
     const hiddenNow = withHidden(from, options.hide);
     const shapes = [
-      ...expandShapes(
+      ...cleanShapes(from,
         from.filter(isShape).filter((b) => !hiddenNow.has(b.id) && (options.notes || b.type !== "note") && (options.lines || b.type !== "line")),
       ).filter((b) => !isHole(b)),
       ...extra,
@@ -583,7 +584,7 @@ export function Viewport({
           <Lighting cam={light} />
           <Boxes
             nodes={from}
-            boxes={shapes.filter((s) => !terrainInputIds(from).has(s.id))}
+            boxes={shapes}
             arrays={from.filter((b): b is ArrayNode => b.type === "array" && !hiddenNow.has(b.id))}
             entityMode={entityNow}
             cuts={cutsNow}
@@ -1056,6 +1057,7 @@ export function Viewport({
   onViewRef.current = onView;
   // What's drawn: each instance as its entity's shapes (IDs like `instance_4/box_2`; `ownerOf` maps a hit back).
   const sourceIds = terrainInputIds(nodes);
+  const terrainPreviewActive = !!(drag?.active || pointPreview || preview);
   const terrainNodes = nodes.map((n) => unfollowed.find((s) => s.id === n.id) ?? n);
   const drawn = expandShapes(onView).filter((s) => showModifiers || !sourceIds.has(s.id));
   const drawnArrays = useMemo(() => onView.filter((b): b is ArrayNode => b.type === "array"), [onView]);
@@ -1190,9 +1192,9 @@ export function Viewport({
     let distance = best ? Math.hypot(best.point.x - ray.origin.x, best.point.y - ray.origin.y, best.point.z - ray.origin.z) : Infinity;
     for (const s of shapes) {
       if (s.type !== "terrain") continue;
-      const f = evaluateTerrain(s, terrainNodes);
-      const mesh = { ...f.mesh, min: [s.x - s.width / 2, f.min, s.z - s.depth / 2] as [number, number, number], max: [s.x + s.width / 2, f.max, s.z + s.depth / 2] as [number, number, number] };
-      const hit = rayMeshFirst(ray, mesh);
+      const t = previewTerrain(s, terrainPreviewActive);
+      const f = evaluateTerrain(t, terrainNodes);
+      const hit = rayTerrainFirst(ray, t, f);
       const d = hit ? hit.t * Math.hypot(ray.dir.x, ray.dir.y, ray.dir.z) : Infinity;
       if (hit && d < distance) { distance = d; best = { id: s.id, normal: hit.normal, point: { x: ray.origin.x + ray.dir.x * hit.t, y: ray.origin.y + ray.dir.y * hit.t, z: ray.origin.z + ray.dir.z * hit.t } }; }
     }
@@ -2093,6 +2095,7 @@ export function Viewport({
         {!walk && <OriginAxes />}
         <Boxes
           nodes={terrainNodes}
+          terrainPreview={terrainPreviewActive}
           boxes={[...drawn.filter((s) => showModifiers || !terrainInputIds(nodes).has(s.id)), ...expandShapes(ghosts)]}
           arrays={drawnArrays}
           entityMode={entityMode}
@@ -2256,6 +2259,7 @@ function Boxes({
   nodes,
   boxes: all,
   arrays = NO_ARRAYS,
+  terrainPreview = false,
   entityMode,
   cuts,
   showHoles,
@@ -2267,6 +2271,7 @@ function Boxes({
   boxes: Shape[];
   /** The arrays among what's drawn, as shown: their items (in `boxes`) are drawn instanced where they can be (10.5). */
   arrays?: ArrayNode[];
+  terrainPreview?: boolean;
   /** Editing an entity: a top-level hole is fine there (no warning). */
   entityMode: boolean;
   /** The holes that cut each shape, by its ID. */
@@ -2292,7 +2297,7 @@ function Boxes({
         // A part of an instance lights up with it.
         const owner = ownerOf(b.id);
         const highlight = selected.has(b.id) || selected.has(owner) ? "selected" : hovered.has(b.id) || hovered.has(owner) ? "hover" : undefined;
-        if (b.type === "terrain") return <TerrainMesh key={b.id} terrain={b} nodes={nodes} selected={!!highlight} />;
+        if (b.type === "terrain") return <TerrainMesh key={b.id} terrain={previewTerrain(b, terrainPreview)} nodes={nodes} selected={!!highlight} />;
         if (b.type === "line") return <LineMesh key={b.id} line={b} highlight={highlight} />;
         if (b.type === "note") return <NoteMesh key={b.id} note={b} highlight={highlight} />;
         // Instances and arrays arrive expanded; one here would be a bug upstream.
@@ -2301,7 +2306,7 @@ function Boxes({
         return (
           <group key={b.id}>
             <ShapeMesh shape={b} authoring={modifierIds.has(b.id)} highlight={highlight} cuts={modifierIds.has(b.id) ? undefined : cuts.get(b.id)} />
-            {highlight && modifierIds.has(b.id) && isTerrainSource(b) && <TerrainInfluence source={b} nodes={nodes} />}
+            {highlight && modifierIds.has(b.id) && isTerrainSource(b) && <TerrainInfluence source={b} nodes={nodes} preview={terrainPreview} />}
             {isHole(b) && b.parent === undefined && !entityMode && <HoleWarning hole={b} />}
           </group>
         );
@@ -2354,10 +2359,11 @@ function HoleWarning({ hole }: { hole: ClosedShape }) {
 }
 
 /** Selected authoring input: its fade boundary draped on the generated ground, using annotation lines. */
-function TerrainInfluence({ source, nodes }: { source: import("../shared/terrain").TerrainSource; nodes: SceneNode[] }) {
+function TerrainInfluence({ source, nodes, preview = false }: { source: import("../shared/terrain").TerrainSource; nodes: SceneNode[]; preview?: boolean }) {
   const rings = useMemo(() => {
-    const t = nodes.find((n): n is import("../shared/scene.types").Terrain => n.type === "terrain" && !!n.source && subtreeIds(nodes, n.source).has(source.id));
-    if (!t) return [];
+    const original = nodes.find((n): n is import("../shared/scene.types").Terrain => n.type === "terrain" && !!n.source && subtreeIds(nodes, n.source).has(source.id));
+    if (!original) return [];
+    const t = previewTerrain(original, preview);
     const field = evaluateTerrain(t, nodes), size = t.resolution;
     const height = (x: number, z: number) => {
       if (Math.abs(x - t.x) > t.width / 2 || Math.abs(z - t.z) > t.depth / 2) return t.y;
@@ -2375,7 +2381,7 @@ function TerrainInfluence({ source, nodes }: { source: import("../shared/terrain
       }
       return points.length ? [...points, points[0]] : [];
     });
-  }, [source, nodes]);
+  }, [source, nodes, preview]);
   return <>{rings.map((points, i) => points.length >= 2 && <LineMesh key={i} line={{ id: "terrain-influence", type: "line", points, color: "blue", thickness: 1.5, dashed: true, arrow: "none", createdBy: "human" }} />)}</>;
 }
 

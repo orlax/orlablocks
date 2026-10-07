@@ -1,3 +1,5 @@
+import { createSceneStore } from "../server/scene";
+import { cleanShapes, drawnShapes } from "./renders";
 import { describe, expect, it } from "vitest";
 import type { SceneNode } from "../shared/scene.types";
 import { gridLayout, labelTag, labelTargets, pairLayout, legendLine, lookAt, niceLength, planFrame, planSize, sheetLayout, stripLayout, walkFrames } from "./renders";
@@ -104,4 +106,20 @@ describe("render planning", () => {
     expect(nine.cells[8]).toEqual({ x: 800, y: 600, width: 400, height: 300 });
     expect(Math.max(gridLayout(24, 1024).width, gridLayout(24, 1024).height)).toBeLessThanOrEqual(1024);
   });
+});
+
+it("frames and labels generated terrain without its source overlays, independently of their heights", () => {
+  const store = createSceneStore();
+  const [source, terrain] = store.drawShapes([
+    { type: "group", ref: "source", name: "inputs" },
+    { type: "terrain", ref: "ground", source: "$source", x: 0, z: 0, width: 32, depth: 16 },
+    { type: "box", kind: "volume", parent: "$source", x: 0, z: 0, width: 8, depth: 8, height: 5 },
+    { type: "box", kind: "volume", parent: "$source", x: 100, z: 0, width: 8, depth: 8, height: 50 },
+  ], "human");
+  const nodes = store.getScene().nodes;
+  expect(cleanShapes(nodes).map((n) => n.id)).toEqual([terrain.id]);
+  expect(drawnShapes(nodes, source.id)).toEqual([]);
+  const labels = labelTargets(nodes, undefined, new Set());
+  expect(labels).toHaveLength(1);
+  expect(labels[0]).toMatchObject({ id: terrain.id, anchor: { x: 0, y: 5, z: 0 } });
 });

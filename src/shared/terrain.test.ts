@@ -1,5 +1,6 @@
+import { rayMeshFirst } from "./ray";
 import { describe, expect, it } from "vitest";
-import { evaluateTerrain, terrainSources, terrainProblems } from "./terrain";
+import { evaluateTerrain, terrainSources, terrainProblems, previewTerrain, rayTerrainFirst } from "./terrain";
 import type { Box, Group, SceneNode, Terrain } from "./scene.types";
 
 export const terrain: Terrain = { id: "terrain_1", type: "terrain", x: 0, z: 0, y: 0, width: 32, depth: 32, resolution: 129, source: "group_1", color: "green", createdBy: "human" };
@@ -74,4 +75,33 @@ describe("free-form and ramp terrain inputs", () => {
     expect(sample([group, curved], 0, 1)).toBeCloseTo(4, 1);
     expect(sample([group, { ...ramp, points: [{ x: -4, y: -6, z: 0 }, { x: 4, y: -2, z: 0 }] }], 0)).toBeCloseTo(-4);
   });
+});
+
+it("reuses canonical heights across cosmetic edits, invalidates geometry and keeps previews separate", () => {
+  const nodes = [group, box];
+  const t = { ...terrain, id: "cache-terrain", resolution: 257 as const };
+  const first = evaluateTerrain(t, nodes);
+  expect(evaluateTerrain({ ...t, name: "renamed", color: "blue" }, [group, { ...box, color: "red", locked: true, name: "input" }])).toBe(first);
+  const preview = evaluateTerrain(previewTerrain(t, true), nodes);
+  expect(preview.heights).toHaveLength(129 * 129);
+  expect(evaluateTerrain(t, nodes).heights).toHaveLength(257 * 257);
+  expect(evaluateTerrain({ ...t, y: 10 }, nodes).min).toBe(10);
+  expect(evaluateTerrain(t, [group, { ...box, hidden: true }]).max).toBe(0);
+});
+
+it("picks the exact canonical triangles by cell traversal, from above, below, edges and oblique rays", () => {
+  const t = { ...terrain, id: "pick-terrain" }, field = evaluateTerrain(t, [group, box]);
+  const mesh = { ...field.mesh, min: [-16, field.min, -16] as [number, number, number], max: [16, field.max, 16] as [number, number, number] };
+  const rays: import("./ray").Ray[] = [
+    { origin: { x: 0, y: 10, z: 0 }, dir: { x: 0, y: -2, z: 0 } },
+    { origin: { x: 0, y: -10, z: 0 }, dir: { x: 0, y: 1, z: 0 } },
+    { origin: { x: 16, y: 10, z: 16 }, dir: { x: 0, y: -1, z: 0 } },
+    { origin: { x: 20, y: 10, z: 0 }, dir: { x: 0, y: -1, z: 0 } },
+  ];
+  for (let i = 0; i < 30; i++) rays.push({ origin: { x: -22 + i * 1.5, y: 12, z: -20 }, dir: { x: Math.sin(i) * 0.7, y: -1, z: 1.2 } });
+  for (const ray of rays) {
+    const exact = rayMeshFirst(ray, mesh), hit = rayTerrainFirst(ray, t, field);
+    if (!exact) expect(hit).toBeNull();
+    else { expect(hit?.t).toBeCloseTo(exact.t, 7); expect(hit?.normal.y).toBeCloseTo(exact.normal.y, 7); }
+  }
 });

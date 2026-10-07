@@ -19,7 +19,7 @@ import { FULL_SCENE_MAX } from "./outline";
  * topic, which `get_guide` returns on demand, so a session only pays for the topics it uses.
  */
 
-export const GUIDE_TOPICS = ["design", "review", "shapes", "volumes", "holes", "ramps", "lines", "notes", "groups", "library", "entities", "arrays", "export"] as const;
+export const GUIDE_TOPICS = ["design", "review", "shapes", "volumes", "holes", "ramps", "lines", "notes", "groups", "library", "entities", "arrays", "terrains", "export"] as const;
 export type GuideTopic = (typeof GUIDE_TOPICS)[number];
 
 /** One line per topic, for the core and for get_guide's description. */
@@ -36,6 +36,7 @@ const TOPIC_SUMMARIES: Record<GuideTopic, string> = {
   library: "the project's tags (#name) and skills (@name): what they mean, tagging nodes, referring to them",
   entities: "entities (prefabs): making them, placing instances, swapping, detaching; holes in and around them",
   arrays: "arrays: one node repeating entities along a path, around a circle, in a grid or scattered (battlements, windows, pillars, forests)",
+  terrains: "shape-driven ground: source groups, Raise/Lower/Set, Fade, outliner order, clean renders and native Unity Terrain",
   export: "exporting a scene to Unity: what reaches it, and naming and tagging so the human's mappings work",
 };
 
@@ -357,6 +358,16 @@ const GUIDE: Record<Exclude<GuideTopic, "design">, string> = {
     "the camera's view): copy a wing with move_nodes, then mirror the copy, instead of computing reflected positions " +
     "by hand. rotate_nodes turns around the bounds' center by default and returns that `pivot`: pass it back to turn " +
     "something back exactly.",
+  terrains:
+    "A terrain is an axis-aligned rectangle (x/z center, y base, width/depth, resolution 129/257/513/1025), referencing one ordinary source group. " +
+    "Draw a group with ref: inputs, then a terrain with source: $inputs, and volume inputs with parent: $inputs; batch refs work as usual. Or make_terrain { ids } wraps existing shapes in an assembly/source group, fits their footprints plus Fade and preserves their world positions. " +
+    "Untilted box/cylinder/free-form volumes and smooth ramps contribute their actual upper surfaces. Rooms, holes, stairs, tilted sources, instances, arrays and terrains in entity definitions are rejected. Notes and lines may annotate sources. " +
+    "Modifiers have terrain: { operation: raise|lower|set, fade: meters }; omitted means Raise, Fade 0. Raise can only lift ground, Lower can only lower it (put the visible top at the valley floor), Set can do either. Inside the footprint the surface is exact; outside, Fade uses smoothstep to zero and extends the nearest boundary height. No global blur or extra join smoothing. " +
+    "Operation order is the fully expanded outliner, depth first, top to bottom. place_nodes { ids, parent, before } is the same reorder used by the human (before: null = last); dry_run changes nothing. Hidden inputs/ancestors stop contributing; collapsed/locked groups do not. Group adjacent modifiers to preserve order; reorder explicitly first if necessary. " +
+    "Human controls stay in the Terrain toolbar, Inspector and View bar. Show modifiers is only a local overlay toggle; inputs stay editable. Captures/shots/render_view omit inputs and show canonical ground, independent of overlays. Dragging terrain above 129 samples uses a temporary 129 preview; release, captures and export use the requested resolution. " +
+    "Move an assembly to move ground and inputs together; moving a terrain alone moves only its rectangle/base. Copying terrain also clones its source subtree. Scaling scales Fade, dimensions and elevations but keeps resolution. Mirror is allowed; terrain yaw/tilt and source tilt are not. Deleting terrain preserves inputs; deleting/ungrouping its source root releases the binding to flat ground. Undo restores these actions. " +
+    "get_scene/find_nodes/compact edits report source, resolution, cellSpacing (meters), elevation [min,max] and generated bounds; input lines report terrain settings, terrainFor and modifierOrder. Samples are never returned in normal reads. Native Unity export uses the same canonical heights and omits source geometry. GLB and full Unity refresh polish follow in 16.4. " +
+    "Terrain-aware Walk, drawing/standing/on placement, sight, clearance, slices, enclosure and lint are deferred: these queries do not verify terrain and authoring inputs are not its collision proxy. Use explicit coordinates for now. Start at 129 samples; use higher counts only when finer cells are needed. ",
   export:
     "EXPORT (export_scene) writes your scene for Unity into a folder of its own (the scene's ID) in the folder the " +
     "human chose in the editor (Export → Unity; you can't choose it, and without one ask the human). The human may " +

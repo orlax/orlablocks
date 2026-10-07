@@ -1,3 +1,4 @@
+import { terrainReadFields, terrainSummary } from "../shared/terrain";
 import { boundsOf, round2 } from "../shared/geometry";
 import { arrayLayout, type ArrayItem } from "../shared/arrays";
 import { arrayItemInstance, instanceShapes } from "../shared/entities";
@@ -63,6 +64,7 @@ export type CompactNode = {
 /** One node's compact line, from the scene as it is after the step. */
 export function compactNode(nodes: SceneNode[], n: SceneNode, opts: CompactOptions = {}): CompactNode {
   const base: CompactNode = {
+    ...terrainReadFields(n, nodes),
     id: n.id,
     type: n.type,
     ...(isShape(n) && "kind" in n ? { kind: n.kind } : {}),
@@ -76,12 +78,13 @@ export function compactNode(nodes: SceneNode[], n: SceneNode, opts: CompactOptio
     return {
       ...base,
       ...(n.description ? { description: n.description } : {}),
-      ...(shapes.length > 0 ? { bounds: boundsFor(shapes) } : {}),
+      ...(shapes.length > 0 ? { bounds: boundsFor(shapes, nodes) } : {}),
       contains: countsText(nodes.filter((d) => inside.has(d.id))),
     };
   }
-  const bounds = boundsFor([n]);
+  const bounds = boundsFor([n], nodes);
   switch (n.type) {
+    case "terrain": return { ...base, bounds, ...terrainSummary(n, nodes) };
     case "line":
       return { ...base, bounds, points: n.points.length, ...(n.through ? { through: { stops: n.through.stops.length, style: n.through.style } } : {}) };
     case "freeform":

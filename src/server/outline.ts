@@ -1,3 +1,4 @@
+import { boundsWithTerrain, terrainReadFields, terrainSummary } from "../shared/terrain";
 import { boundsOf, isTilted, round2 } from "../shared/geometry";
 import { currentTags, EMPTY_LIBRARY, entityMeta, findRefs, resolveRef, type EntityMeta, type Library, type Skill, type Tag } from "../shared/library";
 import { arrayLayout, arrayShortfall } from "../shared/arrays";
@@ -137,8 +138,8 @@ export function glossaryFor(library: Library, shown: AgentNode[]): Glossary | un
 export const entitiesOf = (n: SceneNode): string[] => (n.type === "instance" ? [n.entity] : n.type === "array" ? [...new Set(n.entities.map((e) => e.entity))] : []);
 
 /** Axis-aligned bounds for the agent: center x/z, bottom y, sizes. */
-export function boundsFor(shapes: Shape[]): AgentBounds {
-  const b = boundsOf(shapes);
+export function boundsFor(shapes: Shape[], nodes?: SceneNode[]): AgentBounds {
+  const b = nodes ? boundsWithTerrain(shapes, nodes) : boundsOf(shapes);
   return {
     x: round2((b.minX + b.maxX) / 2),
     z: round2((b.minZ + b.maxZ) / 2),
@@ -171,6 +172,8 @@ function describeNodeIn(nodes: SceneNode[], n: SceneNode, library: Library): Age
     const tags = currentTags(library, stored);
     n = (tags.length > 0 ? { ...rest, tags } : rest) as SceneNode;
   }
+  if (n.type === "terrain") return { ...n, ...terrainSummary(n, nodes), bounds: boundsFor([n], nodes) };
+  n = { ...n, ...terrainReadFields(n, nodes) } as SceneNode;
   if (n.type === "instance") return { ...n, bounds: boundsFor([n]) };
   // An array in full, with how many items it has (and how many its layout would place past the cap).
   if (n.type === "array") {
@@ -183,7 +186,7 @@ function describeNodeIn(nodes: SceneNode[], n: SceneNode, library: Library): Age
   const shapes = shapesUnder(nodes, [n.id]);
   return {
     ...n,
-    ...(shapes.length > 0 ? { bounds: boundsFor(shapes) } : {}),
+    ...(shapes.length > 0 ? { bounds: boundsFor(shapes, nodes) } : {}),
     contains: countsText(nodes.filter((d) => inside.has(d.id))),
   };
 }
@@ -321,7 +324,7 @@ export function findNodes(nodes: SceneNode[], query: FindQuery, library: Library
 
   const boundsOfNode = (n: SceneNode) => {
     const shapes = isShape(n) ? [n] : shapesUnder(nodes, [n.id]);
-    return shapes.length > 0 ? boundsFor(shapes) : undefined;
+    return shapes.length > 0 ? boundsFor(shapes, nodes) : undefined;
   };
   const isNear = (b: AgentBounds | undefined) => {
     if (!near || !b) return !near;
@@ -354,6 +357,8 @@ export function findNodes(nodes: SceneNode[], query: FindQuery, library: Library
       ...(n.type === "array" ? { entities: entitiesOf(n), items: arrayLayout(n).items.length } : {}),
       ...(tagsOfNode(n).length > 0 ? { tags: tagsOfNode(n) } : {}),
       ...(n.parent !== undefined ? { parent: n.parent, path: pathOf(nodes, n.id) } : {}),
+      ...terrainReadFields(n, nodes),
+      ...(n.type === "terrain" ? terrainSummary(n, nodes) : {}),
       ...(bounds ? { bounds } : {}),
     };
   }

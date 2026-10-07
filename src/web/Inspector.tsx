@@ -1322,7 +1322,7 @@ function TerrainSection({ width, depth, y, resolution, hasSource, onChange, onEn
         <select
           className="entity-picker"
           value={resolution}
-          title="Grid sample resolution"
+          title="Grid sample resolution. Drags preview at 129 samples; release, captures and export use this resolution."
           onChange={(e) => onChange({ resolution: Number(e.target.value) as Terrain["resolution"] })}
         >
           {TERRAIN_RESOLUTIONS.map((res) => (

@@ -1,6 +1,7 @@
+import { boundsWithTerrain, terrainInputIds } from "../shared/terrain";
 import type { SceneNode, Shape } from "../shared/scene.types";
 import { boundsOf } from "../shared/geometry";
-import { expandShapes } from "../shared/entities";
+import { expandShapes, ownerOf } from "../shared/entities";
 import { childrenOf, shapesUnder } from "../shared/tree";
 import type { Box3 } from "./camera";
 import type { Vec3 } from "./walk";
@@ -28,7 +29,11 @@ export function labelTag(i: number): string {
 }
 
 /** Everything a node draws, as shapes (a group's contents and an instance's entity included). */
-export const drawnShapes = (nodes: SceneNode[], id: string): Shape[] => expandShapes(shapesUnder(nodes, [id]));
+export function cleanShapes(nodes: SceneNode[], shapes: Shape[] = nodes.filter((n): n is Shape => n.type !== "group")): Shape[] {
+  const inputs = terrainInputIds(nodes);
+  return expandShapes(shapes).filter((s) => !inputs.has(ownerOf(s.id)));
+}
+export const drawnShapes = (nodes: SceneNode[], id: string): Shape[] => cleanShapes(nodes, shapesUnder(nodes, [id]));
 
 /**
  * What a render labels: the top level (or, with `ids`, those nodes, a group standing for what's in it), without
@@ -48,7 +53,7 @@ export function labelTargets(nodes: SceneNode[], ids: string[] | undefined, hidd
   return marked.flatMap((n) => {
     const shapes = drawnShapes(nodes, n.id).filter((s) => s.type !== "note" && s.type !== "line");
     if (shapes.length === 0) return [];
-    const b = boundsOf(shapes);
+    const b = boundsWithTerrain(shapes, nodes);
     return [{ id: n.id, ...(n.name ? { name: n.name } : {}), anchor: { x: (b.minX + b.maxX) / 2, y: b.maxY, z: (b.minZ + b.maxZ) / 2 } }];
   }).map((t, i) => ({ tag: labelTag(i), ...t }));
 }

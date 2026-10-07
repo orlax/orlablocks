@@ -1,3 +1,5 @@
+import { describeScene, findNodes } from "./outline";
+import { compactNodes } from "./results";
 import { describe, expect, it } from "vitest";
 import { createSceneStore } from "./scene";
 import { buildExport } from "./export";
@@ -50,9 +52,11 @@ describe("terrain scene and export", () => {
     expect(r.position).toEqual([-6, -2, -15]);
     expect(r.collider).toBe("terrain");
     const field = evaluateTerrain(t, nodes);
-    for (let z = 0; z < 129; z += 8) for (let x = 0; x < 129; x += 8) {
+    for (let z = 0; z < 129; z++) for (let x = 0; x < 129; x++) {
       const h = built.binary.readFloatLE(r.terrain.offset + (z * 129 + x) * 4);
-      expect(h * r.terrain.size[1] + r.position[1]).toBeCloseTo(field.heights[(128 - z) * 129 + x], 5);
+      const i = (128 - z) * 129 + x;
+      expect(h * r.terrain.size[1] + r.position[1]).toBeCloseTo(field.heights[i], 5);
+      expect(field.mesh.positions[i * 3 + 1]).toBe(field.heights[i]);
     }
   });
 });
@@ -144,4 +148,19 @@ it("Make terrain retains expanded order when selected sources originally have di
   expect(terrainSourcesFor(store, t).map((n) => n.id)).toEqual(["box_2", "box_1"]);
   expect(evaluateTerrain(t, store.getScene().nodes).max).toBe(2);
   store.undo(); expect(store.getScene().nodes).toEqual(before);
+});
+
+it("describes generated bounds and lean terrain metadata consistently across reads and edits", () => {
+  const store = fixture();
+  store.drawShapes([{ type: "box", kind: "volume", parent: "group_1", x: 10, z: 7, y: -5, width: 8, depth: 8, height: 2, terrain: { operation: "lower", fade: 2 } }], "human");
+  const nodes = store.getScene().nodes;
+  const open = { project: { id: "p", name: "P", description: "" }, scene: { id: "s", name: "S" } };
+  const read = describeScene(open, store.getScene()).nodes.find((n) => n.type === "terrain")!;
+  const compact = compactNodes(nodes, ["terrain_1"])[0];
+  const found = findNodes(nodes, { type: "terrain" }).found[0];
+  for (const result of [read, compact, found]) {
+    expect(result).toMatchObject({ source: "group_1", resolution: 129, cellSpacing: { x: 0.25, z: 0.125 }, elevation: [-3, -2], bounds: { y: -3, height: 1 } });
+    expect(result).not.toHaveProperty("heights");
+  }
+  expect(findNodes(nodes, { type: "box" }).found[0]).toMatchObject({ terrainFor: "terrain_1", modifierOrder: 1 });
 });

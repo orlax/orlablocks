@@ -1,3 +1,4 @@
+import { terrainQueryWarnings } from "../shared/terrain";
 import type { Express } from "express";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -13,6 +14,7 @@ import {
   DuplicateNodesSchema,
   GroupNodesSchema,
   MakeTerrainSchema,
+  PlaceNodesSchema,
   MAX_COPIES,
   MirrorNodesSchema,
   MoveNodesSchema,
@@ -152,7 +154,7 @@ function buildServer(workspace: Workspace, renders: RenderBroker, exports: Expor
   /** Runs an edit tool's body for real, or as a dry run (14.2): the same result, marked, with nothing changed. */
   const edit = <T extends object>(dryRun: boolean | undefined, run: () => T) =>
     dryRun ? { dryRun: "nothing was changed: this is what the call would do", ...store().dryRun(run) } : run();
-  const server = new McpServer({ name: "orlablocks", version: "0.0.42" }, { instructions: INSTRUCTIONS });
+  const server = new McpServer({ name: "orlablocks", version: "0.0.43" }, { instructions: INSTRUCTIONS });
   // Every tool reads or edits the open scene, and fails with a clear message while nothing is open.
   // The agent's scene (14.5): its own while the human is in another one, else the human's open document.
   const store = () => workspace.requireAgentScene();
@@ -268,7 +270,7 @@ function buildServer(workspace: Workspace, renders: RenderBroker, exports: Expor
         name: z.string().optional().describe("Part of the name (or of a note's text, or an instance's or array's entity's name), any case"),
         tag: z.string().optional().describe("A library tag (without #): only nodes carrying it"),
         type: z
-          .enum(["box", "cylinder", "freeform", "line", "ramp", "note", "instance", "array", "group", "item"])
+          .enum(["box", "cylinder", "freeform", "line", "ramp", "note", "instance", "array", "group", "terrain", "item"])
           .optional()
           .describe("item: array items (array_5/3), not nodes"),
         entity: z.string().optional().describe("An entity's ID: only its instances and the arrays that repeat it"),
@@ -608,6 +610,19 @@ function buildServer(workspace: Workspace, renders: RenderBroker, exports: Expor
   );
 
   server.registerTool(
+    "place_nodes",
+    {
+      title: "Place nodes in hierarchy",
+      description: "The existing outliner operation: move nodes into parent (null = top level), immediately before sibling before (null = last). Terrain modifiers evaluate in this depth-first sibling order. One undo step; no world positions change.",
+      inputSchema: PlaceNodesSchema.extend({ dry_run: DRY_RUN }).shape,
+    },
+    async ({ dry_run, ...input }) => json(edit(dry_run, () => {
+      store().placeNodes(input, "agent");
+      return { placed: compactNodes(store().getScene().nodes, input.ids) };
+    })),
+  );
+
+  server.registerTool(
     "make_terrain",
     {
       title: "Make terrain",
@@ -732,7 +747,7 @@ function buildServer(workspace: Workspace, renders: RenderBroker, exports: Expor
       const lines = pairs.map(
         (p) => `${p.from} → ${p.to}: ${Math.round(p.visible * 100)}%${p.blockers.length > 0 ? ` · blocked by ${p.blockers.join(", then ")}` : ""}`,
       );
-      return json({ eyeHeight, sight: lines });
+      return json({ eyeHeight, sight: lines, ...(terrainQueryWarnings(nodes).length ? { warnings: terrainQueryWarnings(nodes) } : {}) });
     },
   );
 
@@ -759,7 +774,7 @@ function buildServer(workspace: Workspace, renders: RenderBroker, exports: Expor
     async ({ from, band, cell, open_top, ignore }) => {
       const nodes = store().getScene().nodes;
       try {
-        return json(checkEnclosure(nodes, { from, band, cell, openTop: open_top, ignore }));
+        return json({ ...checkEnclosure(nodes, { from, band, cell, openTop: open_top, ignore }), ...(terrainQueryWarnings(nodes).length ? { warnings: terrainQueryWarnings(nodes) } : {}) });
       } catch (err) {
         throw new SceneError(`${(err as Error).message}. Nothing was checked.`);
       }
@@ -791,7 +806,7 @@ function buildServer(workspace: Workspace, renders: RenderBroker, exports: Expor
     async ({ id, speed, climb_rate, sink_rate, max_slope, probe, max_y, ignore }) => {
       const nodes = store().getScene().nodes;
       try {
-        return json(measurePath(nodes, id, { speed, climbRate: climb_rate, sinkRate: sink_rate, maxSlope: max_slope, probe, maxY: max_y, ignore }));
+        return json({ ...measurePath(nodes, id, { speed, climbRate: climb_rate, sinkRate: sink_rate, maxSlope: max_slope, probe, maxY: max_y, ignore }), ...(terrainQueryWarnings(nodes).length ? { warnings: terrainQueryWarnings(nodes) } : {}) });
       } catch (err) {
         throw new SceneError(`${(err as Error).message}. Nothing was measured.`);
       }
@@ -819,7 +834,7 @@ function buildServer(workspace: Workspace, renders: RenderBroker, exports: Expor
       const nodes = store().getScene().nodes;
       if (root !== undefined && !nodes.some((n) => n.id === root)) throw new SceneError(`root: no node "${root}". Nothing was checked.`);
       const result = lintScene(nodes, { root, checks, floats });
-      return json(result.findings.length === 0 ? { findings: [], summary: "nothing found" } : result);
+      return json({ ...(result.findings.length === 0 ? { findings: [], summary: "nothing found" } : result), ...(terrainQueryWarnings(nodes).length ? { warnings: terrainQueryWarnings(nodes) } : {}) });
     },
   );
 
