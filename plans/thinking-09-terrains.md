@@ -522,3 +522,4 @@ So here is what I am thinking:
 - and then each shape in a terrain group gets a "fade" property that determines how much do we smotth it out on the terrain. 
 - this can connect to all of our existing tools right? what we wand to do essentially is be able to generate a terrain height map by sampling a group of our shapes. 
 - we want this to be exportable to unity (as a unity terrain) so that would be something to take into account. 
+

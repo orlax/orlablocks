@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps } from "react";
+import { valueStore, type ValueStore } from "./valueStore";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentProps } from "react";
 import { ArrowLeft, BookOpen, ChevronDown, Map as MapIcon, Package, Upload } from "lucide-react";
 import {
   DEFAULT_COLOR,
@@ -243,7 +244,7 @@ function linksOf(node: SceneNode | null | undefined, nodes: SceneNode[], send: (
 export function App() {
   // The agent's renders are drawn by the view (09.3).
   const renderer = useRef<RenderHandler | null>(null);
-  const { scene, history, seq, shots, player: savedPlayer, agent, exportStatus, projects, open, restore, library: libraryState, connected, error, clearError, send } =
+  const { scene, history, seq, shots, player: savedPlayer, agent, exportStatus, projects, open, restore, library: libraryState, definitionsVersion, connected, error, clearError, send } =
     useScene(renderer);
   const library = libraryState.library;
   // The Library panel, open or not, remembered per viewer.
@@ -267,14 +268,18 @@ export function App() {
   const [exportOpen, setExportOpen] = useState(false);
   const [view, setView] = useState<View>(DEFAULT_VIEW);
   const [camera, setCamera] = useState<CameraState | null>(null);
-  const [cursor, setCursor] = useState<CursorPoint | null>(null);
-  // Where the pointer last rested (14.1), for the agent's `view.pointer`: the cursor once it's been still a moment.
+  const cursorStore = useMemo(() => valueStore<CursorPoint | null>(null), []);
+  // Only a resting pointer is reported through the app/server; live coordinates have their own subscriber.
   const [pointer, setPointer] = useState<CursorPoint | null>(null);
   useEffect(() => {
-    if (!cursor) return;
-    const t = setTimeout(() => setPointer(cursor), POINTER_REST_MS);
-    return () => clearTimeout(t);
-  }, [cursor]);
+    let timer: ReturnType<typeof setTimeout>;
+    const unsubscribe = cursorStore.subscribe(() => {
+      clearTimeout(timer);
+      const cursor = cursorStore.get();
+      if (cursor) timer = setTimeout(() => setPointer(cursor), POINTER_REST_MS);
+    });
+    return () => { clearTimeout(timer); unsubscribe(); };
+  }, [cursorStore]);
   const [tool, setTool] = useState<Tool>("select");
   // Notes belong in scenes: the Note tool is off while an entity is open.
   const chooseTool = (t: Tool) => {
@@ -1083,6 +1088,7 @@ export function App() {
       <Viewport
         tool={activeTool}
         nodes={nodes}
+        definitionsVersion={definitionsVersion}
         selection={selection}
         context={context}
         onContext={setContext}
@@ -1181,7 +1187,7 @@ export function App() {
           duplicate(ids, offset);
         }}
         onNotice={setNotice}
-        onCursor={setCursor}
+        onCursor={cursorStore.set}
         onViewChange={(v, c) => {
           setView(v);
           setCamera({ focus: { ...c.focus }, yaw: c.yaw, distance: c.distance });
@@ -1347,9 +1353,7 @@ export function App() {
           <i className="dot" />
           {connected ? "connected" : "offline"}
         </span>
-        <span className="coords">
-          x {coord(cursor?.x)} · y {coord(cursor?.y)} · z {coord(cursor?.z)} m
-        </span>
+        <CursorCoordinates store={cursorStore} />
         <span className="coords">yaw {`${Math.round(view.yaw)}°`.padStart(4)}</span>
         <span className="sep" />
         <span className="counts">
@@ -1413,4 +1417,9 @@ export function App() {
       {open && exportOpen && exportStatus && <ExportDialog status={exportStatus} error={error} send={send} onClose={() => setExportOpen(false)} />}
     </div>
   );
+}
+
+function CursorCoordinates({ store }: { store: ValueStore<CursorPoint | null> }) {
+  const cursor = useSyncExternalStore(store.subscribe, store.get);
+  return <span className="coords">x {coord(cursor?.x)} · y {coord(cursor?.y)} · z {coord(cursor?.z)} m</span>;
 }

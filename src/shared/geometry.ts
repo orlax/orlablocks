@@ -112,11 +112,11 @@ function bezier3(p0: Point3, p1: Point3, p2: Point3, p3: Point3, t: number): Poi
   };
 }
 
-/** A line's edge from `a` to `b` in 3D, as `sampleEdge` does on the ground: its start, then points along a curve. */
-export function sampleEdge3(a: LinePoint, b: LinePoint): Point3[] {
+/** A 3D editing edge: lines carry 3D handles; a ramp's flat handles have zero vertical offset. */
+export function sampleEdge3(a: LinePoint | RampPoint, b: LinePoint | RampPoint): Point3[] {
   if (!a.out && !b.in) return [{ x: a.x, y: a.y, z: a.z }];
-  const c1 = a.out ? { x: a.x + a.out.x, y: a.y + a.out.y, z: a.z + a.out.z } : a;
-  const c2 = b.in ? { x: b.x + b.in.x, y: b.y + b.in.y, z: b.z + b.in.z } : b;
+  const c1 = a.out ? { x: a.x + a.out.x, y: a.y + ('y' in a.out ? a.out.y : 0), z: a.z + a.out.z } : a;
+  const c2 = b.in ? { x: b.x + b.in.x, y: b.y + ('y' in b.in ? b.in.y : 0), z: b.z + b.in.z } : b;
   return Array.from({ length: CURVE_SEGMENTS }, (_, i) => bezier3(a, c1, c2, b, i / CURVE_SEGMENTS));
 }
 

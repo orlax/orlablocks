@@ -1,8 +1,10 @@
+import { valueStore, type ValueStore } from "./valueStore";
+import { NavigationStats, captureTiming, beginCaptureTiming, endCaptureTiming } from "./navigationStats";
 import { cleanShapes } from "./renders";
 import { type Ray } from "../shared/ray";
 import { TerrainMesh } from "./TerrainMesh";
 import { evaluateTerrain, terrainInputIds, isTerrainSource, terrainInfluence, previewTerrain, rayTerrainFirst } from "../shared/terrain";
-import { useEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent, type RefObject } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, memo, type MouseEvent, type PointerEvent, type RefObject } from "react";
 import { Canvas, invalidate, useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
 import {
@@ -345,6 +347,7 @@ const noSnap = (e: { metaKey: boolean; ctrlKey: boolean }) => e.metaKey || e.ctr
 type Props = {
   tool: Tool;
   nodes: SceneNode[];
+  definitionsVersion: number;
   /** Node IDs (boxes and groups). A group stands for every box in it. */
   selection: string[];
   /** The group the user has entered with a double-click (null = the top level): clicks select its children. */
@@ -476,6 +479,7 @@ export type ViewportApi = {
 export function Viewport({
   tool,
   nodes,
+  definitionsVersion,
   selection,
   context,
   onContext,
@@ -524,6 +528,19 @@ export function Viewport({
   shots,
   onRemoveShot,
 }: Props) {
+  const navigationPulse = useRef(-Infinity);
+  const navigationEpoch = useRef(0);
+  useEffect(() => {
+    const endInput = () => { navigationEpoch.current++; };
+    window.addEventListener("keyup", endInput, true);
+    window.addEventListener("pointerup", endInput, true);
+    window.addEventListener("pointercancel", endInput, true);
+    return () => {
+      window.removeEventListener("keyup", endInput, true);
+      window.removeEventListener("pointerup", endInput, true);
+      window.removeEventListener("pointercancel", endInput, true);
+    };
+  }, []);
   const cam = useRef<CameraState>({ ...DEFAULT_CAMERA });
   // The compass rose, turned every frame to where north is on screen.
   const rose = useRef<HTMLDivElement>(null);
@@ -559,43 +576,48 @@ export function Viewport({
     /** What `source` is: an entity's definition (the default), or another scene (14.5: the agent's, no tab shows it). */
     sourceKind: "entity" | "scene" = "entity",
   ) => {
-    await manifoldReady();
-    const from = source ?? nodesRef.current;
-    const hiddenNow = withHidden(from, options.hide);
-    const shapes = [
-      ...cleanShapes(from,
-        from.filter(isShape).filter((b) => !hiddenNow.has(b.id) && (options.notes || b.type !== "note") && (options.lines || b.type !== "line")),
-      ).filter((b) => !isHole(b)),
-      ...extra,
-    ];
-    const entityNow = source ? sourceKind === "entity" : entityModeRef.current;
-    // The live view's cuts, unless this capture hides more (a hidden hole cuts nothing).
-    const visibleNodes = () => expandNodes(from.filter((n) => !hiddenNow.has(n.id)));
-    const cutsNow = source || options.hide ? cutters(entityNow ? inEntityRoot(visibleNodes()) : visibleNodes()) : cutsRef.current;
-    return captureScene({
-      view,
-      width,
-      height,
-      pixelRatio,
-      background: BACKGROUND,
-      clip: options.clip,
-      content: (light) => (
-        <>
-          <Lighting cam={light} />
-          <Boxes
-            nodes={from}
-            boxes={shapes}
-            arrays={from.filter((b): b is ArrayNode => b.type === "array" && !hiddenNow.has(b.id))}
-            entityMode={entityNow}
-            cuts={cutsNow}
-            showHoles={false}
-            draft={null}
-            selected={NO_IDS}
-            hovered={NO_IDS}
-          />
-        </>
-      ),
-    });
+    beginCaptureTiming();
+    try {
+      await manifoldReady();
+      const from = source ?? nodesRef.current;
+      const hiddenNow = withHidden(from, options.hide);
+      const shapes = [
+        ...cleanShapes(from,
+          from.filter(isShape).filter((b) => !hiddenNow.has(b.id) && (options.notes || b.type !== "note") && (options.lines || b.type !== "line")),
+        ).filter((b) => !isHole(b)),
+        ...extra,
+      ];
+      const entityNow = source ? sourceKind === "entity" : entityModeRef.current;
+      // The live view's cuts, unless this capture hides more (a hidden hole cuts nothing).
+      const visibleNodes = () => expandNodes(from.filter((n) => !hiddenNow.has(n.id)));
+      const cutsNow = source || options.hide ? cutters(entityNow ? inEntityRoot(visibleNodes()) : visibleNodes()) : cutsRef.current;
+      return await captureScene({
+        view,
+        width,
+        height,
+        pixelRatio,
+        background: BACKGROUND,
+        clip: options.clip,
+        content: (light) => (
+          <>
+            <Lighting cam={light} />
+            <Boxes
+              nodes={from}
+              boxes={shapes}
+              arrays={from.filter((b): b is ArrayNode => b.type === "array" && !hiddenNow.has(b.id))}
+              entityMode={entityNow}
+              cuts={cutsNow}
+              showHoles={false}
+              draft={null}
+              selected={NO_IDS}
+              hovered={NO_IDS}
+            />
+          </>
+        ),
+      });
+    } finally {
+      endCaptureTiming();
+    }
   };
   if (api) {
     api.current = {
@@ -797,6 +819,8 @@ export function Viewport({
       const sess = walkRef.current;
       const l = live.current;
       if (!sess || !l || sess.phase !== "walking" || document.pointerLockElement !== wrap.current) return;
+      if (performance.now() - navigationPulse.current >= 150) navigationEpoch.current++;
+      navigationPulse.current = performance.now();
       l.pose = look(l.pose, e.movementX, e.movementY);
       invalidate();
     };
@@ -1022,57 +1046,64 @@ export function Viewport({
   // patch so far.
   const [itemSel, setItemSel] = useState<number[]>([]);
   // The stats readout's numbers (10.5), from the last frames drawn.
-  const [stats, setStats] = useState<Stats | null>(null);
+  const statsStore = useMemo(() => valueStore<Stats | null>(null), []);
   const [arrayDrag, setArrayDrag] = useState<{ pointerId: number; part: ArrayPart; y: number; patch: Record<string, unknown>; label: string; sx: number; sy: number } | null>(null);
   useEffect(() => setItemSel([]), [editing]);
 
-  const boxes = nodes.filter(isShape);
+  const boxes = useMemo(() => nodes.filter(isShape), [nodes]);
   const boxesRef = useRef(boxes);
   boxesRef.current = boxes;
   // What's on screen: the server's boxes, with the drag in progress (or just released) applied locally. A copy
   // leaves the originals where they are and shows the copies (`ghosts`) where the drag puts them. A point edit in
   // progress shows too, while its outline is valid.
   const override = drag?.active ? drag : pending;
-  const moved = (b: Shape): Shape => (override?.patches[b.id] ? ({ ...b, ...override.patches[b.id] } as Shape) : b);
   const pointPreview = pointDrag && (pointDrag.active || pointDrag.inserted) ? pointDrag : null;
-  const previewed = preview ? boxes.map((b) => (preview[b.id] ? ({ ...b, ...preview[b.id] } as Shape) : b)) : boxes;
-  const unfollowed = (override && !override.copy ? previewed.map(moved) : previewed).map((b) =>
-    pointPreview && !pointPreview.problem && b.id === editing
-      ? withEditedPoints(b, roundPoints(pointPreview.points))
-      : arrayDrag && b.id === editing && b.type === "array"
-        ? ({ ...b, layout: { ...b.layout, ...arrayDrag.patch } } as Shape)
-        : b,
-  );
-  // A following array takes its path from what it follows as shown, so it follows a drag live (10.3).
-  const unfollowedById = new Map(unfollowed.map((b) => [b.id, b]));
-  const shown = unfollowed.map((b) => (b.type === "array" ? withFollowed(b, (id) => unfollowedById.get(id)) : b));
-  const ghosts = override?.copy ? override.origin.map((b) => ({ ...moved(b), id: `${b.id}:copy` }) as Shape) : [];
-  // Hidden holes (Show holes off) can't be clicked or marquee-selected, unless they're selected.
-  const selectedIds = new Set(shapesUnder(nodes, selection).map((b) => b.id));
-  // Hidden nodes and what's outside the isolation don't show.
-  const onView = (visible ? shown.filter((b) => visible.has(b.id)) : shown).filter(
+  const { shown, ghosts, unfollowed } = useMemo(() => {
+    const moved = (b: Shape): Shape => override?.patches[b.id] ? ({ ...b, ...override.patches[b.id] } as Shape) : b;
+    const previewed = preview ? boxes.map((b) => preview[b.id] ? ({ ...b, ...preview[b.id] } as Shape) : b) : boxes;
+    const unfollowed = (override && !override.copy ? previewed.map(moved) : previewed).map((b) =>
+      pointPreview && !pointPreview.problem && b.id === editing
+        ? withEditedPoints(b, roundPoints(pointPreview.points))
+        : arrayDrag && b.id === editing && b.type === "array"
+          ? ({ ...b, layout: { ...b.layout, ...arrayDrag.patch } } as Shape) : b,
+    );
+    const byId = new Map(unfollowed.map((b) => [b.id, b]));
+    return {
+      unfollowed,
+      shown: unfollowed.map((b) => b.type === "array" ? withFollowed(b, (id) => byId.get(id)) : b),
+      ghosts: override?.copy ? override.origin.map((b) => ({ ...moved(b), id: `${b.id}:copy` }) as Shape) : [],
+    };
+  }, [boxes, override, preview, pointPreview, editing, arrayDrag, definitionsVersion]);
+  const selectedIds = useMemo(() => new Set(shapesUnder(nodes, selection).map((b) => b.id)), [nodes, selection]);
+  const onView = useMemo(() => (visible ? shown.filter((b) => visible.has(b.id)) : shown).filter(
     (b) => (showNotes || b.type !== "note" || selectedIds.has(b.id)) && (showLines || b.type !== "line" || selectedIds.has(b.id)),
-  );
+  ), [shown, visible, showNotes, showLines, selectedIds]);
   const onViewRef = useRef(onView);
   onViewRef.current = onView;
   // What's drawn: each instance as its entity's shapes (IDs like `instance_4/box_2`; `ownerOf` maps a hit back).
-  const sourceIds = terrainInputIds(nodes);
+  const sourceIds = useMemo(() => terrainInputIds(nodes), [nodes]);
   const terrainPreviewActive = !!(drag?.active || pointPreview || preview);
-  const terrainNodes = nodes.map((n) => unfollowed.find((s) => s.id === n.id) ?? n);
-  const drawn = expandShapes(onView).filter((s) => showModifiers || !sourceIds.has(s.id));
+  const terrainNodes = useMemo(() => {
+    const byId = new Map(unfollowed.map((s) => [s.id, s]));
+    return nodes.map((n) => byId.get(n.id) ?? n);
+  }, [nodes, unfollowed]);
+  const drawn = useMemo(() => expandShapes(onView).filter((s) => showModifiers || !sourceIds.has(s.id)), [onView, showModifiers, sourceIds, definitionsVersion]);
+  const renderShapes = useMemo(() => [...drawn, ...expandShapes(ghosts)], [drawn, ghosts, definitionsVersion]);
   const drawnArrays = useMemo(() => onView.filter((b): b is ArrayNode => b.type === "array"), [onView]);
-  const pickable = showHoles ? drawn : drawn.filter((b) => !isHole(b) || selectedIds.has(b.id) || selectedIds.has(ownerOf(b.id)));
+  const pickable = useMemo(() => showHoles ? drawn : drawn.filter((b) => !isHole(b) || selectedIds.has(b.id) || selectedIds.has(ownerOf(b.id))), [showHoles, drawn, selectedIds]);
   // Locked nodes (and what's in them) can't be clicked, hovered or marquee-selected, unless selected from the
   // outliner; they still count as surfaces to draw on and snap to.
-  const locked = lockedIds(nodes);
-  const selectable = pickable.filter((b) => !locked.has(ownerOf(b.id)) || selectedIds.has(ownerOf(b.id)));
+  const locked = useMemo(() => lockedIds(nodes), [nodes]);
+  const selectable = useMemo(() => pickable.filter((b) => !locked.has(ownerOf(b.id)) || selectedIds.has(ownerOf(b.id))), [pickable, locked, selectedIds]);
   // Which holes cut which shapes, as shown (so a drag cuts live).
   // A hidden hole cuts nothing; holes outside the isolation still cut what shows (the cut follows the data).
-  const hidden = hiddenIds(nodes);
+  const hidden = useMemo(() => hiddenIds(nodes), [nodes]);
   // Instances cut and are cut as groups of their shapes.
   // In an entity's definition the top level is a group (in every instance), so its holes cut there.
-  const cutList = expandNodes([...nodes.filter(isGroup), ...shown.filter((b) => !(isHole(b) && hidden.has(b.id))), ...ghosts]);
-  const cuts = cutters(entityMode ? inEntityRoot(cutList) : cutList);
+  const cuts = useMemo(() => {
+    const cutList = expandNodes([...nodes.filter(isGroup), ...shown.filter((b) => !(isHole(b) && hidden.has(b.id))), ...ghosts]);
+    return cutters(entityMode ? inEntityRoot(cutList) : cutList);
+  }, [nodes, shown, ghosts, hidden, entityMode, definitionsVersion]);
   // For captures, which run after awaits: the scene as it is then.
   const nodesRef = useRef(nodes);
   nodesRef.current = nodes;
@@ -1080,6 +1111,8 @@ export function Viewport({
   cutsRef.current = cuts;
   const entityModeRef = useRef(entityMode);
   entityModeRef.current = entityMode;
+  const renderedSelection = useMemo(() => walk ? NO_IDS : ghosts.length > 0 ? new Set(ghosts.map((b) => b.id)) : selectedIds, [walk, ghosts, selectedIds]);
+  const renderedHover = useMemo(() => walk ? NO_IDS : new Set(shapesUnder(nodes, [hoveredId, outsideHover].filter((id) => id !== null)).map((b) => b.id)), [walk, nodes, hoveredId, outsideHover]);
   // The free-form or line in point editing, as shown. A free-form's points sit on its top face (`editTop`); a
   // line's carry their own y, and its path is open.
   // A path array's points are its path's (10.1).
@@ -1200,17 +1233,14 @@ export function Viewport({
     }
     return best;
   };
-  const hitAt = (sx: number, sy: number, size: Size) => {
+  const hitAt = (sx: number, sy: number, size: Size, solidHit?: ReturnType<typeof pickHit>, noteHit?: ReturnType<typeof pickNote>) => {
     const hit =
-      pickNote(cam.current, size, sx, sy, selectable) ??
+      (noteHit === undefined ? pickNote(cam.current, size, sx, sy, selectable) : noteHit) ??
       pickLine(cam.current, size, sx, sy, selectable) ??
-      pickWithTerrain(screenRay(cam.current, size, sx, sy), selectable);
+      (solidHit !== undefined && (!solidHit || selectable.some((s) => s.id === solidHit.id))
+        ? solidHit : pickWithTerrain(screenRay(cam.current, size, sx, sy), selectable));
     // A part of an instance picks the instance.
     return hit && { ...hit, id: ownerOf(hit.id) };
-  };
-  const pickAt = (sx: number, sy: number, size: Size) => {
-    const id = hitAt(sx, sy, size)?.id;
-    return id === undefined ? null : resolve(id).id;
   };
   const gizmoAt = (sx: number, sy: number, size: Size) =>
     gizmo ? hitGizmo(cam.current, size, sx, sy, gizmo.anchor, gizmo.parts, gizmo.boxes, gizmo.frame) : null;
@@ -1619,6 +1649,7 @@ export function Viewport({
       const grabbed = screenToGround(cam.current, size, sx, sy);
       pan.current = { pointerId: e.pointerId, grabbed, sx, sy };
       setPanning(true);
+      onCursor(null);
     } else if (tool === "terrain") {
       const { point } = planeAt(e, 0);
       setLanding(null);
@@ -1642,12 +1673,19 @@ export function Viewport({
     }
   };
 
+  const lastPointer = useRef<PointerEvent | null>(null);
   const onPointerMove = (e: PointerEvent) => {
+    lastPointer.current = e;
     if (walkRef.current) return;
     const { sx, sy, size } = local(e);
+    if (pan.current?.pointerId === e.pointerId) {
+      cam.current = panTo(cam.current, size, pan.current.grabbed, sx, sy);
+      invalidate();
+      return;
+    }
     // The 3D cursor (14.1): the surface under the pointer, or the ground.
     const ray = screenRay(cam.current, size, sx, sy);
-    const hit = pickHit(ray, pickable);
+    const hit = pickWithTerrain(ray, pickable);
     const ground = screenToGround(cam.current, size, sx, sy);
     const point: CursorPoint = hit
       ? { x: round2(hit.point.x), y: round2(hit.point.y), z: round2(hit.point.z), id: ownerOf(hit.id) }
@@ -1695,11 +1733,6 @@ export function Viewport({
       setMarquee({ ...marquee, end, active });
       return;
     }
-    if (pan.current?.pointerId === e.pointerId) {
-      cam.current = panTo(cam.current, size, pan.current.grabbed, sx, sy);
-      invalidate();
-      return;
-    }
     if (isPointTool(tool)) {
       penMove(e);
       return;
@@ -1729,10 +1762,19 @@ export function Viewport({
     }
     const hot = gizmoAt(sx, sy, size);
     setHotPart(hot);
-    setHoveredId(tool === "select" && onPickTarget ? (hitAt(sx, sy, size)?.id ?? null) : tool === "select" && !hot ? pickAt(sx, sy, size) : null);
     const note = tool === "select" && !hot ? pickNote(cam.current, size, sx, sy, selectable) : null;
+    const hoveredHit = tool === "select" && (onPickTarget || !hot) ? hitAt(sx, sy, size, hit, hot && onPickTarget ? undefined : note) : null;
+    setHoveredId(hoveredHit ? (onPickTarget ? hoveredHit.id : resolve(hoveredHit.id).id) : null);
     setNoteHover(note ? { id: note.id, sx, sy } : null);
   };
+
+  // A remote edit/undo or visibility change can move the surface under a stationary pointer.
+  // Re-pick only when scene inputs change; never drive an in-progress authoring gesture here.
+  useEffect(() => {
+    if (lastPointer.current && !pan.current && !drag && !pointDrag && !arrayDrag && !marquee && !drawing.current && !isPointTool(tool)) {
+      onPointerMove(lastPointer.current);
+    }
+  }, [pickable, selectable, cameraRestore]);
 
   const onPointerUp = (e: PointerEvent) => {
     if (walkRef.current) return;
@@ -1809,6 +1851,7 @@ export function Viewport({
     if (pan.current?.pointerId === e.pointerId) {
       pan.current = null;
       setPanning(false);
+      onPointerMove(e);
     }
     const d = drawing.current;
     if (d?.pointerId === e.pointerId) {
@@ -1976,6 +2019,8 @@ export function Viewport({
         if (walkRef.current.phase === "walking") onPlayerRef.current({ ...playerRef.current, speed: Math.round(wheelSpeed(playerRef.current.speed, deltaY) * 10) / 10 });
         return;
       }
+      if (performance.now() - navigationPulse.current >= 150) navigationEpoch.current++;
+      navigationPulse.current = performance.now();
       cam.current = zoomBy(cam.current, deltaY, e.ctrlKey);
       invalidate();
     };
@@ -2064,6 +2109,7 @@ export function Viewport({
       // Ctrl+click on a Mac opens the context menu; Ctrl is the no-snap modifier here.
       onContextMenu={(e) => e.preventDefault()}
       onPointerLeave={() => {
+        lastPointer.current = null;
         onCursor(null);
         cursorRef.current = null;
         invalidate();
@@ -2087,23 +2133,27 @@ export function Viewport({
         <color attach="background" args={[BACKGROUND]} />
         <CameraRig cam={cam} yawKeys={yawKeys} flight={flight} walker={walker} onViewChange={onViewChange} />
         <CompassSync cam={cam} rose={rose} />
-        {showStats && <StatsProbe onStats={setStats} />}
+        {showStats && <StatsProbe onStats={statsStore.set} inputEpoch={navigationEpoch} active={() => {
+          if (walkRef.current) return walkRef.current.phase === "walking" &&
+            (!!live.current && (Object.entries(live.current.keys).some(([key, pressed]) => key !== "fast" && pressed) || performance.now() - navigationPulse.current < 150));
+          return !!pan.current || (yawKeys.current.has("left") !== yawKeys.current.has("right")) || performance.now() - navigationPulse.current < 150;
+        }} />}
         <Lighting cam={cam} />
         {/* Walking, the view is the player's: no grid, axes, gizmo, highlights or hole ghosts (09.2). */}
         {showGrid && !walk && <Grid cam={cam} />}
-        {showCursor && !walk && !drag?.active && <Cursor3D at={cursorRef} />}
+        {showCursor && !walk && !panning && !drag?.active && <Cursor3D at={cursorRef} />}
         {!walk && <OriginAxes />}
         <Boxes
           nodes={terrainNodes}
           terrainPreview={terrainPreviewActive}
-          boxes={[...drawn.filter((s) => showModifiers || !terrainInputIds(nodes).has(s.id)), ...expandShapes(ghosts)]}
+          boxes={renderShapes}
           arrays={drawnArrays}
           entityMode={entityMode}
           cuts={cuts}
           showHoles={showHoles && !walk}
           draft={draft}
-          selected={walk ? NO_IDS : new Set(ghosts.length > 0 ? ghosts.map((b) => b.id) : shapesUnder(nodes, selection).map((b) => b.id))}
-          hovered={walk ? NO_IDS : new Set(shapesUnder(nodes, [hoveredId, outsideHover].filter((id) => id !== null)).map((b) => b.id))}
+          selected={renderedSelection}
+          hovered={renderedHover}
         />
         {walk && <Avatar shapes={avatar} group={avatarGroup} />}
         {pen.points.length > 0 && <PenPreview pen={pen} kind={nextKind} fields={nextFields} line={nextLine} ramp={nextRamp} />}
@@ -2202,11 +2252,7 @@ export function Viewport({
           {drag.copy ? `${drag.label} · copy` : drag.label}
         </div>
       )}
-      {showStats && stats && (
-        <div className="stats-readout" title="The view's last frames: CPU time to draw one (rolling average), draw calls (shadows included), triangles, and shapes drawn (instances and arrays expanded)">
-          {stats.ms.toFixed(1)} ms · {stats.calls} draws · {stats.triangles >= 10000 ? `${Math.round(stats.triangles / 1000)}k` : stats.triangles} tris · {drawn.length} shapes
-        </div>
-      )}
+      {showStats && <StatsReadout store={statsStore} shapes={drawn.length} />}
       {arrayDrag?.label && (
         <div className="draft-label" style={{ left: arrayDrag.sx + 14, top: arrayDrag.sy + 14 }}>
           {arrayDrag.label}
@@ -2255,7 +2301,7 @@ export function Viewport({
  * The scene's boxes plus the draft. With frameloop="demand", r3f redraws when objects are added or changed
  * but not when they're removed (Clear, a cancelled draft), so request a frame after every change.
  */
-function Boxes({
+const Boxes = memo(function Boxes({
   nodes,
   boxes: all,
   arrays = NO_ARRAYS,
@@ -2283,7 +2329,7 @@ function Boxes({
   selected: Set<string>;
   hovered: Set<string>;
 }) {
-  const modifierIds = terrainInputIds(nodes);
+  const modifierIds = useMemo(() => terrainInputIds(nodes), [nodes]);
   const selectedKey = [...selected].join(",");
   const hoveredKey = [...hovered].join(",");
   const { boxes, groups } = useMemo(() => splitInstanced(all, arrays, cuts), [all, arrays, cuts]);
@@ -2340,7 +2386,7 @@ function Boxes({
       )}
     </>
   );
-}
+});
 
 /** The warning over a hole that cuts nothing (it's outside any group): a small yellow diamond above its top. */
 const warningGeometry = new THREE.OctahedronGeometry(0.22);
@@ -2660,39 +2706,66 @@ function ArrayEditOverlay({ dots, handles, selected }: { dots: ItemDot[]; handle
 }
 const NO_ARRAYS: ArrayNode[] = [];
 
-/** What the stats readout shows (10.5). */
-type Stats = { ms: number; calls: number; triangles: number };
-/** How often the readout updates (ms), and how many frames its time averages. */
-const STATS_EVERY = 250;
-const STATS_FRAMES = 30;
+type Stats = { ms: number; calls: number; triangles: number; navigation: ReturnType<NavigationStats["snapshot"]> };
 
-/**
- * Measures the view's frames for the stats readout (10.5): the CPU time of each render (the renderer's `render`
- * wrapped while it's on), and its draw calls and triangles (`gl.info`, reset every render, shadow passes included).
- * The view draws on demand, so numbers change while something moves.
- */
-function StatsProbe({ onStats }: { onStats: (s: Stats) => void }) {
+function StatsReadout({ store, shapes }: { store: ValueStore<Stats | null>; shapes: number }) {
+  const stats = useSyncExternalStore(store.subscribe, store.get);
+  if (!stats) return null;
+  return <div className="stats-readout" title="Navigation: last 120 active intervals; slow > 16.7 ms (60 Hz reference budget). CPU render excludes other JavaScript and GPU completion. Draws/triangles include shadows; captures excluded.">
+    {stats.navigation ? `${stats.navigation.fps.toFixed(0)} FPS · ${stats.navigation.ms.toFixed(1)} ms interval · ${stats.navigation.slow}/${stats.navigation.samples} slow` : "Navigation idle / warming up"} · CPU render {stats.ms.toFixed(1)} ms · {stats.calls} draws · {stats.triangles >= 10000 ? `${Math.round(stats.triangles / 1000)}k` : stats.triangles} tris · {shapes} shapes
+  </div>;
+}
+
+/** Observes the existing renderer; never requests frames to refresh statistics. */
+function StatsProbe({ onStats, active, inputEpoch }: { onStats: (s: Stats) => void; active: () => boolean; inputEpoch: RefObject<number> }) {
   const gl = useThree((s) => s.gl);
+  const isActive = useRef(active);
+  isActive.current = active;
   useEffect(() => {
     const render = gl.render;
+    const pacing = new NavigationStats();
     const times: number[] = [];
-    let last = 0;
+    let last = -Infinity;
+    let epoch = captureTiming().epoch;
+    let idleTimer: ReturnType<typeof setTimeout> | undefined;
+    const reset = () => { pacing.reset(); times.length = 0; };
+    let published: Stats | null = null;
+    const publish = (value: Stats) => { published = value; onStats(value); };
+    const clearNavigation = () => {
+      pacing.reset();
+      if (published?.navigation) publish({ ...published, navigation: null });
+    };
+    const visibility = () => { reset(); clearNavigation(); };
+    document.addEventListener("visibilitychange", visibility);
+    window.addEventListener("blur", visibility);
     gl.render = function (scene, camera) {
       const t0 = performance.now();
+      const capture = captureTiming();
+      if (capture.epoch !== epoch) { reset(); epoch = capture.epoch; }
+      const eligible = !document.hidden && !capture.active;
+      pacing.frame(t0, eligible && isActive.current(), inputEpoch.current);
       render.call(gl, scene, camera);
+      if (!eligible) return;
       times.push(performance.now() - t0);
-      if (times.length > STATS_FRAMES) times.shift();
-      const now = performance.now();
-      if (now - last > STATS_EVERY) {
-        last = now;
-        onStats({ ms: times.reduce((a, b) => a + b, 0) / times.length, calls: gl.info.render.calls, triangles: gl.info.render.triangles });
+      if (times.length > 30) times.shift();
+      if (t0 - last >= 250) {
+        last = t0;
+        publish({ ms: times.reduce((a, b) => a + b, 0) / times.length, calls: gl.info.render.calls,
+          triangles: gl.info.render.triangles, navigation: pacing.snapshot() });
       }
+      // One idle notification, not a polling/render loop. Held input retains even long hitch intervals.
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        if (!isActive.current()) clearNavigation();
+      }, 250);
     };
-    invalidate();
     return () => {
+      clearTimeout(idleTimer);
+      document.removeEventListener("visibilitychange", visibility);
+      window.removeEventListener("blur", visibility);
       gl.render = render;
     };
-  }, [gl, onStats]);
+  }, [gl, onStats, inputEpoch]);
   return null;
 }
 /** An array's item dots and handles in edit mode. */

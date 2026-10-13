@@ -296,7 +296,7 @@ export function ViewBar({
       <button
         type="button"
         className={stats.on ? "toggle" : "toggle off"}
-        title={stats.on ? "Hide the stats (render time, draw calls, triangles, shapes)" : "Show the stats: render time, draw calls, triangles and shapes"}
+        title={stats.on ? "Hide the stats (navigation FPS, CPU render time, draw calls, triangles, shapes)" : "Show the stats: navigation FPS, CPU render time, draw calls, triangles and shapes"}
         onClick={stats.onToggle}
       >
         <Activity size={13} /> stats

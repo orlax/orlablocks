@@ -28,6 +28,7 @@ import {
   roomWalls,
   rotateShape,
   sampleEdge,
+  sampleEdge3,
   signedArea2,
 } from "./geometry";
 import { hitMesh } from "./mesh";
@@ -568,4 +569,14 @@ describe("toLocal3", () => {
     expect(back.y).toBeCloseTo(p.y);
     expect(back.z).toBeCloseTo(p.z);
   });
+});
+
+it("samples flat ramp handles as finite editing edges while retaining explicit 3D line offsets", () => {
+  const a = { x: -12, y: 0, z: -8, out: { x: 4, z: 0 } };
+  const b = { x: 8, y: 4, z: -12, in: { x: -4, z: 0 } };
+  const flat = sampleEdge3(a, b);
+  expect(flat.every((p) => Object.values(p).every(Number.isFinite))).toBe(true);
+  expect(flat).toEqual(sampleEdge3({ ...a, out: { ...a.out, y: 0 } }, { ...b, in: { ...b.in, y: 0 } }));
+  const raised = sampleEdge3({ ...a, out: { ...a.out, y: 3 } }, b);
+  expect(raised[CURVE_SEGMENTS / 2].y).toBeGreaterThan(flat[CURVE_SEGMENTS / 2].y);
 });

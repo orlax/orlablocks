@@ -39,3 +39,22 @@ A blockout should be cheap to draw because it's simple, not only because the ren
 ## Since then
 
 Phase 10.5 draws each array's items instanced (one `InstancedMesh` per entity part, one merged edge set), and the view bar has a **stats** readout (frame time, draw calls, triangles, shapes): step 1 above, and the array half of step 3. Merging static shapes (step 2) and instancing plain instances are still to do.
+
+The implementation plan is now `plans/17-editor-performance` (2026-10-09). It owns increment status, acceptance requirements and subsequent decisions; this document retains the original discussion and investigation evidence.
+
+## Progress — 2026-10-09 rendering investigation
+
+Orlando reports sluggish navigation in `castle v2` (`adventure-in-henders-castle`, scene `castle-copy`). His screenshot shows 2.3 ms, 767 draws, 196k triangles and 450 expanded shapes. Read-only MCP inspection confirms 48 ordinary instances and 20 arrays with 113 items; the outline reports no terrains. No scene edits or rendering changes were made.
+
+Code inspection findings:
+
+- `Viewport.tsx`'s `StatsProbe` times only the synchronous `gl.render` call. This is CPU render-submission time, **not FPS or total frame duration**, and excludes React, pointer handlers, preceding frame callbacks and GPU completion. Actual navigation frame pacing remains unmeasured.
+- `onPointerMove` calls `pickHit` and `onCursor` before reaching the pan branch. Normal select hover can pick again through `pickAt`/`hitAt`. `App.tsx` passes `setCursor`, so fresh cursor objects schedule editor React updates. Hidden cursor rendering does not skip this picking. `shared/ray.ts` already has per-mesh bounds rejection and `shared/mesh.ts` caches hit meshes; do not assume picking dominates without profiling.
+- `Viewport.tsx` rebuilds expanded lists, cutter relationships and instancing inputs during React renders, including stats updates and camera reports (100 ms). Its fresh `all`/`arrays`/`cuts` props invalidate `Boxes`' instancing memo. Geometry itself has key-based memoization; this is not evidence that all CSG geometry rebuilds each frame.
+- `instancing.ts` batches array items only. Ordinary instances still use separate `ShapeMesh` bodies/floors/edges. Static merging and ordinary-instance batching remain the main draw-count opportunities. Preserve holes, highlights, visibility/isolation and capture behavior.
+- `Lighting.tsx` uses a 2048-square shadow map; default shadow auto-update renders it every frame. Cache only while caster geometry and the light/shadow camera are unchanged: panning changes the light target, and zoom can change its coverage.
+- `Canvas` does not override the installed R3F default DPR range `[1, 2]`. A DPR 1 option could reduce main-frame pixel work on Retina screens, with a sharpness tradeoff. The actual browser DPR and GPU cost were not measured.
+
+Verification: read-only live scene outline, screenshot counters, source inspection and installed dependency defaults. No automated tests were needed for this documentation-only audit. Browser discovery did not expose the existing Chrome tab through browser instrumentation; no browser trace, GPU timing or before/after benchmark was obtained. Earlier synthetic timings above must not be presented as timings of this scene.
+
+Next performance increment: add correctly labeled CPU render time plus active-navigation frame interval/FPS and slow-frame reporting (exclude demand-render idle gaps); profile pan, held-key orbit and Walk separately on this scene or an authorized scratch copy. Compare picking/React time, shadows and DPR before selecting the first optimization. Then reduce redundant navigation work and batch ordinary instances/static geometry where the measurements justify it. Orlando's smoothness and visual acceptance remain open; terrain-aware walking stays in its separate follow-up.

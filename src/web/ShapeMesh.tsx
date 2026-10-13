@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react";
+import { memo, useEffect, useMemo } from "react";
 import * as THREE from "three";
 import { drawMesh, toBufferGeometry, uvOffset } from "../shared/bake";
 import { cutParts } from "../shared/csg";
@@ -114,7 +114,7 @@ export function colorMaterials(color: ShapeColor): ColorMaterials {
  * ceiling, so you see in from above. A volume is the footprint extruded to its height. Both cast and receive shadows
  * and have faint outlined edges. A hole is a translucent ghost with dashed edges.
  */
-export function ShapeMesh({ shape, draft = false, highlight, cuts, walkable = true, authoring = false }: Props) {
+export const ShapeMesh = memo(function ShapeMesh({ shape, draft = false, highlight, cuts, walkable = true, authoring = false }: Props) {
   const { kind, color } = shape;
   const { solid, floor, edges, frame, y, height, tilt } = useShapeGeometry(shape, cuts);
   const hole = (kind === "hole" || authoring) && !draft;
@@ -169,7 +169,7 @@ export function ShapeMesh({ shape, draft = false, highlight, cuts, walkable = tr
       </group>
     </group>
   );
-}
+});
 
 /**
  * Where a shape's geometry sits (`useShapeGeometry` builds it in the shape's own frame, from its bottom): turned

@@ -1421,7 +1421,10 @@ summary:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
   box-shadow: var(--shadow-sm);
   font: 500 11px/1.4 var(--mono);
   font-variant-numeric: tabular-nums;
-  white-space: nowrap;
+  max-width: calc(100% - 100px);
+  width: max-content;
+  text-align: center;
+  white-space: normal;
   pointer-events: none;
   z-index: 3;
 }

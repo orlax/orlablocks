@@ -1,0 +1,190 @@
+# 17 — Editor Performance
+
+> **For the agent reading this:** Read `plans/thinking-05-performance` first, especially the 2026-10-09 investigation. Background: `10-array-tools` §8 and §13 (existing array instancing and stats), `09-review-loop` (Walk and captures), and `16-terrains` §13 plus `16-terrain-measurements.md` (terrain caching, drag previews and canonical captures). Read other phases only when a change touches their behavior.
+>
+> Start with **17.1 — Measure navigation honestly**. Orlando's `castle v2` feels sluggish, but its `2.3 ms · 767 draws · 196k tris · 450 shapes` screenshot measures CPU render submission, not FPS. Draw overhead, pointer work, React and GPU cost are candidates, not a measured diagnosis. Establish a reproducible baseline before optimizing.
+>
+> Work in small increments (§7). Each implementation increment ends with relevant tests, `npm test`, `npm run typecheck`, a web production build, and its browser checks on a spare server with a separate scratch data folder. Never read or write the main data folder directly; scene fixtures and copies go through MCP or the editor. Record measurements and decisions in §10, with automated verification separate from Orlando's acceptance. Add implemented terminology to `GLOSSARY.md`. Bump the MCP patch version only if its contract changes.
+
+---
+
+## 1. Goal
+
+1. Orlando opens the castle, turns on stats and sees meaningful navigation FPS/frame intervals alongside clearly labeled CPU render time and draw calls.
+2. Panning, held-key rotation, zooming and Walk feel responsive at the castle's current detail level. Hover and selection remain immediate.
+3. Repeated entities and ordinary static geometry use substantially fewer draw calls, without changing the saved scene or requiring Orlando to redesign it for the renderer.
+4. Editing a room, moving a hole, reshaping a ramp or changing an entity still previews correctly, saves one normal command and supports undo/redo.
+5. The editor, saved shots and agent renders keep the same geometry and graybox appearance. Any optional quality tradeoff is explicit and local to the viewer.
+
+## 2. Scope
+
+### In
+
+- Honest active-navigation frame pacing, CPU render timing, draw/triangle counters and repeatable browser profiling.
+- Avoiding redundant pointer picking, broad React updates and repeated scene derivation during navigation, hover and stats updates.
+- Instancing compatible ordinary instances, building on the existing array path.
+- Batching static bodies, floors and edges with bounded rebuild cost and useful culling.
+- Correct shadow invalidation and, where measurements justify it, an explicit viewer performance setting.
+- Capture, Walk, selection, holes, isolation, entity editing and terrain-rendering regression checks.
+
+### Out (deliberately deferred)
+
+- Terrain-aware walking, placement and gameplay queries from phase 16 §10.
+- Changes to authored geometry, scene schemas, scene history, library history or Unity export structure to suit batching.
+- Server/network/persistence optimization unless profiling identifies a direct navigation dependency; record unrelated findings for later.
+- WebGPU, a new renderer, occlusion culling, automatic geometry simplification, mesh LOD, and a general worker/job framework.
+- New lighting/art direction, mandatory lower image quality, and permanent telemetry or a performance dashboard.
+
+## 3. Measurement contract
+
+The existing view renders on demand. An idle gap is not a slow frame, and the first frame after idle must not poison navigation statistics. Stats must not create a continuous render loop merely to keep themselves fresh.
+
+| Metric | Meaning |
+|---|---|
+| Active frame interval / FPS | Time between rendered frames during sustained navigation; FPS is derived from elapsed time and frame count over that window. Exclude idle, background-tab, pause and capture intervals. |
+| CPU render time | Synchronous duration of the renderer call. Explicitly labeled; does not include all JavaScript work or GPU completion. |
+| Slow frames | Navigation frame intervals above the recorded refresh/frame budget; retain median and p95 intervals in benchmark results so averages do not hide hitches. |
+| Draw calls / triangles | Renderer counters for the editor frame, with shadow inclusion documented and capture passes kept separate. |
+| Shapes | Expanded shapes as today; not a count of GPU draw calls. |
+
+Browser traces should attribute pointer handlers, React commits, derived scene work, render submission and Walk surface rays. Record GPU evidence when the available browser supports it; unavailable GPU timing is not zero GPU cost. Prefer a temporary/local profiling harness to permanent detailed instrumentation.
+
+For every comparison record commit, browser/OS/hardware, development or production build, canvas CSS size, device pixel ratio, quality settings, camera/route, scene counts and whether stats are enabled. Use the same conditions before and after. Warm up first, repeat each sustained navigation scenario at least three times, and distinguish load/first-pick/first-edit hitches from steady-state costs. Compare stats on and off to check instrumentation overhead.
+
+## 4. Renderer constraints
+
+- The server-owned scene remains the source of truth. Batches, matrices, buffers and lookup tables are disposable derived state.
+- Cache invalidation follows actual inputs: geometry, cutters, entity definitions, transforms, visibility/isolation and material/highlight state. Cursor, stats and camera reports must not invalidate unrelated geometry.
+- Reuse compatible entity geometry; a part cut by an external hole falls back to its correct variant. Preserve entity pivots, scale, pitch, roll, inherited visibility and missing-entity behavior.
+- Keep picking IDs and group/instance/array ownership unchanged. Editor data picking and Walk's rendered-mesh surface queries must both work after batching, including transformed instances and floor holes.
+- Batch by compatible material and render behavior. Preserve body/floor shading, tiled UVs, creased normals, edge styling, transparency and shadow flags. Hole ghosts, notes, lines, gizmos and live previews may retain separate paths.
+- Avoid one scene-wide batch that destroys useful frustum culling. Compare spatial chunks or a supported batching approach against merged buffers; select using measured frame time, rebuild cost and memory. Do not choose an API solely because it reduces the counter.
+- Hover/selection must highlight exactly the intended shapes without rebuilding the whole scene on each pointer move. Temporary overlays or exclusion from static batches are implementation choices to benchmark.
+- Dispose replaced buffers/materials and cancel stale derived work. Scene switches, entity-definition edits, undo and repeated select/deselect cycles must not accumulate GPU resources.
+- Captures use canonical geometry and their requested resolution. Existing terrain drag previews and full-resolution capture/export behavior remain intact. A renderer refactor must not accidentally reevaluate terrain on each cursor update.
+
+## 5. Fixtures and benchmark scenarios
+
+Create fixtures only on a scratch server (`PORT=5171 DATA_DIR=<scratch>/data npm run dev`, or another free port). Use MCP/editor operations, not direct scene-file access. Keep reproducible setup and measurement instructions with the benchmark results.
+
+| Fixture | Purpose |
+|---|---|
+| Castle | Read-only profiling of Orlando's open scene when browser access is available, or a copy created through supported scene operations. Record which was used. Never mutate the original for benchmarks. |
+| Repetition | 400 ordinary instances of a single-box entity, then equivalent arrays; compare incremental calls above an empty-scene baseline. Include a multipart entity and scaled/tilted placements. |
+| Mixed geometry | Hundreds of plain shapes, rooms, cylinders, curved/concave free-forms and ramps; holes crossing ordinary and entity geometry; several colors. |
+| Terrain | Generated terrain with modifiers plus ordinary buildings; verify cached navigation, source editing, Show modifiers, drag preview and canonical captures. Reuse phase 16's practical limits. |
+
+For each applicable fixture measure: steady pan, held-key rotation, sustained zoom, select hover across shapes, Walk movement/look, first pick after an edit, edit preview/release and undo. Use a fixed route and camera for before/after comparisons. Include a small scene to detect overhead that only helps large scenes.
+
+## 6. Acceptance and performance targets
+
+- **Correctness is required:** the browser checklist (§8) passes and screenshots show no unintended geometry, material or shadow changes.
+- **Smoothness target:** on Orlando's recorded reference setup, target sustained 60 FPS where the display/browser supports it (16.7 ms frame budget), with p95 active intervals within 1.5 refresh intervals on the benchmark routes. Record actual refresh cadence; do not promise this across arbitrary hardware or terrain resolutions.
+- **Baseline gate:** 17.1 records actual current results and identifies the dominant costs. If the target is infeasible on the reference hardware, record evidence and bring a concrete quality/scope tradeoff to Orlando before changing the target.
+- **Ordinary-instance target:** the 400-single-box fixture adds at most 4 render calls above baseline in the default view, including its shadow pass. Multipart entities scale with compatible parts/materials, not placement count. Document any renderer-specific extra pass.
+- **Static batching target:** at least 50% fewer calls on the fixed mixed fixture, while improving navigation frame time and avoiding worse p95 edit-release hitches. Record castle results separately; do not apply the screenshot's 767 calls to a different camera as a baseline.
+- **No hidden regressions:** compare small-scene navigation, edit latency, memory/resource counts and capture time. Investigate repeatable regressions above run-to-run noise before accepting an increment.
+- An optimization is accepted for its measured effect and correctness. If a proposed technique does not help, record the experiment and decision; do not silently mark an unimplemented increment complete.
+
+## 7. Implementation increments
+
+### 17.1 — Measure navigation honestly
+
+- Correct the stats labels; add active-navigation FPS/frame intervals with explicit idle/background reset behavior and bounded UI update frequency.
+- Build the reproducible fixture/profile workflow and baseline results in `plans/17-performance-measurements.md`.
+- Compare pan, rotation, zoom, hover and Walk; separate development overhead from a production build. Attribute the leading costs and test shadow/DPR sensitivity using temporary diagnostic controls.
+- **Checks:** focused timing tests for idle, resume, window aggregation and capture exclusion; full checks from the preamble; browser stats-on/off comparison and an idle-demand-render check.
+- **Exit:** a trustworthy baseline and written implementation priorities. Continue with 17.2; evidence can change the order of 17.3–17.5 if the decision is recorded here.
+
+### 17.2 — Keep navigation and hover cheap
+
+- Dispatch navigation before work that navigation does not need. Reuse picking results and coalesce high-rate pointer work to frames where appropriate; preserve exact click/drawing behavior and final pointer state.
+- Contain cursor/stats updates and stabilize derived scene/instancing inputs. Recompute expansions, cutter relationships and relevant geometry only when their inputs change.
+- Profile React commits, picking and first-pick costs. Add spatial indexing or lazy hit-mesh work only if the trace justifies it.
+- **Checks:** pan/Space-hand, hover, cursor, drawing on surfaces, snapping, marquee, gizmos and undo; locked/hidden/isolated behavior; no stale cursor or selection after edits. Repeat baseline scenarios and capture checks.
+- **Exit:** lower measured interaction overhead with unchanged editing behavior; record any remaining bottleneck.
+
+### 17.3 — Instance ordinary repeated entities
+
+- Share the compatible instancing path between ordinary instances and arrays while keeping stable ownership for highlights, picking and Walk.
+- Group compatible parts/materials, maintain transformed bounds and preserve fallback variants for external cuts, incomplete visibility and missing definitions.
+- Ensure scene and entity-definition changes invalidate the correct batches; keep capture rendering in parity.
+- **Checks:** repetition fixture meets §6; multipart/scaled/tilted entities, external holes, selected/hovered instances, arrays, Edit entity mode, definition edits and undo; Walk floor queries through instances and holes; captures and resource disposal.
+- **Exit:** ordinary repetition scales by compatible entity parts rather than placement count, with recorded before/after results.
+
+### 17.4 — Batch ordinary static geometry
+
+- Compare merged spatial batches with the installed renderer's supported batching options. Record the choice before expanding the implementation.
+- Batch eligible static bodies/floors/edges; retain correct live preview and highlight paths. Rebuild affected batches rather than everything on pointer movement.
+- Preserve culling, holes, terrain coexistence and clean capture behavior; measure initial builds and edit-release cost as well as navigation.
+- **Checks:** mixed fixture meets §6; pan through near/far views, selection crossing batches, multiselect/group highlights, room-floor cuts, free-form/ramp/tilt geometry, visibility/isolation, copy/mirror/scale, undo, scene switching, Walk and capture parity.
+- **Exit:** measured draw and frame-time reduction with bounded rebuild cost and no resource growth after repeated edits.
+
+### 17.5 — Shadows, quality and final acceptance
+
+- Cache shadows only when caster geometry and light/shadow-camera state permit. Invalidate for edits, previews, transforms, visibility, scene changes and navigation that changes light coverage. Verify a fresh shadow map before captures.
+- If 17.1 or subsequent measurements show a pixel/GPU bottleneck, add a small, explicit local viewer quality control for resolution/shadows, using existing UI conventions. Preserve the current appearance by default and canonical capture resolution. Omit the control if it has no useful measured effect, recording why.
+- Repeat the complete benchmark matrix and provide the concrete reference setup, before/after values, limitations and Orlando's acceptance checklist.
+- **Checks:** no frozen/missing shadows on pan, zoom, Walk, edit, undo or capture; high-DPR comparison; default visual parity; production build, full tests/typecheck and §8.
+- **Exit:** automated/browser verification complete and Orlando's hands-on smoothness/visual acceptance recorded separately. Any unresolved target remains explicitly open.
+
+## 8. Browser checklist
+
+1. Navigate the castle using pan, zoom, held-key rotation and Walk; record frame pacing and how movement feels. Pause and resume without a misleading FPS dip.
+2. Hover/select ordinary shapes, instances, arrays and groups; marquee and multiselect; enter/leave isolation and Edit entity mode. Check locks, hidden nodes and hole ghosts.
+3. Move/resize/tilt a room or volume, move a cutting hole, edit a curved free-form/ramp and copy repeated entities. Check preview, release, undo and redo without flicker or stale batches.
+4. Walk over rooms, ramps, scaled/tilted entities and externally cut floors. Existing terrain-walking limitations remain separately documented.
+5. Edit terrain modifiers and toggle Show modifiers; inspect drag previews and canonical release results without repeated evaluation on navigation.
+6. Compare fixed-camera editor screenshots, saved shots and agent plan/sheet/node/eye renders where supported. Compare geometry, outlines, materials, clipping and shadows; distinguish expected capture presentation from regressions.
+7. Switch scenes and edit definitions repeatedly; inspect resource counts after cleanup. Confirm the renderer becomes idle after navigation and updates immediately after a remote edit.
+
+## 9. Decisions
+
+1. Measure the full navigation experience before selecting expensive renderer work. The screenshot alone establishes neither low FPS nor its cause.
+2. Keep optimizations derived and viewer-side, preserving authored scenes and shared undo behavior.
+3. Build on array instancing and shared baking; retain correct individual variants where batching is incompatible.
+4. Keep default visual quality. Explicit viewer settings are available only if a measured tradeoff warrants them.
+5. This phase does not close phase 16's outstanding Unity visual acceptance or implement terrain-aware gameplay queries.
+
+## 10. Progress
+
+### Planning — ready for 17.1 (2026-10-09)
+
+- Created this plan from Orlando's performance request, the current source audit and `thinking-05-performance`; reviewed the phase 10 instancing context and phase 16's latest checkpoint.
+- Defined five increments, measurement/fixture requirements, correctness constraints, performance targets and a human acceptance checklist.
+- Baseline evidence remains the supplied screenshot and read-only scene/source inspection. No live FPS trace, GPU measurement or optimization result is claimed.
+- Planning-only changes: no implementation checks or browser acceptance were run. No scene data changed.
+- **Next:** implement **17.1 — Measure navigation honestly** and create the measurements log with reproducible results. All implementation increments and Orlando's acceptance remain open.
+
+### 17.1 — Timing implementation and synthetic baseline (2026-10-09; acceptance still open)
+
+- Added `src/web/navigationStats.ts` and focused tests; `Viewport.tsx` now separates active-navigation FPS/mean intervals/slow counts from explicitly labeled synchronous CPU render time. Bounded 120-interval window, four UI updates/second, idle/background/input-release resets, capture preparation/queue/render exclusion, and no stats-driven continuous render loop. Updated toolbar wording, responsive stats styling and glossary. No MCP contract/version change or geometry optimization.
+- Added `scripts/performance-fixture.mjs` (MCP/WS-only scratch fixture creation), removable `scripts/performance-harness.tsx` and its installer. Temporary application imports/adapter/React Profiler were removed; scripts remain for reproduction. Main scene data was never accessed directly or modified.
+- Recorded repeatable routes, environment, three-trial development/production results, stats on/off, shadow/DPR sensitivity and priorities in `plans/17-performance-measurements.md`. Production 400-shape grid sustains ~60 FPS, versus substantial development React overhead. Idle checks report zero frames with stats both off and on. This is not a castle performance claim or Orlando's acceptance.
+- Current recommendation: 17.2's React/update containment first; do not infer that draw calls or pointer picking dominate from the old screenshot. Shadow/DPR experiments did not justify changing default quality on this fixture.
+- **Open before claiming full 17.1 acceptance:** castle/reference-browser profiling; capture/background integration checks after the final boundary refinements; small-scene and richer fixture controls; detailed R3F/Walk-ray attribution and first-edit latency. Full §8 and human visual/smoothness acceptance remain open. Stopped further profiling at Orlando's explicit wrap-up request; no later subphase started.
+- **Final automated verification:** 574 tests in 46 files passed; typecheck and production web build passed after removing temporary instrumentation. Existing build warnings remain (chunk size/manifold externalization). Both scratch servers were stopped. Task-file diff whitespace check passes; pre-existing whitespace warnings in `thinking-09-terrains.md` were left untouched.
+
+### 17.1 — Actual castle baseline and timing integration (2026-10-09)
+
+- At Orlando's request, started his stopped server and profiled the open **Adventure in Henders Castle ▸ castle v2** in the in-app browser, in development and production. Geometry/library/history were untouched; no fixtures or saved shots were created on the main server. Camera/view reports used the normal editor path. Recorded camera, 1822 × 1561 canvas, DPR, panel state, routes and three-trial results in `17-performance-measurements.md`.
+- **The castle fails the smoothness target in production:** stats-off rotation/zoom mean intervals ~24–25 ms, pan/hover ~39–40 ms, with ~74 ms editor p95; Walk ~20–21 ms mean and ~84 ms p95 on the measured route. Profiled development is considerably slower. Stats add measurable rotation/zoom cost here. Synthetic-grid success did not establish castle performance.
+- Direct removable instrumentation identifies `cutters()` as the dominant measured derivation: **54–55 ms per invocation on editor routes**, **62 ms in Walk**, repeatedly recalculated during cursor/camera/stats React updates. Expansion and instancing preparation were sub-millisecond; actual Walk floor rays ~.31–.32 ms. Collapsing Entities barely helped. Shadows-off and DPR-2 controls left the long hitches essentially intact; no quality change is justified by these results.
+- Actual castle pause/resume and offscreen capture integration passed: the UI clears at idle, resumes without including the pause, and resets its window across 332/345 ms captures. Capturing produced an ineligible epoch followed by an eligible epoch, each starting with no navigation samples. Development and production stats-on/off checks all returned to **zero idle renders**.
+- Extended the removable harness/installer with opt-in `castle` camera preservation/restoration, direct derivation/Walk-ray attribution, single-quality comparisons and boundary observations. Main-port synthetic fixture guards remain. Removed every temporary application import/wrapper/adapter/Profiler afterwards; no renderer optimization or MCP contract change.
+- **Verification after cleanup:** 574 tests / 46 files passed, typecheck and production web build passed. Existing chunk-size/manifold warnings remain. Installer Python syntax and application diff whitespace checks passed.
+- **Remaining acceptance:** real background-tab behavior could not be simulated by this in-app browser (the document stayed `visible` when its pane was hidden or another tab opened); focused tests are not a substitute. Native input/pointer-lock and Orlando's smoothness/visual acceptance, first-pick/edit-release latency, small/richer fixture controls and the broader §8 regression checklist remain open. The live castle baseline and capture integration gap are now addressed; 17.1 is not described as fully accepted.
+- **Next:** 17.2 should stabilize cutter inputs/cache their relationships across navigation, contain cursor/stats/camera update propagation and repeat these exact castle routes. Verify cutter invalidation on edits, previews and undo before accepting caching. Keep 17.3–17.5 ordering. Leave the normal development server and castle browser available for Orlando.
+
+### 17.2 — Keep navigation and hover cheap (2026-10-09; implemented and verified, human acceptance separate)
+
+- Memoized the viewport's authored-shape/preview/follow/visibility/expansion/cutter/terrain-node derivation with explicit `definitionsVersion` invalidation. Stabilized `Boxes`/array-instancing inputs, memoized `Boxes` and `ShapeMesh`, and contained cursor/stats subscriptions to their readouts (`src/web/App.tsx`, `Viewport.tsx`, `ShapeMesh.tsx`, new `valueStore.ts` plus lifecycle tests). A resting cursor still reaches the agent's existing view report. Scene edits, pending/live previews, hidden nodes, entity mode/definitions and undo invalidate their real inputs.
+- Pan dispatches before ray picking and cursor/hover work, hides its cursor during the gesture and re-picks the final pointer on release. Passive hover reuses a selectable cursor hit, preserving note/line priority and falling back behind locked geometry. Click/drawing queries remain synchronous/fresh; a stationary pointer refreshes after edits/undo/visibility changes. Did not introduce a spatial index, lazy hit-mesh rewrite or pointer queue: measured callbacks were sub-millisecond, so those changes are not justified.
+- **Measured exit:** repeated exact-camera/canvas production castle routes now average ~16.7 ms with stats on and off; stats-on p95 is 16.8–18.6 ms for editor routes, 18.9–21.8 ms for Walk. Previous castle pan/hover means were ~40 ms and editor p95 ~74 ms. Warmed navigation records zero cutter/expansion/instancing rebuilds, replacing repeated 54–62 ms cutter calls. Draw counts and default quality remain effectively unchanged. Both stats settings return to zero idle renders. All measurements/conditions and limits are in `17-performance-measurements.md`; production frontend used a read-only preview connection to the existing backend, leaving Orlando's server running.
+- Repeated synthetic development attribution and added an eight-shape production control (three trials per route, ~60 FPS, p95 ≤18.9 ms, zero idle frames). Camera-report updates still incur substantial development App render work; production timings above satisfy the current route target. No lower-quality default, shadow change, batching or server optimization was introduced.
+- Added reproducible scratch interaction actions and read-only production preview (`scripts/check-17-interactions.mjs`, `performance-live-preview.mjs`); extended the removable harness with explicit castle reference-camera selection/restoration and derived-scene inspection. Removed all temporary application instrumentation afterwards. Added **scene derivation** to the glossary; MCP version/contract unchanged.
+- **Browser verification:** native Hand navigation/final cursor and Space-hand dispatch, hover/select, surface drawing and snapping, marquee/locks/hidden/isolation, body/y-gizmo drags, curved free-form/ramp point edits, undo/redo; definition changes reach ordinary scaled/tilted instances and arrays. Hole edits change the cut map and image; undo restores byte-identical captures. Stationary cursor updates from 3 → 3.2 → 3 m through surface drawing/undo. Entity edit/undo and other restored gestures preserve the same canonical PNG. Terrain modifier visibility, source drag/undo and canonical plan/sheet/node capture checks pass. Production pause/resume and 280 ms capture exclusion pass. No main-project geometry/library/history/shot edits or direct data-folder access.
+- Curved-ramp editing exposed a pre-existing `sampleEdge3` assumption that every curve handle has a vertical component. Flat ramp handles now use zero vertical offset, preventing NaN overlay/picking geometry while preserving explicit 3D line handles. Added a regression test; native station drag/undo runs without console errors and a clean reload restores the original canonical PNG.
+- **Final automated checks after removing the harness:** 577 tests in 47 files pass; typecheck and production web build pass; diff whitespace checks pass (pre-existing unrelated plan whitespace left untouched). Existing manifold/chunk warnings remain. Scratch/preview servers stopped, main development server kept available.
+- **Acceptance still separate:** Orlando's hands-on smoothness/visual acceptance, native pointer-lock/full castle traversal, real background-tab integration, full first-edit latency distributions and repeated resource-count audits remain open. Serialized native tooling did not establish simultaneous held-Space movement; Hand pan plus Space-hand dispatch were checked independently. These limits are explicit rather than inferred from adapter routes. The full renderer/batching regression matrix remains required in subsequent increments.
+- **Next:** 17.3 ordinary repeated-entity instancing, retaining the existing order and measurement gates. Keep 17.4 static batching and 17.5 shadows/quality/final acceptance separate; terrain-aware Walk stays deferred.
