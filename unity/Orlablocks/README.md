@@ -94,13 +94,49 @@ share the project's entity prefabs.
   and static flags. **Keep notes and lines in builds** is for a route the game reads.
 - **Colors:** a palette color uses your body and floor materials instead of the generated `orla-*` ones.
 
-The entity and tag pickers search (type to filter) what the exports of the Levels using the mappings have, and a
-search field filters the entity rows once there are more than a few. The next sync applies a change to
-every object once. A mapping that can't apply (no prefab, a missing script, an unknown Unity tag) is listed in the
-Level's report, and the blockout stays.
+Open **Mapping browser** from the mappings asset inspector, the Level inspector, or **Window → Orlablocks → Mapping browser**.
+- **Entities:** searchable cards show the entity name/ID, labeled generated blockout and Unity prefab previews,
+  and mapping status. Filter mapped, unmapped, invalid or not in available exports. Select a card to edit its
+  prefab, scale, position/rotation offsets and blockout policy. Drag a prefab into the field, or use its picker;
+  **Ping prefab** locates the asset. Narrow windows put the detail panel below the cards.
+- **Tags:** compact summaries with selected layer, Unity tag, component, static flag and build settings.
+- **Colors:** palette swatches and body/floor material previews with selected material fields.
+
+The catalog reads exports from loaded scene Levels using the selected asset. **Refresh** rereads them after an
+external export; opening/focusing the browser and relevant editor changes also refresh the snapshot. Unreadable
+sources are reported. Unloaded Levels offer no catalog entries; saved mappings remain editable. **Not in available
+exports** never means deleted. **Manual entity ID/tag/color key → Add rule** works without a loaded Level.
+Selecting an unmapped card creates nothing; assigning its prefab or choosing **Create mapping** creates a rule.
+Duplicate entity rules remain visible as invalid: edit their IDs or explicitly **Remove mapping** on individual rules.
+Multiple tag rules remain additive. Existing sync resolution and mapping assets are unchanged.
+
+Edits support Unity Undo/Redo and asset dirty tracking. Changes apply on the **next Sync** of each Level; opening
+or editing this browser does not trigger a sync. Invalid mappings are also reported by Sync.
+Previews are requested only for visible cards, cached until asset changes, with icons/text when unavailable.
+
+To repeat the automated browser checks, copy `scripts/unity/MappingBrowserAcceptance.cs` under `Assets/Editor`
+and this importer into a scratch project at `/private/tmp/orla-mappings-18-browser`. Run Unity with
+`-batchmode -nographics -projectPath /private/tmp/orla-mappings-18-browser -executeMethod MappingBrowserAcceptance.Run`
+(without `-quit`). The harness refuses other project paths and writes `browser-result.json` and `filter-metrics.txt`.
+Its fixture uses a generated export under that scratch project; no orlablocks scene storage is accessed.
+Run `MappingBrowserAcceptance.RunGUI` with `-batchmode` (without `-nographics` or `-quit`) for five IMGUI
+layout/repaint event scenarios; it writes `gui-result.json` and `gui-metrics.txt`, then exits. These checks validate
+layout execution and preview request bounds, not human visual acceptance. A minimal scratch project's built-in
+Unity modules are sufficient; optional template packages are not required.
+`MappingBrowserAcceptance.Open` opens the saved fixture for visual checks. The final fixture deliberately contains
+missing destinations, duplicates, an unknown ID, and an unreadable export. Human review should also exercise
+prefab drag/drop, previews and narrow docking with real mappings.
 
 ## Terrain export verification
 
 Format 2 adds native Terrain height payloads; the reader accepts format 1 ordinary scenes and rejects terrain records in format 1 or newer unsupported formats. Unity imports the server's evaluated samples, not source shapes. GLB uses the same samples as a triangle mesh with the editor's diagonal layout; Unity's height storage/LOD can differ slightly.
 
 For a repeatable isolated check, run `node --import tsx scripts/terrain-export-fixtures.ts /private/tmp/terrain-fixtures`, copy this importer and `scripts/unity/TerrainAcceptance.cs` into a scratch Unity project's Assets (the latter under Editor), then launch Unity with `ORLA_TERRAIN_FIXTURES=/private/tmp/terrain-fixtures`, `-batchmode -nographics -projectPath <scratch> -executeMethod TerrainAcceptance.Run` (without `-quit`). The harness exits and writes `result.json`; it tests the real importer, asset undo, local sculpt protection, claims, deletion/orphans, compatibility and the Auto sync watcher. Never run fixtures in your real project.
+
+## Phase 18 prototype
+
+The mapping browser and stable-parent NPC override experiments live separately in
+[`scripts/unity/mappings-prototype`](../../scripts/unity/mappings-prototype/README.md).
+They run only in a scratch Unity project. The production browser is now available above; the stable-parent override remains a prototype.
+The prototype README records the supported reference target, calibration/pivot findings, legacy migration
+policy and reproduction steps. Orlando confirmed seeing the prototype work in the scratch project. Production node override integration and final gameplay acceptance remain pending.

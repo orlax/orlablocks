@@ -56,6 +56,8 @@ namespace Orlablocks.Editor
                 if (level.mappings == null && GUILayout.Button(new GUIContent("New", "Make a mappings asset for this Level's project"), GUILayout.Width(50))) SetMappings(level, NewMappings(level));
             }
 
+            if (level.mappings != null && GUILayout.Button("Open mapping browser")) OrlaMappingBrowser.Open(level.mappings);
+
             EditorGUILayout.Space();
             EditorGUILayout.LabelField("View", EditorStyles.boldLabel);
             Toggle(level, "Show notes", "Notes' text in the Scene view (a selected note always shows it)", level.showNotes, v => level.showNotes = v, true);

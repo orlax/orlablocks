@@ -1,0 +1,146 @@
+# 18 — Unity mapping browser and node overrides
+
+> **Status: Orlando confirmed the 18.1 scratch prototype working; 18.2 production browser implemented and automated checks pass; interactive production browser review remains open. Production 18.3–18.4 remain ahead.** Read `thinking-10-unity-mappings-and-overrides.md` first, then `15-unity-export` §16 and `unity/Orlablocks/README.md`. Relevant terrain ownership regressions are in `16-terrains` §13. Phase 17 remains independent. The node-local Override / Clear override workflow follows Orlando’s clarification below; the mapping browser is implemented in 18.2 below.
+
+## 1. Outcome and scope
+
+Orlando can recognize an entity and its Unity prefab without opening every form. Several placements of one NPC entity can become different NPC prefabs while their positions, orientations and visibility continue to follow orlablocks.
+
+Unity owns these choices. No scene schema, export format, server/MCP or reverse-sync changes are expected. Retain existing mapping assets and entity/tag/color behavior. Defer arbitrary component-property overrides, per-node materials/tags, runtime spawning, nested entity-part overrides, bulk editing and persistent character identity for array items.
+
+## 2. Mapping browser
+
+- A dockable window opened from the mappings asset inspector and Level inspector. The asset inspector becomes a compact summary and entry point; retain a usable narrow layout.
+- Entities, Tags and Colors are separate tabs. Entities default to a responsive grid; selecting a card opens one detail panel, beside the grid or below it in narrow windows.
+- Cards show entity name, secondary ID, destination prefab name, thumbnail and status. Use source generated-prefab and destination previews where available; label each side so the user knows which is the blockout. Missing previews use an icon and text, never a blank/unusable card.
+- Always-visible search by name, ID and prefab; filters for mapped, unmapped, invalid and not in available exports. Include known unmapped entities, not just saved mapping rows. Selecting an unmapped entity does not create a rule until edited.
+- Detail panel contains existing prefab, scale, position offset, rotation offset and blockout settings. Support prefab drag/drop, asset ping and explicit remove mapping. Duplicate entity rules are flagged and resolved explicitly, not silently discarded during UI migration.
+- Tags use compact rule summaries with selected details; Colors use palette swatches and material previews. Preserve all current fields.
+- Catalog scope is explicit: loaded Levels using this asset and their readable exports. “Not in available exports” is not “deleted.” Report unreadable sources; retain mappings with unknown IDs and permit manual IDs without a loaded Level.
+- Preview loading must be bounded to visible entries, cached, and invalidated on relevant asset changes; no continuous repaint or manifest reads per card. Measure a fixture of at least 100 entities. Choose the Unity UI/API implementation after a small prototype against the installed Unity version.
+- Editing saves with Unity Undo and dirty tracking. Clearly state that mappings apply on the next Sync; opening the browser must not sync every Level.
+
+## 3. Node override contract
+
+Proposed first version: ordinary scene `instance` nodes only. The inspector explains why entity-definition children, generated assets and array items are ineligible. Named NPCs should use separate instances. Arrays may follow later with explicit slot semantics or durable source identity.
+
+Store the serialized override on the stable placement parent alongside its `OrlaNode`, not on the replaceable prefab child or in a Level-owned settings list. The parent carries source identity, sync baselines and the override prefab/settings. Sync still resolves source project + scene + node identity within the owning Level; names and hierarchy paths are not keys. Two Levels importing the same scene have independent exceptions. Changing the Level’s source must not reuse overrides for unrelated IDs. The Level remains the sync boundary, but no Level navigation is required to edit an override.
+
+Each node has two modes:
+
+| Mode | Resolution |
+|---|---|
+| Inherit | Existing entity mapping, otherwise generated blockout |
+| Override prefab | Explicit local prefab, scale, offset, rotation and blockout policy |
+
+Choosing a prefab creates and applies the override immediately as one undoable node operation; cancelling the picker changes nothing. Optional calibration settings stay collapsed so no additional form or Apply step is required. Initially copy effective calibration settings as an editable starting point; validate this default with different NPC prefab pivots in 18.1. Thereafter all replacement settings are local; global changes do not silently change an NPC's calibration. Removing the override resumes current inheritance. A missing prefab is an invalid override, not an instruction to clear it: show a warning and keep an existing valid representation; on first import use the generated blockout. Retry after correction. An override may exist without a global entity mapping.
+
+Tags, no-collisions and ordinary visibility rules still apply. Source entity changes invalidate the override for review (record expected entity ID); do not silently assign an NPC to a different placeholder type. Keep the existing representation until the user rebinds or clears the exception. Type changes are similarly reported, not treated as valid overrides.
+
+## 4. Sync and object ownership
+
+- Introduce one effective placement resolver used by prefab selection, transforms, blockout handling and replacement decisions. Per-node choices must never enter shared generated entity prefabs or their hashes.
+- Add the local effective configuration to that node's revision. Editing one override must not invalidate every object or rebuild shared entity assets. Existing global mapping invalidation can remain as-is.
+- Preserve current source transform conversion and offset semantics. Moving a node in orlablocks updates the specific NPC on Sync. Local transform drift and Claim still take precedence: report pending overrides, never bypass these protections. Revert transform does not remove an override; Clear override is separate.
+- Override selection and Clear override immediately reconcile only the selected node’s managed representation, without a separate Apply/Sync step or a full-Level sync. Reuse the same resolver and ownership rules as Sync; do not advance the Level export checkpoint. Source transforms remain on the parent. Claimed nodes require Unclaim first; local parent drift is left untouched by a representation-only edit. Subsequent manual Sync works with unchanged export IDs. Existing Auto sync remains export-driven.
+- An override is user-authored state. If its source node is removed, retain the stable parent and override as a reported missing-source object, excluded from normal sync updates. Restoring the same source identity rebinds it; explicitly clearing the override permits normal deletion/orphan rules on the next Sync. Do not use a detached Orphaned object if it cannot be rediscovered. Copying a source node to a new ID does not copy its Unity override.
+- Save/reload, domain reload, duplicate Levels, undo/redo, failed-sync rollback and source switching must preserve the correct records and references.
+
+### Object identity gate
+
+Current `Replace` destroys the root and only rescues added children. Use a stable, otherwise empty placement parent holding `OrlaNode` and serialized override state, with a replaceable managed prefab child. Source position, rotation, scale and visibility belong to the parent; prefab calibration belongs to the child. User components and separate user children on the parent survive representation changes. Identify the managed child explicitly, never by name or child index. A kept generated blockout is separate managed content at the source pivot.
+
+This is the chosen target structure for the node-local workflow. The 18.1 compatibility decision is to retain legacy prefab roots without automatic migration; see Progress and the scratch prototype README. Production 18.3 must guard destructive legacy replacements and report a migration conflict. This is not an unconditional hierarchy rewrite. Evaluate existing mapped roots, prefab connections, added components, local prefab modifications, tag application, cuts/kept blockouts, colliders and Claim/drift. Do not silently migrate legacy roots with potentially lossy state. If safe migration cannot be established, retain them and report a migration conflict with a concrete resolution.
+
+Stable roots cannot preserve direct references to components inside a prefab that is deliberately replaced. Show that limitation, detect local prefab edits before swapping and retain conflicted content until resolved. Do not promise generic reference repair or arbitrary component copying. Acceptance requires a supported stable reference target for gameplay and no silent loss of user-authored state.
+
+## 5. Node UI
+
+The `OrlaNode` inspector on the selected placement parent provides this complete workflow:
+
+1. Click **Override** to open a prefab asset picker.
+2. Choose a prefab: the managed child becomes that prefab immediately; the parent and its source identity stay intact.
+3. The inspector shows the chosen prefab and **Clear override** (plus optional collapsed calibration).
+4. Click **Clear override**: immediately restore the current entity mapping, or the generated blockout if unmapped. Continue ordinary source sync. This does not clear Claim, revert local parent transforms or erase unrelated user components.
+
+A cancelled picker makes no edit. Both actions support Unity Undo/Redo as one operation each, including settings and child replacement. A failed replacement rolls back the whole operation. Show invalid/source-changed/conflicted states inline. Selecting managed prefab content should offer a direct route to its owning node inspector, without requiring navigation to the Level.
+
+A Level summary may expose missing-source/conflicted nodes for recovery; it is not the settings owner or a required step in normal editing.
+
+## 6. Increments
+
+### 18.1 — Interaction and ownership prototype
+
+Create a Unity browser prototype with representative entity cards and selected details. Prototype stable-root ownership in an isolated Unity fixture with two identical placeholders, distinct NPC prefabs and a third inherited instance. Resolve legacy migration and references before shipping sync changes. Record the chosen hierarchy, limitations and screenshots. Orlando reviews recognizability and the NPC interaction; distinguish that review from automated checks.
+
+### 18.2 — Mapping browser
+
+Ship the browser, previews, catalog states, search/filter, tags/colors and inspector entry points. Keep existing assets and sync semantics compatible. Validate Undo, missing assets, unloaded/unreadable exports, narrow layout and large catalog responsiveness.
+
+### 18.3 — Per-node replacement
+
+Implement node-owned override state on stable parents, effective resolver, revisions and node inspector actions, following 18.1’s migration decision. Add ordinary-instance support, missing/source-changed states and immediate node-local application. No array-item support is silently added.
+
+### 18.4 — Persistence, regression and acceptance
+
+Exercise real Unity sync, save/reload and rollback; update README and glossary. Complete Orlando's visual and gameplay acceptance in his project separately from scratch automated verification.
+
+## 7. Required checks
+
+Use a separate scratch data directory and Unity project; never use the main project for fixtures or access scene storage directly. Compile importer changes through `scripts/compile-unity.sh` where available. Use a real Unity harness for serialized references, prefab behavior and Undo, not C# compile alone. Run `npm test` and `npm run typecheck` for implementation increments; browser/server checks are required if those surfaces change.
+
+1. Existing mappings load unchanged, all fields remain editable, and Undo restores them. Search and fallback previews work without a loaded Level. Unknown entries remain visible.
+2. Two instances of one entity resolve to different NPCs; a third inherits globally. Source movement/rotation/scale and visibility update correctly, including offsets and kept blockout alignment.
+3. Picker cancellation changes nothing; choosing a prefab and Clear override each apply immediately and undo atomically without navigating to the Level or syncing unrelated nodes. A global mapping change affects the inheriting instance without overwriting local replacement settings. Clearing one override restores inheritance. Editing one exception leaves unrelated objects/shared entity assets untouched.
+4. User children, supported root components and stable-root references survive sync and supported swaps. Internal prefab references/edits receive the documented conflict behavior; there is no silent loss. Verify migration from existing root-prefab scenes.
+5. Claim, drift, Revert, no-collisions, tags, cut blockouts and terrain protections continue to work.
+6. Missing prefab, deleted/restored source node, changed source entity/type, duplicate source instance, duplicate Level, same scene in two Levels and different source scene with colliding node IDs behave as specified.
+7. Save/reopen, domain reload, Undo/Redo of record edits and Sync, unchanged-export Sync, export-driven Auto sync and failure rollback preserve settings and representation consistently.
+8. Orlando can find and edit the screenshot's mappings quickly, then move two distinct NPCs from orlablocks without reassigning them or breaking supported gameplay references. Only Orlando can mark this hands-on acceptance complete.
+
+## 8. Progress
+
+### Planning — 2026-10-15
+
+- Analyzed the supplied screenshot and read the current mapping editor/data, Level/node ownership, sync replacement/resolution, array IDs, Unity README, phase 15's thinking/progress, phase 16's latest acceptance and phase 17's scope.
+- Created the thinking note and this proposed phase. Recommendations: grid plus detail panel; Level-owned local replacement records; ordinary instances first; stable-root compatibility investigation before replacement implementation.
+- Found a concrete existing risk: `Sync.Replace` transfers added children but destroys the old root without generic component/reference migration. This plan does not assume that issue is already solved.
+- Documentation only. No implementation, Unity compilation, automated tests or human visual acceptance performed. Existing phase acceptance remains unchanged.
+- Next: discuss the proposed interaction/scope with Orlando, then begin 18.1 when implementation is requested. Stable-root migration is the main technical gate.
+
+### Workflow clarification — 2026-10-15
+
+- Orlando specified selecting a synced GameObject, clicking Override on OrlaNode, choosing a prefab and using Clear override to return to source behavior. He proposed an empty parent with the overridden prefab as a child so work stays object-local.
+- Adopted that target structure and inspector workflow. Replaced the proposed Level-owned record list with serialized state on the stable parent; the Level remains responsible for source sync and optional conflict discovery.
+- Override/Clear apply immediately to managed child content; parent references and user components remain stable. References into a replaced prefab still cannot be generically preserved. Legacy hierarchy migration remains the 18.1 technical gate.
+- Updated deletion/recovery requirements so a removed source node cannot silently erase its local override. Documentation only; no implementation or checks claimed.
+
+### 18.1 — Interaction and ownership prototypes (2026-10-15)
+
+- Started implementation at the first increment. Added `scripts/unity/mappings-prototype/` as a **scratch-only** experiment, separate from `unity/Orlablocks`; the installed mapping inspector, node inspector and production Sync behavior are unchanged. The harness refuses projects outside `/private/tmp/orla-mappings-18-*`. No project scene storage or Orlando Unity project was used.
+- Browser: IMGUI EditorWindow against installed Unity **6000.5.9f1**, fixed-height virtualized cards with labeled blockout/destination previews and icon/text fallback, search/status filters, selected serialized mapping details, asset ping and details below the grid at narrow widths. Fixture: 120 known entities plus one unknown saved mapping; unmapped selection creates no rule; duplicate rules are flagged and retained. Prototype catalog is deliberately a fixture, not real export discovery; Tags/Colors and entry points remain 18.2.
+- Ownership: stable parent carries OrlaNode and a scratch local-settings component; explicit serialized references identify the replaceable prefab child and optional identity-transform blockout sibling. Prototype Override / Clear swaps only that representation. Parent transforms, user components/children and references remain stable. References to components inside replaced content are demonstrably lost and are not a supported gameplay reference target.
+- Calibration decision: initially copy effective global settings, then retain local values. The floor-pivot guard and center-pivot merchant fixture confirms identical copied settings give different ground alignment; collapsed editable calibration remains required in 18.3. Keep the blockout at the source pivot as a sibling, unaffected by prefab calibration.
+- **Legacy compatibility decision:** no automatic conversion of existing prefab roots. Retain hierarchy, prefab connection, root components, local prefab edits, children and references. 18.3 must report a migration conflict before any destructive replacement (including source type changes/removal with user state), and must not silently apply a new prefab. Concrete opt-in recovery and rationale are in `scripts/unity/mappings-prototype/README.md`: Claim the legacy object, import a new ordinary source instance with a new ID, explicitly rebind gameplay to its stable parent, verify, then retire the legacy source/object. A generic conversion/reference-repair tool is deferred.
+- Automated verification: **577 tests** and `npm run typecheck` pass; `scripts/compile-unity.sh` passes against Unity 6000.5.9f1. Real isolated Unity run: **25 checks pass**, including distinct NPCs plus inheritance; supported root references/user additions; documented internal-reference loss; copied calibration/pivot difference; immediate Clear; atomic Undo/Redo; unrelated nodes untouched; injected failure after destruction and rollback; Claim gate; parent drift preservation; kept-blockout alignment; prefab-component-edit conflicts; source entity mismatch; conservative legacy conflict; catalog states; save/reopen, serialized references and calibrated child/blockout transforms. Unity exposed a real Undo ordering issue: creating/destroying objects flushes recorders; recording final node state after object operations fixed Redo, verified by the harness.
+- Scratch artifacts: `/private/tmp/orla-mappings-18-prototype/{result.json,checks.log,Assets/Fixture/NPCs.unity}`. Mean catalog/filter time was **1.59 ms** for 121 entries (100 iterations, headless); this is not total GUI frame time or real-export/preview loading performance.
+- Graphical verification found and fixed Unity fake-null prefab handling in browser search (`?.name` does not honor Unity’s destroyed/missing-object equality). Initial screen captures were incomplete and rejected as evidence. The native UI tool selected Orlando’s game editor instead of the other Unity process; only read-only observations occurred there, with no edits or sync. Scratch window screenshots and rendered-layout verification remain pending; do not treat the prototype as visually accepted.
+- **Remaining acceptance:** Orlando’s recognizability and NPC interaction review is open. Picker cancellation/choice needs interactive checking; the harness exercises the replacement operation directly. Direct calibration edits on the managed child need a baseline guard in 18.3; the prototype treats child calibration transforms as managed. Production sync/source-transform updates, deletion/restoration, source switching, arrays, tags/no-collisions/cuts, domain reload, global mapping changes, Sync Undo/failure rollback and Auto sync remain 18.3/18.4. No production behavior or human acceptance is claimed by these prototype checks.
+- **Next:** review the prototype hierarchy/layout and legacy policy; implement 18.2’s real browser/catalog/Tags/Colors/entry points, then 18.3’s production resolver, guarded ownership and OrlaNode actions. Keep 18.4 regression and Orlando’s project acceptance separate.
+
+
+### 18.1 — Orlando’s prototype confirmation (2026-10-15)
+
+- Orlando confirmed seeing the prototype working in the scratch Unity project and requested proceeding with 18.2. This closes the prototype-working review gate; final production browser/gameplay acceptance, picker interaction and the 18.3/18.4 regression checks remain separate.
+
+### 18.2 — Mapping browser (2026-10-15)
+
+- Added production `MappingCatalog.cs` and `OrlaMappingBrowser.cs`. The dockable IMGUI window uses the 18.1 layout decision: virtualized entity cards, labeled generated blockout/destination previews, searchable names/IDs/prefab names, mapped/unmapped/invalid/outside-catalog filters, selected details beside the grid or below it below 800 px. Missing previews retain icons/text. Tags have compact summaries and selected details; Colors have palette swatches and body/floor material previews.
+- The catalog is a snapshot of readable export folders from loaded scene Levels using the selected asset, deduplicated by folder. It reports unreadable sources and distinguishes outside-catalog IDs from deletion. Manual IDs work without Levels; selecting an unmapped entry makes no rule. Existing unknown and duplicate rules are retained; duplicates are edited/removed individually. Multiple tag rules remain additive. Asset schema, MappingSet resolution, Sync and generated prefab ownership are unchanged.
+- Replaced the old expanded asset inspector with counts and an entry point; added the Level entry point and Window menu. Existing calibration, layer, Unity tag, component type, static/build and material fields remain editable. Unknown Unity tags and missing/malformed component type names are preserved for repair. SerializedObject edits and explicit add/remove operations participate in Undo and dirty tracking. Browser edits never Sync a Level.
+- Catalog reads occur on refresh/focus/editor invalidation, never per card. Preview requests are restricted to visible cards, cached across frames, invalidated on project changes, with a bounded polling interval. Source warnings have a collapsible bounded-height area for narrow layouts.
+- Verification: **577 tests**, `npm run typecheck`, and `scripts/compile-unity.sh` pass against Unity **6000.5.9f1**. `scripts/unity/MappingBrowserAcceptance.cs` passes **27 real Unity checks** for catalog union/status/search/filters, readable/unreadable exports, generated source asset discovery, unloaded Levels, absent IDs/duplicates, fake-null missing prefabs, no sync on opening, no rule on selection, manual rules, all legacy tag/color fields, serialized calibration/tag/color Undo/Redo, add/remove Undo/Redo and save/reopen. Initial harness assertion incorrectly counted duplicate IDs as distinct catalog entries; corrected the expectation to the intended deduplicated catalog.
+- Responsiveness: 121 entries (120 exported + one unknown saved ID), 100 catalog/filter iterations averaged **0.357 ms**. Five real Unity IMGUI layout/repaint-event scenarios pass: Entities at 1100 and 360 px (including expanded source warning), Tags at 360 px, Colors at 1100 px and a scrolled large entity catalog. Visible cards: **9 / 2 / 3 / 2 / 12**; requested preview assets: **2 / 0 / 0 / 1 / 0**, bounded to visible entries. Last sampled GUI event times: **3.150 / 2.210 / 1.933 / 1.069 / 3.216 ms**. These are fixture event timings, not real-project frame-rate guarantees or human visual review.
+- Scratch artifacts: `/private/tmp/orla-mappings-18-browser/{browser-result.json,filter-metrics.txt,gui-result.json,gui-metrics.txt,checks.log,gui.log}`. README includes harness reproduction and browser use. A graphical startup hit a Unity optional-package warning dialog; no dialog was clicked because the UI tool cannot identify the correct Unity process. Removed unrelated optional packages only in the new scratch project and used batch mode with explicit IMGUI Layout/Repaint events. All test processes exit; no changes to Orlando’s game project.
+- **Remaining acceptance:** Orlando’s production browser visual/interaction review: open from asset/Level, recognize real mappings, dock narrowly, search/filter, assign/drag/ping a prefab, edit Tags/Colors, Undo, and Sync deliberately. Automated IMGUI checks do not claim screenshots, interactive drag/drop/picker validation or appearance acceptance. His 18.1 prototype confirmation remains recorded separately.
+- **Next:** 18.3 production node-owned replacement/resolver/inspector actions with the recorded legacy safeguards; retain the broader 18.4 regression and gameplay acceptance checks.
