@@ -61,6 +61,13 @@ namespace Orlablocks.Editor
             EditorUtility.SetDirty(level);
         }
 
+        [MenuItem("GameObject/Orlablocks/Select owning placement", false, 14)]
+        static void SelectPlacement()
+        {
+            var p = Selection.activeGameObject != null ? Selection.activeGameObject.GetComponentInParent<OrlaPlacement>(true) : null;
+            if (p != null) Selection.activeGameObject = p.gameObject;
+        }
+
         static GameObject[] Synced() => Selection.gameObjects.Where(g => g.GetComponent<OrlaNode>() != null).ToArray();
 
         [MenuItem("GameObject/Orlablocks/Claim", false, 11)]
@@ -83,6 +90,56 @@ namespace Orlablocks.Editor
     [CanEditMultipleObjects]
     public class OrlaNodeEditor : UnityEditor.Editor
     {
+        string overrideError;
+        bool calibrationOpen;
+        void OverrideUI(OrlaNode node)
+        {
+            var owner = node.GetComponentsInParent<OrlaPlacement>(true).FirstOrDefault(p => p.gameObject != node.gameObject);
+            if (owner != null && GUILayout.Button("Select owning placement")) Selection.activeGameObject = owner.gameObject;
+            var gate = Placements.Gate(node);
+            var p = node.GetComponent<OrlaPlacement>();
+            if (gate != null) EditorGUILayout.HelpBox(gate, MessageType.Info);
+            if (p != null && !string.IsNullOrEmpty(p.problem)) EditorGUILayout.HelpBox(p.problem, MessageType.Warning);
+            if (overrideError != null) EditorGUILayout.HelpBox(overrideError, MessageType.Error);
+            using (new EditorGUI.DisabledScope(gate != null || targets.Length != 1))
+            {
+                var current = p != null && p.overridden ? p.replacement.prefab : null;
+                EditorGUI.BeginChangeCheck();
+                var selected = (GameObject)EditorGUILayout.ObjectField(
+                    new GUIContent("Override prefab", "Assign a prefab asset to replace this instance immediately. Empty restores inheritance."),
+                    current, typeof(GameObject), false);
+                if (EditorGUI.EndChangeCheck() && selected != current)
+                {
+                    TryOverride(node, selected, selected == null);
+                    GUIUtility.ExitGUI();
+                }
+                if (p != null && p.overridden)
+                {
+                    if (GUILayout.Button("Clear override"))
+                    {
+                        TryOverride(node, null, true);
+                        GUIUtility.ExitGUI();
+                    }
+                    calibrationOpen = EditorGUILayout.Foldout(calibrationOpen, "Calibration", true);
+                    if (calibrationOpen)
+                    {
+                        EditorGUI.BeginChangeCheck();
+                        var settings = new OrlaMappings.EntityMapping { prefab = p.replacement.prefab,
+                            scale = EditorGUILayout.FloatField("Scale", p.replacement.scale),
+                            offset = EditorGUILayout.Vector3Field("Position offset", p.replacement.offset),
+                            rotation = EditorGUILayout.Vector3Field("Rotation offset", p.replacement.rotation),
+                            blockout = (OrlaMappings.Blockout)EditorGUILayout.EnumPopup("Blockout", p.replacement.blockout) };
+                        if (EditorGUI.EndChangeCheck()) TryOverride(node, settings.prefab, false, settings);
+                    }
+                }
+            }
+            if (p != null) EditorGUILayout.HelpBox("Reference this placement parent from gameplay. References inside a replaced prefab cannot survive replacement. Resolve local prefab edits before swapping.", MessageType.Info);
+        }
+        void TryOverride(OrlaNode node, GameObject prefab, bool clear, OrlaMappings.EntityMapping settings = null)
+        {
+            try { Placements.Set(node, prefab, clear, settings); overrideError = null; }
+            catch (Exception e) { overrideError = e.Message; }
+        }
         public override void OnInspectorGUI()
         {
             var node = (OrlaNode)target;
@@ -110,6 +167,7 @@ namespace Orlablocks.Editor
                 }
                 EditorGUILayout.Space();
             }
+            OverrideUI(node);
             using (new EditorGUI.DisabledScope(true)) DrawDefaultInspector();
         }
     }

@@ -55,6 +55,7 @@ namespace Orlablocks.Editor
         /// <summary>What building records needs: where meshes go, the materials, the palette and the entity prefabs.</summary>
         class Context
         {
+            public string Project, Scene;
             public MeshBinary Bin;
             public string TerrainFolder;
             public MeshStore Store;
@@ -148,6 +149,7 @@ namespace Orlablocks.Editor
             }
             var ctx = new Context
             {
+                Project = m.project.id, Scene = m.scene.id,
                 Bin = bin,
                 Look = new Look(root, m, rebuildMaterials),
                 Palette = m.palette.ToDictionary(p => p.key, p => ColorUtility.TryParseHtmlString(p.color, out var c) ? c : Color.white),
@@ -211,6 +213,19 @@ namespace Orlablocks.Editor
                 Undo.CollapseUndoOperations(group);
             }
             return result;
+        }
+
+        // Representation-only node edit: no entity rebuild, traversal, checkpoint or parent transform change.
+        public static void ApplyPlacement(OrlaLevel level, Manifest m, NodeRecord r, OrlaNode node)
+        {
+            var root = Assets.ProjectRoot(m.project.id);
+            var ctx = new Context { Project = m.project.id, Scene = m.scene.id,
+                Bin = new MeshBinary(Assets.FullPath(level.folder), m.meshes),
+                Store = new MeshStore($"{root}/Levels/{Assets.Safe(m.scene.id)}", true),
+                Mappings = new MappingSet(level.mappings, new List<string>()), Result = new Result(), LightmapUVs = level.lightmapUVs };
+            foreach (var e in m.entities) ctx.Prefabs[e.id] = AssetDatabase.LoadAssetAtPath<GameObject>($"{root}/Entities/{Assets.Safe(e.id)}.prefab");
+            new Reconciler(level.transform, ctx, new Edit(true, "Override prefab"), true).Representation(node.gameObject, r);
+            ctx.Store.Save();
         }
 
         /// <summary>
@@ -349,6 +364,7 @@ namespace Orlablocks.Editor
                     // (An entity's root under an instance is a mapped instance's kept blockout: part of that instance.)
                     if (n.transform == root || string.IsNullOrEmpty(n.id) || n.type == "entity" || IsPrefabContent(n.gameObject)) continue;
                     if (level && InOrphans(n.transform)) continue;
+                    if (n.GetComponentsInParent<OrlaPlacement>(true).Any(p => p.gameObject != n.gameObject)) continue;
                     if (index.ContainsKey(n.id))
                     {
                         // A copy made in Unity (it has the same ID): it becomes the user's.
@@ -419,14 +435,39 @@ namespace Orlablocks.Editor
                         Result.TerrainChanged.Add(n.gameObject);
                         return;
                     }
-                    if (n.rev == ctx.Rev(r.rev) && !n.revert && !MissingMesh(n, r))
+                    var placement = n.GetComponent<OrlaPlacement>();
+                    if (level && placement != null)
+                    {
+                        string problem = null;
+                        if (placement.project != ctx.Project || placement.scene != ctx.Scene) problem = "Source identity changed: restore the original Level source; override is retained.";
+                        else if (placement.overridden && (r.type != "instance" || placement.expectedEntity != r.entity)) problem = "Source entity/type changed: choose Override to rebind, or Clear override.";
+                        else if (placement.overridden && placement.replacement.prefab == null) problem = "Override prefab is missing: choose a valid prefab or Clear override.";
+                        else if (Placements.Edited(placement)) problem = "Managed content edited locally: resolve prefab edits before Sync or replacement.";
+                        edit.Record(placement); placement.problem = problem ?? "";
+                        if (problem != null)
+                        {
+                            if (placement.overridden && placement.replacement.prefab == null && placement.managedChild == null && r.type == "instance" && placement.expectedEntity == r.entity && placement.project == ctx.Project && placement.scene == ctx.Scene)
+                            { Representation(n.gameObject, r); edit.Record(placement); placement.problem = problem; }
+                            Result.Warnings.Add(r.id + ": " + problem); return;
+                        }
+                    }
+                    if (n.rev == ctx.Rev(r.rev) + Placements.Revision(placement) && !n.revert && !MissingMesh(n, r))
                     {
                         if (r.type == "terrain" && string.IsNullOrEmpty(n.syncedTerrain)) { edit.Record(n); n.syncedTerrain = TerrainSync.Fingerprint(n.gameObject); }
                         Result.Unchanged++;
                         return;
                     }
                     // (Replace destroys n: don't touch it after.)
-                    var replace = NeedsReplace(n, r);
+                    var convertedStable = placement != null && r.type != "instance" && !placement.overridden;
+                    if (convertedStable)
+                    {
+                        if (placement.managedChild != null) edit.Destroy(placement.managedChild);
+                        if (placement.managedBlockout != null) edit.Destroy(placement.managedBlockout);
+                        edit.Destroy(placement);
+                    }
+                    var replace = !convertedStable && NeedsReplace(n, r);
+                    if (level && replace && (placement != null || n.type == "instance"))
+                    { Result.Warnings.Add(r.id + ": " + Placements.Legacy); return; }
                     var go = replace ? Replace(n, r, parent) : n.gameObject;
                     if (!replace) Apply(go, r, parent);
                     placed[r.id] = go.transform;
@@ -443,6 +484,8 @@ namespace Orlablocks.Editor
 
             static bool MissingMesh(OrlaNode n, NodeRecord r)
             {
+                var placement = n.GetComponent<OrlaPlacement>();
+                if (placement != null && placement.managedChild == null) return true;
                 if (r.type == "terrain") { var t = n.GetComponent<Terrain>(); return t == null || t.terrainData == null; }
                 if (!r.IsShape || !r.HasMesh) return false;
                 var f = n.GetComponent<MeshFilter>();
@@ -454,7 +497,7 @@ namespace Orlablocks.Editor
             {
                 var node = go.GetComponent<OrlaNode>();
                 edit.Record(node);
-                node.rev = ctx.Rev(r.rev);
+                node.rev = ctx.Rev(r.rev) + Placements.Revision(go.GetComponent<OrlaPlacement>());
                 node.revert = false;
                 node.syncedParent = r.parent ?? "";
                 node.syncedPosition = go.transform.localPosition;
@@ -465,6 +508,7 @@ namespace Orlablocks.Editor
 
             bool NeedsReplace(OrlaNode n, NodeRecord r)
             {
+                if (n.GetComponent<OrlaPlacement>() != null && r.type == "instance") return false;
                 var wasPlacement = n.type == "instance" || n.type == "item";
                 if (wasPlacement != r.IsPlacement) return true;
                 if (!r.IsPlacement) return false;
@@ -476,7 +520,7 @@ namespace Orlablocks.Editor
             GameObject Create(NodeRecord r, Transform parent)
             {
                 GameObject go = null;
-                if (r.IsPlacement)
+                if (r.IsPlacement && !(level && r.type == "instance"))
                 {
                     var prefab = PrefabFor(r, out _);
                     if (prefab != null) go = (GameObject)PrefabUtility.InstantiatePrefab(prefab, parent);
@@ -489,6 +533,11 @@ namespace Orlablocks.Editor
                 }
                 if (!created.Contains(parent.gameObject)) edit.Created(go);
                 created.Add(go);
+                if (level && r.type == "instance")
+                {
+                    var placement = edit.Add<OrlaPlacement>(go);
+                    placement.project = ctx.Project; placement.scene = ctx.Scene;
+                }
                 Apply(go, r, parent);
                 return go;
             }
@@ -513,7 +562,8 @@ namespace Orlablocks.Editor
                 edit.Record(go.transform);
                 go.transform.localPosition = NodeRecord.V(r.position);
                 go.transform.localEulerAngles = NodeRecord.V(r.euler);
-                var mapping = r.IsPlacement ? ctx.Mappings.Entity(r.entity) : null;
+                var stable = go.GetComponent<OrlaPlacement>();
+                var mapping = r.IsPlacement && stable == null ? ctx.Mappings.Entity(r.entity) : null;
                 var scale = r.scale > 0 ? r.scale : 1f;
                 go.transform.localScale = Vector3.one * scale * (mapping != null && mapping.scale > 0 ? mapping.scale : 1f);
                 if (mapping != null)
@@ -550,14 +600,15 @@ namespace Orlablocks.Editor
                 if (r.IsPlacement)
                 {
                     // Cuts go on the generated blockout: the instance itself, or the one kept under a mapped prefab.
-                    var blockout = mapping != null ? ApplyBlockout(go, r, mapping) : go;
-                    if (blockout != null)
+                    var blockout = stable != null ? Representation(go, r) : mapping != null ? ApplyBlockout(go, r, mapping) : go;
+                    if (blockout != null && stable == null)
                     {
                         ApplyCuts(blockout, node, r);
                         ApplyColliders(blockout, node, r.noColliders);
                     }
                 }
                 ApplyRules(go, r);
+                if (stable != null) Baseline(stable);
 
                 var active = !r.hidden;
                 if (go.activeSelf != active)
@@ -565,6 +616,61 @@ namespace Orlablocks.Editor
                     edit.Record(go);
                     go.SetActive(active);
                 }
+            }
+
+            void Baseline(OrlaPlacement p)
+            {
+                // Explicitly persist managed component changes before taking the baseline. Unity may
+                // otherwise defer prefab override recording until after Undo.FlushUndoRecordObjects.
+                foreach (var content in new[] { p.managedChild, p.managedBlockout })
+                {
+                    if (content == null) continue;
+                    foreach (var t in content.GetComponentsInChildren<Transform>(true))
+                    {
+                        PrefabUtility.RecordPrefabInstancePropertyModifications(t.gameObject);
+                        foreach (var component in t.GetComponents<Component>())
+                            if (component != null) PrefabUtility.RecordPrefabInstancePropertyModifications(component);
+                    }
+                }
+                Undo.FlushUndoRecordObjects();
+                edit.Record(p);
+                p.childBaseline = Placements.Fingerprint(p.managedChild);
+                p.blockoutBaseline = Placements.Fingerprint(p.managedBlockout);
+            }
+
+            public GameObject Representation(GameObject go, NodeRecord r)
+            {
+                var p = go.GetComponent<OrlaPlacement>();
+                var mapping = Placements.Effective(p, ctx.Mappings, r.entity);
+                if (mapping != null && mapping.prefab == null) mapping = null;
+                ctx.Prefabs.TryGetValue(r.entity ?? "", out var generated);
+                var prefab = mapping != null ? mapping.prefab : generated;
+                if (prefab == null)
+                { Result.Warnings.Add(r.id + ": no entity " + r.entity + " in the export; existing content is retained, or the placement stays empty."); return null; }
+                GameObject Child(GameObject old, GameObject asset, Vector3 offset, Quaternion rotation, Vector3 scale, bool active)
+                {
+                    if (old != null && PrefabUtility.GetCorrespondingObjectFromSource(old) != asset) { edit.Destroy(old); old = null; }
+                    if (asset == null) { if (old != null) edit.Destroy(old); return null; }
+                    if (old == null) { old = (GameObject)PrefabUtility.InstantiatePrefab(asset, go.transform); edit.Created(old); }
+                    edit.Record(old.transform); old.transform.localPosition = offset; old.transform.localRotation = rotation; old.transform.localScale = scale;
+                    edit.Record(old); old.SetActive(active);
+                    PrefabUtility.RecordPrefabInstancePropertyModifications(old.transform);
+                    PrefabUtility.RecordPrefabInstancePropertyModifications(old);
+                    return old;
+                }
+                var child = Child(p.managedChild, prefab, mapping?.offset ?? Vector3.zero, Quaternion.Euler(mapping?.rotation ?? Vector3.zero), Vector3.one * (mapping != null && mapping.scale > 0 ? mapping.scale : 1), true);
+                var kept = Child(p.managedBlockout, mapping != null && mapping.blockout != OrlaMappings.Blockout.Replace ? generated : null,
+                    Vector3.zero, Quaternion.identity, Vector3.one, mapping != null && mapping.blockout == OrlaMappings.Blockout.Keep);
+                edit.Record(p); p.managedChild = child; p.managedBlockout = kept; p.problem = "";
+                var blockout = mapping == null ? child : kept;
+                var node = go.GetComponent<OrlaNode>();
+                if (blockout != null) ApplyCuts(blockout, node, r);
+                // no-collisions applies to the chosen NPC as well as the generated blockout.
+                ApplyColliders(child, node, r.noColliders);
+                if (kept != null) ApplyColliders(kept, node, r.noColliders);
+                ApplyRules(go, r);
+                Baseline(p);
+                return blockout;
             }
 
             T Ensure<T>(GameObject go) where T : Component
@@ -882,10 +988,11 @@ namespace Orlablocks.Editor
                 var cut = node.cutShapes ?? new string[0];
                 foreach (var col in blockout.GetComponentsInChildren<Collider>(true))
                 {
-                    if (!IsPrefabContent(col.gameObject)) continue;
+                    if (!IsPrefabContent(col.gameObject) && !(node.GetComponent<OrlaPlacement>() != null && col.gameObject == blockout)) continue;
                     var part = col.GetComponent<OrlaNode>();
                     var cutBox = col is BoxCollider && part != null && cut.Contains(part.id);
-                    var want = !off && !cutBox;
+                    var source = PrefabUtility.GetCorrespondingObjectFromSource(col);
+                    var want = !off && !cutBox && (node.GetComponent<OrlaPlacement>() == null || source == null || source.enabled);
                     if (col.enabled == want) continue;
                     edit.Record(col);
                     col.enabled = want;
@@ -912,6 +1019,30 @@ namespace Orlablocks.Editor
             void RemoveUnseen()
             {
                 var gone = new HashSet<OrlaNode>(index.Values.Where(n => n != null && !seen.Contains(n)));
+                var retained = new HashSet<OrlaNode>();
+                if (level) foreach (var n in gone)
+                {
+                    var p = n.GetComponent<OrlaPlacement>();
+                    if ((p != null && (p.overridden || p.project != ctx.Project || p.scene != ctx.Scene || Placements.Edited(p))) ||
+                        (p == null && n.type == "instance")) retained.Add(n);
+                }
+                foreach (var n in retained)
+                {
+                    var p = n.GetComponent<OrlaPlacement>();
+                    if (p != null) { edit.Record(p); p.problem = "Source missing: retained for restoration. Clear override to permit normal removal on next Sync."; }
+                    Result.Warnings.Add(n.id + ": " + (p != null ? p.problem : Placements.Legacy));
+                    if (Claimed(n)) Result.Gone.Add(n.gameObject);
+                    if (n.transform.parent != root && n.GetComponentsInParent<OrlaNode>(true).Any(a => a != n && gone.Contains(a) && !retained.Contains(a) && !Claimed(a)))
+                    {
+                        var drifted = Drifted(n);
+                        edit.SetParent(n.transform, root);
+                        edit.Record(n);
+                        // Force reconciliation after restoration, while preserving a pre-existing drift decision.
+                        n.rev = drifted ? n.rev + "|missing-parent" : "";
+                        if (!drifted) n.syncedParent = "";
+                    }
+                }
+                gone.ExceptWith(retained);
                 foreach (var n in gone.ToList())
                 {
                     if (n == null) continue;
@@ -943,7 +1074,8 @@ namespace Orlablocks.Editor
             {
                 foreach (var child in t.Cast<Transform>().ToList())
                 {
-                    if (IsPrefabContent(child.gameObject) || IsBlockout(child)) continue;
+                    var placement = t.GetComponent<OrlaPlacement>();
+                    if (IsPrefabContent(child.gameObject) || IsBlockout(child) || (placement != null && (child.gameObject == placement.managedChild || child.gameObject == placement.managedBlockout))) continue;
                     var n = child.GetComponent<OrlaNode>();
                     if (n != null && gone.Contains(n) && !Claimed(n) && !(level && !n.revert && TerrainSync.NeedsDecisionOnRemoval(n)))
                     {

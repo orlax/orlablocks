@@ -74,6 +74,16 @@ namespace Orlablocks.Editor
                 if (!string.IsNullOrEmpty(level.report)) EditorGUILayout.HelpBox(level.report, MessageType.None);
             }
 
+            var conflicts = level.GetComponentsInChildren<OrlaPlacement>(true).Where(p => !string.IsNullOrEmpty(p.problem)).ToArray();
+            if (conflicts.Length > 0)
+            {
+                EditorGUILayout.LabelField("Placement conflicts (" + conflicts.Length + ")", EditorStyles.boldLabel);
+                foreach (var p in conflicts)
+                {
+                    EditorGUILayout.HelpBox(p.problem, MessageType.Warning);
+                    if (GUILayout.Button("Select " + p.name)) Selection.activeGameObject = p.gameObject;
+                }
+            }
             List(level, "Moved in Unity", "Left where you put them. Revert takes orlablocks' place on the next sync; Claim makes them yours.", level.movedInUnity, true);
             List(level, "Terrain edited in Unity", "Local terrain edits, or an older import without a verified baseline. Revert takes the export; Claim preserves your terrain.", level.terrainChangedInUnity, true);
             List(level, "Claimed, changed in orlablocks", "Not updated, because they're claimed. Unclaim one to take orlablocks' version.", level.claimedChanged, false);

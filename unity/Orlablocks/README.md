@@ -28,7 +28,7 @@ Copy (or symlink) this `Orlablocks` folder into your project's `Assets/`. It has
   - Shapes have their mesh, a collider (a box collider for plain boxes, a mesh collider otherwise) and the static
     flags for batching and occlusion. What carries orlablocks' built-in `#no-collisions` tag, and everything in a
     group or entity that does, gets no collider (an instance in such a group has its entity's colliders turned off).
-  - Instances and array items are instances of a generated prefab per entity.
+  - New ordinary instances have a stable placement parent with a managed prefab child (generated blockout or mapped prefab). Array items retain the existing prefab-root layout.
   - Notes (`OrlaNote`) and lines (`OrlaLine`) are tagged EditorOnly, so they never reach a build.
   - Hidden nodes arrive disabled.
 - **In `Assets/OrlablocksGenerated/<project>/`:**
@@ -87,8 +87,8 @@ share the project's entity prefabs.
 - **Entities:** an entity's instances and array items become your prefab, with a scale factor, an optional
   position and rotation offset from the entity's pivot (a broom whose pivot is its middle, not the floor; the
   offset grows with the instance's scale), and the generated blockout **replaced**, **kept hidden** under it (to
-  compare), or **kept**. The blockout stays at orlablocks' place whatever the offset. Your prefab's root gets the `OrlaNode`.
-  When you change the mapping, the next sync swaps the instances, and whatever you added under them moves across.
+  compare), or **kept**. The blockout stays at orlablocks' place whatever the offset. New ordinary instances keep `OrlaNode` on a stable parent; prefab calibration belongs to its managed child.
+  Mapping changes apply on the next Sync. Legacy prefab roots are retained with a migration conflict before destructive replacement.
 - **Tags:** what carries a tag, and everything in a tagged group, gets a layer (on an instance, its parts too, where
   its colliders are), a Unity tag (it must exist in Tags and Layers), components (added if missing, never removed)
   and static flags. **Keep notes and lines in builds** is for a route the game reads.
@@ -127,6 +127,53 @@ Unity modules are sufficient; optional template packages are not required.
 missing destinations, duplicates, an unknown ID, and an unreadable export. Human review should also exercise
 prefab drag/drop, previews and narrow docking with real mappings.
 
+## Individual NPC prefab overrides
+
+Select the **placement parent** of a newly synced ordinary instance. Its `OrlaNode` inspector has a standard
+**Override prefab** GameObject reference field. Drag a prefab asset from the Project panel into it, or use its native
+Unity picker. Assignment updates that node immediately as one Undo step. Emptying the field restores inheritance.
+**Clear override** immediately returns to the current entity mapping, or the generated blockout when unmapped.
+No Level navigation or extra Apply/Sync is required. The optional **Calibration** foldout edits scale, position/rotation
+offsets and blockout policy immediately. The first override copies effective global calibration; subsequent values
+are local, including when global mappings change. Different prefab pivots may need different offsets.
+
+The parent owns source transforms, visibility, identity and the serialized `OrlaPlacement` state. The chosen prefab
+and optional blockout are explicitly referenced managed children; the blockout stays at the source pivot. Source
+movement continues on Sync. Immediate representation edits preserve local parent drift; Sync still requires Revert
+or Claim for that drift. Revert keeps the override. Claimed nodes/ancestors require Unclaim before replacement.
+Tags and no-collisions continue to apply. Overrides never enter shared generated entity assets.
+
+Reference the **placement parent or user components on it** from gameplay. Those references, components and separate
+user children survive supported prefab swaps. References into a replaced prefab cannot be repaired or preserved.
+Local modifications within managed prefab content (including direct calibration edits) block replacement and Sync;
+resolve/revert those edits first, or Claim the node. Edit calibration through the node inspector. Use
+**GameObject → Orlablocks → Select owning placement** from selected managed content; generated `OrlaNode` inspectors
+also offer an owning-parent button.
+
+Only ordinary scene instances support overrides. Array items have slot identity and remain ineligible. Generated
+assets and entity-definition children cannot own exceptions. Legacy prefab roots are **not automatically migrated**:
+Claim the old object, create a new ordinary source instance with a new ID, explicitly rebind gameplay references to
+its stable parent, verify it, then retire the legacy source/object. The sync report explains migration conflicts.
+
+A missing override prefab retains the previous representation and warns; choose a valid prefab or Clear override.
+A changed source entity/type is retained for review; choose Override to explicitly rebind an ordinary instance or
+Clear to resume inheritance/conversion. Removed source nodes retain their stable parent and override under the Level,
+where Sync can rediscover the same source identity if restored. Clearing a missing-source override allows ordinary
+removal/orphan handling on the next Sync. The Level inspector lists placement conflicts for recovery. Changing the
+Level's project/scene source never reuses a local override for colliding IDs; restore the original source to recover.
+Two Levels, including editor duplicates, own independent exceptions. Duplicating a node in Unity detaches its copied
+ID from sync, as before. Save/reopen, domain reload and Undo/Redo retain the serialized records and managed references.
+
+For production override regression checks, copy `scripts/unity/PlacementAcceptance.cs` under `Assets/Editor` and this
+importer into a scratch Unity project at **`/private/tmp/orla-mappings-18-overrides`**. The harness refuses other paths.
+Run Unity with `-batchmode -nographics -projectPath /private/tmp/orla-mappings-18-overrides
+-executeMethod PlacementAcceptance.Run -logFile /private/tmp/orla-mappings-18-overrides/checks.log` (without `-quit`).
+It creates scratch exports and fixtures, requests a real script reload, tests export-driven Auto sync and exits,
+writing `placement-result.json`. No orlablocks scene storage or game project is used.
+
+Production browser appearance, interactive prefab picker/drag/drop, and moving distinct NPCs while exercising actual
+gameplay references in Orlando's project still need his hands-on acceptance. Automated scratch tests cannot grant it.
+
 ## Terrain export verification
 
 Format 2 adds native Terrain height payloads; the reader accepts format 1 ordinary scenes and rejects terrain records in format 1 or newer unsupported formats. Unity imports the server's evaluated samples, not source shapes. GLB uses the same samples as a triangle mesh with the editor's diagonal layout; Unity's height storage/LOD can differ slightly.
@@ -137,6 +184,6 @@ For a repeatable isolated check, run `node --import tsx scripts/terrain-export-f
 
 The mapping browser and stable-parent NPC override experiments live separately in
 [`scripts/unity/mappings-prototype`](../../scripts/unity/mappings-prototype/README.md).
-They run only in a scratch Unity project. The production browser is now available above; the stable-parent override remains a prototype.
+They run only in a scratch Unity project. The production browser is now available above; the stable-parent override is integrated in production as described above.
 The prototype README records the supported reference target, calibration/pivot findings, legacy migration
-policy and reproduction steps. Orlando confirmed seeing the prototype work in the scratch project. Production node override integration and final gameplay acceptance remain pending.
+policy and reproduction steps. Orlando confirmed seeing the prototype work in the scratch project. Production node override integration is implemented; final gameplay acceptance remains pending.
