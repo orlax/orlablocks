@@ -1,0 +1,142 @@
+# 19 — Editor and agent UX improvements
+
+> **Status: proposed implementation plan; no implementation started.** Read `thinking-11-ux-improvements.md` first. The working-session report motivates this phase; its proposed API spellings, formulas and diagnoses are not verified contracts. This plan records recommended defaults and explicit gates below. Start with 19.1 when implementation is requested.
+>
+> Relevant background: phase 13 for agent ergonomics and live placement dependencies; phase 14 for transforms, review tools and editing; phase 17 §10 for current pointer/hover performance work; phase 16 §10 for deferred terrain queries; phase 18 for Unity ownership. Read their relevant sections when implementing those features. Existing human acceptance remains open independently.
+
+## 1. Outcome
+
+Orlando can navigate and select in a deeply grouped scene without the whole building turning yellow, find the selection in the outliner, set useful snap increments and access common actions where he is working. Curved galleries, wall-mounted props and sloping arrays require fewer manual corrections. Agents can inspect a few nodes and make precise edits without broad accidental reads or external trigonometry scripts.
+
+Deliver small independently verifiable increments. The editor fixes come first; geometry and persistent relationships follow with explicit compatibility tests. This phase does not require phase 17's remaining batching work, but must preserve its pointer and scene-derivation improvements.
+
+## 2. Findings from current code
+
+- `src/web/Outliner.tsx` already expands ancestors when selection changes; scrolling the selected row into view is missing. Extend that behavior rather than adding a second expansion system.
+- `src/web/Viewport.tsx` resolves pointer hover to the selectable owner, then expands that owner through `shapesUnder`. This explains why a large group lights up. Separate the hit used for hover feedback from the owner used for clicking.
+- Snap constants and behavior span `gizmo.ts`, `Viewport.tsx` and `arrayEdit.ts`; changing one toolbar value alone will not make snapping consistent.
+- `src/server/mcp.ts` registers `find_nodes` with a raw input shape and no `ids` filter; `get_scene` accepts one `root`. Verify both emitted JSON schema and actual MCP rejection behavior when fixing unknown keys.
+- `src/shared/scene.types.ts` accepts spiral creation for ramps/lines and path layouts, but direct node updates expose points rather than a spiral shorthand. Stored geometry is points; retain that model.
+- Circle layouts currently require count. Paths already have spacing placement. Array items support pitch/roll from whole-array tilt, but this is different from following each local 3D path tangent.
+- `src/shared/holes.ts` uses a bounded group-neighborhood rule, not arbitrary ancestor traversal. Changing it globally could change existing scenes.
+- `src/server/lint.ts` already treats `on` references specially for floating diagnostics. A wall attachment needs real support validation, not a blanket flag that hides mistakes.
+- Facing descriptions use local **+x** for instances/array alignment. The report's −z-forward formula is not a safe universal default. Existing `along.offset` descriptions also distinguish inward closed-outline offsets from right-of-travel path offsets; preserve that distinction.
+
+Primary implementation map: `src/shared/scene.types.ts`, `geometry.ts`, `mesh.ts`, `holes.ts`, `arrays.ts`, `entities.ts`, `rotation3.ts`, `surfaces.ts`, `bake.ts`, `bakeScene.ts`; `src/server/scene.ts`, `commands.ts`, `outline.ts`, `mcp.ts`, `guide.ts`, `lint.ts`, `export.ts`, `gltf.ts`; `src/web/Viewport.tsx`, `Outliner.tsx`, `Inspector.tsx`, `ToolBar.tsx`, `gizmo.ts`, `arrayEdit.ts`. Check actual ownership before editing; this is a map, not a requirement to touch every file.
+
+## 3. Increments and contracts
+
+### 19.1 — Predictable agent reads and small edits
+
+- Reject unknown `find_nodes` keys at the protocol boundary, with an actionable error. Add `ids: string[]`; intersect it with other filters. Keep `under` as the canonical recursive filter. Recommend rejecting `parent` with guidance to use `under`, rather than introducing an alias with ambiguous direct-child semantics.
+- Add `get_scene.ids` for compact multi-node inspection with one header. Make it mutually exclusive with `root`; preserve existing behavior when omitted. Bound request size, deduplicate while preserving request order, report missing IDs explicitly, and define array-item handling consistently with existing item lookup. Group entries remain compact unless depth/full is requested; do not accidentally expand a large subtree by default.
+- Default omitted `kind` to `volume` for box/cylinder **creation inputs only**. Explicit kinds and stored-scene validation remain unchanged; do not turn a missing update field into a kind change. Leave free-form defaults outside this change.
+- Accept spiral shorthand in direct ramp and line updates using the existing generator; reject points plus spiral and incompatible node types before any mutation. Preserve node IDs and recompute dependent `along`/`on` placements through the normal edit path. The shorthand replaces points once; it is not a new persistent parametric dependency.
+- Update `skills/orlablocks/SKILL.md`, guide and tool descriptions: same-call groups and `$ref`, `define_entity` versus `make_entity`, verified angles/facing examples, and path-versus-outline offset signs. Do not silently edit separately installed skill copies outside the repository.
+
+**Acceptance:** an unknown filter cannot return a broad scene listing; four unrelated nodes can be inspected in one bounded response; a ramp spiral edit preserves an attached array's reference and undoes in one step; omitted creation kinds work in a mixed batch. Check actual MCP calls and generated schemas, not only helper functions. Record a representative before/after call count and response size.
+
+### 19.2 — Hover and selection that stay readable
+
+- Pointer hover highlights the actual hit shape or entity placement, not every descendant of its selectable group. Keep existing group click/enter semantics. Show the selectable owner's name/path so feedback explains what clicking will select. Selected groups retain their normal selection feedback.
+- For an outliner group hover, prefer a lightweight bounds outline plus label instead of filling every child yellow. Verify arrays and entity instances without exploding them or changing their identity.
+- On viewport-originated selection, expand ancestors and scroll the primary selected row into the nearest visible position after layout. Do not steal keyboard focus, restart scrolling on unrelated scene updates, or fight manual scrolling. For multi-selection reveal the latest/primary target once. Preserve outliner-originated range selection and drag/drop.
+- Respect hidden/locked nodes, isolation, entered groups, entity editing, array-item editing and Walk. Keep pointer state out of broad React/geometry invalidation paths established in 17.2.
+
+**Acceptance:** nested-building, ordinary-instance and array fixtures demonstrate localized hover, unchanged click ownership and reliable row reveal. Compare stationary hover and navigation against the phase 17 approach; no full-scene rebuild on pointer movement. Orlando reviews the visual distinction between hover and selection.
+
+### 19.3 — Configurable snapping and context actions
+
+- Add a compact Snap settings control with translation/grid step, elevation step and rotation step; retain today's defaults and a Reset action. Store per-viewer preferences, not scene geometry or undo history. Validate finite positive values and document supported precision; do not advertise values finer than geometry rounding can retain.
+- Share resolved settings across drawing, move/resize/elevation/rotation, point edits and array handles. Keep Ctrl/Cmd free movement, Shift behavior and surface snapping explicit. Surface-attraction tolerance is separate from the elevation step. Profile fractions and uniform-scale increments stay unchanged in this increment and are labeled separately where needed.
+- Add viewport and outliner context menus using existing command handlers. Initial actions: Frame, Isolate/Exit isolation, Rename where supported, Duplicate, Group/Ungroup, Hide/Show, Lock/Unlock and Delete. Show only applicable actions and reasons for disabled ones; do not add a second mutation system.
+- Right-click on an unselected target selects it; on a selected target preserves the current multi-selection. Empty-space actions must not delete or mutate a stale selection unexpectedly. Open on release only if no navigation drag occurred. Preserve right-button navigation, Mac Ctrl-click/no-snap behavior and text-field native menus.
+- Keyboard opening, arrow navigation, Escape dismissal, focus return and viewport-edge positioning are required.
+
+**Acceptance:** settings persist on reload and Reset restores defaults; drawing and manipulation agree on chosen steps; cancelling a drag changes nothing. Context actions match shortcuts and undo behavior, with selection, locks, empty space and right-drag navigation checked in the browser.
+
+### 19.4 — Floorless rooms, curved galleries and inverted taper
+
+- Add room-only `floor?: boolean`, default true. Support box, cylinder and free-form rooms; disabling it removes the floor while preserving perimeter walls and the outer footprint. Inspector and MCP expose the same option.
+- Add an optional cylinder arc, initially for smooth **circular** room cylinders: proposed `arc: { from, sweep }`, positive sweep in (0, 360], CCW from east in local space, composed with node rotation. Partial arcs are annular wall segments with closed radial end faces, not pie sectors that fill the atrium. Full 360° has no duplicate seam faces. Increasing wall thickness moves the inner boundary inward while the outer radius stays fixed.
+- Explicitly reject elliptical, polygon-sided and non-room arc combinations initially. Establish the floor-on partial-sector geometry in a small mesh fixture before shipping; its floor covers the sector and its radial end faces must not become unintended full-height walls across the atrium. Verify current floor thickness/elevation conventions rather than inventing a new slab model.
+- Support negative taper for existing taper-capable volumes/holes: −1 narrows the bottom to a point, 0 is straight, +1 narrows the top. Preserve footprint bounds and define bevel interaction using the same profile construction. Rooms remain ineligible. Update inspector/gizmo clamping, normals and all query paths, not just schemas.
+- Carry geometry through shared baking, CSG, picking, bounds, surface rays, captures, GLB and Unity export. A floorless room must not remain standable on an invisible floor. Update conversion, scaling, mirroring and copy behavior for arcs.
+
+**Acceptance:** stack three open tower tiers; make 296° and 101° galleries; widening each ledge never moves its outer edge. Test near-zero/full sweeps, rotation across 0°, legal wall extremes, holes through arc ends, floor toggles, positive/negative taper and undo/reload. Compare browser/capture/export geometry and Unity collider behavior. Do not convert Orlando's existing scene automatically.
+
+### 19.5 — Spacing and slope-aware arrays
+
+- Extend circle layouts with count or spacing placement, keeping old count scenes unchanged. Recommend spacing as a maximum desired distance along the layout centerline: distribute evenly, include both ends of an open arc, omit a duplicate endpoint on a full circle. For rising circles use 3D centerline length. Document the actual resulting spacing and item count; test very short arcs and existing item limits before allocation.
+- Add an opt-in path slope-follow mode, defaulting to today's upright items. Align entity local +x to the sampled 3D tangent with a stable up direction; do not add automatic banking. Define vertical-tangent fallback, degenerate segments, reversed paths and corner sampling deterministically.
+- Compose local slope alignment with explicit rotation and whole-array pitch/roll using the shared rotation helpers. Define or reject conflicting `on` placement/orientation combinations explicitly. Preserve skip indices and document that changing count/spacing may change which physical position an index identifies; no durable item identity is promised.
+- Extend inspector, layout editing, derived bounds, baking, export, copy/mirror/scale and guides together.
+
+**Acceptance:** railings follow a rising path without remaining horizontal; a count-based existing array looks unchanged. Test uphill/downhill, curves, vertical/zero-length edge cases, full/open/rising circles, limits, skips and transforms. Verify 3D orientation in Unity and GLB as well as the editor.
+
+### 19.6 — Explicit and inspectable cut targets
+
+**Recommended decision:** keep current hierarchy scoping as the default; add explicit targets as an override. Do not introduce implicit ancestor cutting or a second cut-group hierarchy in this phase.
+
+- Prototype a hole/door-instance inspector showing automatic candidates and actual overlapping targets. Provide an explicit target picker and a way to return to Auto. Proposed public field: `cuts: string[]`; omitted means Auto, empty means cut nothing, nonempty replaces automatic scope. Final schema belongs to this increment's prototype.
+- First explicit targets are ordinary scene solids; reject groups, holes, generated array-item IDs and unsupported entity-internal targets with clear messages. Door instances can specify external cut targets for their expanded hole parts while preserving internal prefab cuts. Decide array-hosted door support explicitly before broadening it; unsupported hosts must reject the field.
+- Keep targeting independent of organization so a roof doorway can live under the mezzanine and still cut the tower. Explicit targets do not bypass geometric overlap or floor-cut rules.
+- Preserve IDs through reparenting; remap references when copying a complete assembly and retain external references for a same-scene partial copy. Define missing-target behavior for deletion and cross-scene paste: report unresolved links and cut nothing for them, never silently fall back to Auto. Undo restores bindings. Entity definitions must not acquire scene-specific IDs.
+- Use one shared target resolver for renderer, lint, queries, captures and exports; target edits invalidate affected solids. Display the resolved behavior before committing where practical.
+
+**Acceptance:** reproduce the nested roof-door case with synthetic IDs; changing its parent no longer changes explicit cutting. Confirm old scenes retain identical default cuts; explicit empty lists, missing/deleted targets, copy/paste, entity expansion, isolation and undo/reload work. Inspect overlapping rooms to prove no unintended new cuts.
+
+### 19.7 — Scene-relative placement and wall attachments
+
+Treat two different needs separately:
+
+1. **One-shot polar placement:** add a draw/update shorthand resolving around a supported cylinder to ordinary world position/orientation in the same command. This has no live link after placement. Respect the current +x facing contract and permit an explicit rotation offset for differently authored entities. Reject conflicting absolute coordinates/facing inputs. Resolve same-batch `$ref` targets atomically. Keep the API name provisional until checking all existing `at`, `on` and facing fields.
+2. **Persistent wall attachment:** extend the existing dependency machinery for ordinary instances on upright smooth circular room cylinders first. Store target, inner/outer side, local angle, elevation relative to target base, signed normal offset and facing offset. Target movement, rotation, resizing and wall thickness update the placement. Arc targets require the angle to fall on the supported arc. Expose attach/detach and these values in the inspector; detach preserves the current world pose.
+
+Handle cycles, invalid target type, deletion, copying, cross-scene paste, direct manipulation of an attached instance and undo/reload explicitly. Recommend direct manipulation changes attachment parameters where representable; otherwise require detach, never silently discard the relation. Missing support is reported and keeps the last resolved pose until repaired/detached. Existing floor `on` behavior remains backward-compatible.
+
+Validate attachment support in `check_scene`; suppress floating only for a valid attachment and report broken/unsupported attachments separately. Do not add a generic `wall_mounted: true` exemption. Boxes/free-forms, tilted walls, arbitrary mesh attachment and terrain support are follow-ups.
+
+**Acceptance:** place nine frames around a tower in one batch; move/resize/rotate the tower and change its wall thickness without rerunning placement math. Frames stay on the intended surface and face correctly at cardinal/intermediate angles. Lint accepts valid mounts and reports a deleted support. Exported poses and Unity sync agree.
+
+### 19.8 — Integration and human acceptance
+
+Use one synthetic rotunda fixture containing tiered galleries, a curved rising railing array, wall art, a nested targeted doorway and external roof pieces. Exercise editing, inspector/MCP parity, dependency refresh, copy/reparent, save/reload, undo/redo, captures and export. Record before/after call counts for the report's workflows without treating estimates such as “95%” as measured results.
+
+Orlando reviews hover readability, selection reveal, snapping, context actions and the tower workflows in his project. Record each acceptance separately; automated fixture checks cannot complete it.
+
+## 4. Explicit follow-ups from the report
+
+These ideas are retained but not hidden inside the increments above:
+
+| Idea | Disposition and reason |
+|---|---|
+| `fit_arc` / bounded arc sampling | Follow-up after native arcs. Needs a clear point-range/handle editing contract and a distinction between inscribed chords and tangent-safe exterior fitting. A sagitta bound alone does not guarantee clearance from an inner wall. |
+| `clip_outside` | Deferred geometry feature: boolean ownership, live dependency and mesh/query parity need their own design. Explicit hole targets do not implement clipping solids against rooms. |
+| General `measure_geometry` | Deferred until concrete remaining query gaps are identified; reuse existing path/surface tools where possible. No arbitrary expression evaluator. |
+| Cross-group room-interior intrusion lint | Deferred diagnostic prototype. Intentional intersecting floors, galleries and door surrounds make bounding-box overlap insufficient. Requires geometry-aware depth/clearance, tolerances, exclusions and a measured false-positive fixture. Do not promise exact distances from coarse bounds. |
+| Cut groups | Address the immediate problem through explicit target lists and inspection first; revisit named reusable cut sets only if target-list authoring proves insufficient. |
+| Terrain-aware Walk/placement/queries | Remains phase 16 §10 follow-up, not silently included here. |
+
+## 5. Delivery and verification
+
+Order: 19.1 → 19.2 → 19.3 → 19.4 → 19.5 → 19.6 → 19.7 → 19.8. The editor and geometry increments can ship independently; integration fixtures accumulate as features land. Geometry contract questions are resolved in the owning increment before production changes, with decisions written below.
+
+For every implementation increment:
+
+- Read applicable prior plan requirements and record decisions, relevant files, checks, limitations and next steps in Progress. Add implemented terms to `GLOSSARY.md`; proposed fields here are not yet glossary contracts.
+- Run focused behavioral regressions, `npm test`, `npm run typecheck` and `npm run build:web`. Use real MCP requests for schema/error/atomicity changes and browser checks for interactions. Bump the MCP patch version when its public contract changes.
+- Use `PORT=5171 DATA_DIR=<scratch>/data npm run dev` or another free port with a separate scratch folder. Create/read scene fixtures through MCP or the editor only. Never inspect or edit project data files directly.
+- Check one-command undo, failed-call atomicity, old scene defaults, save/reload, dependencies and copied references for persisted changes. Verify captures use canonical geometry and selection overlays do not leak into exports.
+- Geometry/orientation changes require GLB and real scratch Unity import/collider checks even if importer code is unchanged. Compile importer changes with `scripts/compile-unity.sh` where available; compilation alone is not visual acceptance. Preserve Unity Claim/drift and phase 18 node ownership.
+- Keep performance checks proportional: large nested scene for hover/reveal; bounded results for reads; item limits for arrays; affected-target invalidation for cuts/attachments. Do not introduce scene-wide pointer work or unrelated renderer optimization.
+
+## 6. Progress
+
+### Planning — 2026-10-30
+
+- Read the supplied UX report, current phase 17/18 context, terrain acceptance/deferrals, glossary and relevant MCP, schema, array, hole, lint, viewport and outliner code. Inspected repository skill documentation as a prospective documentation target; no scene-design work performed.
+- Created this proposed phase with editor improvements first, then shared geometry, arrays, explicit cutting and scene-relative placement. Corrected the report's universal facing assumption and identified existing ancestor expansion, offset documentation and whole-array tilt behavior.
+- Recommended preserving automatic cut defaults, distinguishing one-shot placement from live attachment, and keeping speculative clipping/measurement/intrusion features as named follow-ups. These are planning recommendations, not user-approved implementation decisions.
+- Documentation only: no code changes, scene mutations, test runs, Unity checks or human acceptance claimed. The source thinking document was already untracked and remains unchanged.
+- Next: review scope and ordering with Orlando; begin 19.1 when implementation is requested. Main discussion points: deferred fit/clip/intrusion tools, circular-only initial arc/attachment scope, and explicit targets instead of named cut groups.
