@@ -154,7 +154,7 @@ function buildServer(workspace: Workspace, renders: RenderBroker, exports: Expor
   /** Runs an edit tool's body for real, or as a dry run (14.2): the same result, marked, with nothing changed. */
   const edit = <T extends object>(dryRun: boolean | undefined, run: () => T) =>
     dryRun ? { dryRun: "nothing was changed: this is what the call would do", ...store().dryRun(run) } : run();
-  const server = new McpServer({ name: "orlablocks", version: "0.0.46" }, { instructions: INSTRUCTIONS });
+  const server = new McpServer({ name: "orlablocks", version: "0.0.47" }, { instructions: INSTRUCTIONS });
   // Every tool reads or edits the open scene, and fails with a clear message while nothing is open.
   // The agent's scene (14.5): its own while the human is in another one, else the human's open document.
   const store = () => workspace.requireAgentScene();
@@ -426,7 +426,7 @@ function buildServer(workspace: Workspace, renders: RenderBroker, exports: Expor
         `(box, the default, cylinder, freeform, line, ramp, note, instance, array or group) and that type's fields. For a box or cylinder (a room, a volume or a hole) only ` +
         `x, z, width and depth are required (kind defaults to volume); for a free-form, kind and points; for a line, points, spiral or through; for a ramp, points or spiral; for a note, x, z and text; for an instance of an entity, entity, x and z; ` +
         `for an array (get_guide arrays), entity (or entities) and layout. The rest have defaults (the kind's ` +
-        `height, y 0, rotation 0, color ${DEFAULT_COLOR} (${DEFAULT_LINE_COLOR} for a line), ${DEFAULT_WALL} m room walls, no taper or bevel, no name, top level, a smooth cylinder, ` +
+        `height, y 0, rotation 0, color ${DEFAULT_COLOR} (${DEFAULT_LINE_COLOR} for a line), ${DEFAULT_WALL} m room walls, floor included (rooms; floor: false removes it), no taper or bevel, no name, top level, a smooth cylinder, ` +
         `and a solid ${DEFAULT_THICKNESS} px line with no arrow). ` +
         `Set \`parent\` to a group's ID to draw straight into that group. ` +
         `ONE BATCH, ONE CALL: give an entry a \`ref\` ("chamber") and later entries use "$chamber" where an ID goes (parent, ` +
@@ -476,8 +476,8 @@ function buildServer(workspace: Workspace, renders: RenderBroker, exports: Expor
       description:
         `Change existing nodes by ID in a single batch; changes appear live in the editor. ` +
         `A box takes any of: name, parent, kind, x, z, y, width, depth, height, rotation, color, wall (a room's; null = the default), ` +
-        `taper and bevel (a volume's; 0 clears them), pitch and roll (a box or cylinder volume's; 0 levels it); ` +
-        `a cylinder those and sides; a free-form name, parent, kind, y, height, color, wall, taper, bevel and points (the whole outline); a line name, parent, color, ` +
+        `floor (rooms, default true; false leaves walls only), taper (-1 bottom point to +1 top point) and bevel (a volume's; 0 clears them), pitch and roll (a box or cylinder volume's; 0 levels it); ` +
+        `a cylinder those and sides and arc (smooth circular rooms only; null clears it); a free-form name, parent, kind, y, height, color, wall, taper, bevel and points (the whole outline); a line name, parent, color, ` +
         `points or spiral (replaces the whole path once, preserving its ID), thickness, dashed and arrow; a ramp name, parent, color, ` +
         `points (with y) or spiral (not both), width, step (null = smooth) and base; a note name, parent, x, y, z, color, text, label (null removes it) and status (open or done); an instance name, parent, x, y, z, rotation (degrees, or where it faces), scale and entity (another entity's ID, to swap it); ` +
         `an array name, parent, entities, layout (fields merge into it; another type replaces it), facing, rotation, jitter, turnJitter, seed, skip and scale. ` +

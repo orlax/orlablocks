@@ -72,13 +72,17 @@ export function topOf(nodes: SceneNode[], id: string, byId = new Map(nodes.map((
   const b = boundsOf(solids);
   const x = pivot ? pivot.x : (b.minX + b.maxX) / 2;
   const z = pivot ? pivot.z : (b.minZ + b.maxZ) / 2;
-  return { x: round2(x), y: round2(surfaceAt(solids, x, z) ?? b.maxY), z: round2(z) };
+  const surface = surfaceAt(solids, x, z);
+  if (surface === null && n && "kind" in n && n.kind === "room" && "floor" in n && n.floor === false) return null;
+  return { x: round2(x), y: round2(surface ?? b.maxY), z: round2(z) };
 }
 
 /** Why a node can't be stood on (for `on`), or null. */
 export function standProblem(nodes: SceneNode[], id: string, self: string): string | null {
   const n = nodes.find((m) => m.id === id);
   if (!n) return `no node "${id}"`;
+  if ((n.type === "box" || n.type === "cylinder" || n.type === "freeform") && n.kind === "room" && n.floor === false && !topOf(nodes, id))
+    return `"${id}" has no surface at its placement anchor (floor disabled)`;
   if (id === self) return "a node can't stand on itself";
   if (n.type === "line" || n.type === "note") return `"${id}" is a ${n.type}: nothing stands on it`;
   if ((n.type === "instance" || n.type === "array") && n.on?.id === self) return `"${id}" stands on ${self} already`;

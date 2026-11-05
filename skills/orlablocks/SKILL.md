@@ -38,3 +38,7 @@ Use this skill when designing, viewing, or modifying 3D dungeon layouts, rooms, 
    - `check_scene`: floating things, stale notes, off-center entities, holes that cut nothing, duplicates.
 8. **Look:** `render_view`. It can draw a sheet, a plan (`slice: y` cuts it at a height and rings the gaps), a node, an eye view, a walk along a route, the human's shots again, or the entities. `hide` and `clip` see inside an enclosed room.
 9. **End of a session:** run `check_scene`, go through the open notes (done or rewritten), check that the entities match their descriptions, and offer to add what was settled to the design guide.
+
+### Floorless rooms and circular galleries (19.4)
+
+Use `floor: false` on box, cylinder or free-form rooms for perimeter walls without a floor. Smooth circular room cylinders also accept `arc: { from, sweep }`: local degrees CCW from east (+x toward -z), composed with node rotation; `0 < sweep <= 360`. Example: `{ type: "cylinder", kind: "room", x: 0, z: 0, width: 21.5, depth: 21.5, height: 0.2, wall: 4.45, floor: false, arc: { from: 252, sweep: 296 } }`. Increasing wall widens the ledge inward, keeping the outer radius. With a floor, the existing 4 cm slab covers the sector; radial wall ends cover only wall thickness. Ellipses, sided cylinders and non-room arcs reject; clear with `arc: null`. Arc conversion to free-form rejects because its radial walls cannot be preserved. Taper supports `-1..1` on volumes/holes: negative narrows the bottom, positive the top; bevel still rounds the top.

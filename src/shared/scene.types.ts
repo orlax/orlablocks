@@ -60,8 +60,9 @@ type Footprinted = {
   height: number; // >= MIN_HEIGHT
   rotation: number; // degrees, 0..360
   color: ShapeColor;
+  floor?: boolean; // rooms only; omitted = true
   wall?: number; // rooms only: the walls' thickness, grown inward from the footprint; none = DEFAULT_WALL
-  taper?: number; // volumes and holes only: 0..1, how much the top shrinks toward the center (1 = a point); none = 0
+  taper?: number; // volumes and holes only: -1..1; negative narrows the bottom, positive the top; none = 0
   bevel?: number; // volumes and holes only: 0..1, how round the top edge is (1 = as round as it fits); none = 0
   pitch?: number; // volumes and holes only: degrees around the local x axis through the center (+ leans the top toward local +z); none = 0
   roll?: number; // volumes and holes only: degrees around the local z axis through the center (+ leans the top toward local -x); none = 0
@@ -74,7 +75,7 @@ export type Box = Footprinted & { type: "box" };
  * A cylinder: its footprint is the ellipse inscribed in width × depth (an oval when they differ). With `sides` it's
  * a regular polygon on that ellipse instead, with a flat edge facing local +x; without, it's smooth.
  */
-export type Cylinder = Footprinted & { type: "cylinder"; sides?: number };
+export type Cylinder = Footprinted & { type: "cylinder"; sides?: number; arc?: { from: number; sweep: number } };
 
 /** An offset on the ground, e.g. a bezier handle relative to its point. */
 export type Offset = { x: number; z: number };
@@ -104,6 +105,7 @@ export type Freeform = {
   y: number;
   height: number;
   color: ShapeColor;
+  floor?: boolean; // rooms only; omitted = true
   wall?: number; // rooms only, as a box's
   taper?: number; // volumes and holes only, as a box's (toward the outline's centroid)
   bevel?: number; // volumes and holes only, as a box's
@@ -372,11 +374,12 @@ export type SceneNode = Shape | Group;
  * (undefined = smooth), `points` for free-forms, lines and ramps, `thickness`, `dashed` and `arrow` for lines,
  * `step` and `base` for ramps (whose `width` is their own).
  */
-export type ShapePatch = Partial<Pick<Footprinted, "name" | "kind" | "x" | "z" | "y" | "width" | "depth" | "height" | "rotation" | "color" | "wall" | "taper" | "bevel" | "pitch" | "roll">> & {
+export type ShapePatch = Partial<Pick<Footprinted, "name" | "kind" | "x" | "z" | "y" | "width" | "depth" | "height" | "rotation" | "color" | "floor" | "wall" | "taper" | "bevel" | "pitch" | "roll">> & {
   terrain?: TerrainModifier;
   resolution?: 129 | 257 | 513 | 1025;
   source?: string;
   sides?: number;
+  arc?: { from: number; sweep: number };
   points?: FootPoint[] | LinePoint[] | RampPoint[];
   step?: number;
   base?: RampBase;
@@ -461,6 +464,7 @@ export const MIN_WALL = 0.05;
  */
 export const KIND_FIELDS = {
   wall: ["room"],
+  floor: ["room"],
   taper: ["volume", "hole"],
   bevel: ["volume", "hole"],
   // Rooms tilt too from 14.4 (a whole tilted group of rooms and props).
@@ -545,7 +549,7 @@ const field = {
     .number()
     .min(MIN_WALL)
     .describe(`Rooms only: the walls' thickness in meters (>= ${MIN_WALL}, default ${DEFAULT_WALL}), grown inward from the footprint`),
-  taper: z.number().min(0).max(1).describe("Volumes and holes only: 0 (straight sides, the default) to 1 (the top comes to a point, a pyramid or cone)"),
+  taper: z.number().min(-1).max(1).describe("Volumes and holes only: -1 (bottom point), 0 (straight, default), +1 (top point); negative narrows the bottom within the footprint"),
   bevel: z.number().min(0).max(1).describe("Volumes and holes only: 0 (a sharp top edge, the default) to 1 (the top edge as round as it fits, a dome)"),
   pitch: z
     .number()
@@ -576,8 +580,9 @@ const footprinted = {
   height: z.number().min(MIN_HEIGHT),
   rotation: z.number(),
   color: ShapeColorSchema,
+  floor: z.boolean().optional(),
   wall: z.number().min(MIN_WALL).optional(),
-  taper: z.number().min(0).max(1).optional(),
+  taper: z.number().min(-1).max(1).optional(),
   bevel: z.number().min(0).max(1).optional(),
   pitch: z.number().optional(),
   roll: z.number().optional(),
@@ -588,7 +593,11 @@ const Offset3Schema = z.object({ x: z.number(), y: z.number(), z: z.number() });
 const LinePointSchema = z.object({ x: z.number(), y: z.number(), z: z.number(), in: Offset3Schema.optional(), out: Offset3Schema.optional() });
 const FootPointSchema = z.object({ x: z.number(), z: z.number(), in: OffsetSchema.optional(), out: OffsetSchema.optional() });
 const BoxSchema = z.object({ ...footprinted, type: z.literal("box") });
-const CylinderSchema = z.object({ ...footprinted, type: z.literal("cylinder"), sides: z.number().int().min(MIN_SIDES).max(MAX_SIDES).optional() });
+const ArcSchema = z.strictObject({ from: z.number().finite(), sweep: z.number().finite().gt(0).max(360) });
+const CylinderSchema = z.object({ arc: ArcSchema.optional(), ...footprinted, type: z.literal("cylinder"), sides: z.number().int().min(MIN_SIDES).max(MAX_SIDES).optional() }).refine(
+  (s) => !s.arc || (s.kind === "room" && s.sides === undefined && Math.abs(s.width - s.depth) < 1e-8),
+  { message: "arc requires a smooth circular room cylinder with equal width/depth", path: ["arc"] },
+);
 
 const FreeformSchema = z.object({
   terrain: TerrainModifierSchema.optional(),
@@ -603,8 +612,9 @@ const FreeformSchema = z.object({
   y: z.number(),
   height: z.number().min(MIN_HEIGHT),
   color: ShapeColorSchema,
+  floor: z.boolean().optional(),
   wall: z.number().min(MIN_WALL).optional(),
-  taper: z.number().min(0).max(1).optional(),
+  taper: z.number().min(-1).max(1).optional(),
   bevel: z.number().min(0).max(1).optional(),
   pitch: z.number().optional(),
   roll: z.number().optional(),
@@ -796,6 +806,7 @@ export const BoxInputSchema = z.strictObject({
   y: field.y.optional().describe("Elevation of the box's bottom, meters. Defaults to 0 (on the ground); negative = below ground"),
   rotation: field.rotation.optional().describe("Degrees, counterclockwise seen from above. Defaults to 0 (grid-aligned)"),
   color: field.color.optional().describe(`Palette key: ${SHAPE_COLORS.join(", ")}. Defaults to ${DEFAULT_COLOR}`),
+  floor: z.boolean().optional().describe("Rooms only: include the floor slab (default true); false leaves perimeter walls only"),
   wall: field.wall.optional(),
   taper: field.taper.optional(),
   bevel: field.bevel.optional(),
@@ -828,6 +839,7 @@ export const FreeformInputSchema = z.strictObject({
   height: BoxInputSchema.shape.height,
   y: BoxInputSchema.shape.y,
   color: BoxInputSchema.shape.color,
+  floor: BoxInputSchema.shape.floor,
   wall: BoxInputSchema.shape.wall,
   taper: BoxInputSchema.shape.taper,
   bevel: BoxInputSchema.shape.bevel,
@@ -1125,6 +1137,7 @@ export const ShapeInputSchema = z.discriminatedUnion("type", [
   BoxInputSchema.extend({
     type: z.enum(["box", "cylinder"]).optional().describe("box (the default) or cylinder (the ellipse inscribed in width × depth)"),
     sides: field.sides.optional(),
+    arc: ArcSchema.optional().describe("Smooth circular room cylinders only: CCW from east in local degrees, sweep > 0 up to 360; annular walls with radial ends, optional sector floor"),
     ...refField,
   }),
   FreeformInputSchema.extend(refField),
@@ -1159,6 +1172,8 @@ export const NodeUpdateSchema = z.strictObject({
     "Degrees, counterclockwise seen from above; an instance also takes where it faces (its local +x), worked out once: { toward: {x, z} or an ID }, { away: ... } or { along: a line or ramp }",
   ),
   color: field.color.optional(),
+  floor: z.boolean().optional().describe("Rooms only: false removes the floor; true restores it"),
+  arc: ArcSchema.nullable().optional().describe("Smooth circular room cylinders only: local CCW from east and positive sweep <= 360; null restores a full cylinder"),
   sides: field.sides.nullable().optional().describe(`Cylinders only: ${MIN_SIDES}..${MAX_SIDES} sides, or null to make it smooth`),
   wall: field.wall
     .nullable()

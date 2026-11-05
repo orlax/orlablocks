@@ -88,7 +88,7 @@ const facesUp = (a: Point, b: Point, c: Point) => signedArea2([a, b, c]) < 0;
  */
 export function loft(stack: { ring: Point[]; y: number }[]): Mesh | null {
   const base = stack[0].ring;
-  const area = signedArea2(base);
+  const area = stack.map(({ ring }) => signedArea2(ring)).find((a) => Math.abs(a) >= 1e-12) ?? 0;
   if (base.length < 3 || Math.abs(area) < 1e-12) return null;
   // Counterclockwise in x/z, so the solid is on the left of each edge (as in `prism`).
   const rings = stack.map(({ ring, y }) => ({ ring: area > 0 ? ring : [...ring].reverse(), y }));
@@ -315,7 +315,7 @@ export function shapeMesh(shape: Solid): ShapeParts {
   let parts: ShapeParts;
   if (Math.abs(signedArea2(outline)) < 1e-9) parts = { body: null, floor: null };
   else if (shape.kind !== "room") parts = { body: loft(volumeRings(shape)), floor: null };
-  else parts = { body: prism(roomWalls(shape).walls, 0, shape.height), floor: prism([outline], 0, FLOOR_THICKNESS) };
+  else parts = { body: prism(roomWalls(shape).walls, 0, shape.height), floor: shape.floor === false ? null : prism([outline], 0, FLOOR_THICKNESS) };
   partsCache.set(shape, parts);
   return parts;
 }
@@ -332,7 +332,7 @@ const worldCache = new WeakMap<Solid, BoundedMesh | null>();
 export function hitMesh(shape: Solid): BoundedMesh | null {
   if (worldCache.has(shape)) return worldCache.get(shape)!;
   const { body } = shapeMesh(shape);
-  const floor = shape.kind === "room" && body ? cap([localFootprint(shape)], 0) : null;
+  const floor = shape.kind === "room" && shape.floor !== false && body ? cap([localFootprint(shape)], 0) : null;
   const positions: number[] = [];
   const indices: number[] = [];
   for (const m of [body, floor]) {

@@ -774,7 +774,7 @@ export function App() {
       : `${selectedShapes.length} shape${selectedShapes.length === 1 ? "" : "s"}`;
   // What Convert to free-form converts: every box and cylinder in the selection (groups included).
   // A tilted shape can't convert (a free-form's outline is on the ground).
-  const convertible = selectedShapes.filter((s) => (s.type === "box" || s.type === "cylinder") && !isTilted(s));
+  const convertible = selectedShapes.filter((s) => (s.type === "box" || (s.type === "cylinder" && !s.arc)) && !isTilted(s));
   const convert = () => {
     const ids = convertible.map((s) => s.id);
     const before = nodes;
@@ -932,6 +932,7 @@ export function App() {
     ? {
         title: nextTitle[tool]!,
         sides: tool === "cylinder" ? { value: nextSides, onChange: setNextSides } : undefined,
+        floor: nextWallControl ? { value: nextFields.floor ?? true, onChange: (floor) => setNext({ floor }) } : undefined,
         wall: nextWallControl,
         profile: nextProfileControl,
       }
@@ -1038,6 +1039,14 @@ export function App() {
                 singleShape?.type === "cylinder"
                   ? { value: singleShape.sides, onChange: (sides) => send({ type: "update_nodes", changes: [{ id: singleShape.id, sides: sides ?? null }] }) }
                   : undefined,
+              floor: selectedRooms.length ? {
+                value: selectedRooms.every((r) => (r.floor ?? true) === (selectedRooms[0].floor ?? true)) ? (selectedRooms[0].floor ?? true) : undefined,
+                onChange: (floor) => send({ type: "update_nodes", changes: selectedRooms.map((r) => ({ id: r.id, floor })) }),
+              } : undefined,
+              arc: singleShape?.type === "cylinder" && singleShape.kind === "room" && singleShape.sides === undefined && singleShape.width === singleShape.depth ? {
+                value: singleShape.arc,
+                onChange: (arc) => send({ type: "update_nodes", changes: [{ id: singleShape.id, arc }] }),
+              } : undefined,
               wall: wallControl,
               profile: profileControl,
               tilt: tiltControl && { ...tiltControl, levelOnly: tiltable.some((n) => terrainInputIds(nodes).has(n.id)), ...(yawControl ? { yaw: yawControl } : {}) },

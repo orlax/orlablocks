@@ -1,5 +1,5 @@
 import { rayMeshFirst } from "./ray";
-import { footprint, pointInPolygon, volumeRings, rampStations, offsetRings, boundsOf, shapeFrame, toShapeLocal } from "./geometry";
+import { footprint, localFootprint, pointInPolygon, volumeRings, rampStations, offsetRings, boundsOf, shapeFrame, toShapeLocal } from "./geometry";
 import { hitMesh, type Mesh } from "./mesh";
 import type { Box, Cylinder, Freeform, Ramp, SceneNode, Terrain, Shape } from "./scene.types";
 import { childrenOf, hiddenIds, subtreeIds } from "./tree";
@@ -28,7 +28,7 @@ export function terrainBoundary(s: TerrainSource): { x: number; y: number; z: nu
     const st = rampStations(s);
     return [...st.map((p) => ({ ...p.left, y: p.y })), ...[...st].reverse().map((p) => ({ ...p.right, y: p.y }))];
   }
-  const rings = volumeRings(s), base = rings[0].ring;
+  const rings = volumeRings(s), base = localFootprint(s);
   let y = s.y;
   for (const r of rings) if (r.ring.every((v, i) => Math.hypot(v.x - base[i].x, v.z - base[i].z) < 1e-8)) y = s.y + r.y;
   return footprint(s).map((p) => ({ ...p, y }));

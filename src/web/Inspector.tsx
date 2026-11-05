@@ -121,6 +121,8 @@ export type InspectorProps = {
   /** A cylinder's sides: the side count, undefined = smooth. */
   sides?: { value: number | undefined; onChange: (sides: number | undefined) => void };
   /** Rooms: the wall thickness in meters, undefined when the selected rooms differ. */
+  floor?: { value: boolean | undefined; onChange: (floor: boolean) => void };
+  arc?: { value: { from: number; sweep: number } | undefined; onChange: (arc: { from: number; sweep: number } | null) => void };
   wall?: { value: number | undefined; onChange: (wall: number) => void };
   /** Volumes and holes: taper and bevel, each undefined when they differ. */
   profile?: {
@@ -228,6 +230,8 @@ export function Inspector({
   tags,
   sides,
   wall,
+  floor,
+  arc,
   profile,
   scale,
   onScaleBy,
@@ -302,11 +306,33 @@ export function Inspector({
               </Row>
             </Section>
           )}
+          {floor && (
+            <Section label="Floor">
+              <Row label="floor"><input type="checkbox" checked={floor.value ?? false}
+                ref={(el) => { if (el) el.indeterminate = floor.value === undefined; }}
+                onChange={(e) => floor.onChange(e.target.checked)} title="Include the room floor slab" /></Row>
+            </Section>
+          )}
+          {arc && (
+            <Section label="Arc">
+              <Row label="arc"><input type="checkbox" checked={!!arc.value}
+                onChange={(e) => arc.onChange(e.target.checked ? { from: 0, sweep: 360 } : null)} title="Circular room arc" /></Row>
+              {arc.value && <>
+                <Row label="from"><NumberField value={arc.value.from} step={1} fallback={0} unit="°"
+                  title="Local degrees CCW from east, composed with rotation"
+                  onChange={(from) => arc.onChange({ ...arc.value!, from })} /></Row>
+                <Row label="sweep"><NumberField value={arc.value.sweep} step={1} min={0.01} max={360} fallback={360} unit="°"
+                  title="Positive sweep up to 360 degrees; wall thickness grows inward"
+                  onChange={(sweep) => arc.onChange({ ...arc.value!, sweep })} /></Row>
+              </>}
+            </Section>
+          )}
           {profile && (
             <Section label="Profile">
               <Row label="taper">
                 <Slider
-                  title="Taper: how much the top shrinks toward the center (1 = a point)"
+                  min={-1}
+                  title="Taper: -1 narrows the bottom to a point, 0 straight, +1 narrows the top"
                   value={profile.taper}
                   onChange={(taper) => profile.onChange({ taper })}
                   onPreview={profile.onPreview && ((taper) => profile.onPreview!(taper === null ? null : { taper }))}
@@ -414,6 +440,7 @@ function NumberField({
   unit,
   step,
   min,
+  max,
   fallback,
   onChange,
 }: {
@@ -422,12 +449,13 @@ function NumberField({
   unit: string;
   step: number;
   min?: number;
+  max?: number;
   fallback: number;
   onChange: (v: number) => void;
 }) {
   const [text, setText] = useState<string | null>(null);
   const cancelled = useRef(false);
-  const set = (n: number) => onChange(Math.max(min ?? -Infinity, Math.round(n * 100) / 100));
+  const set = (n: number) => onChange(Math.min(max ?? Infinity, Math.max(min ?? -Infinity, Math.round(n * 100) / 100)));
   const commit = () => {
     if (!cancelled.current && text !== null && text.trim() !== "" && Number.isFinite(Number(text))) set(Number(text));
     cancelled.current = false;
@@ -453,7 +481,7 @@ function NumberField({
           if (e.key === "Enter" || e.key === "Escape") e.currentTarget.blur();
         }}
       />
-      <button title={`+${step}`} onClick={() => stepBy(step)}>
+      <button title={`+${step}`} disabled={max !== undefined && value !== undefined && value >= max} onClick={() => stepBy(step)}>
         <Plus size={14} />
       </button>
     </div>

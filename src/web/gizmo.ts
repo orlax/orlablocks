@@ -156,7 +156,9 @@ export function profileSpokes(shape: ClosedShape): { center: Ground; taper: Grou
   if (isFootprinted(shape)) {
     const hw = shape.width / 2;
     const out = (sign: number) => rayExit(poly, { x: sign * hw, z: (sign * shape.depth) / 4 });
-    return { center: { x: 0, z: 0 }, taper: out(1), bevel: out(-1), wall: { at: { x: hw, z: 0 }, inward: { x: -1, z: 0 } }, half: Math.min(shape.width, shape.depth) / 2 };
+    const arcAngle = shape.type === "cylinder" && shape.arc ? (shape.arc.from + shape.arc.sweep / 2) * Math.PI / 180 : 0;
+    const wall = { at: { x: hw * Math.cos(arcAngle), z: -hw * Math.sin(arcAngle) }, inward: { x: -Math.cos(arcAngle), z: Math.sin(arcAngle) } };
+    return { center: { x: 0, z: 0 }, taper: out(1), bevel: out(-1), wall, half: Math.min(shape.width, shape.depth) / 2 };
   }
   const mid = (i: number) => {
     const [a, b] = [poly[i], poly[(i + 1) % poly.length]];
@@ -194,7 +196,7 @@ function rayExit(poly: Ground[], dir: Ground): Ground {
 }
 
 /** How much a volume's outline is scaled at height y by its taper (1 at the bottom, 1 − taper at the top). */
-const taperScale = (shape: ClosedShape, y: number) => 1 - ((shape.taper ?? 0) * y) / shape.height;
+const taperScale = (shape: ClosedShape, y: number) => (shape.taper ?? 0) < 0 ? 1 + (shape.taper ?? 0) * (1 - y / shape.height) : 1 - ((shape.taper ?? 0) * y) / shape.height;
 /** The largest radius a volume's bevel can have: bevel 1. */
 export const maxBevelRadius = (shape: ClosedShape) => Math.min(shape.height, taperScale(shape, shape.height) * profileSpokes(shape).half);
 /** The thickest wall a room can have and keep an inside. */
@@ -210,7 +212,10 @@ export function profileKnob(shape: ClosedShape, part: ProfilePart): Point3 {
   const s = profileSpokes(shape);
   const h = shape.height;
   const along = (p: Ground, k: number, y: number) => ({ x: s.center.x + (p.x - s.center.x) * k, y, z: s.center.z + (p.z - s.center.z) * k });
-  if (part === "taper") return along(s.taper, taperScale(shape, h), h);
+  if (part === "taper") {
+    const y = (shape.taper ?? 0) < 0 ? 0 : h;
+    return along(s.taper, taperScale(shape, y), y);
+  }
   if (part === "bevel") {
     const y = h - (shape.bevel ?? 0) * maxBevelRadius(shape);
     return along(s.bevel, taperScale(shape, y), y);
@@ -808,7 +813,7 @@ function profileUpdate(
   if (!at) return { patches: {}, label: "" };
   const v = profileAlong(shape, part, at) - (drag.grab as number);
   if (part === "taper") {
-    const taper = round2(Math.min(1, Math.max(0, snap(1 - v))));
+    const taper = round2(Math.min(1, Math.max(-1, snap((shape.taper ?? 0) < 0 ? v - 1 : 1 - v))));
     return { patches: { [shape.id]: { taper: kept(taper, shape.taper, 0) } }, label: `taper ${taper.toFixed(2)}` };
   }
   const wall = round2(Math.min(maxWall(shape), Math.max(MIN_WALL, mods.snap ? snapTo(v, (mods.settings ?? DEFAULT_SNAP).elevation) : v)));

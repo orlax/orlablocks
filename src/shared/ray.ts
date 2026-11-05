@@ -151,7 +151,7 @@ export function surfaceUnder(ray: Ray, shapes: Shape[], opts: { slopes?: boolean
     const frame = shapeFrame(s);
     if (s.kind === "room") {
       const { inner, walls } = roomWalls(s);
-      consider(s.id, s.y, "floor", (p) => pointInRings(inner, p), frame);
+      if (s.floor !== false) consider(s.id, s.y, "floor", (p) => pointInRings(inner, p), frame);
       consider(s.id, s.y + s.height, "wall top", (p) => pointInRings(walls, p), frame);
     } else {
       // The flat part of the top: the last ring (smaller with a taper, inset by a bevel; none once it's a point).

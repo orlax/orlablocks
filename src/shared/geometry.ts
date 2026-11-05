@@ -160,6 +160,24 @@ export function sampleOutline(points: FootPoint[]): { polygon: Point[]; edge: nu
  *   4, every axis). A smooth one is drawn and picked with SMOOTH_SEGMENTS corners.
  * - A free-form: its sampled outline; its frame is the world's, or for a tilted one (14.4) its outline's center.
  */
+/** Samples an arc without duplicating the full circle seam. Angles follow the local +x toward -z convention. */
+export function cylinderArc(shape: Cylinder, radius = shape.width / 2): Point[] {
+  const { from, sweep } = shape.arc!;
+  const n = Math.max(1, Math.ceil(SMOOTH_SEGMENTS * sweep / 360));
+  return Array.from({ length: sweep === 360 ? n : n + 1 }, (_, i) => {
+    const a = (from + sweep * i / n) * Math.PI / 180;
+    return { x: radius * Math.cos(a), z: -radius * Math.sin(a) };
+  });
+}
+
+/** Arc restrictions apply to the final pose/size, including edits and nonuniform resize. */
+export function arcProblem(shape: Shape): string | null {
+  if (!("arc" in shape) || !shape.arc) return null;
+  if (shape.type !== "cylinder" || shape.kind !== "room" || shape.sides !== undefined || Math.abs(shape.width - shape.depth) > 1e-8)
+    return "arc requires a smooth circular room cylinder (equal width/depth, no sides)";
+  return null;
+}
+
 export function localFootprint(shape: ClosedShape): Point[] {
   if (shape.type === "freeform") {
     const polygon = sampleOutline(shape.points).polygon;
@@ -170,6 +188,10 @@ export function localFootprint(shape: ClosedShape): Point[] {
   const hw = shape.width / 2;
   const hd = shape.depth / 2;
   if (shape.type === "cylinder") {
+    if (shape.arc) {
+      const rim = cylinderArc(shape);
+      return shape.arc.sweep === 360 ? rim : [{ x: 0, z: 0 }, ...rim];
+    }
     const n = shape.sides ?? SMOOTH_SEGMENTS;
     return Array.from({ length: n }, (_, i) => {
       const a = ((i + 0.5) * 2 * Math.PI) / n;
@@ -242,6 +264,10 @@ export function toLocal3(shape: Solid, p: Point3): Point3 {
 
 /** A tilted shape's points in the world (its rings' corners): what its bounds and its outline on the ground come from. */
 function tiltedPoints(shape: ClosedShape): Point3[] {
+  if (shape.kind === "room") {
+    const rings = roomWalls(shape).walls;
+    return [0, shape.height].flatMap((y) => rings.flatMap((ring) => ring.map((p) => toWorld3(shape, { ...p, y }))));
+  }
   return volumeRings(shape).flatMap(({ ring, y }) => ring.map((p) => toWorld3(shape, { x: p.x, y, z: p.z })));
 }
 
@@ -280,7 +306,9 @@ export const groundPoints = (shape: Shape): Point[] =>
       ? rampEdges(shape).flat()
       : isTilted(shape)
         ? tiltedPoints(shape)
-        : footprint(shape);
+        : shape.type === "cylinder" && shape.arc && shape.floor === false
+          ? roomWalls(shape).walls.flat().map((p) => fromShapeLocal(shapeFrame(shape), p))
+          : footprint(shape);
 
 /** An array's ground points: its items' shapes, or its layout's when it has no items. */
 function arrayGround(array: Extract<Shape, { type: "array" }>): Point[] {
@@ -307,8 +335,8 @@ export function centroid(poly: Point[]): Point {
 
 /**
  * The rings a volume is built from, from 0 up to its height, in its own frame. Without a taper or a bevel it's the
- * footprint at the bottom and the top. `taper` (0..1) scales the outline toward its center linearly up the height,
- * to 1 − taper at the top (1 = a point). `bevel` (0..1) rounds the top edge along a quarter circle of radius
+ * footprint at the bottom and the top. Positive taper scales toward the center up the height; negative taper
+ * scales toward the center down the height (-1 = bottom point, +1 = top point). Neither enlarges the footprint. `bevel` (0..1) rounds the top edge along a quarter circle of radius
  * bevel × min(height, the top's half smallest extent), in BEVEL_SEGMENTS rings.
  * - A box or cylinder shrinks by the same distance on its width and depth: a true inset, so the rounding is even.
  * - A free-form scales toward its outline's area centroid (a true inset of a concave outline would change its
@@ -337,9 +365,9 @@ export function volumeRings(shape: ClosedShape): { ring: Point[]; y: number }[] 
       return base.map((p) => ({ x: c.x + (p.x - c.x) * s, z: c.z + (p.z - c.z) * s }));
     };
   }
-  const scale = (y: number) => 1 - (taper * y) / h;
+  const scale = (y: number) => taper < 0 ? 1 + taper * (1 - y / h) : 1 - taper * y / h;
   const r = bevel * Math.min(h, scale(h) * half);
-  const stack = [{ ring: base, y: 0 }];
+  const stack = [{ ring: ringAt(scale(0), 0), y: 0 }];
   if (r < 1e-6) stack.push({ ring: ringAt(scale(h), 0), y: h });
   else {
     for (let j = 0; j <= BEVEL_SEGMENTS; j++) {
@@ -622,7 +650,17 @@ export function roomWalls(shape: ClosedShape): { outer: Point[][]; inner: Point[
   if (cached) return cached;
   const local = localFootprint(shape);
   let result: { outer: Point[][]; inner: Point[][]; walls: Point[][] };
-  if (Math.abs(signedArea2(local)) < 1e-9) result = { outer: [], inner: [], walls: [] };
+  if (shape.type === "cylinder" && shape.arc) {
+    const outer = cylinderArc(shape);
+    const radius = Math.max(0, shape.width / 2 - wallOf(shape));
+    const inner = radius > 1e-9 ? cylinderArc(shape, radius) : [];
+    const full = shape.arc.sweep === 360;
+    const inside = inner.length ? (full ? inner : [{ x: 0, z: 0 }, ...inner]) : [];
+    const wall = full ? [outer, ...(inner.length ? [[...inner].reverse()] : [])]
+      : [[...outer, ...(inner.length ? [...inner].reverse() : [{ x: 0, z: 0 }])]];
+    result = { outer: [local], inner: inside.length ? [inside] : [], walls: wall };
+  }
+  else if (Math.abs(signedArea2(local)) < 1e-9) result = { outer: [], inner: [], walls: [] };
   else {
     const convex = isFootprinted(shape);
     const inner = offsetRings(local, -wallOf(shape), convex);
@@ -647,7 +685,7 @@ function polygonBounds(poly: Point[]) {
  * cylinder's from its true ellipse, not the drawn polygon), from the sampled outline for a free-form.
  */
 export function footprintBounds(shape: Shape): { minX: number; maxX: number; minZ: number; maxZ: number } {
-  if (!isFootprinted(shape) || isTilted(shape) || (shape.type === "cylinder" && shape.sides !== undefined)) return polygonBounds(groundPoints(shape));
+  if (!isFootprinted(shape) || isTilted(shape) || (shape.type === "cylinder" && (shape.sides !== undefined || shape.arc !== undefined))) return polygonBounds(groundPoints(shape));
   const a = (shape.rotation * Math.PI) / 180;
   const cos = Math.abs(Math.cos(a));
   const sin = Math.abs(Math.sin(a));
@@ -799,6 +837,7 @@ export const CIRCLE_HANDLE = 0.5523;
  * so it stays a true circle or oval to edit. The points go counterclockwise seen from above, from local +x.
  */
 export function toFreeformPoints(shape: Box | Cylinder): FootPoint[] {
+  if (shape.type === "cylinder" && shape.arc) return localFootprint(shape).map((p) => fromShapeLocal(shape, p));
   if (shape.type === "box" || shape.sides !== undefined) return roundPoints(footprint(shape));
   const { ex, ez } = shapeAxes(shape);
   const world = (l: Offset) => ({ x: l.x * ex.x + l.z * ez.x, z: l.x * ex.z + l.z * ez.z });
@@ -942,6 +981,11 @@ export function rotateAround(shapes: Shape[], pivot: Point, degrees: number): Re
  * center and size; a free-form's points (and handles) stretch with the frame, along its own (possibly turned) axes.
  */
 export function resizeShape(shape: Shape, from: Frame, to: { x: number; z: number; width: number; depth: number }): ShapePatch {
+  if (shape.type === "cylinder" && shape.arc) {
+    const widthChanged = Math.abs(to.width / from.width - 1) >= Math.abs(to.depth / from.depth - 1);
+    const diameter = widthChanged ? to.width : to.depth;
+    return { x: to.x, z: to.z, width: diameter, depth: diameter };
+  }
   if (isFootprinted(shape) || shape.type === "terrain") return { x: to.x, z: to.z, width: to.width, depth: to.depth };
   if (shape.type === "line" || shape.type === "ramp" || shape.type === "note" || shape.type === "instance" || shape.type === "array") return {}; // these have no scale handles
   const sx = from.width > 0 ? to.width / from.width : 1;
@@ -1169,7 +1213,9 @@ export function mirrorShape(shape: Shape, axis: MirrorAxis, sum: number): ShapeP
   const flipsPitch = axis === "z" || odd;
   if (shape.pitch !== undefined && flipsPitch) tilt.pitch = flip(shape.pitch);
   if (shape.roll !== undefined && !flipsPitch) tilt.roll = flip(shape.roll);
-  return axis === "x" ? { x: round2(sum - shape.x), rotation, ...tilt } : { z: round2(sum - shape.z), rotation, ...tilt };
+  const arc = shape.type === "cylinder" && shape.arc
+    ? { arc: { from: normalizeDeg((axis === "x" ? 180 : 0) - shape.arc.from - shape.arc.sweep), sweep: shape.arc.sweep } } : {};
+  return axis === "x" ? { x: round2(sum - shape.x), rotation, ...tilt, ...arc } : { z: round2(sum - shape.z), rotation, ...tilt, ...arc };
 }
 
 /**

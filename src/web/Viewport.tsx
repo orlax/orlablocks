@@ -234,7 +234,7 @@ const DRAWS: Partial<Record<Tool, "box" | "cylinder" | "terrain">> = { box: "box
 type Footprint = { x: number; z: number; width: number; depth: number };
 /** What the draft being drawn is. */
 /** The next shape's kind-specific fields (a room's wall, a volume's taper and bevel); a missing one is the default. */
-export type KindFields = Partial<Record<KindField, number>>;
+export type KindFields = { [K in KindField]?: K extends "floor" ? boolean : number };
 
 /** The kind-specific fields a new shape of this kind gets: only the ones its kind has. */
 const fieldsFor = (kind: ShapeKind, fields: KindFields): KindFields =>

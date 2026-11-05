@@ -1,6 +1,7 @@
 import { terrainProblems, isTerrainSource, terrainSources, terrainInputIds } from "../shared/terrain";
 import type { z } from "zod";
 import {
+  arcProblem,
   boundsOf,
   footprintBounds,
   isFootprinted,
@@ -187,6 +188,8 @@ const FIELD_VERBS: Record<keyof NodePatch, string> = {
   rotation: "rotate",
   color: "recolor",
   sides: "change sides of",
+  floor: "change floor of",
+  arc: "change arc of",
   wall: "change walls of",
   taper: "taper",
   bevel: "bevel",
@@ -223,7 +226,7 @@ const ARRAY_FIELDS: readonly string[] = ["name", "parent", "locked", "hidden", "
 const ARRAY_ONLY = ["entities", "layout", "facing", "jitter", "turnJitter", "seed", "skip"] as const;
 
 /** What a kind-specific field is called in errors ("only a room has walls"). */
-const KIND_FIELD_NOUNS: Record<KindField, string> = { wall: "walls", taper: "a taper", bevel: "a bevel", pitch: "a pitch", roll: "a roll" };
+const KIND_FIELD_NOUNS: Record<KindField, string> = { floor: "a floor", wall: "walls", taper: "a taper", bevel: "a bevel", pitch: "a pitch", roll: "a roll" };
 const kindFieldProblem = (f: KindField, kind: ShapeKind) => `only a ${KIND_FIELDS[f].join(" or a ")} has ${KIND_FIELD_NOUNS[f]} (this is a ${kind})`;
 const kindAllows = (f: KindField, kind: ShapeKind) => (KIND_FIELDS[f] as readonly ShapeKind[]).includes(kind);
 
@@ -603,6 +606,8 @@ export function createSceneStore({
       const node = nodes.get(id);
       if (node && node.type !== "box" && node.type !== "cylinder") {
         errors.push(`${prefix}[${i}]: "${id}" is a ${node.type}; only boxes and cylinders convert to free-forms`);
+      } else if (node?.type === "cylinder" && node.arc) {
+        errors.push(`${prefix}[${i}]: arc rooms cannot convert faithfully to free-form perimeter walls; clear arc first`);
       } else if (node && isTilted(node)) {
         errors.push(`${prefix}[${i}]: "${id}" is tilted, and a free-form can't be; set its pitch and roll to 0 first`);
       }
@@ -624,6 +629,7 @@ export function createSceneStore({
         y: n.y,
         height: n.height,
         color: n.color,
+        ...(n.floor !== undefined ? { floor: n.floor } : {}),
         ...(n.wall !== undefined ? { wall: n.wall } : {}),
         ...(n.taper !== undefined ? { taper: n.taper } : {}),
         ...(n.bevel !== undefined ? { bevel: n.bevel } : {}),
@@ -1084,7 +1090,7 @@ export function createSceneStore({
         const height = d.height ?? DEFAULT_HEIGHT[d.kind];
         checkSizes(prefix, { ...(d.type === "freeform" ? {} : { width: d.width, depth: d.depth }), height }, errors);
         for (const f of Object.keys(KIND_FIELDS) as KindField[]) {
-          if ((d as Partial<Record<KindField, number>>)[f] !== undefined && !kindAllows(f, d.kind)) {
+          if ((d as Partial<Record<KindField, number | boolean>>)[f] !== undefined && !kindAllows(f, d.kind)) {
             errors.push(`${prefix}.${f}: ${kindFieldProblem(f, d.kind)}`);
           }
         }
@@ -1100,6 +1106,7 @@ export function createSceneStore({
           y: round2(d.y ?? 0),
           height: round2(height),
           color: d.color ?? DEFAULT_COLOR,
+          ...(d.floor !== undefined ? { floor: d.floor } : {}),
           ...(wall !== undefined ? { wall } : {}),
           ...(taper !== undefined ? { taper } : {}),
           ...(bevel !== undefined ? { bevel } : {}),
@@ -1115,8 +1122,11 @@ export function createSceneStore({
         }
         const type = d.type ?? "box";
         if (d.sides !== undefined && type !== "cylinder") errors.push(`${prefix}.sides: only a cylinder has sides (this is a ${type})`);
+        if (d.arc !== undefined && (type !== "cylinder" || d.kind !== "room" || d.sides !== undefined || round2(d.width) !== round2(d.depth)))
+          errors.push(`${prefix}.arc: arc requires a smooth circular room cylinder (equal width/depth, no sides)`);
         return {
           type,
+          ...(type === "cylinder" && d.arc ? { arc: { from: normalizeRotation(d.arc.from), sweep: d.arc.sweep } } : {}),
           ...(type === "cylinder" && d.sides !== undefined ? { sides: d.sides } : {}),
           ...common,
           x: round2(d.x),
@@ -1235,7 +1245,7 @@ export function createSceneStore({
           if (fields.entity !== undefined && node.type !== "instance") errors.push(`changes[${i}].entity: only an instance shows an entity ("${id}" is a ${node.type})`);
           if (node.type === "instance") {
             const notInstance = (
-              ["kind", "width", "depth", "height", "sides", "wall", "taper", "bevel", "points", "tags", "thickness", "dashed", "arrow", "step", "base", "color", "text", "label", "status"] as const
+              ["kind", "width", "depth", "height", "sides", "floor", "arc", "wall", "taper", "bevel", "points", "tags", "thickness", "dashed", "arrow", "step", "base", "color", "text", "label", "status"] as const
             ).filter((k) => fields[k] !== undefined);
             if (notInstance.length > 0) {
               errors.push(
@@ -1258,7 +1268,7 @@ export function createSceneStore({
           }
           if (node.type === "note") {
             const notNote = (
-              ["kind", "width", "depth", "height", "rotation", "sides", "wall", "taper", "bevel", "pitch", "roll", "points", "tags", "thickness", "dashed", "arrow", "step", "base"] as const
+              ["kind", "width", "depth", "height", "rotation", "sides", "floor", "arc", "wall", "taper", "bevel", "pitch", "roll", "points", "tags", "thickness", "dashed", "arrow", "step", "base"] as const
             ).filter((k) => fields[k] !== undefined);
             if (notNote.length > 0) {
               errors.push(`changes[${i}]: "${id}" is a note, with no ${notNote.join(", ")}: it has x, y, z, text, label, color and status`);
@@ -1275,7 +1285,7 @@ export function createSceneStore({
             errors.push(`changes[${i}]: only a ramp has ${rampOnly.join(", ")} ("${id}" is a ${node.type})`);
           }
           if (node.type === "ramp") {
-            const notRamp = (["x", "z", "y", "depth", "height", "rotation", "wall", "taper", "bevel", "pitch", "roll"] as const).filter(
+            const notRamp = (["x", "z", "y", "depth", "height", "rotation", "floor", "arc", "wall", "taper", "bevel", "pitch", "roll"] as const).filter(
               (k) => fields[k] !== undefined,
             );
             if (notRamp.length > 0) {
@@ -1291,7 +1301,7 @@ export function createSceneStore({
             errors.push(`changes[${i}]: only a line has ${lineOnly.join(", ")} ("${id}" is a ${node.type})`);
           }
           if (node.type === "line") {
-            const closedOnly = (["kind", "x", "z", "y", "width", "depth", "height", "rotation", "wall", "taper", "bevel", "pitch", "roll"] as const).filter(
+            const closedOnly = (["kind", "x", "z", "y", "width", "depth", "height", "rotation", "floor", "arc", "wall", "taper", "bevel", "pitch", "roll"] as const).filter(
               (k) => fields[k] !== undefined,
             );
             if (closedOnly.length > 0) {
@@ -1337,6 +1347,14 @@ export function createSceneStore({
         if (fields.rotation !== undefined) patch.rotation = normalizeRotation(fields.rotation);
         if (fields.kind !== undefined) patch.kind = fields.kind;
         if (fields.color !== undefined) patch.color = fields.color;
+        if (fields.floor !== undefined) {
+          if (!isClosed(node)) errors.push(`changes[${i}].floor: only closed rooms have a floor`);
+          patch.floor = fields.floor;
+        }
+        if (fields.arc !== undefined) {
+          if (node.type !== "cylinder") errors.push(`changes[${i}].arc: only a smooth circular room cylinder supports arc`);
+          patch.arc = fields.arc === null ? undefined : { from: normalizeRotation(fields.arc.from), sweep: fields.arc.sweep };
+        }
         if (fields.sides !== undefined) patch.sides = fields.sides ?? undefined;
         if (fields.wall !== undefined) patch.wall = fields.wall === null ? undefined : wallValue(`changes[${i}].wall`, fields.wall, errors);
         if (fields.taper !== undefined) patch.taper = fraction(fields.taper);
@@ -1436,6 +1454,10 @@ export function createSceneStore({
         if (fields.locked !== undefined) patch.locked = fields.locked || undefined;
         if (fields.hidden !== undefined) patch.hidden = fields.hidden || undefined;
 
+        if (!isGroup(node)) {
+          const problem = arcProblem({ ...node, ...patch } as Shape);
+          if (problem) errors.push(`changes[${i}]: ${problem}; clear arc with null in the same edit if needed`);
+        }
         // Keep only what differs from the node as it is.
         const effective: NodePatch = {};
         for (const key of Object.keys(patch) as (keyof NodePatch)[]) {
@@ -1700,6 +1722,8 @@ export function createSceneStore({
         if (next.type === "terrain") checkSizes(prefix, next, errors);
         if (isClosed(next)) {
           checkSizes(prefix, next, errors);
+          const problem = arcProblem(next);
+          if (problem) errors.push(`${prefix}: ${problem}`);
           if (next.kind === "room" && next.wall !== undefined) patch.wall = wallValue(`${prefix}.wall`, next.wall, errors);
         }
         if (next.type === "ramp") {

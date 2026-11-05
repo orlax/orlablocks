@@ -679,8 +679,8 @@ function closedOutline(shape: ClosedShape, top: boolean, d: number): FootPoint[]
     return [...ccw.slice(k), ...ccw.slice(0, k)];
   };
   // A tapered or beveled volume's top is its top ring.
-  if (top && (shape.taper || shape.bevel)) {
-    const ring = inset(world(volumeRings(shape).at(-1)!.ring));
+  if ((top && (shape.taper || shape.bevel)) || (!top && (shape.taper ?? 0) < 0)) {
+    const ring = inset(world(top ? volumeRings(shape).at(-1)!.ring : volumeRings(shape)[0].ring));
     return ring && ring.length >= 3 ? fromFirst(ring) : null;
   }
   if (shape.type === "box") {

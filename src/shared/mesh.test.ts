@@ -298,3 +298,50 @@ describe("ramp meshes stay closed whatever their numbers", () => {
     for (const r of [river, slope, spiral, { ...spiral, step: 0.25 }]) expect(watertight(rampMesh(r)!)).toBe(true);
   });
 });
+
+// 19.4 mesh fixtures; intentionally not executed during implementation at Orlando's request.
+describe("19.4 rooms and inverted taper", () => {
+  const gallery = (sweep: number, floor = true, wall = 2): Cylinder => ({
+    ...base, id: "cylinder_gallery", type: "cylinder", kind: "room", x: 0, z: 0,
+    width: 20, depth: 20, height: 3, wall, floor, arc: { from: 252, sweep },
+  });
+
+  it("closes annular arc ends and sector slabs without full-height walls across the atrium", () => {
+    for (const sweep of [0.01, 101, 296, 359.99, 360]) {
+      const { body, floor } = shapeMesh(gallery(sweep));
+      expect(body).not.toBeNull();
+      expect(watertight(body!)).toBe(true);
+      expect(volume(body!)).toBeGreaterThan(0);
+      expect(watertight(floor!)).toBe(true);
+      expect(volume(floor!)).toBeGreaterThan(0);
+      for (let i = 0; i < body!.positions.length; i += 3)
+        expect(Math.hypot(body!.positions[i], body!.positions[i + 2])).toBeGreaterThanOrEqual(8 - 1e-8);
+      expect(shapeMesh(gallery(sweep, false)).floor).toBeNull();
+      const wide = shapeMesh(gallery(sweep, false, 4)).body!;
+      expect(Math.max(...wide.positions.filter((_, i) => i % 3 !== 1).map(Math.abs))).toBeLessThanOrEqual(10);
+    }
+  });
+
+  it("omits floors for all room shapes while preserving walls", () => {
+    const room = box({ kind: "room", floor: false });
+    const forms: (Box | Cylinder | Freeform)[] = [room, gallery(296, false), {
+      ...base, id: "freeform_room", type: "freeform", kind: "room", floor: false, height: 3,
+      points: [{ x: 0, z: 0 }, { x: 4, z: 0 }, { x: 4, z: 4 }, { x: 0, z: 4 }],
+    }];
+    for (const shape of forms) {
+      expect(shapeMesh(shape).floor).toBeNull();
+      expect(watertight(shapeMesh(shape).body!)).toBe(true);
+      expect(hitMesh(shape)).not.toBeNull();
+    }
+  });
+
+  it("keeps bottom-point and top-point volumes closed with outward normals", () => {
+    for (const taper of [-1, -0.5, 0, 0.5, 1]) for (const bevel of [0, 0.5]) {
+      const mesh = shapeMesh(box({ taper, bevel })).body!;
+      expect(mesh).not.toBeNull();
+      expect(watertight(mesh)).toBe(true);
+      expect(volume(mesh)).toBeGreaterThan(0);
+      expect(Math.max(...mesh.positions.filter((_, i) => i % 3 === 0).map(Math.abs))).toBeLessThanOrEqual(2);
+    }
+  });
+});

@@ -235,6 +235,12 @@ const GUIDE: Record<Exclude<GuideTopic, "design">, string> = {
     "edits have their own undo history (the human's Library panel), separate from the scene's. Design with the " +
     "player's skills: a space that asks for @telekinesis needs something #light to move.",
   shapes:
+    "ROOM OPTIONS: floor: false removes the floor from box, cylinder and free-form rooms, leaving perimeter walls; omitted/true keeps the existing 0.04 m slab above y. " +
+    "Smooth circular room cylinders (equal width/depth, no sides) also accept arc: { from, sweep }: local degrees CCW from east (+x toward -z), composed with rotation, 0 < sweep <= 360. " +
+    "Partial arcs have annular walls and closed radial end faces across wall thickness only, never walls to the center. With floor enabled the slab covers the sector. Full 360 has no seam end faces. " +
+    "Wall thickness grows inward without moving the outer radius; at/above the radius the interior closes. arc: null in update_nodes restores a full cylinder. " +
+    "Arcs resize circularly with viewport handles; unequal numeric width/depth, sides or non-room kinds reject unless arc is cleared in the same update. " +
+    "Arc rooms cannot convert faithfully to free-form perimeter walls; conversion rejects until arc is cleared. Copies, uniform scaling and mirrors retain arc geometry. " +
     `A box's footprint is CENTERED at (x, z), with \`width\` along the box's local x and \`depth\` along its local z. It ` +
     "rises from its elevation `y` (its bottom: 0 = on the ground, negative = below ground) to y + height, so to stack " +
     "box B on box A, set B.y = A.y + A.height. `rotation` turns a box around the vertical axis through its center, in " +
@@ -266,8 +272,8 @@ const GUIDE: Record<Exclude<GuideTopic, "design">, string> = {
     "the name, group, kind, color, y, height and place in the list. Don't compute circle handles by hand. " +
     "Every shape records who created it (human or agent).",
   volumes:
-    "A volume or a hole (of any closed shape) can have two fractions: `taper` 0..1 shrinks its top toward its center " +
-    "(1 = a point: a box becomes a pyramid, a cylinder a cone) and `bevel` 0..1 rounds its top edge (1 = as round as " +
+    "A volume or a hole (of any closed shape) can have two fractions: `taper` -1..1 shrinks its top when positive, or bottom when negative, toward its center " +
+    "(-1 = bottom point, +1 = top point; neither expands the footprint; bevel still rounds the top) and `bevel` 0..1 rounds its top edge (1 = as round as " +
     "it fits: a tall cylinder gets a dome, a box a rounded top); together they make hills and mountains (taper 0.6, " +
     "bevel 0.5). The top stays at y + height, the bottom stays flat. Rooms have neither; making a volume a room drops " +
     "them, and making a room a volume drops its wall. " +
