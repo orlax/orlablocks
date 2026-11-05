@@ -1,5 +1,6 @@
 import { boundsOf, isClosed, isSolid, verticalRange, type Bounds } from "./geometry";
 import type { ClosedShape, SceneNode, Solid } from "./scene.types";
+import { subtreeIds } from "./tree";
 import { isGroup } from "./tree";
 
 /**
@@ -34,8 +35,13 @@ function scopeContainers(nodes: SceneNode[], hole: ClosedShape): Set<string> {
   return out;
 }
 
+/** Source-group holes are terrain-only authoring inputs, never ordinary CSG cutters. */
+export const terrainHoleOwner = (nodes: SceneNode[], hole: ClosedShape) =>
+  nodes.find((t) => t.type === "terrain" && t.source && subtreeIds(nodes, t.source).has(hole.id));
+
 /** The shapes a hole may cut, by the tree (see above), whether or not they overlap it. */
 export function holeScope(nodes: SceneNode[], hole: ClosedShape): Solid[] {
+  if (terrainHoleOwner(nodes, hole)) return [];
   const containers = scopeContainers(nodes, hole);
   return nodes.filter((n): n is Solid => cuttable(n) && containers.has(n.parent ?? TOP));
 }
@@ -70,6 +76,7 @@ export const cutsFloor = (hole: ClosedShape, room: ClosedShape) => verticalRange
  */
 export function holeWarnings(nodes: SceneNode[]): string[] {
   return nodes.filter(isHole).flatMap((hole) => {
+    if (terrainHoleOwner(nodes, hole)) return [];
     if (hole.parent === undefined) return [`${hole.id} is a hole outside any group: it cuts nothing (put it in the group of the shapes it should cut)`];
     if (holeScope(nodes, hole).length === 0) {
       return [`${hole.id} is a hole in ${hole.parent}, but there's nothing to cut in its group, beside it or in the groups beside it`];

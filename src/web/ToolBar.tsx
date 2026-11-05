@@ -79,7 +79,7 @@ export const EDIT_POINTS_HINT =
 const KINDS: { kind: ShapeKind; label: string; icon: LucideIcon }[] = [
   { kind: "room", label: "Room (hollow)", icon: SquareDashed },
   { kind: "volume", label: "Volume (solid)", icon: Square },
-  { kind: "hole", label: "Hole (cuts the shapes in its group, beside its group, and in the groups beside those)", icon: SquareDot },
+  { kind: "hole", label: "Hole (cuts nearby grouped shapes; in terrain sources, cuts only that terrain where the volume meets its surface)", icon: SquareDot },
 ];
 
 /** The floating bar at the bottom: the tools, then undo / redo / clear. */

@@ -320,3 +320,8 @@ Reference material checked during planning:
 - Scratch server 5186 checks pass: MCP terrain edits/order/undo and Unity export, full-resolution 513 GLB HTTP download, source omission, clean plan/sheet/node browser captures and saved shot. Fixtures and Unity project are under `/private/tmp`; main data and Orlando's Unity project were untouched. Reproduce with `scripts/terrain-export-fixtures.ts` and `scripts/unity/TerrainAcceptance.cs` (instructions in `unity/Orlablocks/README.md`).
 - **Acceptance status:** implementation and automated checks for 16.1–16.4 are complete; 16.1 remains human-accepted. Orlando's hands-on/visual check in his actual URP project is still open, especially appearance/materials and ordinary editing at his scene scale. The new Unity checks were headless; they do not claim a visual URP review. Earlier browser/source-edit checks and measurements are recorded under 16.2–16.3.
 - **Next:** human visual acceptance when convenient; plan the separate §10 terrain-aware walking/placement/query integration afterwards. No follow-up integration was silently added to this phase.
+
+### Follow-up research — terrain layers and holes (2026-11-05)
+
+- Orlando requested research into palette-color → Unity TerrainLayer mappings and authoring terrain holes. Findings, official Unity references, ownership/compatibility risks and proposed verification are in `thinking-12-terrain-layers-and-holes.md`.
+- This is a separate follow-up to phase 16's deferred holes, not implementation or acceptance. Terrain-aware queries remain separately deferred. Next: settle cutter semantics/target scope and prepare the follow-up implementation phase; layer mappings can ship independently first.

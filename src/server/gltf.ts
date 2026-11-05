@@ -71,8 +71,12 @@ export function glbFromExport(m: Manifest, bin: Buffer): Buffer {
   };
 
   /** Native Unity terrain heights back into the canonical right-handed grid, with the editor's diagonals. */
-  const terrainMesh = (r: NodeRecord): number => {
-    const { resolution: n, offset, size } = r.terrain;
+  const terrainMesh = (r: NodeRecord): number | undefined => {
+    const { resolution: n, offset, size, holes } = r.terrain;
+    const cells = n - 1;
+    if (holes && (holes.resolution !== cells || !Number.isInteger(holes.offset) || holes.offset < 0 || holes.offset + cells * cells > bin.length))
+      throw new Error("Invalid terrain hole payload.");
+    if (holes) for (let i = 0; i < cells * cells; i++) if (bin[holes.offset + i] > 1) throw new Error("Invalid terrain hole sample.");
     if (![129, 257, 513, 1025].includes(n) || offset < 0 || offset % 4 || offset + n * n * 4 > bin.length || size.some((v) => !Number.isFinite(v) || v <= 0))
       throw new Error("Invalid terrain payload; export the scene again.");
     const positions = new Float32Array(n * n * 3), uvs = new Float32Array(n * n * 2);
@@ -87,11 +91,13 @@ export function glbFromExport(m: Manifest, bin: Buffer): Buffer {
       positions[i * 3 + 2] = -size[2] + z * size[2] / (n - 1);
       uvs[i * 2] = x / (n - 1); uvs[i * 2 + 1] = z / (n - 1);
       min[1] = Math.min(min[1], positions[i * 3 + 1]); max[1] = Math.max(max[1], positions[i * 3 + 1]);
-      if (x < n - 1 && z < n - 1) for (const v of [i, i + n, i + 1, i + 1, i + n, i + n + 1]) indices[k++] = v;
+      if (x < cells && z < cells && (!holes || bin[holes.offset + (cells - 1 - z) * cells + x])) for (const v of [i, i + n, i + 1, i + 1, i + n, i + n + 1]) indices[k++] = v;
     }
+    if (!k) return undefined; // All-hole terrain remains an empty hierarchy node, not an invalid zero-count mesh.
+    const drawnIndices = indices.subarray(0, k);
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-    geometry.setIndex(new THREE.BufferAttribute(indices, 1)); geometry.computeVertexNormals();
+    geometry.setIndex(new THREE.BufferAttribute(drawnIndices, 1)); geometry.computeVertexNormals();
     const normals = geometry.getAttribute("normal").array as Float32Array;
     meshes.push({ name: r.name || r.id, primitives: [{
       attributes: {
@@ -99,7 +105,7 @@ export function glbFromExport(m: Manifest, bin: Buffer): Buffer {
         NORMAL: accessor({ bufferView: view(Buffer.from(normals.buffer), 34962), componentType: 5126, count: n * n, type: "VEC3" }),
         TEXCOORD_0: accessor({ bufferView: view(Buffer.from(uvs.buffer), 34962), componentType: 5126, count: n * n, type: "VEC2" }),
       },
-      indices: accessor({ bufferView: view(Buffer.from(indices.buffer), 34963), componentType: 5125, count: indices.length, type: "SCALAR" }),
+      indices: accessor({ bufferView: view(Buffer.from(drawnIndices.buffer, drawnIndices.byteOffset, drawnIndices.byteLength), 34963), componentType: 5125, count: drawnIndices.length, type: "SCALAR" }),
       material: material(r.color, false),
     }] });
     geometry.dispose();

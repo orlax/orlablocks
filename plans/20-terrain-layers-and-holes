@@ -1,0 +1,36 @@
+# 20 — Terrain layers and holes
+
+Read `thinking-12-terrain-layers-and-holes.md` and its phase 16/18 references. Orlando authorized implementation on 2026-11-05 and confirmed volume/surface intersection for holes.
+
+## Scope and decisions
+
+- 20.1: existing Unity Colors mappings gain an optional TerrainLayer reference. External assets are read-only; generated fallback is explicitly matte. Preserve claims, local drift, legacy baselines and Undo.
+- 20.2: existing untilted box/cylinder/free-form Hole shapes inside a terrain source group cut only its owning terrain. Height operations run first, holes union afterwards. No hole Fade. External scene holes, entity/array cutters and terrain-aware gameplay queries remain deferred.
+- Derive one presence value per terrain cell, shared by preview/capture, picking, GLB and Unity. Prototype center sampling against volume intersection; document sub-cell limits. Canonical resolution is retained during edits to terrains containing holes so entrances do not disappear into a coarse drag grid.
+- Explicitly version exported mask data; preserve reading of old exports and protect Unity-painted holes. No scene sample arrays are persisted.
+
+## Required checks
+
+- Unit/store tests: containment, hidden inputs, source-only scope, taper/bevel, final heights, cell boundaries, picking, edit/undo/copy, export row reversal/revisions and GLB empty/partial masks.
+- `npm test`, `npm run typecheck`, web build, `scripts/compile-unity.sh`, diff check.
+- Scratch browser: author/edit/hide/delete/undo holes, clean capture, terrain picking; never use main scene data.
+- Scratch Unity: real importer map/change/clear, matte settings, external assets unchanged, legacy migration, claims/drift, mask/collider orientation, last-hole removal, Undo/Redo/save/reload and compatibility. Reuse existing terrain regression harness.
+- Human acceptance remains Orlando's visual check in his project; automated checks do not substitute for it.
+
+## Progress
+
+### Implementation started — 2026-11-05
+
+- Chosen bounded source-local targeting as the first implementation; no dependency on phase 19.6's proposed target resolver.
+- Next: implement mappings and shared mask, run required checks and record results/limitations here.
+
+### 20.1–20.2 — implemented; human acceptance pending (2026-11-05)
+
+- Colors mappings now accept a TerrainLayer reference, including terrain-only rules, summaries, previews and serialized editing. Mapping changes/clearing apply on Sync; external layer assets remain read-only, and renames retain reference identity. Generated fallback layers explicitly use zero metallic/smoothness and ConstantOnly. Versioned fingerprints migrate after checking old content and protect local sculpt/painted holes. Shared external layers do not force asset forks; generated fallback assets still used by claims remain protected even while unassigned.
+- Source-local untilted box/cylinder/free-form Hole shapes generate a binary presence mask after final heights. Containment uses cell-center surface height and the actual yaw/taper/bevel cross-section. Overlaps union, hidden inputs stop cutting and ordinary CSG cannot consume these source holes. Center sampling was chosen for deterministic grid behavior and bounded evaluation; sub-cell cuts can miss centers and need a finer grid or larger cutter. No walls/floors or general scene-hole terrain targeting were added.
+- Shared evaluation, editor rendering/captures/picking, GLB and native TerrainCollider use the same cells. Hole-bearing terrains retain canonical resolution during edits. Format 3 exports reversed cell rows with validated mask dimensions/ranges/values; version 1 ordinary and version 2 terrain exports remain readable. Missing inline JSON records are normalized for Unity's JsonUtility behavior. Hole-only edits refresh; packaging offsets are excluded from revisions. All-hole GLB terrain retains its hierarchy node without an invalid empty mesh. MCP patch 0.0.45; guides, inspector explanations, README and glossary updated.
+- Verification: **584 unit/store/export tests pass**, typecheck, web production build and importer compilation against **Unity 6000.5.9f1** pass. New real Unity harness: **32 checks pass**, covering map/change/clear, external identity/content, claims, baseline migration/sculpt/painted-hole protection, all mask cells, collider raycasts, hole removal, Undo/Redo, save/reload, partial-Sync rollback and legacy/malformed payloads. The final rerun of the original **44 terrain regression checks also passed**. Evidence: `/private/tmp/orla20-{holes-final,terrain-final}.log`; new harness result: `/private/tmp/orla20-holes-fixtures/terrain20-result.json`.
+- Scratch URP macOS Development player build **succeeded with zero build errors**, Terrain Holes enabled, after correcting persistence/initialization of the temporary renderer asset. Build evidence: `/private/tmp/orla20-build-final.log`; player: `/private/tmp/orla20-build/Terrain20.app`. This is build compatibility, not visual player acceptance.
+- Scratch browser on port 5187 verified both openings, selecting the underground floor through a hole, hide/Undo restoring the opening, a clean saved shot and reload persistence. Screenshot: `/private/tmp/orla20-browser.png`. No main scene data or Orlando's Unity project was modified. Reproducible fixtures/harness: `scripts/terrain-holes-fixtures.ts`, `scripts/unity/TerrainHolesAcceptance.cs`; instructions in Unity README.
+- Flat 256 m terrain with 20 rotated 8 m box cutters, one fresh Node evaluation on this arm64 host: 129/513/1025 samples took **13/71/117 ms** respectively. These are fixture CPU timings, not browser drag guarantees; full-resolution edits of complex terrain remain more expensive.
+- **User steering:** Orlando requested ending further automated verification to reduce token use and will perform final verification himself. No additional checks should be started for this implementation without a new reason/request. Remaining acceptance: update the importer in his project, assign TerrainLayer mappings, check real lighting/tiling, author source-group holes and verify his workflow/player appearance. Terrain-aware gameplay queries remain deferred.

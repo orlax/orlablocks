@@ -63,6 +63,8 @@ namespace Orlablocks
             [Tooltip("The palette key (blue, almost-white, ...)")]
             public string color = "";
             public Material body;
+            [Tooltip("The terrain surface for this palette color; empty: generated matte palette layer") ]
+            public TerrainLayer terrainLayer;
             [Tooltip("A room's floor; empty: the body's")]
             public Material floor;
         }

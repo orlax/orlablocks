@@ -11,8 +11,12 @@ namespace Orlablocks.Editor
     public static class TerrainSync
     {
         static string Key(UnityEngine.Object o) => o == null ? "" : AssetDatabase.GetAssetPath(o);
+        static string AssetKey(UnityEngine.Object o) => o != null && AssetDatabase.TryGetGUIDAndLocalFileIdentifier(o, out var guid, out long local)
+            ? $"{guid}/{local}" : Key(o);
 
-        public static string Fingerprint(GameObject go)
+        public static string Fingerprint(GameObject go) => "v2:" + Fingerprint(go, false);
+
+        static string Fingerprint(GameObject go, bool legacy)
         {
             using var stream = new MemoryStream();
             using var writer = new BinaryWriter(stream);
@@ -26,10 +30,12 @@ namespace Orlablocks.Editor
                 writer.Write(data.size.x); writer.Write(data.size.y); writer.Write(data.size.z);
                 var heights = data.GetHeights(0, 0, data.heightmapResolution, data.heightmapResolution);
                 foreach (float h in heights) writer.Write(h);
+                if (!legacy) foreach (bool surface in data.GetHoles(0, 0, data.holesResolution, data.holesResolution)) writer.Write(surface);
                 foreach (var layer in data.terrainLayers)
                 {
-                    writer.Write(Key(layer));
-                    if (layer == null) continue;
+                    writer.Write(!legacy && !GeneratedLayer(data, layer) ? AssetKey(layer) : Key(layer));
+                    if (layer == null || (!legacy && !GeneratedLayer(data, layer))) continue;
+                    if (!legacy) { writer.Write(layer.metallic); writer.Write(layer.smoothness); writer.Write((int)layer.smoothnessSource); }
                     writer.Write(Key(layer.diffuseTexture));
                     writer.Write(layer.tileSize.x); writer.Write(layer.tileSize.y);
                     if (layer.diffuseTexture != null && layer.diffuseTexture.isReadable)
@@ -46,8 +52,29 @@ namespace Orlablocks.Editor
             return Convert.ToBase64String(sha.ComputeHash(stream.ToArray()));
         }
 
-        public static bool Drifted(OrlaNode node) => node.type == "terrain" && !string.IsNullOrEmpty(node.syncedTerrain)
-            && node.syncedTerrain != Fingerprint(node.gameObject);
+        static bool GeneratedLayer(TerrainData data, TerrainLayer layer)
+        {
+            var path = Key(data);
+            return path.EndsWith(".asset") && Key(layer) == path.Substring(0, path.Length - 6) + "-layer.terrainlayer";
+        }
+
+        static bool HasHoles(TerrainData data)
+        {
+            if (data == null) return false;
+            foreach (bool surface in data.GetHoles(0, 0, data.holesResolution, data.holesResolution)) if (!surface) return true;
+            return false;
+        }
+
+        public static bool CurrentBaseline(OrlaNode node) => node.syncedTerrain?.StartsWith("v2:") == true;
+
+        public static bool Drifted(OrlaNode node)
+        {
+            if (node.type != "terrain" || string.IsNullOrEmpty(node.syncedTerrain)) return false;
+            if (CurrentBaseline(node)) return node.syncedTerrain != Fingerprint(node.gameObject);
+            // Old baselines did not own holes: never adopt or erase existing painted holes silently.
+            var terrain = node.GetComponent<Terrain>();
+            return HasHoles(terrain != null ? terrain.terrainData : null) || node.syncedTerrain != Fingerprint(node.gameObject, true);
+        }
 
         public static bool NeedsDecisionOnRemoval(OrlaNode node) => Drifted(node) ||
             (node.type == "terrain" && string.IsNullOrEmpty(node.syncedTerrain) && !string.IsNullOrEmpty(node.rev));
@@ -59,6 +86,7 @@ namespace Orlablocks.Editor
             if (node.type != "terrain" || !string.IsNullOrEmpty(node.syncedTerrain) || string.IsNullOrEmpty(node.rev)) return false;
             if (node.rev.Split('|')[0] != record.rev) return true;
             var terrain = node.GetComponent<Terrain>(); var data = terrain != null ? terrain.terrainData : null;
+            if (HasHoles(data)) return true;
             if (data == null || data.heightmapResolution != record.terrain.resolution || data.size != NodeRecord.V(record.terrain.size)) return true;
             var expected = binary.Heights(record.terrain); var actual = data.GetHeights(0, 0, data.heightmapResolution, data.heightmapResolution);
             for (int z = 0; z < data.heightmapResolution; z++) for (int x = 0; x < data.heightmapResolution; x++)
@@ -70,13 +98,21 @@ namespace Orlablocks.Editor
         /// <summary>Legacy Levels could share generated assets. Never write through a claimed object's references.</summary>
         public static bool Protected(TerrainData data, Material material)
         {
+            var path = Key(data);
+            // A fallback can be temporarily unassigned while a mapping is active, yet still be used by a claim.
+            var fallback = path.EndsWith(".asset")
+                ? AssetDatabase.LoadAssetAtPath<TerrainLayer>(path.Substring(0, path.Length - 6) + "-layer.terrainlayer") : null;
             foreach (var terrain in UnityEngine.Object.FindObjectsByType<Terrain>(FindObjectsInactive.Include))
             {
                 var other = terrain.terrainData;
                 bool shares = (data != null && other == data) || (material != null && terrain.materialTemplate == material);
                 if (data != null && other != null && !shares)
+                {
                     foreach (var a in other.terrainLayers) foreach (var b in data.terrainLayers)
-                        if (a != null && b != null && (a == b || (a.diffuseTexture != null && a.diffuseTexture == b.diffuseTexture))) shares = true;
+                        if (a != null && b != null && GeneratedLayer(data, b) && (a == b || (a.diffuseTexture != null && a.diffuseTexture == b.diffuseTexture))) shares = true;
+                    foreach (var a in other.terrainLayers)
+                        if (a != null && fallback != null && (a == fallback || (a.diffuseTexture != null && a.diffuseTexture == fallback.diffuseTexture))) shares = true;
+                }
                 if (!shares) continue;
                 for (var t = terrain.transform; t != null; t = t.parent)
                     if (t.GetComponent<OrlaNode>() is OrlaNode n && n.claimed) return true;

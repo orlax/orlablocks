@@ -22,7 +22,7 @@ import { loadManifold, onCutError } from "./manifold";
  */
 
 export const EXPORT_FORMAT = "orlablocks-unity";
-export const EXPORT_VERSION = 2;
+export const EXPORT_VERSION = 3;
 
 type V3 = [number, number, number];
 
@@ -53,7 +53,7 @@ export type NodeRecord = {
   body: MeshRange;
   floor: MeshRange;
   collider: "terrain" | "box" | "mesh" | "none";
-  terrain: { offset: number; resolution: number; size: V3 };
+  terrain: { offset: number; resolution: number; size: V3; holes?: { offset: number; resolution: number } };
   /** An instance or item in something carrying #no-collisions: Unity turns its entity's colliders off, for this one only. */
   noColliders: boolean;
   boxCenter: V3;
@@ -349,8 +349,13 @@ function records(nodes: SceneNode[], baked: Map<string, Baked>, cutIds: Set<stri
         samples.writeFloatLE((f.heights[(n.resolution - 1 - z) * n.resolution + x] - f.min) / size[1], (z * n.resolution + x) * 4);
       const offset = ctx.meshes.bytes;
       ctx.meshes.chunks.push(samples); ctx.meshes.bytes += samples.length;
+      const cells = n.resolution - 1, mask = Buffer.alloc(cells * cells);
+      for (let z = 0; z < cells; z++) for (let x = 0; x < cells; x++)
+        mask[z * cells + x] = f.surface[(cells - 1 - z) * cells + x];
+      const holes = { offset: ctx.meshes.bytes, resolution: cells };
+      ctx.meshes.chunks.push(mask); ctx.meshes.bytes += mask.length;
       return { ...base, position: toUnity(local), color: n.color, collider: noCollisions(n) ? "none" : "terrain",
-        terrain: { offset, resolution: n.resolution, size }, hash: hash16(samples.toString("base64")) };
+        terrain: { offset, resolution: n.resolution, size, holes }, hash: hash16(samples.toString("base64") + mask.toString("base64")) };
     }
     if (n.type === "group") return { ...base, description: n.description ?? "", position: toUnity(local) };
     if (n.type === "array") return { ...base, position: toUnity(local) };
@@ -386,7 +391,7 @@ function records(nodes: SceneNode[], baked: Map<string, Baked>, cutIds: Set<stri
   };
   for (const n of byParent.get("") ?? []) visit(n);
   // A binary offset is packaging, not terrain content: inserting an unrelated mesh must not refresh it.
-  for (const r of out) r.rev = hash16(JSON.stringify({ ...r, rev: "", ...(r.type === "terrain" ? { terrain: { ...r.terrain, offset: 0 } } : {}) }));
+  for (const r of out) r.rev = hash16(JSON.stringify({ ...r, rev: "", ...(r.type === "terrain" ? { terrain: { ...r.terrain, offset: 0, holes: r.terrain.holes ? { ...r.terrain.holes, offset: 0 } : undefined } } : {}) }));
   return out;
 }
 

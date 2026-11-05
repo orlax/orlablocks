@@ -130,3 +130,22 @@ describe("the .glb", () => {
     expect(Math.max(...ys)).toBeCloseTo(8);
   });
 });
+
+it("exports exactly the shared terrain hole cells, rejects bad masks and omits all-hole meshes", () => {
+  const store = createSceneStore();
+  store.drawShapes([{ type: "group", ref: "source" }, { type: "terrain", source: "$source", x: 10, z: 7, width: 32, depth: 16, resolution: 129 }, { type: "box", kind: "hole", parent: "$source", x: 5, z: 3, y: -1, width: 4, depth: 2, height: 2 }], "human");
+  const build = () => buildExport({ nodes: store.getScene().nodes, project: { id: "p", name: "P", description: "" }, scene: { id: "s", name: "S" }, seq: 1, library: EMPTY_LIBRARY });
+  const a = build(), { json, bin } = parse(glbFromExport(a.manifest, a.binary));
+  const t = store.getScene().nodes.find((n): n is Terrain => n.type === "terrain")!;
+  const f = evaluateTerrain(t, store.getScene().nodes);
+  const acc = json.accessors[json.meshes[0].primitives[0].indices], view = json.bufferViews[acc.bufferView];
+  const indices = Array.from(new Uint32Array(bin.buffer.slice(bin.byteOffset + view.byteOffset, bin.byteOffset + view.byteOffset + view.byteLength)));
+  expect(indices).toEqual(f.mesh.indices);
+  const r = a.manifest.nodes.find((n) => n.type === "terrain")!;
+  a.binary[r.terrain.holes!.offset] = 2;
+  expect(() => glbFromExport(a.manifest, a.binary)).toThrow("hole sample");
+  store.updateNodes([{ id: "box_1", x: 10, z: 7, width: 100, depth: 100 }], "human");
+  const empty = build(), result = parse(glbFromExport(empty.manifest, empty.binary)).json;
+  expect(result.nodes.find((n: any) => n.extras?.orlablocks?.id === t.id)?.mesh).toBeUndefined();
+  expect(result.meshes ?? []).toHaveLength(0);
+});

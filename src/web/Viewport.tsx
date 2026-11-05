@@ -1225,7 +1225,7 @@ export function Viewport({
     let distance = best ? Math.hypot(best.point.x - ray.origin.x, best.point.y - ray.origin.y, best.point.z - ray.origin.z) : Infinity;
     for (const s of shapes) {
       if (s.type !== "terrain") continue;
-      const t = previewTerrain(s, terrainPreviewActive);
+      const t = previewTerrain(s, terrainPreviewActive, nodes);
       const f = evaluateTerrain(t, terrainNodes);
       const hit = rayTerrainFirst(ray, t, f);
       const d = hit ? hit.t * Math.hypot(ray.dir.x, ray.dir.y, ray.dir.z) : Infinity;
@@ -2343,7 +2343,7 @@ const Boxes = memo(function Boxes({
         // A part of an instance lights up with it.
         const owner = ownerOf(b.id);
         const highlight = selected.has(b.id) || selected.has(owner) ? "selected" : hovered.has(b.id) || hovered.has(owner) ? "hover" : undefined;
-        if (b.type === "terrain") return <TerrainMesh key={b.id} terrain={previewTerrain(b, terrainPreview)} nodes={nodes} selected={!!highlight} />;
+        if (b.type === "terrain") return <TerrainMesh key={b.id} terrain={previewTerrain(b, terrainPreview, nodes)} nodes={nodes} selected={!!highlight} />;
         if (b.type === "line") return <LineMesh key={b.id} line={b} highlight={highlight} />;
         if (b.type === "note") return <NoteMesh key={b.id} note={b} highlight={highlight} />;
         // Instances and arrays arrive expanded; one here would be a bug upstream.
@@ -2409,7 +2409,7 @@ function TerrainInfluence({ source, nodes, preview = false }: { source: import("
   const rings = useMemo(() => {
     const original = nodes.find((n): n is import("../shared/scene.types").Terrain => n.type === "terrain" && !!n.source && subtreeIds(nodes, n.source).has(source.id));
     if (!original) return [];
-    const t = previewTerrain(original, preview);
+    const t = previewTerrain(original, preview, nodes);
     const field = evaluateTerrain(t, nodes), size = t.resolution;
     const height = (x: number, z: number) => {
       if (Math.abs(x - t.x) > t.width / 2 || Math.abs(z - t.z) > t.depth / 2) return t.y;

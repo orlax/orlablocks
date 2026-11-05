@@ -47,8 +47,8 @@ namespace Orlablocks.Editor
             foreach (var c in m.colors)
             {
                 if (string.IsNullOrEmpty(c.color)) continue;
-                print.Append($"c:{c.color}:{Guid(c.body)}:{Guid(c.floor)};");
-                if (c.body != null || c.floor != null) colors[c.color] = c;
+                print.Append($"c:{c.color}:{Guid(c.body)}:{Guid(c.floor)}:{Guid(c.terrainLayer)};");
+                if (c.body != null || c.floor != null || c.terrainLayer != null) colors[c.color] = c;
             }
             if (print.Length == 0) return;
             using (var md5 = MD5.Create())
@@ -67,6 +67,8 @@ namespace Orlablocks.Editor
         public OrlaMappings.EntityMapping Entity(string id) => id != null && entities.TryGetValue(id, out var e) ? e : null;
 
         /// <summary>A color's own body material, or null for the generated one.</summary>
+        public TerrainLayer TerrainLayer(string color) => color != null && colors.TryGetValue(color, out var c) ? c.terrainLayer : null;
+
         public Material Body(string color) => color != null && colors.TryGetValue(color, out var c) ? c.body : null;
 
         /// <summary>A color's own floor material (its body's if it has no floor), or null for the generated one.</summary>

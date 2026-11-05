@@ -120,7 +120,7 @@ namespace Orlablocks.Editor
                 return string.Join(" · ", rows.Select(t => $"{(t.setLayer ? "Layer " + t.layer + "; " : "")}{t.unityTag} · {t.components.Count} components · flags {t.staticFlags}{(t.keepInBuilds ? " · keep in builds" : "")}"));
             }
             var c = mappings.colors.FirstOrDefault(r => (r.color ?? "") == id);
-            return c == null ? "Unmapped" : $"{(c.body != null ? c.body.name : "Generated body")} · {(c.floor != null ? c.floor.name : "Body floor fallback")}";
+            return c == null ? "Unmapped" : $"{(c.body != null ? c.body.name : "Generated body")} · {(c.floor != null ? c.floor.name : "Body floor fallback")} · {(c.terrainLayer != null ? c.terrainLayer.name : "Generated terrain")}";
         }
         void Grid(float width, float height)
         {
@@ -157,7 +157,7 @@ namespace Orlablocks.Editor
                     var rule = mappings.colors.FirstOrDefault(c => (c.color ?? "") == id);
                     float half = (r.width - 16) / 2;
                     Preview(new Rect(r.x + 5, r.y + 53, half, 64), rule?.body, "Body material");
-                    Preview(new Rect(r.x + 10 + half, r.y + 53, half, 64), rule?.floor, "Floor material");
+                    Preview(new Rect(r.x + 10 + half, r.y + 53, half, 64), rule?.terrainLayer != null ? rule.terrainLayer.diffuseTexture : (UnityEngine.Object)rule?.floor, rule?.terrainLayer != null ? "Terrain layer" : "Floor material");
                     GUI.Label(new Rect(r.x + 5, r.y + 140, r.width - 10, 44), Summary(id), EditorStyles.wordWrappedMiniLabel);
                 }
             }
@@ -237,7 +237,7 @@ namespace Orlablocks.Editor
                     if (EditorGUI.EndChangeCheck()) renamed = row.FindPropertyRelative(key).stringValue;
                     if (tab == 0) EntityDetails(row);
                     else if (tab == 1) TagDetails(row);
-                    else { EditorGUILayout.PropertyField(row.FindPropertyRelative("body")); EditorGUILayout.PropertyField(row.FindPropertyRelative("floor")); }
+                    else { EditorGUILayout.PropertyField(row.FindPropertyRelative("body")); EditorGUILayout.PropertyField(row.FindPropertyRelative("floor")); EditorGUILayout.PropertyField(row.FindPropertyRelative("terrainLayer")); }
                     if (GUILayout.Button("Remove mapping"))
                     {
                         so.ApplyModifiedProperties();

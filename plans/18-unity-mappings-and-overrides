@@ -1,5 +1,7 @@
 # 18 — Unity mapping browser and node overrides
 
+> **Follow-up research (2026-11-05):** `thinking-12-terrain-layers-and-holes.md` investigates adding a TerrainLayer reference to existing color mappings. This does not change phase 18's implementation/acceptance status or introduce per-node terrain overrides.
+
 > **Status: 18.1–18.4 implementation and automated verification are complete. Orlando confirmed the 18.1 scratch prototype; production browser/picker interaction and visual/gameplay acceptance in his project remain open.** Read `thinking-10-unity-mappings-and-overrides.md` first, then `15-unity-export` §16 and `unity/Orlablocks/README.md`. Relevant terrain ownership regressions are in `16-terrains` §13. Phase 17 remains independent. The node-local Override / Clear override workflow follows Orlando’s clarification below; the mapping browser is implemented in 18.2 below.
 
 ## 1. Outcome and scope

@@ -1,5 +1,5 @@
 import { rayMeshFirst } from "./ray";
-import { footprint, pointInPolygon, volumeRings, rampStations, offsetRings, boundsOf } from "./geometry";
+import { footprint, pointInPolygon, volumeRings, rampStations, offsetRings, boundsOf, shapeFrame, toShapeLocal } from "./geometry";
 import { hitMesh, type Mesh } from "./mesh";
 import type { Box, Cylinder, Freeform, Ramp, SceneNode, Terrain, Shape } from "./scene.types";
 import { childrenOf, hiddenIds, subtreeIds } from "./tree";
@@ -9,6 +9,17 @@ export type TerrainSource = Box | Cylinder | Freeform | Ramp;
 export function isTerrainSource(n: SceneNode): n is TerrainSource {
   return n.type === "ramp" ? n.step === undefined :
     (n.type === "box" || n.type === "cylinder" || n.type === "freeform") && n.kind === "volume" && !n.pitch && !n.roll;
+}
+
+/** Hole inputs belong exclusively to their terrain, separate from the height-operation stack. */
+export function isTerrainHole(n: SceneNode): n is Box | Cylinder | Freeform {
+  return (n.type === "box" || n.type === "cylinder" || n.type === "freeform") && n.kind === "hole" && !n.pitch && !n.roll;
+}
+
+export function terrainHoles(t: Terrain, nodes: SceneNode[]) {
+  const owned = t.source ? subtreeIds(nodes, t.source) : new Set<string>();
+  const hidden = hiddenIds(nodes);
+  return nodes.filter(isTerrainHole).filter((n) => owned.has(n.id) && !hidden.has(n.id));
 }
 
 /** The upper boundary; ramp edges retain their height along a rising/curved path. */
@@ -29,7 +40,7 @@ export function terrainInfluence(s: TerrainSource): { x: number; z: number }[][]
   return s.terrain?.fade ? offsetRings(ring, s.terrain.fade, false) : [ring];
 }
 
-export type Heightfield = { heights: Float32Array; min: number; max: number; mesh: Mesh };
+export type Heightfield = { surface: Uint8Array; holeCells: number; heights: Float32Array; min: number; max: number; mesh: Mesh };
 
 /** Same depth-first order as the fully expanded outliner, independent of collapsed UI state. */
 export function terrainSources(terrain: Terrain, nodes: SceneNode[]): TerrainSource[] {
@@ -69,8 +80,8 @@ export function terrainProblems(nodes: SceneNode[]): string[] {
       if (owned.has(n.id)) errors.push(`${t.id}: source overlaps ${owned.get(n.id)}`);
       owned.set(n.id, t.id);
       if (n.type === "group" || n.type === "note" || n.type === "line") continue;
-      if (!isTerrainSource(n))
-        errors.push(`${n.id}: terrain sources support untilted box, cylinder and free-form volumes and smooth ramps only (no rooms, holes, stairs, instances or arrays)`);
+      if (!isTerrainSource(n) && !isTerrainHole(n))
+        errors.push(`${n.id}: terrain sources support untilted box, cylinder and free-form volumes, holes and smooth ramps only (no rooms, stairs, tilted cutters, instances or arrays)`);
     }
   }
   return errors;
@@ -93,12 +104,12 @@ const sourceKey = (s: TerrainSource) => {
 };
 
 /** The same preview rule for meshes, picking and influence outlines. Canonical callers never opt into it. */
-export const previewTerrain = (t: Terrain, active: boolean): Terrain => active && t.resolution > 129 ? { ...t, resolution: 129 } : t;
+export const previewTerrain = (t: Terrain, active: boolean, nodes: SceneNode[] = []): Terrain => active && t.resolution > 129 && !terrainHoles(t, nodes).length ? { ...t, resolution: 129 } : t;
 
 /** Rasterize only the affected rectangle per input; ordered operations remain identical to canonical evaluation. */
 export function evaluateTerrain(t: Terrain, nodes: SceneNode[]): Heightfield {
-  const sources = terrainSources(t, nodes);
-  const key = JSON.stringify([t.x, t.y, t.z, t.width, t.depth, t.resolution, sources.map(sourceKey)]);
+  const sources = terrainSources(t, nodes), holes = terrainHoles(t, nodes);
+  const key = JSON.stringify([t.x, t.y, t.z, t.width, t.depth, t.resolution, sources.map(sourceKey), holes.map(sourceKey)]);
   const cached = cache.get(t.id);
   if (cached?.key === key) { cache.delete(t.id); cache.set(t.id, cached); return cached.result; }
   const n = t.resolution, dx = t.width / (n - 1), dz = t.depth / (n - 1);
@@ -169,9 +180,36 @@ export function evaluateTerrain(t: Terrain, nodes: SceneNode[]): Heightfield {
     const i = z * n + x, h = heights[i]; min = Math.min(min, h); max = Math.max(max, h);
     positions[i * 3] = x0 + x * dx; positions[i * 3 + 1] = h; positions[i * 3 + 2] = z0 + z * dz;
   }
-  const result = { heights, min, max, mesh: { positions, indices } };
+  // A hole removes a whole cell when the center of its final surface lies in the cutter volume.
+  // At the shared diagonal the two triangles agree: center height is the mean of opposite vertices.
+  const cells = n - 1, surface = new Uint8Array(cells * cells).fill(1);
+  for (const hole of holes) {
+    const rings = volumeRings(hole), frame = shapeFrame(hole), b = boundsOf([hole]);
+    const loX = Math.max(0, Math.ceil((b.minX - x0) / dx - .5));
+    const hiX = Math.min(cells - 1, Math.floor((b.maxX - x0) / dx - .5));
+    const loZ = Math.max(0, Math.ceil((b.minZ - z0) / dz - .5));
+    const hiZ = Math.min(cells - 1, Math.floor((b.maxZ - z0) / dz - .5));
+    for (let z = loZ; z <= hiZ; z++) for (let x = loX; x <= hiX; x++) {
+      const cell = z * cells + x;
+      if (!surface[cell]) continue;
+      const i = z * n + x, y = (heights[i + 1] + heights[i + n]) / 2 - hole.y;
+      if (y < -1e-7 || y > hole.height + 1e-7) continue;
+      const p = toShapeLocal(frame, { x: x0 + (x + .5) * dx, z: z0 + (z + .5) * dz });
+      for (let j = 1; j < rings.length; j++) {
+        const a = rings[j - 1], b = rings[j];
+        if (y > b.y + 1e-7) continue;
+        const u = Math.max(0, Math.min(1, (y - a.y) / (b.y - a.y || 1)));
+        const ring = a.ring.map((p, k) => ({ x: p.x + u * (b.ring[k].x - p.x), z: p.z + u * (b.ring[k].z - p.z) }));
+        if (pointInPolygon(ring, p)) surface[cell] = 0;
+        break;
+      }
+    }
+  }
+  const holeCells = surface.reduce((count, v) => count + (v === 0 ? 1 : 0), 0), hasHoles = holeCells > 0;
+  if (hasHoles) indices = indices.filter((_, i) => surface[Math.floor(i / 6)] !== 0);
+  const result = { heights, surface, holeCells, min, max, mesh: { positions, indices } };
   if (cached) { cachedBytes -= cached.bytes; cache.delete(t.id); }
-  const bytes = heights.byteLength + positions.length * 8;
+  const bytes = heights.byteLength + surface.byteLength + positions.length * 8 + (hasHoles ? indices.length * 8 : 0);
   while (cache.size && (cache.size >= 8 || cachedBytes + bytes > CACHE_BYTES)) {
     const [id, oldest] = cache.entries().next().value!;
     cache.delete(id); cachedBytes -= oldest.bytes;
@@ -196,7 +234,7 @@ export function boundsWithTerrain(shapes: Shape[], nodes: SceneNode[]) {
 /** Small terrain metadata; height samples are never part of scene/MCP read results. */
 export function terrainSummary(t: Terrain, nodes: SceneNode[]) {
   const f = evaluateTerrain(t, nodes);
-  return { source: t.source, resolution: t.resolution, cellSpacing: { x: t.width / (t.resolution - 1), z: t.depth / (t.resolution - 1) }, elevation: [f.min, f.max] };
+  return { source: t.source, resolution: t.resolution, cellSpacing: { x: t.width / (t.resolution - 1), z: t.depth / (t.resolution - 1) }, elevation: [f.min, f.max], holeCells: f.holeCells };
 }
 
 export const TERRAIN_QUERY_LIMIT = "Terrain-aware surface placement, Walk, sight, clearance, slices, enclosure and lint are deferred. These checks do not verify generated terrain; authoring inputs are not its collision proxy.";
@@ -204,6 +242,10 @@ export const terrainQueryWarnings = (nodes: SceneNode[]) => nodes.some((n) => n.
 
 /** Source settings, including defaults and their place in the operation stack; dormant settings stay readable. */
 export function terrainReadFields(n: SceneNode, nodes: SceneNode[]) {
+  if (isTerrainHole(n)) {
+    const owner = nodes.find((t) => t.type === "terrain" && t.source && subtreeIds(nodes, t.source).has(n.id));
+    if (owner) return { terrainFor: owner.id, terrainCut: "surface intersection at cell centers" };
+  }
   if (!isTerrainSource(n)) return {};
   const owner = nodes.find((t) => t.type === "terrain" && t.source && subtreeIds(nodes, t.source).has(n.id));
   if (!owner && !n.terrain) return {};
@@ -235,8 +277,8 @@ export function rayTerrainFirst(ray: import("./ray").Ray, t: Terrain, field: Hei
   let nextX = sx ? (x0 + (x + (sx > 0 ? 1 : 0)) * dx - ray.origin.x) / ray.dir.x : Infinity;
   let nextZ = sz ? (z0 + (z + (sz > 0 ? 1 : 0)) * dz - ray.origin.z) / ray.dir.z : Infinity;
   for (let count = 0; count < 2 * n && x >= 0 && z >= 0 && x < n - 1 && z < n - 1; count++) {
-    const at = (z * (n - 1) + x) * 6;
-    const hit = rayMeshFirst(ray, { positions: field.mesh.positions, indices: field.mesh.indices.slice(at, at + 6), min: [x0 + x * dx, field.min, z0 + z * dz], max: [x0 + (x + 1) * dx, field.max, z0 + (z + 1) * dz] });
+    const i = z * n + x;
+    const hit = field.surface[z * (n - 1) + x] ? rayMeshFirst(ray, { positions: field.mesh.positions, indices: [i, i + n, i + 1, i + 1, i + n, i + n + 1], min: [x0 + x * dx, field.min, z0 + z * dz], max: [x0 + (x + 1) * dx, field.max, z0 + (z + 1) * dz] }) : null;
     if (hit && hit.t >= enter - 1e-8 && hit.t <= exit + 1e-8) return hit;
     const next = Math.min(nextX, nextZ);
     if (!Number.isFinite(next) || next > exit + 1e-8) break;

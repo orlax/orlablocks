@@ -27,7 +27,7 @@ namespace Orlablocks.Editor
         public NodeRecord[] nodes;
 
         public const string Format = "orlablocks-unity";
-        public const int Version = 2;
+        public const int Version = 3;
 
         /// <summary>
         /// The exportId in a scene folder's level.json without reading the whole file (the watcher's cheap check), or
@@ -69,6 +69,20 @@ namespace Orlablocks.Editor
             if (m.version < 1) throw new Exception($"{file} has an unsupported export version {m.version}; export the scene again.");
             if (m.version > Version) throw new Exception($"{file} is export version {m.version}; these Orlablocks files read up to {Version}. Update them from the orlablocks repo.");
             if (m.version == 1 && Array.Exists(m.nodes ?? new NodeRecord[0], n => n.type == "terrain")) throw new Exception("Terrain requires export version 2; export the scene again.");
+            foreach (var n in m.nodes ?? Array.Empty<NodeRecord>())
+            {
+                if (n.type != "terrain") continue;
+                // JsonUtility can materialize missing inline records with zero fields. Normalize old exports.
+                var holes = n.terrain?.holes;
+                if (m.version < 3)
+                {
+                    if (holes != null && (holes.resolution != 0 || holes.offset != 0))
+                        throw new Exception("Terrain hole payload requires export version 3.");
+                    if (n.terrain != null) n.terrain.holes = null;
+                }
+                else if (holes == null || holes.resolution != n.terrain.resolution - 1)
+                    throw new Exception("Terrain hole payload does not match export version.");
+            }
             return m;
         }
     }
@@ -152,7 +166,8 @@ namespace Orlablocks.Editor
     /// The export's mesh binary: each mesh is its positions (float × 3), normals (float × 3), UVs (float × 2) and
     /// indices (uint), little-endian, from its range's offset.
     /// </summary>
-    [Serializable] public class TerrainRecord { public int offset; public int resolution; public float[] size; }
+    [Serializable] public class TerrainRecord { public int offset; public int resolution; public float[] size; public TerrainHoles holes; }
+    [Serializable] public class TerrainHoles { public int offset; public int resolution; }
 
     public class MeshBinary
     {
@@ -177,6 +192,23 @@ namespace Orlablocks.Editor
                 float h = samples[z * n + x];
                 if (float.IsNaN(h) || float.IsInfinity(h) || h < 0 || h > 1) throw new Exception("Invalid terrain height sample.");
                 result[z, x] = h;
+            }
+            return result;
+        }
+
+        public bool[,] Holes(TerrainRecord terrain)
+        {
+            int n = terrain.resolution - 1;
+            if (n != 128 && n != 256 && n != 512 && n != 1024) throw new Exception("Invalid terrain hole resolution.");
+            var mask = terrain.holes;
+            if (mask != null && (mask.resolution != n || mask.offset < 0 || (long)mask.offset + (long)n * n > bytes.Length))
+                throw new Exception("Invalid terrain hole payload; export the scene again.");
+            var result = new bool[n,n];
+            for (int z = 0; z < n; z++) for (int x = 0; x < n; x++)
+            {
+                int v = mask == null ? 1 : bytes[mask.offset + z * n + x];
+                if (v > 1) throw new Exception("Invalid terrain hole sample.");
+                result[z,x] = v == 1;
             }
             return result;
         }

@@ -1322,7 +1322,7 @@ function TerrainSection({ width, depth, y, resolution, hasSource, onChange, onEn
         <select
           className="entity-picker"
           value={resolution}
-          title="Grid sample resolution. Drags preview at 129 samples; release, captures and export use this resolution."
+          title="Grid sample resolution. Drags preview at 129 samples unless the terrain has holes; release, captures and export use this resolution."
           onChange={(e) => onChange({ resolution: Number(e.target.value) as Terrain["resolution"] })}
         >
           {TERRAIN_RESOLUTIONS.map((res) => (
@@ -1335,9 +1335,10 @@ function TerrainSection({ width, depth, y, resolution, hasSource, onChange, onEn
       <Row label="grid">
         <span className="value" title="Meters per grid cell">{cellX} × {cellZ} m / cell</span>
       </Row>
+      {hasSource && <p className="value">Hole shapes in sources cut the ground where their volume meets it. Edges follow the grid.</p>}
       {hasSource && onEnterSource && (
         <Row label="">
-          <button className="labeled" title="Enter the terrain's source group to draw modifying shapes" onClick={onEnterSource}>
+          <button className="labeled" title="Enter the terrain's source group to draw modifiers or Hole shapes that intersect its surface" onClick={onEnterSource}>
             <PencilRuler size={16} /> Draw in sources
           </button>
         </Row>

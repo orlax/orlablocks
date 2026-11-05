@@ -451,9 +451,9 @@ namespace Orlablocks.Editor
                             Result.Warnings.Add(r.id + ": " + problem); return;
                         }
                     }
-                    if (n.rev == ctx.Rev(r.rev) + Placements.Revision(placement) && !n.revert && !MissingMesh(n, r))
+                    if (n.rev == ctx.Rev(r.rev) + Placements.Revision(placement) && !n.revert && !MissingMesh(n, r)
+                        && (r.type != "terrain" || TerrainSync.CurrentBaseline(n)))
                     {
-                        if (r.type == "terrain" && string.IsNullOrEmpty(n.syncedTerrain)) { edit.Record(n); n.syncedTerrain = TerrainSync.Fingerprint(n.gameObject); }
                         Result.Unchanged++;
                         return;
                     }
@@ -689,6 +689,7 @@ namespace Orlablocks.Editor
             {
                 if (r.terrain == null) throw new Exception("Terrain record is missing its height payload.");
                 var heights = ctx.Bin.Heights(r.terrain);
+                var holes = ctx.Bin.Holes(r.terrain);
                 Assets.EnsureFolder(ctx.TerrainFolder);
                 var path = $"{ctx.TerrainFolder}/{Assets.Safe(r.id)}.asset";
                 var existing = go.GetComponent<Terrain>();
@@ -709,19 +710,29 @@ namespace Orlablocks.Editor
                 if (data.heightmapResolution != r.terrain.resolution) data.heightmapResolution = r.terrain.resolution;
                 data.size = NodeRecord.V(r.terrain.size);
                 data.SetHeights(0, 0, heights);
+                data.SetHoles(0, 0, holes);
                 // Each terrain owns its generated assets: claiming one cannot mutate another through a shared cache.
-                var layerPath = $"{assetBase}-layer.terrainlayer";
-                var layer = AssetDatabase.LoadAssetAtPath<TerrainLayer>(layerPath);
-                if (layer == null) { layer = new TerrainLayer(); AssetDatabase.CreateAsset(layer, layerPath); }
-                var texturePath = $"{assetBase}-color.asset";
-                var texture = AssetDatabase.LoadAssetAtPath<Texture2D>(texturePath);
-                if (texture == null) { texture = new Texture2D(2, 2); AssetDatabase.CreateAsset(texture, texturePath); }
-                Undo.RegisterCompleteObjectUndo(texture, "Sync terrain color"); edit.Record(layer);
-                if (texture.width != 2 || texture.height != 2) texture.Reinitialize(2, 2);
-                var color = ctx.Palette.TryGetValue(r.color ?? "", out var c) ? c : Color.white;
-                texture.SetPixels(new[] { color, color, color, color }); texture.Apply();
-                layer.diffuseTexture = texture; layer.tileSize = Vector2.one;
-                if (data.terrainLayers.Length != 1 || data.terrainLayers[0] != layer) data.terrainLayers = new[] { layer };
+                var layer = ctx.Mappings.TerrainLayer(r.color);
+                if (layer == null)
+                {
+                    var layerPath = $"{assetBase}-layer.terrainlayer";
+                    layer = AssetDatabase.LoadAssetAtPath<TerrainLayer>(layerPath);
+                    if (layer == null) { layer = new TerrainLayer(); AssetDatabase.CreateAsset(layer, layerPath); }
+                    var texturePath = $"{assetBase}-color.asset";
+                    var texture = AssetDatabase.LoadAssetAtPath<Texture2D>(texturePath);
+                    if (texture == null) { texture = new Texture2D(2, 2); AssetDatabase.CreateAsset(texture, texturePath); }
+                    Undo.RegisterCompleteObjectUndo(texture, "Sync terrain color"); edit.Record(layer);
+                    if (texture.width != 2 || texture.height != 2) texture.Reinitialize(2, 2);
+                    var color = ctx.Palette.TryGetValue(r.color ?? "", out var c) ? c : Color.white;
+                    texture.SetPixels(new[] { color, color, color, color }); texture.Apply();
+                    layer.diffuseTexture = texture; layer.tileSize = Vector2.one;
+                    layer.metallic = 0; layer.smoothness = 0;
+                    layer.smoothnessSource = TerrainLayerSmoothnessSource.ConstantOnly;
+                    EditorUtility.SetDirty(layer); EditorUtility.SetDirty(texture);
+                }
+                // Mapped assets are external, shared and read-only. Only the reference is managed.
+                if (data.terrainLayers.Length != 1 || data.terrainLayers[0] != layer)
+                    data.SetTerrainLayersRegisterUndo(new[] { layer }, "Sync terrain layer");
                 // Keep Unity painting, trees and details; sync owns the generated layer, not their contents.
                 var terrain = Ensure<Terrain>(go); edit.Record(terrain); terrain.terrainData = data;
                 var shader = Shader.Find("Universal Render Pipeline/Terrain/Lit") ?? Shader.Find("Nature/Terrain/Standard");
@@ -734,7 +745,7 @@ namespace Orlablocks.Editor
                 }
                 if (r.collider == "terrain") { var collider = Ensure<TerrainCollider>(go); edit.Record(collider); collider.terrainData = data; collider.enabled = true; }
                 else Drop<TerrainCollider>(go);
-                EditorUtility.SetDirty(data); EditorUtility.SetDirty(layer); EditorUtility.SetDirty(texture);
+                EditorUtility.SetDirty(data);
                 terrain.Flush();
             }
 

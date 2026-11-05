@@ -64,7 +64,7 @@ describe("terrain scene and export", () => {
     const t = nodes.find((n): n is Terrain => n.type === "terrain")!;
     const built = buildExport({ nodes, project: { id: "p", name: "P", description: "" }, scene: { id: "s", name: "S" }, seq: 1, library: EMPTY_LIBRARY });
     const r = built.manifest.nodes.find((n) => n.type === "terrain")!;
-    expect(built.manifest.version).toBe(2);
+    expect(built.manifest.version).toBe(3);
     expect(built.manifest.nodes.map((n) => n.id)).toEqual(["terrain_1", "box_2"]);
     expect(r.position).toEqual([-6, -2, -15]);
     expect(r.collider).toBe("terrain");
@@ -180,4 +180,24 @@ it("describes generated bounds and lean terrain metadata consistently across rea
     expect(result).not.toHaveProperty("heights");
   }
   expect(findNodes(nodes, { type: "box" }).found[0]).toMatchObject({ terrainFor: "terrain_1", modifierOrder: 1 });
+});
+
+it("edits terrain-only cutters atomically, copies them and exports a reversed presence mask", () => {
+  const store = fixture();
+  store.drawShapes([{ type: "box", kind: "hole", parent: "group_1", x: 5, z: 3, y: -3, width: 4, depth: 2, height: 2 }], "human");
+  const build = () => buildExport({ nodes: store.getScene().nodes, project: { id: "p", name: "P", description: "" }, scene: { id: "s", name: "S" }, seq: 1, library: EMPTY_LIBRARY });
+  const a = build(), r = a.manifest.nodes.find((n) => n.type === "terrain")!;
+  expect(a.manifest.nodes.some((n) => n.id === "box_1")).toBe(false);
+  const t = store.getScene().nodes.find((n): n is Terrain => n.type === "terrain")!;
+  const f = evaluateTerrain(t, store.getScene().nodes), mask = r.terrain.holes!;
+  expect(mask.resolution).toBe(128);
+  for (let z = 0; z < 128; z++) for (let x = 0; x < 128; x++) expect(a.binary[mask.offset + z * 128 + x]).toBe(f.surface[(127 - z) * 128 + x]);
+  store.updateNodes([{ id: "box_1", y: 3 }], "human");
+  expect(build().manifest.nodes.find((n) => n.type === "terrain")!.rev).not.toBe(r.rev);
+  store.undo(); expect(build().manifest.nodes.find((n) => n.type === "terrain")!.rev).toBe(r.rev);
+  const copied = store.duplicateNodes({ ids: [t.id], dx: 100 }, "human")[0] as Terrain;
+  expect(evaluateTerrain(copied, store.getScene().nodes).surface).toEqual(f.surface);
+  const saved = SceneFileSchema.parse({ name: "test", createdAt: "now", seq: 1, nodes: store.getScene().nodes, nextId: store.getNextId() });
+  const restored = createSceneStore(); restored.load(saved);
+  expect(evaluateTerrain(copied, restored.getScene().nodes).surface).toEqual(f.surface);
 });
