@@ -1,3 +1,4 @@
+import { DEFAULT_SNAP, type SnapSettings } from "./snap";
 import { hoverTarget, hoverOwnerLabel } from "./hover";
 import { valueStore, type ValueStore } from "./valueStore";
 import { NavigationStats, captureTiming, beginCaptureTiming, endCaptureTiming } from "./navigationStats";
@@ -14,7 +15,6 @@ import {
   KIND_FIELDS,
   MIN_LINE_POINTS,
   MIN_POINTS,
-  SNAP,
   type KindField,
   type ClosedShape,
   type Line,
@@ -325,7 +325,6 @@ const footprintKey = (shapes: Shape[]) =>
     ),
   );
 
-const snap = (n: number) => Math.round(n / SNAP) * SNAP;
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
 /**
@@ -405,6 +404,8 @@ type Props = {
   visible: Set<string> | null;
   /** Values held in the inspector (a slider being dragged), shown on their shapes before they're sent. */
   preview: Record<string, ShapePatch> | null;
+  snapSettings?: SnapSettings;
+  onContextAction?: (id: string | null, x: number, y: number, source: HTMLElement) => void;
   onSelect: (ids: string[], reveal?: boolean) => void;
   onDrawShape: (shape: ShapeInput) => void;
   /** Creates a terrain assembly (assembly group + sources group + terrain node) from a drawn footprint. */
@@ -508,6 +509,8 @@ export function Viewport({
   onPlaceInstance,
   visible,
   preview,
+  snapSettings = DEFAULT_SNAP,
+  onContextAction,
   onSelect,
   onDrawShape,
   onCreateTerrain,
@@ -530,6 +533,7 @@ export function Viewport({
   shots,
   onRemoveShot,
 }: Props) {
+  const snap = (n: number) => round2(Math.round(n / snapSettings.translation) * snapSettings.translation);
   const navigationPulse = useRef(-Infinity);
   const navigationEpoch = useRef(0);
   useEffect(() => {
@@ -1207,7 +1211,7 @@ export function Viewport({
 
   /** The flat surface under the pointer that a new box, cylinder or free-form would stand on (null: the ground). */
   const surfaceFor = (sx: number, sy: number, size: Size) => surfaceUnder(screenRay(cam.current, size, sx, sy), pickable, { slopes: true });
-  /** The point under the pointer on the level plane at height `y`, snapped to 0.5 m unless Cmd/Ctrl is held. */
+  /** The point under the pointer on the level plane at height `y`, snapped to the viewer grid unless Cmd/Ctrl is held. */
   const planeAt = (e: PointerEvent, y: number) => {
     const { sx, sy, size } = local(e);
     const g = screenToPlane(cam.current, size, sx, sy, y);
@@ -1321,7 +1325,7 @@ export function Viewport({
   const dragTo = (d: Drag, sx: number, sy: number, keys: { shiftKey: boolean; altKey: boolean; metaKey: boolean; ctrlKey: boolean }): Drag => {
     const copy = keys.altKey && canCopy(d.part);
     const others = expandShapes(copy ? onViewRef.current : onViewRef.current.filter((b) => !d.ids.includes(b.id)));
-    const mods = { shift: keys.shiftKey, alt: keys.altKey, snap: !noSnap(keys) };
+    const mods = { shift: keys.shiftKey, alt: keys.altKey, snap: !noSnap(keys), settings: snapSettings };
     const size = { width: wrap.current!.clientWidth, height: wrap.current!.clientHeight };
     const { patches, label, turn, scale, tilt } = dragUpdate(d, cam.current, size, sx, sy, mods, others);
     return { ...d, active: true, copy, patches, label, turn, scale, tilt, sx, sy };
@@ -1333,7 +1337,7 @@ export function Viewport({
 
   /**
    * The Line tool's point under the cursor: on the surface there (a volume's top, a room's floor or wall top; lines
-   * don't count), else on the ground. x and z snap to 0.5 m unless Cmd/Ctrl; y comes from the surface.
+   * don't count), else on the ground. x and z snap to the viewer grid unless Cmd/Ctrl; y comes from the surface.
    */
   const surfaceAt = (e: { clientX: number; clientY: number; metaKey: boolean; ctrlKey: boolean }): LinePoint => {
     const { sx, sy, size } = local(e);
@@ -1510,7 +1514,7 @@ export function Viewport({
   };
 
   /**
-   * A point drag as the cursor moves: the grabbed point follows it (snapped to 0.5 m unless Cmd/Ctrl) and the
+   * A point drag as the cursor moves: the grabbed point follows it (snapped to the viewer grid unless Cmd/Ctrl) and the
    * other selected points move with it; a handle follows it freely, turning its opposite with it unless Alt.
    */
   const pointMove = (d: PointDrag, e: PointerEvent, sx: number, sy: number, size: Size) => {
@@ -1521,7 +1525,7 @@ export function Viewport({
       const from = pointY(q, 0);
       const raw = from + paramOnLine(cam.current, size, sx, sy, { x: q.x, y: from, z: q.z }, AXES.y) - d.grabY!;
       const near = { minX: q.x - 0.01, maxX: q.x + 0.01, minY: from, maxY: from, minZ: q.z - 0.01, maxZ: q.z + 0.01 };
-      const y = snapElevation(raw, elevationTargets(near, expandShapes(onViewRef.current)), !noSnap(e));
+      const y = snapElevation(raw, elevationTargets(near, expandShapes(onViewRef.current)), !noSnap(e), snapSettings.elevation);
       const points = movePoints(d.start, d.indices, 0, 0, y - from);
       setPointDrag({ ...d, points, problem: pointsProblem(points), sx, sy, label: `y ${y.toFixed(2)} m` });
       return;
@@ -1546,7 +1550,14 @@ export function Viewport({
   // deselects (Shift keeps the selection).
   // Hand tool (or middle button in any tool): drag to pan, the grabbed ground point stays under the cursor.
   // Box and Cylinder tools: drag a footprint on the ground.
+  const rightPress = useRef<{ pointerId: number; x: number; y: number; moved: boolean } | null>(null);
   const onPointerDown = (e: PointerEvent) => {
+    if (e.button === 2 && !walkRef.current) {
+      rightPress.current = { pointerId: e.pointerId, x: e.clientX, y: e.clientY, moved: false };
+      (e.currentTarget as HTMLElement).focus();
+      e.currentTarget.setPointerCapture(e.pointerId);
+      return;
+    }
     // Walking: a click is the shutter. Paused (the menu, or released: 14.1) a click does nothing here, so clicking
     // to focus this window never takes the mouse back.
     if (walkRef.current) {
@@ -1692,6 +1703,24 @@ export function Viewport({
 
   const lastPointer = useRef<PointerEvent | null>(null);
   const onPointerMove = (e: PointerEvent) => {
+    if (rightPress.current?.pointerId === e.pointerId) {
+      const press = rightPress.current;
+      if (!press.moved && Math.hypot(e.clientX - press.x, e.clientY - press.y) > 4) {
+        press.moved = true;
+        setPanning(true);
+        onCursor(null);
+        setHoveredId(null); setNoteHover(null); setHotPart(null);
+      }
+      if (press.moved) {
+        const { sx, sy, size } = local(e);
+        const rect = e.currentTarget.getBoundingClientRect();
+        const grabbed = screenToGround(cam.current, size, press.x - rect.left, press.y - rect.top);
+        cam.current = panTo(cam.current, size, grabbed, sx, sy);
+        press.x = e.clientX; press.y = e.clientY;
+        invalidate();
+      }
+      return;
+    }
     lastPointer.current = e;
     if (walkRef.current) return;
     const { sx, sy, size } = local(e);
@@ -1730,7 +1759,7 @@ export function Viewport({
         const f = handleFrame(b);
         return { x: f.x, z: f.z };
       });
-      const next = dragArrayHandle(original, arrayDrag.part, g, { alt: e.shiftKey, free: noSnap(e), centers });
+      const next = dragArrayHandle(original, arrayDrag.part, g, { alt: e.shiftKey, free: noSnap(e), centers, settings: snapSettings });
       if (next) setArrayDrag({ ...arrayDrag, patch: next.patch, label: next.label, sx, sy });
       return;
     }
@@ -1795,6 +1824,17 @@ export function Viewport({
   }, [pickable, selectable, cameraRestore, context, editing, tool, onPickTarget]);
 
   const onPointerUp = (e: PointerEvent) => {
+    if (rightPress.current?.pointerId === e.pointerId) {
+      const press = rightPress.current; rightPress.current = null;
+      setPanning(false);
+      if (press.moved) onPointerMove(e);
+      if (!press.moved && e.type !== 'pointercancel' && !walkRef.current && !editing && !placing && !onPickTarget) {
+        const { sx, sy, size } = local(e);
+        const hit = hitAt(sx, sy, size);
+        onContextAction?.(hit?.id ?? null, e.clientX, e.clientY, e.currentTarget as HTMLElement);
+      }
+      return;
+    }
     if (walkRef.current) return;
     if (arrayDrag?.pointerId === e.pointerId) {
       const d = arrayDrag;
@@ -1996,8 +2036,10 @@ export function Viewport({
     const onKeyDown = (e: KeyboardEvent) => {
       const m = marqueeRef.current;
       if (typingInField(e)) return;
-      if (e.key !== "Escape" || (!dragRef.current?.active && !drawing.current && !m?.active)) return;
+      if (e.key !== "Escape" || (!dragRef.current?.active && !drawing.current && !m?.active && !rightPress.current)) return;
       e.stopImmediatePropagation();
+      rightPress.current = null;
+      setPanning(false);
       cancelDrawing();
       setDrag(null);
       if (m?.active) onSelectRef.current(m.base);
@@ -2099,11 +2141,26 @@ export function Viewport({
   return (
     <div
       ref={wrap}
+      tabIndex={0}
+      onKeyDown={e => {
+        if ((e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) && !walkRef.current && !editing && !placing) {
+          e.preventDefault(); e.stopPropagation();
+          const r = e.currentTarget.getBoundingClientRect();
+          onContextAction?.(selection.at(-1) ?? null, r.left + r.width / 2, r.top + r.height / 2, e.currentTarget);
+        }
+      }}
       className={`viewport ${cursorClass}`}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
-      onPointerCancel={onPointerUp}
+      onPointerCancel={() => {
+        rightPress.current = null;
+        cancelDrawing();
+        setDrag(null); setPointDrag(null); setArrayDrag(null);
+        if (marquee?.active) onSelect(marquee.base, false);
+        setMarquee(null); pan.current = null; setPanning(false);
+        setPen(p => ({ ...p, drag: null }));
+      }}
       onDoubleClick={onDoubleClick}
       // An entity dragged from the Library lands on the surface under the drop.
       onDragOver={(e) => {

@@ -1,4 +1,5 @@
-import { DEFAULT_WALL, HEIGHT_SNAP, MAX_SCALE, MIN_HEIGHT, MIN_WALL, SNAP, type ClosedShape, type Shape, type ShapePatch } from "../shared/scene.types";
+import { DEFAULT_SNAP, type SnapSettings } from "./snap";
+import { DEFAULT_WALL, HEIGHT_SNAP, MAX_SCALE, MIN_HEIGHT, MIN_WALL, type ClosedShape, type Shape, type ShapePatch } from "../shared/scene.types";
 import {
   anchorOf,
   boundsOf,
@@ -67,7 +68,7 @@ export const MIN_SIZE = 0.05;
 export const ROTATE_OFFSET = 0.75;
 export const ROTATE_RADIUS = 0.3;
 /** Rotation snap, degrees. */
-export const ROTATE_SNAP = 15;
+export const ROTATE_SNAP = DEFAULT_SNAP.rotation;
 /** The tilt rings' radius, in gizmo units, around the shape's center. */
 export const TILT_RADIUS = 1.5;
 /** A profile knob's radius (wall, taper, bevel), in gizmo units. */
@@ -486,13 +487,13 @@ export function elevationTargets(moving: Bounds, others: Shape[]): number[] {
 }
 
 /** The nearest target within ELEVATION_SNAP_RANGE, else the nearest 0.05 m step. `snap` false leaves it free. */
-export function snapElevation(raw: number, targets: number[], snap: boolean): number {
+export function snapElevation(raw: number, targets: number[], snap: boolean, step = HEIGHT_SNAP): number {
   if (!snap) return round2(raw);
   let best: number | null = null;
   for (const t of targets) {
     if (Math.abs(t - raw) <= ELEVATION_SNAP_RANGE && (best === null || Math.abs(t - raw) < Math.abs(best - raw))) best = t;
   }
-  return round2(best ?? snapTo(raw, HEIGHT_SNAP));
+  return round2(best ?? snapTo(raw, step));
 }
 
 /**
@@ -502,7 +503,7 @@ export function snapElevation(raw: number, targets: number[], snap: boolean): nu
  */
 export type GizmoDrag = { part: DragPart; origin: Shape[]; bounds: Bounds; frame: Frame; grab: Vec3 | number; line?: { origin: Vec3; axis: Vec3 } };
 
-export type DragModifiers = { shift: boolean; alt: boolean; snap: boolean };
+export type DragModifiers = { shift: boolean; alt: boolean; snap: boolean; settings?: SnapSettings };
 
 /**
  * Starts a drag on a handle: remembers where along its line the cursor is, or for a scale handle how far the
@@ -609,8 +610,8 @@ export function dragUpdate(
     let delta = normalizeDeg(angleOf(p.x - anchor.x, p.z - anchor.z) - (drag.grab as number));
     if (delta > 180) delta -= 360;
     // The frame's angle (a single box's own rotation, or how far this selection has been turned) snaps to whole
-    // 15° angles, and the label shows it.
-    if (mods.snap) delta = snapTo(frame.rotation + delta, ROTATE_SNAP) - frame.rotation;
+    // configured angles (15° by default), and the label shows it.
+    if (mods.snap) delta = snapTo(frame.rotation + delta, (mods.settings ?? DEFAULT_SNAP).rotation) - frame.rotation;
     Object.assign(patches, rotateAround(origin, anchor, delta));
     const turn = round2(normalizeDeg(frame.rotation + delta)) % 360;
     return { patches, label: `${turn}°`, turn };
@@ -621,7 +622,7 @@ export function dragUpdate(
     const ring = selectionTiltRing(origin, part);
     let delta = normalizeDeg(ringAngle(cam, size, sx, sy, ring) - (drag.grab as number));
     if (delta > 180) delta -= 360;
-    delta = round2(mods.snap ? snapTo(delta, ROTATE_SNAP) : delta);
+    delta = round2(mods.snap ? snapTo(delta, (mods.settings ?? DEFAULT_SNAP).rotation) : delta);
     const m = part === "pitch" ? rotX(delta) : rotZ(delta);
     for (const s of origin) patches[s.id] = tiltShape(s, m, ring.center);
     const axis = part === "pitch" ? "x" : "z";
@@ -634,7 +635,7 @@ export function dragUpdate(
     if (delta > 180) delta -= 360;
     const before = box[part] ?? 0;
     const raw = before + delta;
-    const next = tiltValue(mods.snap ? snapTo(raw, ROTATE_SNAP) : raw);
+    const next = tiltValue(mods.snap ? snapTo(raw, (mods.settings ?? DEFAULT_SNAP).rotation) : raw);
     patches[box.id] = { [part]: next };
     return { patches, label: `${part} ${next}°` };
   }
@@ -645,7 +646,7 @@ export function dragUpdate(
     const line = drag.line ?? { origin: anchor, axis: AXES.y };
     const s = paramOnLine(cam, size, sx, sy, line.origin, line.axis);
     const raw = box.height + s - (drag.grab as number);
-    const height = round2(Math.max(MIN_HEIGHT, mods.snap ? snapTo(raw, HEIGHT_SNAP) : raw));
+    const height = round2(Math.max(MIN_HEIGHT, mods.snap ? snapTo(raw, (mods.settings ?? DEFAULT_SNAP).elevation) : raw));
     patches[box.id] = { height };
     if (isTilted(box)) {
       // The bottom stays put: the tilt's pivot (the center) moves half the change up the shape's own axis.
@@ -657,7 +658,7 @@ export function dragUpdate(
 
   if (part === "y") {
     const s = paramOnLine(cam, size, sx, sy, anchor, AXES.y);
-    const bottom = snapElevation(bounds.minY + s - (drag.grab as number), elevationTargets(bounds, others), mods.snap);
+    const bottom = snapElevation(bounds.minY + s - (drag.grab as number), elevationTargets(bounds, others), mods.snap, (mods.settings ?? DEFAULT_SNAP).elevation);
     const dy = bottom - bounds.minY;
     for (const box of origin) patches[box.id] = moveShape(box, 0, dy, 0);
     return { patches, label: `y ${bottom.toFixed(2)} m` };
@@ -680,8 +681,8 @@ export function dragUpdate(
     else dz = d;
   }
   if (mods.snap) {
-    dx = snapTo(dx, SNAP);
-    dz = snapTo(dz, SNAP);
+    dx = snapTo(dx, (mods.settings ?? DEFAULT_SNAP).translation);
+    dz = snapTo(dz, (mods.settings ?? DEFAULT_SNAP).translation);
   }
   for (const box of origin) patches[box.id] = moveShape(box, dx, 0, dz);
   return { patches, label: `x ${(anchor.x + dx).toFixed(2)} · z ${(anchor.z + dz).toFixed(2)}` };
@@ -721,7 +722,7 @@ function scaleUpdate(
   // Where the dragged handle should be, in the box's frame.
   const tx = l.x - grab.x;
   const tz = l.z - grab.z;
-  const step = mods.alt ? 2 * SNAP : SNAP;
+  const step = (mods.alt ? 2 : 1) * (mods.settings ?? DEFAULT_SNAP).translation;
   const raw = (sign: Sign, target: number, original: number) =>
     sign === 0 ? original : mods.alt ? 2 * sign * target : sign * target + original / 2;
 
@@ -810,7 +811,7 @@ function profileUpdate(
     const taper = round2(Math.min(1, Math.max(0, snap(1 - v))));
     return { patches: { [shape.id]: { taper: kept(taper, shape.taper, 0) } }, label: `taper ${taper.toFixed(2)}` };
   }
-  const wall = round2(Math.min(maxWall(shape), Math.max(MIN_WALL, snap(v))));
+  const wall = round2(Math.min(maxWall(shape), Math.max(MIN_WALL, mods.snap ? snapTo(v, (mods.settings ?? DEFAULT_SNAP).elevation) : v)));
   return { patches: { [shape.id]: { wall: kept(wall, shape.wall, DEFAULT_WALL) } }, label: `wall ${wall.toFixed(2)} m` };
 }
 

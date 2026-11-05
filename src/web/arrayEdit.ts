@@ -1,6 +1,7 @@
+import { DEFAULT_SNAP, type SnapSettings } from "./snap";
 import { arrayItems, circleAngles } from "../shared/arrays";
 import { round2, shapeAxes, type Point, type Point3 } from "../shared/geometry";
-import { MIN_ARRAY_SPACING, SNAP, type ArrayNode } from "../shared/scene.types";
+import { MIN_ARRAY_SPACING, type ArrayNode } from "../shared/scene.types";
 import { worldToScreen, type CameraState, type Size } from "./camera";
 
 /**
@@ -83,35 +84,36 @@ export const CENTER_SNAP = 0.75;
 /**
  * What dragging a handle to ground point `to` does to the layout (fields to merge into it) and the label to show.
  * - center: moves the layout's center (a circle's, a scatter circle's, a grid's), snapped to the nearest of
- *   `centers` within CENTER_SNAP, else to the 0.5 m grid (unless `free`);
- * - radius: the distance from the center (0.05 m steps; 0.25 m unless `free`), or with `alt` a circle's start
- *   instead (the angle to the cursor, 5° steps);
+ *   `centers` within CENTER_SNAP, else to the configured translation grid (unless `free`);
+ * - radius: the distance from the center (configured array distance steps, default 0.25 m), or with `alt` a circle's start
+ *   instead (the angle to the cursor, configured array angle steps, default 5°);
  * - spacing: a grid's spacing along its own axes, from where its far corner item is dragged (equal on both with `alt`).
  */
 export function dragArrayHandle(
   array: ArrayNode,
   part: ArrayPart,
   to: Point,
-  { alt = false, free = false, centers = [] }: { alt?: boolean; free?: boolean; centers?: Point[] } = {},
+  { alt = false, free = false, centers = [], settings = DEFAULT_SNAP }: { alt?: boolean; free?: boolean; centers?: Point[]; settings?: SnapSettings } = {},
 ): { patch: Record<string, unknown>; label: string } | null {
   const l = array.layout;
-  const step = (n: number, s: number) => round2(free ? Math.round(n / 0.05) * 0.05 : Math.round(n / s) * s);
+  const step = (n: number, s: number) => round2(free ? n : Math.round(n / s) * s);
   if (part === "center") {
     const near = centers.reduce<{ p: Point; d: number } | null>((best, c) => {
       const d = Math.hypot(c.x - to.x, c.z - to.z);
       return d <= CENTER_SNAP && (!best || d < best.d) ? { p: c, d } : best;
     }, null);
-    const at = near && !free ? { x: round2(near.p.x), z: round2(near.p.z) } : { x: step(to.x, SNAP), z: step(to.z, SNAP) };
+    const at = near && !free ? { x: round2(near.p.x), z: round2(near.p.z) } : { x: step(to.x, settings.translation), z: step(to.z, settings.translation) };
     return { patch: at, label: `center ${at.x}, ${at.z}${near && !free ? " · on a shape's center" : ""}` };
   }
   if (part === "radius" && (l.type === "circle" || l.type === "scatter")) {
     const [cx, cz] = [l.x ?? 0, l.z ?? 0];
     if (alt && l.type === "circle") {
       const deg = (Math.atan2(-(to.z - cz), to.x - cx) * 180) / Math.PI;
-      const start = round2((((Math.round(deg / 5) * 5) % 360) + 360) % 360);
+      const angle = free ? deg : Math.round(deg / settings.arrayRotation) * settings.arrayRotation;
+      const start = round2(((angle % 360) + 360) % 360) % 360;
       return { patch: { start }, label: `start ${start}°` };
     }
-    const radius = Math.max(0.05, step(Math.hypot(to.x - cx, to.z - cz), 0.25));
+    const radius = Math.max(0.05, step(Math.hypot(to.x - cx, to.z - cz), settings.arrayDistance));
     return { patch: { radius }, label: `r ${radius} m` };
   }
   if (part === "spacing" && l.type === "grid") {
@@ -119,8 +121,8 @@ export function dragArrayHandle(
     const [dx, dz] = [to.x - l.x, to.z - l.z];
     const [u, v] = [dx * ex.x + dz * ex.z, dx * ez.x + dz * ez.z];
     const stagger = l.stagger && l.rows > 1 && (l.rows - 1) % 2 === 1 ? 0.5 : 0;
-    let sx = l.columns > 1 || stagger ? Math.max(MIN_ARRAY_SPACING, step((2 * u) / (l.columns - 1 + 2 * stagger), 0.25)) : l.spacing.x;
-    let sz = l.rows > 1 ? Math.max(MIN_ARRAY_SPACING, step((2 * v) / (l.rows - 1), 0.25)) : l.spacing.z;
+    let sx = l.columns > 1 || stagger ? Math.max(MIN_ARRAY_SPACING, step((2 * u) / (l.columns - 1 + 2 * stagger), settings.arrayDistance)) : l.spacing.x;
+    let sz = l.rows > 1 ? Math.max(MIN_ARRAY_SPACING, step((2 * v) / (l.rows - 1), settings.arrayDistance)) : l.spacing.z;
     if (alt) sx = sz = Math.max(l.columns > 1 ? sx : 0, l.rows > 1 ? sz : 0);
     return { patch: { spacing: { ...l.spacing, x: sx, z: sz } }, label: `spacing ${sx} × ${sz} m` };
   }

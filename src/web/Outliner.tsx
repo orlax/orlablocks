@@ -86,6 +86,8 @@ function rowsOf(nodes: SceneNode[], collapsed: Set<string>): Row[] {
  * shown on hover or while on; rows that don't show in the view are dimmed.
  */
 export function Outliner({
+  onContextAction,
+  renameRequest,
   nodes,
   selection,
   reveal,
@@ -109,6 +111,8 @@ export function Outliner({
   /** The new selection, and the group it's in (the view's entered group; null = top level). */
   onSelect: (ids: string[], context: string | null) => void;
   onHover: (id: string | null) => void;
+  renameRequest?: { id: string } | null;
+  onContextAction: (id: string | null, x: number, y: number, source: HTMLElement) => void;
   onRename: (id: string, name: string) => void;
   onPlace: (ids: string[], parent: string | null, before: string | null) => void;
   /** The isolated node (null = everything shows), and isolating one (or ending it: null). */
@@ -134,6 +138,17 @@ export function Outliner({
   const [dragging, setDragging] = useState<string[] | null>(null);
   const [drop, setDrop] = useState<Drop | null>(null);
 
+  useEffect(() => {
+    if (!renameRequest) return;
+    const node = nodes.find(n => n.id === renameRequest.id);
+    if (!node) return;
+    const above = new Set(ancestry(nodes, node.id).slice(1));
+    setOpen(true);
+    setCollapsed(c => new Set([...c].filter(id => !above.has(id))));
+    setRenaming({ id: node.id, value: node.name ?? "" });
+  }, [renameRequest]);
+
+  const contextPress = useRef<{ x: number; y: number; moved: boolean } | null>(null);
   // Reveal the selection: expand every collapsed group above a selected node.
   const selectionKey = selection.join(",");
   useEffect(() => {
@@ -258,6 +273,35 @@ export function Outliner({
             return (
               <div
                 key={node.id}
+                tabIndex={0}
+                onPointerDown={e => {
+                  if (e.button === 2 && !(e.target as HTMLElement).closest('input, textarea'))
+                    contextPress.current = { x: e.clientX, y: e.clientY, moved: false };
+                }}
+                onPointerMove={e => {
+                  const p = contextPress.current;
+                  if (p && Math.hypot(e.clientX - p.x, e.clientY - p.y) > 4) p.moved = true;
+                }}
+                onPointerCancel={() => { contextPress.current = null; }}
+                onPointerUp={e => {
+                  const p = contextPress.current; contextPress.current = null;
+                  if (e.button === 2 && p && !p.moved && !e.ctrlKey) {
+                    e.currentTarget.focus();
+                    onContextAction(node.id, e.clientX, e.clientY, e.currentTarget);
+                  }
+                }}
+                onContextMenu={e => {
+                  if ((e.target as HTMLElement).closest('input, textarea')) return;
+                  e.preventDefault(); e.stopPropagation();
+                }}
+                onKeyDown={e => {
+                  if ((e.target as HTMLElement).closest('input, textarea')) return;
+                  if (e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) {
+                    e.preventDefault(); e.stopPropagation();
+                    const r = e.currentTarget.getBoundingClientRect();
+                    onContextAction(node.id, r.left + 20, r.bottom, e.currentTarget);
+                  }
+                }}
                 data-node-id={node.id}
                 ref={(el) => { if (el) rowElements.current.set(node.id, el); else rowElements.current.delete(node.id); }}
                 className={classes.join(" ")}
@@ -302,7 +346,7 @@ export function Outliner({
                     autoFocus
                     value={renaming.value}
                     placeholder={node.id}
-                    onFocus={(e) => e.currentTarget.select()}
+                    onFocus={(e) => { e.currentTarget.select(); e.currentTarget.scrollIntoView({ block: "nearest" }); }}
                     onChange={(e) => setRenaming({ id: node.id, value: e.target.value })}
                     onKeyDown={onRenameKey}
                     onBlur={commitRename}

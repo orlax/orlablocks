@@ -1,3 +1,6 @@
+import { ContextMenu, type ContextAction } from "./ContextMenu";
+import { SnapControl } from "./SnapControl";
+import { useSnapSettings } from "./snap";
 import { valueStore, type ValueStore } from "./valueStore";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentProps } from "react";
 import { ArrowLeft, BookOpen, ChevronDown, Map as MapIcon, Package, Upload } from "lucide-react";
@@ -522,6 +525,43 @@ export function App() {
     return () => clearTimeout(t);
   }, [notice]);
 
+  // Viewer preferences never enter scene geometry or undo history.
+  const [snapSettings, setSnapSettings] = useSnapSettings();
+  const [renameRequest, setRenameRequest] = useState<{ id: string } | null>(null);
+  const [contextMenu, setContextMenu] = useState<{ id: string | null; ids: string[]; x: number; y: number; source: HTMLElement } | null>(null);
+  const openContextMenu = (id: string | null, x: number, y: number, source: HTMLElement) => {
+    const node = nodes.find(n => n.id === id);
+    const ids = node ? (selection.includes(node.id) ? selection : [node.id]) : [];
+    if (node && !selection.includes(node.id)) {
+      setSelection(ids);
+      setContext(node.parent ?? null);
+      if (source.classList.contains("viewport"))
+        setSelectionReveal(r => ({ id: node.id, serial: (r?.serial ?? 0) + 1 }));
+    }
+    setContextMenu({ id: node?.id ?? null, ids, x, y, source });
+  };
+  useEffect(() => { setContextMenu(null); setRenameRequest(null); }, [sceneKey, scene]);
+  useEffect(() => {
+    setContextMenu(menu => menu && menu.ids.length && menu.ids.join(',') !== selection.join(',') ? null : menu);
+  }, [selection]);
+  const groupSelection = (ids: string[], ungroup: boolean) => {
+    if (!ids.length) return;
+    if (!ungroup) {
+      pendingSelect.current = {
+        before: new Set(state.current.nodes.map(n => n.id)),
+        pick: (added, next) => added
+          .filter(n => isGroup(n) && next.some(c => c.parent === n.id && ids.includes(c.id)))
+          .slice(0, 1).map(n => n.id),
+      };
+      send({ type: "group_nodes", ids });
+    } else {
+      const nodes = state.current.nodes;
+      const groups = ids.filter(id => nodes.some(n => n.id === id && isGroup(n)));
+      if (!groups.length) return;
+      send({ type: "ungroup", ids: groups });
+      setSelection([...ids.filter(id => !groups.includes(id)), ...nodes.filter(n => n.parent && groups.includes(n.parent)).map(n => n.id)]);
+    }
+  };
   /** Copies nodes by an offset (one step) and selects the copies when they arrive. */
   const duplicate = useCallback(
     (ids: string[], offset: { dx: number; dy: number; dz: number }) => {
@@ -592,27 +632,7 @@ export function App() {
       }
       if (mod && key === "g") {
         e.preventDefault();
-        if (selection.length === 0) return;
-        if (!e.shiftKey) {
-          const grouped = selection;
-          pendingSelect.current = {
-            before: new Set(nodes.map((n) => n.id)),
-            // The new group that holds the grouped nodes.
-            pick: (added, next) =>
-              added
-                .filter((n) => isGroup(n) && next.some((c) => c.parent === n.id && grouped.includes(c.id)))
-                .slice(0, 1)
-                .map((n) => n.id),
-          };
-          send({ type: "group_nodes", ids: selection });
-          return;
-        }
-        const groupIds = selection.filter((id) => nodes.some((n) => n.id === id && isGroup(n)));
-        if (groupIds.length === 0) return;
-        // Their contents take their place in the selection.
-        const freed = nodes.filter((n) => n.parent !== undefined && groupIds.includes(n.parent)).map((n) => n.id);
-        send({ type: "ungroup", ids: groupIds });
-        setSelection([...selection.filter((id) => !groupIds.includes(id)), ...freed]);
+        groupSelection(selection, e.shiftKey);
         return;
       }
       if (e.key === " ") {
@@ -1085,9 +1105,36 @@ export function App() {
             }
           : null;
 
+  const menuActions: ContextAction[] = [];
+  if (contextMenu) {
+    const ids = contextMenu.ids.filter(id => nodes.some(n => n.id === id));
+    const targets = nodes.filter(n => ids.includes(n.id));
+    const locked = lockedIds(nodes);
+    const reason = !connected ? "Disconnected" : ids.some(id => locked.has(id)) ? "Unlock selection first" : undefined;
+    if (ids.length) {
+      menuActions.push({ label: "Frame", run: () => { const shapes = expandShapes(shapesUnder(nodes, ids)); if (shapes.length) setCameraFrame({ bounds: boundsOf(shapes) }); else setNotice("Nothing to frame: it's empty"); } });
+      if (ids.length === 1 && ids[0] !== isolated) menuActions.push({ label: "Isolate", run: () => isolate(ids[0]) });
+      if (ids.length === 1) menuActions.push({ label: "Rename", disabled: reason, run: () => setRenameRequest({ id: ids[0] }) });
+      menuActions.push({ label: "Duplicate", disabled: reason, run: () => duplicate(ids, { dx: 0, dy: 0, dz: 0 }) });
+      menuActions.push({ label: "Group", disabled: reason, run: () => groupSelection(ids, false) });
+      if (targets.some(isGroup)) menuActions.push({ label: "Ungroup", disabled: reason, run: () => groupSelection(ids, true) });
+      const hidden = targets.every(n => n.hidden);
+      menuActions.push({ label: hidden ? "Show" : "Hide", disabled: reason, run: () => send({ type: "update_nodes", changes: ids.map(id => ({ id, hidden: !hidden })) }) });
+      const ownLocked = targets.every(n => n.locked);
+      const inherited = targets.some(n => locked.has(n.id) && !n.locked);
+      menuActions.push({ label: ownLocked ? "Unlock" : "Lock", disabled: !connected ? "Disconnected" : inherited ? "Locked by an ancestor" : undefined, run: () => send({ type: "update_nodes", changes: ids.map(id => ({ id, locked: !ownLocked })) }) });
+      menuActions.push({ label: "Delete", disabled: reason, run: () => send({ type: "remove_nodes", ids }) });
+    }
+    if (isolated) menuActions.push({ label: "Exit isolation", run: () => isolate(null) });
+    if (!menuActions.length) menuActions.push({ label: "No target", disabled: "Right-click an object for actions", run: () => {} });
+  }
   return (
     <div className={[libraryOpen && open && library ? "app library-open" : "app", walking ? "walking" : ""].join(" ").trim()}>
+      <SnapControl settings={snapSettings} onChange={setSnapSettings} />
+      {contextMenu && <ContextMenu {...contextMenu} actions={menuActions} onClose={() => setContextMenu(null)} />}
       <Viewport
+        snapSettings={snapSettings}
+        onContextAction={openContextMenu}
         tool={activeTool}
         nodes={nodes}
         definitionsVersion={definitionsVersion}
@@ -1218,6 +1265,8 @@ export function App() {
 
       <div className="left-dock">
         <Outliner
+          onContextAction={openContextMenu}
+          renameRequest={renameRequest}
           key={sceneKey}
           nodes={nodes}
           selection={selection}
