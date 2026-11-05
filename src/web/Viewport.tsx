@@ -1,3 +1,4 @@
+import { hoverTarget, hoverOwnerLabel } from "./hover";
 import { valueStore, type ValueStore } from "./valueStore";
 import { NavigationStats, captureTiming, beginCaptureTiming, endCaptureTiming } from "./navigationStats";
 import { cleanShapes } from "./renders";
@@ -41,6 +42,7 @@ import { renderJob } from "./renderView";
 import {
   boundsOf,
   isClosed,
+  isSolid,
   isFootprinted,
   lineProblem,
   rampProblem,
@@ -356,7 +358,7 @@ type Props = {
   /** The free-form in point editing (entered by double-clicking it), or null. */
   editing: string | null;
   onEditing: (id: string | null) => void;
-  /** A node hovered outside the view (an outliner row): its boxes get the hover highlight too. */
+  /** Outliner hover: groups and arrays use bounds, leaves use localized highlighting. */
   outsideHover: string | null;
   /** The kind the Box and Cylinder tools draw (the draft is previewed at that kind's default height). */
   nextKind: ShapeKind;
@@ -403,7 +405,7 @@ type Props = {
   visible: Set<string> | null;
   /** Values held in the inspector (a slider being dragged), shown on their shapes before they're sent. */
   preview: Record<string, ShapePatch> | null;
-  onSelect: (ids: string[]) => void;
+  onSelect: (ids: string[], reveal?: boolean) => void;
   onDrawShape: (shape: ShapeInput) => void;
   /** Creates a terrain assembly (assembly group + sources group + terrain node) from a drawn footprint. */
   onCreateTerrain?: (footprint: { x: number; z: number; width: number; depth: number }, y: number) => void;
@@ -1112,7 +1114,22 @@ export function Viewport({
   const entityModeRef = useRef(entityMode);
   entityModeRef.current = entityMode;
   const renderedSelection = useMemo(() => walk ? NO_IDS : ghosts.length > 0 ? new Set(ghosts.map((b) => b.id)) : selectedIds, [walk, ghosts, selectedIds]);
-  const renderedHover = useMemo(() => walk ? NO_IDS : new Set(shapesUnder(nodes, [hoveredId, outsideHover].filter((id) => id !== null)).map((b) => b.id)), [walk, nodes, hoveredId, outsideHover]);
+  const outsideNode = nodes.find((n) => n.id === outsideHover);
+  const boundsHover = useMemo(() => {
+    if (!outsideNode || (outsideNode.type !== "group" && outsideNode.type !== "array")) return null;
+    const ids = new Set(shapesUnder(nodes, [outsideNode.id]).map((s) => s.id));
+    const shapes = selectable.filter((s) => ids.has(ownerOf(s.id)));
+    return shapes.length ? boundsOf(shapes) : null;
+  }, [outsideNode, nodes, selectable]);
+  const renderedHover = useMemo(() => {
+    if (walk || panning) return NO_IDS;
+    const ids = new Set<string>();
+    if (hoveredId) ids.add(hoveredId);
+    if (outsideNode && outsideNode.type !== "group" && outsideNode.type !== "array" && selectable.some((s) => ownerOf(s.id) === outsideNode.id)) ids.add(outsideNode.id);
+    return ids;
+  }, [walk, panning, hoveredId, outsideNode, selectable]);
+  const hoverLabel = useMemo(() => hoverOwnerLabel(nodes, outsideHover, hoveredId, context, !!onPickTarget),
+    [nodes, outsideHover, hoveredId, context, onPickTarget]);
   // The free-form or line in point editing, as shown. A free-form's points sit on its top face (`editTop`); a
   // line's carry their own y, and its path is open.
   // A path array's points are its path's (10.1).
@@ -1240,7 +1257,7 @@ export function Viewport({
       (solidHit !== undefined && (!solidHit || selectable.some((s) => s.id === solidHit.id))
         ? solidHit : pickWithTerrain(screenRay(cam.current, size, sx, sy), selectable));
     // A part of an instance picks the instance.
-    return hit && { ...hit, id: ownerOf(hit.id) };
+    return hit && { ...hit, shapeId: hit.id, id: ownerOf(hit.id) };
   };
   const gizmoAt = (sx: number, sy: number, size: Size) =>
     gizmo ? hitGizmo(cam.current, size, sx, sy, gizmo.anchor, gizmo.parts, gizmo.boxes, gizmo.frame) : null;
@@ -1728,7 +1745,7 @@ export function Viewport({
           const r = resolve(ownerOf(id));
           if (!r.leaves && !hits.includes(r.id)) hits.push(r.id);
         }
-        onSelect(marquee.additive ? [...marquee.base, ...hits.filter((id) => !marquee.base.includes(id))] : hits);
+        onSelect(marquee.additive ? [...marquee.base, ...hits.filter((id) => !marquee.base.includes(id))] : hits, false);
       }
       setMarquee({ ...marquee, end, active });
       return;
@@ -1764,7 +1781,8 @@ export function Viewport({
     setHotPart(hot);
     const note = tool === "select" && !hot ? pickNote(cam.current, size, sx, sy, selectable) : null;
     const hoveredHit = tool === "select" && (onPickTarget || !hot) ? hitAt(sx, sy, size, hit, hot && onPickTarget ? undefined : note) : null;
-    setHoveredId(hoveredHit ? (onPickTarget ? hoveredHit.id : resolve(hoveredHit.id).id) : null);
+    // Ordinary instances highlight their placement; an array hit highlights only its actual part.
+    setHoveredId(hoveredHit ? hoverTarget(hoveredHit.shapeId) : null);
     setNoteHover(note ? { id: note.id, sx, sy } : null);
   };
 
@@ -1774,7 +1792,7 @@ export function Viewport({
     if (lastPointer.current && !pan.current && !drag && !pointDrag && !arrayDrag && !marquee && !drawing.current && !isPointTool(tool)) {
       onPointerMove(lastPointer.current);
     }
-  }, [pickable, selectable, cameraRestore]);
+  }, [pickable, selectable, cameraRestore, context, editing, tool, onPickTarget]);
 
   const onPointerUp = (e: PointerEvent) => {
     if (walkRef.current) return;
@@ -1845,6 +1863,7 @@ export function Viewport({
         onSelect([]);
         onContext(null);
       }
+      if (marquee.active) onSelect(selection);
       setMarquee(null);
       return;
     }
@@ -2155,6 +2174,7 @@ export function Viewport({
           selected={renderedSelection}
           hovered={renderedHover}
         />
+        {!walk && boundsHover && <HoverBounds bounds={boundsHover} />}
         {walk && <Avatar shapes={avatar} group={avatarGroup} />}
         {pen.points.length > 0 && <PenPreview pen={pen} kind={nextKind} fields={nextFields} line={nextLine} ramp={nextRamp} />}
         {!walk &&
@@ -2199,7 +2219,12 @@ export function Viewport({
           {round2(draft.width)} × {round2(draft.depth)} m{draft.on ? ` · ${draft.on}` : ""}
         </div>
       )}
-      {noteHover &&
+      {!walk && !panning && hoverLabel && (
+        <div className="draft-label hover-owner" style={{ left: 12, bottom: 44, top: "auto", maxWidth: "calc(100% - 24px)", overflow: "hidden", textOverflow: "ellipsis" }}>
+          {outsideHover ? "Outliner: " : "Click selects: "}{hoverLabel}
+        </div>
+      )}
+      {!walk && noteHover &&
         (() => {
           const note = onView.find((b) => b.id === noteHover.id);
           if (note?.type !== "note") return null;
@@ -2333,9 +2358,18 @@ const Boxes = memo(function Boxes({
   const selectedKey = [...selected].join(",");
   const hoveredKey = [...hovered].join(",");
   const { boxes, groups } = useMemo(() => splitInstanced(all, arrays, cuts), [all, arrays, cuts]);
+  const instancedHoverParts = useMemo(() => {
+    const ordinary = new Set(boxes.map((s) => s.id));
+    return new Map(all.filter((s) => !ordinary.has(s.id)).map((s) => [s.id, s]));
+  }, [all, boxes]);
   useEffect(() => invalidate(), [all, draft, selectedKey, hoveredKey]);
   return (
     <>
+      {[...hovered].map((id) => {
+        const s = instancedHoverParts.get(id);
+        if (!s || selected.has(ownerOf(id)) || !isSolid(s)) return null;
+        return <ShapeMesh key={`hover:${id}`} shape={s} overlay highlight="hover" cuts={cuts.get(id)} />;
+      })}
       {groups.map((g) => (
         <InstancedEntity key={g.key} group={g} highlight={selected.has(g.array) ? "selected" : hovered.has(g.array) ? "hover" : undefined} />
       ))}
@@ -2975,4 +3009,16 @@ function OriginAxes() {
       </mesh>
     </group>
   );
+}
+
+/** Disposable viewer overlay; never part of canonical capture/export geometry. */
+function HoverBounds({ bounds: b }: { bounds: ReturnType<typeof boundsOf> }) {
+  const helper = useMemo(() => new THREE.Box3Helper(new THREE.Box3(
+    new THREE.Vector3(b.minX, b.minY, b.minZ), new THREE.Vector3(b.maxX, b.maxY, b.maxZ),
+  ), new THREE.Color("#e4b940")), [b]);
+  useEffect(() => {
+    invalidate();
+    return () => { helper.geometry.dispose(); (helper.material as THREE.Material).dispose(); invalidate(); };
+  }, [helper]);
+  return <primitive object={helper} />;
 }

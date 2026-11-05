@@ -290,6 +290,7 @@ export function App() {
   const [spaceHand, setSpaceHand] = useState(false);
   // Node IDs (boxes and groups), at the level of `context`.
   const [selection, setSelection] = useState<string[]>([]);
+  const [selectionReveal, setSelectionReveal] = useState<{ id: string; serial: number } | null>(null);
   // The group entered with a double-click (null = the top level).
   const [context, setContext] = useState<string | null>(null);
   // The free-form in point editing (entered by double-clicking it, or its Edit points button).
@@ -492,6 +493,7 @@ export function App() {
     if (!restore) return;
     setPickerOpen(false);
     setSelection(restore.selection);
+    setSelectionReveal(null);
     setContext(null);
     setIsolation(null);
     setPlacing(null);
@@ -1105,7 +1107,13 @@ export function App() {
         showGrid={showGrid}
         visible={visible}
         preview={preview}
-        onSelect={setSelection}
+        onSelect={(ids, reveal = true) => {
+          setSelection(ids);
+          const id = ids.at(-1);
+          if (!reveal || !id) setSelectionReveal(null);
+          else if (ids.join(",") !== selection.join(",") || selectionReveal?.id !== id)
+            setSelectionReveal((r) => ({ id, serial: (r?.serial ?? 0) + 1 }));
+        }}
         showNotes={showNotes}
         showLines={showLines}
         showCursor={showCursor}
@@ -1213,7 +1221,9 @@ export function App() {
           key={sceneKey}
           nodes={nodes}
           selection={selection}
+          reveal={selectionReveal}
           onSelect={(ids, ctx) => {
+            setSelectionReveal(null);
             setSelection(ids);
             setContext(ctx);
           }}

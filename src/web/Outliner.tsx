@@ -1,4 +1,4 @@
-import { useEffect, useState, type DragEvent, type KeyboardEvent, type MouseEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type DragEvent, type KeyboardEvent, type MouseEvent } from "react";
 import {
   ChevronDown,
   ChevronRight,
@@ -88,6 +88,7 @@ function rowsOf(nodes: SceneNode[], collapsed: Set<string>): Row[] {
 export function Outliner({
   nodes,
   selection,
+  reveal,
   onSelect,
   onHover,
   onRename,
@@ -103,6 +104,8 @@ export function Outliner({
 }: {
   nodes: SceneNode[];
   selection: string[];
+  /** One-shot viewport selection reveal; outliner selections never request scrolling. */
+  reveal?: { id: string; serial: number } | null;
   /** The new selection, and the group it's in (the view's entered group; null = top level). */
   onSelect: (ids: string[], context: string | null) => void;
   onHover: (id: string | null) => void;
@@ -139,7 +142,18 @@ export function Outliner({
       return [...c].some((id) => above.has(id)) ? new Set([...c].filter((id) => !above.has(id))) : c;
     });
     // Only when the selection changes, not on every scene.
-  }, [selectionKey]);
+  }, [selectionKey, reveal]);
+
+  const rowElements = useRef(new Map<string, HTMLDivElement>());
+  const revealed = useRef<typeof reveal>(null);
+  useLayoutEffect(() => {
+    if (!reveal || revealed.current === reveal) return;
+    // Wait until the existing ancestor-expansion effect has laid out the requested row.
+    const row = rowElements.current.get(reveal.id);
+    if (!row) return;
+    row.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "instant" });
+    revealed.current = reveal;
+  }, [reveal, collapsed, open]);
 
   const rows = rowsOf(nodes, collapsed);
   const byId = new Map(nodes.map((n) => [n.id, n]));
@@ -244,6 +258,8 @@ export function Outliner({
             return (
               <div
                 key={node.id}
+                data-node-id={node.id}
+                ref={(el) => { if (el) rowElements.current.set(node.id, el); else rowElements.current.delete(node.id); }}
                 className={classes.join(" ")}
                 style={{ paddingLeft: 6 + depth * 14 }}
                 draggable={renaming?.id !== node.id}

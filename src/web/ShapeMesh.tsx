@@ -9,6 +9,8 @@ import { VIEW_ACCENT } from "../ui/viewColors";
 
 type Props = {
   authoring?: boolean;
+  /** Localized hover over an instanced part; draw above its unchanged batched body. */
+  overlay?: boolean;
   shape: Solid;
   /** The live preview while drawing: translucent blue, so it reads as not-yet-placed. */
   draft?: boolean;
@@ -114,7 +116,7 @@ export function colorMaterials(color: ShapeColor): ColorMaterials {
  * ceiling, so you see in from above. A volume is the footprint extruded to its height. Both cast and receive shadows
  * and have faint outlined edges. A hole is a translucent ghost with dashed edges.
  */
-export const ShapeMesh = memo(function ShapeMesh({ shape, draft = false, highlight, cuts, walkable = true, authoring = false }: Props) {
+export const ShapeMesh = memo(function ShapeMesh({ shape, draft = false, highlight, cuts, walkable = true, authoring = false, overlay = false }: Props) {
   const { kind, color } = shape;
   const { solid, floor, edges, frame, y, height, tilt } = useShapeGeometry(shape, cuts);
   const hole = (kind === "hole" || authoring) && !draft;
@@ -139,6 +141,16 @@ export const ShapeMesh = memo(function ShapeMesh({ shape, draft = false, highlig
           ? s.edgeHover
           : s.edge;
 
+  const overlayMaterials = useMemo(() => overlay ? [bodyMaterial, floorMaterial].map((m) => {
+    const copy = m.clone();
+    copy.depthWrite = false;
+    copy.polygonOffset = true;
+    copy.polygonOffsetFactor = -1;
+    copy.polygonOffsetUnits = -1;
+    return copy;
+  }) : null, [overlay, bodyMaterial, floorMaterial]);
+  useEffect(() => () => overlayMaterials?.forEach((m) => m.dispose()), [overlayMaterials]);
+
   // Turned around the vertical, then (inside) tilted around the shape's center: roll, then pitch (see `toWorld3`).
   const deg = Math.PI / 180;
   const turn = new THREE.Euler(tilt[0] * deg, frame.rotation * deg, tilt[1] * deg, "YXZ");
@@ -148,20 +160,20 @@ export const ShapeMesh = memo(function ShapeMesh({ shape, draft = false, highlig
         {solid && (
           <mesh
             geometry={solid}
-            material={bodyMaterial}
-            castShadow={!draft && !hole}
+            material={overlayMaterials?.[0] ?? bodyMaterial}
+            castShadow={!overlay && !draft && !hole}
             receiveShadow={!draft && !hole}
-            renderOrder={hole ? 2 : 0}
-            userData={{ walkable: walkable && !draft && !hole }}
+            renderOrder={overlay ? 2 : hole ? 2 : 0}
+            userData={{ walkable: !overlay && walkable && !draft && !hole }}
           />
         )}
-        {floor && <mesh geometry={floor} material={floorMaterial} receiveShadow={!draft} userData={{ walkable: walkable && !draft }} />}
+        {floor && <mesh geometry={floor} material={overlayMaterials?.[1] ?? floorMaterial} renderOrder={overlay ? 2 : 0} receiveShadow={!draft} userData={{ walkable: !overlay && walkable && !draft }} />}
         {edges && (
           <lineSegments
             key={hole ? "dashed" : "solid"}
             geometry={edges}
             material={edgeMaterial}
-            renderOrder={hole ? 3 : 1}
+            renderOrder={overlay ? 3 : hole ? 3 : 1}
             // Dashes need each segment's distance along the line.
             onUpdate={(l: THREE.LineSegments) => hole && l.computeLineDistances()}
           />

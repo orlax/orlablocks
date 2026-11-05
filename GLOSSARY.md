@@ -178,6 +178,9 @@ Shared vocabulary for this project, for humans and agents alike. Use these names
 
 ## System
 
+- **localized hover** (from 19.2): viewport feedback on the hit shape or ordinary entity placement, independent of the group clicking selects. Array hits highlight only the hit part without detaching the item or rebuilding the batch. A label names the selectable owner's path; outliner groups and arrays use a bounds outline instead of tinting every child. Selection keeps its normal feedback.
+- **selection reveal** (from 19.2): a viewport selection expands outliner ancestors and scrolls the last/primary selected row to the nearest visible position once, without taking keyboard focus. Marquee selection reveals on release; outliner selection and unrelated scene updates do not restart scrolling.
+
 - **scene derivation**: disposable viewer data computed from the authored nodes, current previews and entity definitions: expanded shapes, cutter relationships and instancing inputs. Navigation, hover and readout updates reuse it; edits, undo and definition changes invalidate the relevant inputs (from 17.2).
 
 - **multi-node inspection (`get_scene.ids`)** (from 19.1): a bounded read of 1–100 node or array-item IDs with one scene header, deduplicated in request order. Missing/skipped IDs appear in `missing`. Groups stay collapsed unless `depth`/`full` is explicit; arrays list item lines only with `full`. No unrelated selected nodes or open notes are included. Mutually exclusive with `root`.
