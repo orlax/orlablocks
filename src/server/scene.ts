@@ -51,6 +51,7 @@ import {
   MirrorNodesSchema,
   MoveNodesSchema,
   NodeUpdateSchema,
+  MAX_POINTS,
   PasteNodesSchema,
   PlaceNodesSchema,
   RotateNodesSchema,
@@ -1202,6 +1203,15 @@ export function createSceneStore({
           }
         }
         const fields = { ...others, ...(facing !== undefined ? { rotation: rotation ?? 0 } : {}) };
+        // Input shorthand only: use the normal point-edit validation, unlinking and refollow path.
+        if (fields.spiral !== undefined) {
+          if (node?.type !== "ramp" && node?.type !== "line") errors.push(`changes[${i}].spiral: only ramps and lines accept spiral`);
+          else if (fields.points !== undefined || fields.through != null) errors.push(`changes[${i}]: give one of points, spiral or through`);
+          else if (Math.ceil(Math.abs(fields.spiral.turn) / 90) + 1 > MAX_POINTS) errors.push(`changes[${i}].spiral: exceeds ${MAX_POINTS} generated points`);
+          else fields.points = node.type === "ramp" ? spiralPoints(fields.spiral) : spiralLinePoints(fields.spiral);
+          delete fields.spiral;
+        }
+
         if (!node) errors.push(`changes[${i}].id: no node "${id}"`);
         if (seen.has(id)) errors.push(`changes[${i}].id: "${id}" appears more than once`);
         seen.add(id);

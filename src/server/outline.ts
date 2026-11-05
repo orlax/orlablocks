@@ -2,7 +2,7 @@ import { boundsWithTerrain, terrainReadFields, terrainSummary } from "../shared/
 import { boundsOf, isTilted, round2 } from "../shared/geometry";
 import { currentTags, EMPTY_LIBRARY, entityMeta, findRefs, resolveRef, type EntityMeta, type Library, type Skill, type Tag } from "../shared/library";
 import { arrayLayout, arrayShortfall } from "../shared/arrays";
-import { definitionOf } from "../shared/entities";
+import { arrayItemInstance, definitionOf } from "../shared/entities";
 import { COMPASS, type ArrayNode, type OpenScene, type Scene, type SceneNode, type Shape } from "../shared/scene.types";
 import { ancestry, childrenOf, countsText, isGroup, isShape, shapesUnder, subtreeIds, tagsOf } from "../shared/tree";
 import { itemLine, itemLines } from "./results";
@@ -18,12 +18,14 @@ import { SceneError } from "./scene";
 export const FULL_SCENE_MAX = 40;
 /** The most matches `find_nodes` lists. */
 export const MAX_MATCHES = 100;
+/** Bound multi-node requests before resolving any geometry. */
+export const MAX_QUERY_IDS = 100;
 
 /**
  * `notes` (14.2): how open notes come, "short" (the default: id, label, point and their first 120 characters),
  * "full" (every field) or false (only a count).
  */
-export type SceneQuery = { root?: string; depth?: number; full?: boolean; notes?: "short" | "full" | false };
+export type SceneQuery = { root?: string; ids?: string[]; depth?: number; full?: boolean; notes?: "short" | "full" | false };
 
 /** The most of a note's text a short note shows. */
 const NOTE_PREVIEW = 120;
@@ -45,6 +47,7 @@ export type SceneOutline = OpenScene & {
   counts: string;
   guide?: string;
   root?: AgentNode;
+  missing?: string[];
   detail: string;
   hint?: string;
   nodes: AgentNode[];
@@ -203,7 +206,14 @@ export function describeScene(open: OpenScene, scene: Scene, query: SceneQuery =
   const describeNode = (all: SceneNode[], n: SceneNode) => describeNodeIn(all, n, library);
   const { root, depth = 1, full = false } = query;
   const byId = new Map(nodes.map((n) => [n.id, n]));
-  const rootNode = root !== undefined ? byId.get(root) : undefined;
+  if (query.ids !== undefined && root !== undefined) throw new SceneError("ids and root are mutually exclusive. Nothing was read.");
+  if (query.ids !== undefined && (query.ids.length < 1 || query.ids.length > MAX_QUERY_IDS)) throw new SceneError(`ids: give 1..${MAX_QUERY_IDS} IDs. Nothing was read.`);
+  const lookup = (id: string): SceneNode | undefined => {
+    const match = /^(.+)\/(\d+)$/.exec(id);
+    const array = match && byId.get(match[1]);
+    return byId.get(id) ?? (array?.type === "array" ? arrayItemInstance(array, Number(match![2])) : undefined);
+  };
+  const rootNode = root !== undefined ? lookup(root) : undefined;
   if (root !== undefined && !rootNode) throw new SceneError(`root: no node "${root}". Nothing was read.`);
 
   const header = {
@@ -214,6 +224,35 @@ export function describeScene(open: OpenScene, scene: Scene, query: SceneQuery =
     counts: countsText(nodes),
     ...(context.guide ? { guide: context.guide } : {}),
   };
+  if (query.ids !== undefined) {
+    const requested = [...new Set(query.ids)];
+    const resolved = requested.map((id) => ({ id, node: lookup(id) }));
+    const missing = resolved.filter((r) => !r.node).map((r) => r.id);
+    const listed: AgentNode[] = [];
+    const shown = new Map<string, AgentNode>();
+    const include = (n: SceneNode) => {
+      let entry = shown.get(n.id);
+      if (!entry) {
+        entry = { ...describeNode(nodes, n), path: pathOf(nodes, n.id) };
+        if (n.type === "array" && full) entry.at = itemLines(n);
+        if (isGroup(n) && childrenOf(nodes, n.id).length) entry.collapsed = true;
+        listed.push(entry);
+        shown.set(n.id, entry);
+      }
+      return entry;
+    };
+    const expand = (n: SceneNode, level: number) => {
+      const entry = include(n);
+      if (!isGroup(n) || (!full && level >= (query.depth ?? 0))) return;
+      delete entry.collapsed;
+      for (const child of childrenOf(nodes, n.id)) expand(child, level + 1);
+    };
+    // Requested entries first, in request order; explicit descendants follow without duplicates.
+    for (const { node } of resolved) if (node) include(node);
+    for (const { node } of resolved) if (node) expand(node, 0);
+    const glossary = glossaryFor(library, listed);
+    return { ...header, detail: "requested nodes", nodes: listed, ...(missing.length ? { missing } : {}), ...(glossary ? { glossary } : {}) };
+  }
   const rootInfo = rootNode ? { root: { ...describeNode(nodes, rootNode), path: pathOf(nodes, rootNode.id) } } : {};
 
   // A shape as the root: just that shape. An array with where every item is (plan 13 §4).
@@ -284,6 +323,7 @@ function shortNote(nodes: SceneNode[], n: Extract<SceneNode, { type: "note" }>):
 }
 
 export type FindQuery = {
+  ids?: string[];
   name?: string;
   tag?: string;
   entity?: string;
@@ -334,6 +374,7 @@ export function findNodes(nodes: SceneNode[], query: FindQuery, library: Library
   };
 
   const matches = nodes.filter((n) => {
+    if (query.ids !== undefined && !query.ids.includes(n.id)) return false;
     if (inside && !inside.has(n.id)) return false;
     if (type !== undefined && n.type !== type) return false;
     if (kind !== undefined && !(isShape(n) && "kind" in n && n.kind === kind)) return false;
@@ -384,12 +425,15 @@ export function findNodes(nodes: SceneNode[], query: FindQuery, library: Library
  */
 function findItems(nodes: SceneNode[], query: FindQuery, library: Library, array?: ArrayNode): FoundNodes {
   const { name, entity, near } = query;
+  if ((query.type !== undefined && query.type !== "item") || query.kind !== undefined || query.status !== undefined) return { found: [] };
   const needle = name?.trim().toLowerCase();
   const inside = query.under !== undefined && !array ? subtreeIds(nodes, query.under) : null;
   const arrays = array ? [array] : nodes.filter((n): n is ArrayNode => n.type === "array" && (!inside || inside.has(n.id)));
   const found: { id: string; type: "item"; entity: string; at: string; parent: string; distance?: number }[] = [];
   for (const a of arrays) {
     for (const item of arrayLayout(a).items) {
+      if (query.ids !== undefined && !query.ids.includes(`${a.id}/${item.index}`)) continue;
+      if (query.tag !== undefined && !currentTags(library, entityMeta(library, item.entity)?.tags).includes(resolveRef(library, "tag", query.tag)!.name)) continue;
       if (entity !== undefined && item.entity !== entity) continue;
       if (needle && !(entityMeta(library, item.entity)?.name ?? item.entity).toLowerCase().includes(needle)) continue;
       let distance: number | undefined;

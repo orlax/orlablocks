@@ -61,7 +61,7 @@ export const INSTRUCTIONS =
   `a scene of ${FULL_SCENE_MAX} nodes or fewer comes whole), ` +
   "with the human's `selection` (\"this\"), `view` (`focus`: draw near it; `pointer`: \"here\"; `walking`; " +
   "`isolated`: work inside it), the open `notes` (their intent: mark one done when it's handled) and `changes` (the " +
-  "human edited since your last step: read get_changes first). find_nodes looks nodes up. Edit results are compact " +
+  "human edited since your last step: read get_changes first). get_scene { ids } inspects 1..100 IDs with one header, no unrelated nodes/notes; groups expand only with explicit depth/full, missing IDs are reported. Do not combine ids with root. find_nodes looks nodes up (ids intersects other filters; use under for recursive containment, not parent; unknown filters reject). Edit results are compact " +
   "(`items`, `verbose` for more); `dry_run` checks a call without changing anything. With `editing`, you're in an " +
   "entity's definition, around its pivot, and every instance follows. Leave `locked` and `hidden` nodes alone. " +
   "WORKING: describe groups, so the outline reads as the plan. Repeat things with copies (move_nodes copy, count; " +
@@ -135,7 +135,7 @@ const GUIDE: Record<Exclude<GuideTopic, "design">, string> = {
     "around the pivot (degrees, counterclockwise seen from above). FACING: instead of degrees, rotation can say where " +
     "its local +x faces, worked out once (it doesn't follow later): { toward: {x, z} or a node or item ID } (a stand " +
     "facing the ring), { away: ... } (its back to it), { along: a line's or ramp's ID } (along the route where it " +
-    "passes nearest: rings along a flight path). No atan2. An instance has nothing else of its own: its shapes, " +
+    "passes nearest: rings along a flight path). Angles are CCW from east: x = cx + r*cos(theta), z = cz - r*sin(theta). Local +x faces outward at theta, inward at (theta + 180) % 360; differently authored prefabs need an offset. Prefer toward for inward facing. No atan2. An instance has nothing else of its own: its shapes, " +
     "description and tags are its entity's (find_nodes { tag } finds instances through their entity's tags), and " +
     "editing the entity changes every instance. update_nodes on an instance takes x, y, z, rotation, name, parent and " +
     "`entity` (swap: a small tree becomes a tall one in place). move_nodes, rotate_nodes and copy work on instances as " +
@@ -177,7 +177,7 @@ const GUIDE: Record<Exclude<GuideTopic, "design">, string> = {
     "offset? }, spacing }. A box, cylinder or free-form gives its outline (a loop, counterclockwise seen from above) at " +
     "its top (the default; a tapered volume's top ring) or bottom (at: \"bottom\", its floor), moved `offset` m " +
     "inward: by default half a room's wall, so items stand on the wall's centerline, and 0 for a volume (on its edge). " +
-    "A ramp gives its centerline at its surface's height, and a line its path, `offset` m to the right of travel. " +
+    "A ramp gives its centerline at its surface's height, and a line its path: signed offset is negative left / positive right of travel. " +
     "Battlements on a keep are one call: { type: \"array\", entity: \"merlon\", layout: { type: \"path\", along: { id: " +
     "\"box_5\" }, spacing: 1.2 } }; posts along both sides of a stair are two, offset ± half its width. When the " +
     "followed node changes (resized, reshaped, raised) the items follow in that same step. A following array has no " +
@@ -239,7 +239,7 @@ const GUIDE: Record<Exclude<GuideTopic, "design">, string> = {
     "rises from its elevation `y` (its bottom: 0 = on the ground, negative = below ground) to y + height, so to stack " +
     "box B on box A, set B.y = A.y + A.height. `rotation` turns a box around the vertical axis through its center, in " +
     "degrees, counterclockwise seen from above (0 = grid-aligned: width along world +x, depth along world +z). " +
-    "Rotating never moves the center. " +
+    "Rotating never moves the center. On box/cylinder creation only, omitted kind means volume; free-forms require kind. " +
     `A room is hollow: floor and walls, no ceiling; default height ${DEFAULT_HEIGHT.room} m. Its footprint is the room's ` +
     `OUTSIDE, and its walls grow inward from it, \`wall\` m thick (default ${DEFAULT_WALL}, at least ${MIN_WALL}), so a ` +
     "10 m room is 10 m across outside. Two rooms that touch have two walls back to back, so overlap them by a wall's " +
@@ -305,6 +305,7 @@ const GUIDE: Record<Exclude<GuideTopic, "design">, string> = {
     "without it the ramp is smooth. `base` is solid (the default, filled down to its lowest point) or floating (a " +
     "slab under the surface). For a spiral, give `spiral: { x, z, radius, turn, y, rise, from? }` instead of points " +
     "(turn in degrees, counterclockwise seen from above; from 0 = east, 90 = north) and don't compute a helix by hand. " +
+    "update_nodes { changes: [{ id, spiral: { x, z, radius, turn, y, rise, from? } }] } replaces its points once with the same ID and refreshes dependent placements, in one undo step. Give points or spiral, not both. " +
     "A ramp is always a volume (never a hole); it has no x, z, y, height or rotation, and move_nodes, rotate_nodes " +
     "and mirror_nodes change its points. For a stair up to a floor above, cut a thin hole in that floor " +
     "(get_guide holes).",
@@ -326,7 +327,7 @@ const GUIDE: Record<Exclude<GuideTopic, "design">, string> = {
     "center of its walking surface. style jumps (the default) draws an arc per hop, peaking `apex` m (default 1.2) " +
     "above the higher stop; straight a polyline. It's kept up to date: move a platform, resize it or change an array's " +
     "layout and the line follows in that step; a removed stop drops out (with fewer than 2 left, the line keeps its " +
-    "points, unlinked). Giving it points, or moving it without its stops, unlinks it; update_nodes { through } gives it " +
+    "points, unlinked). update_nodes accepts spiral too: it replaces points once, keeps its ID and refreshes dependents. Give points or spiral, not both, and do not combine spiral with non-null through. Giving it points or spiral, or moving it without its stops, unlinks it; update_nodes { through } gives it " +
     "new stops, { through: null } unlinks it. " +
     "It has no kind, x, z, y, " +
     "height or rotation; move_nodes, rotate_nodes and mirror_nodes change its points.",

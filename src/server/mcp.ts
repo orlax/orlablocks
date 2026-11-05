@@ -31,7 +31,7 @@ import {
 import { EMPTY_LIBRARY, LibraryEditSchema, unknownRefs, type Library } from "../shared/library";
 import { isGroup, isShape } from "../shared/tree";
 import { GUIDE_TOPICS, guideTopic, INSTRUCTIONS, topicList } from "./guide";
-import { describeScene, entitySize, findNodes, FULL_SCENE_MAX, MAX_MATCHES } from "./outline";
+import { describeScene, entitySize, findNodes, FULL_SCENE_MAX, MAX_MATCHES, MAX_QUERY_IDS } from "./outline";
 import { definitionOf } from "../shared/entities";
 import type { Exports } from "./exports";
 import { prepareRender, type RenderBroker } from "./render";
@@ -154,7 +154,7 @@ function buildServer(workspace: Workspace, renders: RenderBroker, exports: Expor
   /** Runs an edit tool's body for real, or as a dry run (14.2): the same result, marked, with nothing changed. */
   const edit = <T extends object>(dryRun: boolean | undefined, run: () => T) =>
     dryRun ? { dryRun: "nothing was changed: this is what the call would do", ...store().dryRun(run) } : run();
-  const server = new McpServer({ name: "orlablocks", version: "0.0.45" }, { instructions: INSTRUCTIONS });
+  const server = new McpServer({ name: "orlablocks", version: "0.0.46" }, { instructions: INSTRUCTIONS });
   // Every tool reads or edits the open scene, and fails with a clear message while nothing is open.
   // The agent's scene (14.5): its own while the human is in another one, else the human's open document.
   const store = () => workspace.requireAgentScene();
@@ -181,19 +181,22 @@ function buildServer(workspace: Workspace, renders: RenderBroker, exports: Expor
         `the editor's selection, \`counts\`, and the nodes as an OUTLINE: the children of \`root\` (a group's ID; default the top ` +
         `level) down to \`depth\` levels (default 1), each group with its description, bounds and \`contains\` (counts), and ` +
         `\`collapsed: true\` when its contents aren't listed. \`full: true\` lists every node under the root instead; a scene of ` +
-        `${FULL_SCENE_MAX} nodes or fewer comes back in full anyway. Selected nodes the outline doesn't list come in \`selected\`.`,
-      inputSchema: {
+        `${FULL_SCENE_MAX} nodes or fewer comes back in full anyway. Selected nodes the outline doesn't list come in \`selected\`. ` +
+        `ids instead returns only requested nodes (no unrelated selection/notes); groups stay collapsed unless depth/full is explicit, ` +
+        `arrays list all item lines only with full. Missing or skipped items are reported in missing.`,
+      inputSchema: z.strictObject({
+        ids: z.array(z.string().min(1).max(200)).min(1).max(MAX_QUERY_IDS).optional().describe("Inspect these node or array-item IDs with one header; deduplicated in request order; mutually exclusive with root; missing IDs reported explicitly"),
         root: z
           .string()
           .optional()
-          .describe("ID of a group to list the contents of (a shape's ID returns just that shape; an array's, with every item's line). Default: the top level"),
+          .describe("ID of a group to list the contents of (a shape/item ID returns just that placement; an array's, with every item's line). Default: the top level"),
         depth: z.number().int().min(1).max(20).optional().describe("How many levels of groups to open, default 1"),
         full: z.boolean().optional().describe("List every node under the root, with no depth limit"),
         notes: z
           .union([z.enum(["short", "full"]), z.literal(false)])
           .optional()
           .describe('Open notes (those in the root, with one): "short" (default: id, label, point, the start of the text), "full" (every field), or false (only a count)'),
-      },
+      }).refine((q) => q.ids === undefined || q.root === undefined, { message: "Use ids or root, not both" }),
     },
     async (query) => {
       const scene = store().getScene();
@@ -266,7 +269,8 @@ function buildServer(workspace: Workspace, renders: RenderBroker, exports: Expor
         `ID ("entry_window"), or to find what's in or near an area. Array ITEMS are found with type: "item" (with near, ` +
         `nearest first: "the column nearest the door") or under an array's ID: each as array_5/3 with its item line ` +
         `(where it stands, its top and its turn), the IDs skip and item references use.`,
-      inputSchema: {
+      inputSchema: z.strictObject({
+        ids: z.array(z.string().min(1).max(200)).min(1).max(MAX_QUERY_IDS).optional().describe("Only these IDs, intersected with every other filter; for array-item IDs use type: item or under: an array"),
         name: z.string().optional().describe("Part of the name (or of a note's text, or an instance's or array's entity's name), any case"),
         tag: z.string().optional().describe("A library tag (without #): only nodes carrying it"),
         type: z
@@ -281,7 +285,7 @@ function buildServer(workspace: Workspace, renders: RenderBroker, exports: Expor
           .strictObject({ x: z.number(), z: z.number(), radius: z.number().min(0) })
           .optional()
           .describe("Only nodes whose bounds come within radius meters of the point x, z (on the ground)"),
-      },
+      }, { error: (issue) => issue.code === "unrecognized_keys" ? "Unknown find_nodes filter: " + issue.keys.join(", ") + ". Use under for recursive containment (parent is not supported); use ids for explicit IDs." : undefined }),
     },
     async (query) => json(findNodes(store().getScene().nodes, query, library())),
   );
@@ -420,7 +424,7 @@ function buildServer(workspace: Workspace, renders: RenderBroker, exports: Expor
       description:
         `Add one or more shapes to the scene in a single batch; they appear live in the editor. Each has a \`type\` ` +
         `(box, the default, cylinder, freeform, line, ramp, note, instance, array or group) and that type's fields. For a box or cylinder (a room, a volume or a hole) only ` +
-        `kind, x, z, width and depth are required; for a free-form, kind and points; for a line, points; for a ramp, points or spiral; for a note, x, z and text; for an instance of an entity, entity, x and z; ` +
+        `x, z, width and depth are required (kind defaults to volume); for a free-form, kind and points; for a line, points, spiral or through; for a ramp, points or spiral; for a note, x, z and text; for an instance of an entity, entity, x and z; ` +
         `for an array (get_guide arrays), entity (or entities) and layout. The rest have defaults (the kind's ` +
         `height, y 0, rotation 0, color ${DEFAULT_COLOR} (${DEFAULT_LINE_COLOR} for a line), ${DEFAULT_WALL} m room walls, no taper or bevel, no name, top level, a smooth cylinder, ` +
         `and a solid ${DEFAULT_THICKNESS} px line with no arrow). ` +
@@ -433,6 +437,8 @@ function buildServer(workspace: Workspace, renders: RenderBroker, exports: Expor
         `date; an array on an array stands item on item. THROUGH: a line with through: { stops, style?, apex? } instead ` +
         `of points goes through its stops (node IDs, items array_3/5, array_3/* for all of them, array_3/2..6), each the ` +
         `center of its walking surface, as jump arcs (the default) or straight, kept up to date: the critical path. ` +
+        `Circle/spiral angles run CCW from east (90 = north): x = cx + r*cos(theta), z = cz - r*sin(theta). ` +
+        `Instance local +x faces outward at theta, inward at (theta + 180) % 360; prefer rotation: { toward: { x, z } }. ` +
         `The batch is all-or-nothing: if any shape is invalid, nothing is drawn and the error says which one. ` +
         `The result is compact: each new node's id, type, kind, name, parent and bounds (a count instead of points; an array's layout, item count and range of tops, with items: true its item lines). dry_run: true checks the batch and returns this result, and every error, drawing nothing.`,
       inputSchema: { shapes: z.array(ShapeInputSchema).min(1), verbose: VERBOSE, items: ITEMS, dry_run: DRY_RUN },
@@ -472,11 +478,11 @@ function buildServer(workspace: Workspace, renders: RenderBroker, exports: Expor
         `A box takes any of: name, parent, kind, x, z, y, width, depth, height, rotation, color, wall (a room's; null = the default), ` +
         `taper and bevel (a volume's; 0 clears them), pitch and roll (a box or cylinder volume's; 0 levels it); ` +
         `a cylinder those and sides; a free-form name, parent, kind, y, height, color, wall, taper, bevel and points (the whole outline); a line name, parent, color, ` +
-        `points (the whole path, with y), thickness, dashed and arrow; a ramp name, parent, color, ` +
-        `points (with y), width, step (null = smooth) and base; a note name, parent, x, y, z, color, text, label (null removes it) and status (open or done); an instance name, parent, x, y, z, rotation (degrees, or where it faces), scale and entity (another entity's ID, to swap it); ` +
+        `points or spiral (replaces the whole path once, preserving its ID), thickness, dashed and arrow; a ramp name, parent, color, ` +
+        `points (with y) or spiral (not both), width, step (null = smooth) and base; a note name, parent, x, y, z, color, text, label (null removes it) and status (open or done); an instance name, parent, x, y, z, rotation (degrees, or where it faces), scale and entity (another entity's ID, to swap it); ` +
         `an array name, parent, entities, layout (fields merge into it; another type replaces it), facing, rotation, jitter, turnJitter, seed, skip and scale. ` +
         `An instance or array takes on ({ id } to stand on a node, null to stop), a line through (new stops, or null to unlink it). ` +
-        `Giving a through line points, or something standing a height (y, or an array's layout y), unlinks it. ` +
+        `Giving a through line points or spiral, or something standing a height (y, or an array's layout y), unlinks it. ` +
         `A group takes only name, description (what that part of the level is; null removes it), parent, locked and hidden (any node takes those two). ` +
         `{ id, type: "freeform" } alone converts a box or cylinder into a free-form with a new ID; a call that converts ` +
         `only converts (edit the new free-form in a second call). ` +

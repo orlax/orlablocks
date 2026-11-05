@@ -785,7 +785,7 @@ export const NodeSchema: z.ZodType<SceneNode> = z.discriminatedUnion("type", [Te
 
 export const BoxInputSchema = z.strictObject({
   terrain: TerrainModifierSchema.optional(),
-  kind: field.kind,
+  kind: field.kind.default("volume").describe("room, volume or hole; omitted on box/cylinder creation means volume"),
   x: field.x,
   z: field.z,
   width: field.width,
@@ -1000,7 +1000,7 @@ const FollowInputSchema = z.strictObject({
   offset: z
     .number()
     .optional()
-    .describe("A closed shape: meters inward from its outline (default: half a room's wall, on its centerline; 0 for a volume). A ramp or line: meters to the right of travel (default 0)"),
+    .describe("A closed shape: meters inward from its outline (default: half a room's wall, on its centerline; 0 for a volume). A ramp or line: signed meters perpendicular to travel, negative left / positive right (default 0)"),
 });
 /** An array's layout for `draw_shapes` and `update_nodes` (see get_guide arrays). */
 export const ArrayLayoutInputSchema = z.discriminatedUnion("type", [
@@ -1168,6 +1168,7 @@ export const NodeUpdateSchema = z.strictObject({
   bevel: field.bevel.optional(),
   pitch: field.pitch.optional(),
   roll: field.roll.optional(),
+  spiral: SpiralInputSchema.optional().describe("Ramps and lines only: replace the path once with generated spiral points; cannot combine with points or non-null through; preserves the node ID"),
   points: z
     .array(
       z.strictObject({
@@ -1213,7 +1214,7 @@ export const NodeUpdateSchema = z.strictObject({
       spiral: SpiralInputSchema.optional(),
       closed: z.boolean().optional(),
       along: z
-        .strictObject({ id: z.string().optional(), at: z.enum(["top", "bottom"]).optional(), offset: z.number().nullable().optional() })
+        .strictObject({ id: z.string().optional(), at: z.enum(["top", "bottom"]).optional(), offset: z.number().nullable().optional().describe("Closed outlines: positive inward. Ramps/lines: negative left, positive right of travel; null restores default") })
         .nullable()
         .optional(),
       place: z.enum(ARRAY_PLACES).optional(),
