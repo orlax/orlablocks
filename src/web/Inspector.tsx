@@ -1,5 +1,5 @@
 import { circleDistribution } from "../shared/arrays";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { memo, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   ArrowDownToLine,
   ArrowUpToLine,
@@ -220,7 +220,9 @@ export type ArrayControls = {
   onRestoreAll: () => void;
 };
 
-export function Inspector({
+export const Inspector = memo(InspectorPanel);
+
+function InspectorPanel({
   title,
   info,
   library = null,

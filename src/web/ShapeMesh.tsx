@@ -213,6 +213,7 @@ export function useShapeGeometry(shape: Solid, cuts?: ClosedShape[], allowWorker
   const { data, previous, pending } = usePreparedGeometry(
     `shape:${key}`, { kind: "shape", shape, cuts }, allowWorker && expensive,
     `shape:${manifold ? key : uncutKey}`, { kind: "shape", shape, cuts: manifold ? cuts : undefined },
+    allowWorker,
   );
   const buffers = useGeometryBuffers(data ?? previous);
   return { ...buffers, ...meshFrame(shape), pending };

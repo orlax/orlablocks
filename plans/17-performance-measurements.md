@@ -259,3 +259,31 @@ The in-app browser reproduced the hitch while holding A on the live development 
 Values are medians of three trials. The forced DPR 1 control did not change the render resolution. Default React Profiler trial p95 render durations were 157.6–173.3 ms. Skipping the application callback gave zero frames at or above 33.3 ms across all three trials, versus 21–22 per default trial. The renderer still drew the same 856 calls in the callback-skip test. The warmed development route showed no cutter/expansion/instancing recomputation in the instrumented sections. `CameraRig` reports at most every 100 ms, and `App` puts both view and camera into top-level React state. This test isolates synchronous report-side work in the browser. Upstream server persistence is excluded by the proxy. A subtree profile would be needed to assign the React cost to individual panels.
 
 The production frontend in the same browser, with the same camera, canvas, live snapshots and shadows enabled, averaged 16.7 ms with a 25.3 ms p95 and 856 draws. Setting render pixel ratio to 0.75 gave the same 16.7 ms mean and 25.3 ms p95. Both production conditions recorded zero frames at or above 33.3 ms across three trials.
+
+### Camera reporting and virtual panels — 2026-11-17
+
+Repeated the same fixed-camera held-A development route after moving camera data out of `App` state. On the scratch castle, the median trial mean was **16.7 ms** and the median trial p95 was **16.8 ms**, compared with 43.3 and 178.2 ms in the previous development baseline. Both used the 1280 × 692 in-app canvas at DPR 1, stats off and 856 draws. The updated editor reported its final native-A yaw to the scratch server. The server's view and restore yaw were 343.66°, matching the rounded 344° readout.
+
+Compared the old and updated panels on the same scratch data with the outer React Profiler in development. For each action the number is the median of three trials' largest React render durations. These are React measurements, not input-to-paint timings.
+
+| Action or mounted rows | Before → after |
+| --- | ---: |
+| Select the castle root group in the Outliner | 97.8 → 70.5 ms |
+| Rename one unselected box through the scratch editor protocol | 140.7 → 29.2 ms |
+| Mounted Outliner rows at the reference viewport | 308 → 26 |
+| Mounted Entities rows at the reference viewport | 69 → 21 |
+
+The browser also verified Home and End navigation, the expanded Entities editor and its drag payload, search, native Outliner drag reorder, one-step rename and undo, and bulk selection and single-record edit updates. The move and edit tests used the scratch project.
+
+### Large-edit latency — 2026-11-17
+
+Compared production frontends on the same scratch `castle v2` in headless Chrome 157 on Apple M1 Max Metal, at 1280 × 822 and DPR 1. The benchmark timestamps the browser just before sending the scratch WebSocket edit. It verifies the new shape value in the viewport's committed inputs, waits until no mounted geometry hook is pending, and reads the next animation-frame timestamp after Three.js draws that result. This measures the next paint opportunity, including the round trip, with no direct display-present timestamp.
+
+| Action | Baseline median | Updated median |
+| --- | ---: | ---: |
+| Raise 11 active cutters together, six distinct offsets from 0.35 to 0.40 m | 101.2 ms | 71.6 ms |
+| Undo those moves, six trials | 33.5 ms | 32.4 ms |
+| Change a part's height in the planter definition, five distinct offsets | 32.8 ms | 32.7 ms |
+| Return to the castle after each planter edit | 93.8 ms | 72.2 ms |
+
+An earlier paired run gave 97.1 → 79.9 ms for the cutter move and 95.0 → 78.2 ms for returning from Edit entity. No trial reported a browser long task. The repeat also verified that two rapid cutter updates settle on the latest input, followed by undo, and that the baseline and updated 800 × 600 canonical captures after restoring the scene were pixel-identical. These are warmed workloads.

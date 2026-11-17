@@ -364,7 +364,7 @@ type Props = {
   editing: string | null;
   onEditing: (id: string | null) => void;
   /** Outliner hover: groups and arrays use bounds, leaves use localized highlighting. */
-  outsideHover: string | null;
+  outsideHover: ValueStore<string | null>;
   /** The kind the Box and Cylinder tools draw (the draft is previewed at that kind's default height). */
   nextKind: ShapeKind;
   /** The sides the Cylinder tool draws (undefined = smooth). */
@@ -409,7 +409,7 @@ type Props = {
    */
   visible: Set<string> | null;
   /** Values held in the inspector (a slider being dragged), shown on their shapes before they're sent. */
-  preview: Record<string, ShapePatch> | null;
+  preview: ValueStore<Record<string, ShapePatch> | null>;
   snapSettings?: SnapSettings;
   onContextAction?: (id: string | null, x: number, y: number, source: HTMLElement) => void;
   onSelect: (ids: string[], reveal?: boolean) => void;
@@ -499,7 +499,7 @@ export function Viewport({
   onContext,
   editing,
   onEditing,
-  outsideHover,
+  outsideHover: hoverStore,
   nextKind,
   nextSides,
   nextFields,
@@ -519,7 +519,7 @@ export function Viewport({
   placing,
   onPlaceInstance,
   visible,
-  preview,
+  preview: previewStore,
   snapSettings = DEFAULT_SNAP,
   onContextAction,
   onSelect,
@@ -544,6 +544,8 @@ export function Viewport({
   shots,
   onRemoveShot,
 }: Props) {
+  const outsideHover = useSyncExternalStore(hoverStore.subscribe, hoverStore.get);
+  const preview = useSyncExternalStore(previewStore.subscribe, previewStore.get);
   const snap = (n: number) => round2(Math.round(n / snapSettings.translation) * snapSettings.translation);
   const navigationPulse = useRef(-Infinity);
   const navigationEpoch = useRef(0);

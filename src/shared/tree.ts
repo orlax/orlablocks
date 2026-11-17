@@ -16,6 +16,16 @@ export const tagsOf = (n: SceneNode): string[] | undefined =>
 /** The nodes directly inside `parent` (undefined = the top level), in list order. */
 export const childrenOf = (nodes: SceneNode[], parent: string | undefined) => nodes.filter((n) => n.parent === parent);
 
+export function indexChildren(nodes: SceneNode[]): Map<string | undefined, SceneNode[]> {
+  const children = new Map<string | undefined, SceneNode[]>();
+  for (const node of nodes) {
+    const siblings = children.get(node.parent);
+    if (siblings) siblings.push(node);
+    else children.set(node.parent, [node]);
+  }
+  return children;
+}
+
 /** `id` and every node below it. */
 export function subtreeIds(nodes: SceneNode[], id: string): Set<string> {
   const ids = new Set([id]);
@@ -35,14 +45,26 @@ export function subtreeIds(nodes: SceneNode[], id: string): Set<string> {
 
 /** The boxes in or under the given nodes (a box counts itself), in list order, each once. */
 export function shapesUnder(nodes: SceneNode[], ids: string[]): Shape[] {
-  const all = new Set<string>();
-  for (const id of ids) for (const d of subtreeIds(nodes, id)) all.add(d);
+  if (!ids.length) return [];
+  const children = indexChildren(nodes);
+  const all = new Set(ids);
+  const pending = [...all];
+  while (pending.length) {
+    for (const node of children.get(pending.pop()!) ?? []) {
+      if (all.has(node.id)) continue;
+      all.add(node.id);
+      pending.push(node.id);
+    }
+  }
   return nodes.filter((n): n is Shape => isShape(n) && all.has(n.id));
 }
 
 /** `[id, its parent, its grandparent, ...]` up to the top level. */
 export function ancestry(nodes: SceneNode[], id: string): string[] {
-  const byId = new Map(nodes.map((n) => [n.id, n]));
+  return ancestryFrom(new Map(nodes.map((n) => [n.id, n])), id);
+}
+
+export function ancestryFrom(byId: ReadonlyMap<string, SceneNode>, id: string): string[] {
   const chain: string[] = [];
   let current = byId.get(id);
   while (current && !chain.includes(current.id)) {
@@ -118,7 +140,16 @@ export function copyNodes(
 function flaggedIds(nodes: SceneNode[], flag: "locked" | "hidden"): Set<string> {
   const set = new Set(nodes.filter((n) => n[flag]).map((n) => n.id));
   if (set.size === 0) return set;
-  return new Set(nodes.filter((n) => ancestry(nodes, n.id).some((id) => set.has(id))).map((n) => n.id));
+  const children = indexChildren(nodes);
+  const pending = [...set];
+  while (pending.length) {
+    for (const child of children.get(pending.pop()!) ?? []) {
+      if (set.has(child.id)) continue;
+      set.add(child.id);
+      pending.push(child.id);
+    }
+  }
+  return new Set(nodes.filter((n) => set.has(n.id)).map((n) => n.id));
 }
 
 /** The nodes that are locked, by their own `locked` or an ancestor's: none of them can be picked in the view. */

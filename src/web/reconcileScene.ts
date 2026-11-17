@@ -1,7 +1,7 @@
 import type { Scene } from "../shared/scene.types";
 
 /** Snapshots contain only JSON values. Object key order can vary between server edits and undo. */
-function sameValue(a: unknown, b: unknown): boolean {
+export function sameValue(a: unknown, b: unknown): boolean {
   if (a === b) return true;
   if (a === null || b === null || typeof a !== "object" || typeof b !== "object") return false;
   if (Array.isArray(a) || Array.isArray(b)) {

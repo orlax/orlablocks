@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { NO_USES, type Library, type Uses } from "../shared/library";
 import { setDefinitions } from "../shared/entities";
-import { reconcileScene } from "./reconcileScene";
+import { reconcileScene, sameValue } from "./reconcileScene";
 import {
   DEFAULT_PLAYER,
   type AgentInfo,
@@ -107,7 +107,14 @@ export function useScene(renderer?: { current: RenderHandler | null }) {
               (err: unknown) => answer({ type: "rendered", requestId: msg.requestId, error: err instanceof Error ? err.message : String(err) }),
             );
         } else if (msg.type === "library") {
-          setLibrary({ library: msg.library, history: msg.history, uses: msg.uses });
+          setLibrary((previous) => {
+            const library = sameValue(previous.library, msg.library) ? previous.library : msg.library;
+            const history = sameValue(previous.history, msg.history) ? previous.history : msg.history;
+            const entities = sameValue(previous.uses.entities, msg.uses.entities) ? previous.uses.entities : msg.uses.entities;
+            const uses = sameValue(previous.uses, msg.uses) ? previous.uses : { ...msg.uses, entities };
+            return library === previous.library && history === previous.history && uses === previous.uses
+              ? previous : { library, history, uses };
+          });
         } else if (msg.type === "error") {
           setError(msg.message);
         }

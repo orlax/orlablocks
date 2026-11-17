@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type DragEvent, type KeyboardEvent, type MouseEvent } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent, type MouseEvent } from "react";
 import {
   ChevronDown,
   ChevronRight,
@@ -22,10 +22,12 @@ import {
   Waypoints,
 } from "lucide-react";
 import { arrayItems } from "../shared/arrays";
-import { isHole, terrainHoleOwner } from "../shared/holes";
+import { isHole } from "../shared/holes";
+import { terrainInputIds } from "../shared/terrain";
 import { Stairs } from "./icons";
 import type { SceneNode } from "../shared/scene.types";
-import { ancestry, childrenOf, hiddenIds, isGroup, lockedIds, subtreeIds } from "../shared/tree";
+import { ancestryFrom, hiddenIds, indexChildren, isGroup, lockedIds } from "../shared/tree";
+import { rowTop, useVirtualRows } from "./virtualRows";
 
 // A hole uses its shape's solid icon, drawn dotted (the `hole` class).
 const SHAPE_ICONS = {
@@ -64,11 +66,11 @@ type Row = { node: SceneNode; depth: number; hasChildren: boolean };
 type Drop = { id: string | null; where: "before" | "after" | "into" | "end" };
 
 /** The visible rows: a depth-first walk of the tree, skipping the insides of collapsed groups. */
-function rowsOf(nodes: SceneNode[], collapsed: Set<string>): Row[] {
+function rowsOf(children: ReturnType<typeof indexChildren>, collapsed: Set<string>): Row[] {
   const rows: Row[] = [];
   const walk = (parent: string | undefined, depth: number) => {
-    for (const node of childrenOf(nodes, parent)) {
-      const hasChildren = isGroup(node) && nodes.some((n) => n.parent === node.id);
+    for (const node of children.get(parent) ?? []) {
+      const hasChildren = isGroup(node) && children.has(node.id);
       rows.push({ node, depth, hasChildren });
       if (hasChildren && !collapsed.has(node.id)) walk(node.id, depth + 1);
     }
@@ -85,7 +87,9 @@ function rowsOf(nodes: SceneNode[], collapsed: Set<string>): Row[] {
  * in the view; the outliner still selects them) and an isolate button (only that node and what's in it show),
  * shown on hover or while on; rows that don't show in the view are dimmed.
  */
-export function Outliner({
+export const Outliner = memo(OutlinerPanel);
+
+function OutlinerPanel({
   onContextAction,
   renameRequest,
   nodes,
@@ -129,20 +133,27 @@ export function Outliner({
   /** Editing an entity: a top-level hole is fine there (no warning). */
   entityMode?: boolean;
 }) {
-  const locked = lockedIds(nodes);
-  const hidden = hiddenIds(nodes);
+  const locked = useMemo(() => lockedIds(nodes), [nodes]);
+  const hidden = useMemo(() => hiddenIds(nodes), [nodes]);
+  const terrainInputs = useMemo(() => terrainInputIds(nodes), [nodes]);
+  const byId = useMemo(() => new Map(nodes.map((n) => [n.id, n])), [nodes]);
+  const children = useMemo(() => indexChildren(nodes), [nodes]);
+  const selected = useMemo(() => new Set(selection), [selection]);
 
   const [open, setOpen] = useState(true);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [renaming, setRenaming] = useState<{ id: string; value: string } | null>(null);
   const [dragging, setDragging] = useState<string[] | null>(null);
+  const [dragSource, setDragSource] = useState<string | null>(null);
+  const [focused, setFocused] = useState<string | null>(null);
   const [drop, setDrop] = useState<Drop | null>(null);
+  const draggedIds = useMemo(() => new Set(dragging), [dragging]);
 
   useEffect(() => {
     if (!renameRequest) return;
-    const node = nodes.find(n => n.id === renameRequest.id);
+    const node = byId.get(renameRequest.id);
     if (!node) return;
-    const above = new Set(ancestry(nodes, node.id).slice(1));
+    const above = new Set(ancestryFrom(byId, node.id).slice(1));
     setOpen(true);
     setCollapsed(c => new Set([...c].filter(id => !above.has(id))));
     setRenaming({ id: node.id, value: node.name ?? "" });
@@ -152,8 +163,9 @@ export function Outliner({
   // Reveal the selection: expand every collapsed group above a selected node.
   const selectionKey = selection.join(",");
   useEffect(() => {
+    if (reveal) setOpen(true);
     setCollapsed((c) => {
-      const above = new Set(selection.flatMap((id) => ancestry(nodes, id).slice(1)));
+      const above = new Set(selection.flatMap((id) => ancestryFrom(byId, id).slice(1)));
       return [...c].some((id) => above.has(id)) ? new Set([...c].filter((id) => !above.has(id))) : c;
     });
     // Only when the selection changes, not on every scene.
@@ -161,17 +173,26 @@ export function Outliner({
 
   const rowElements = useRef(new Map<string, HTMLDivElement>());
   const revealed = useRef<typeof reveal>(null);
+  const focusRequest = useRef<string | null>(null);
+  const rows = useMemo(() => rowsOf(children, collapsed), [children, collapsed]);
+  const rowIndex = useMemo(() => new Map(rows.map(({ node }, i) => [node.id, i])), [rows]);
+  const indexOf = (id?: string | null) => id ? rowIndex.get(id) ?? -1 : -1;
+  const virtual = useVirtualRows(rows.length, [indexOf(focused), indexOf(renaming?.id), indexOf(dragSource)]);
   useLayoutEffect(() => {
-    if (!reveal || revealed.current === reveal) return;
-    // Wait until the existing ancestor-expansion effect has laid out the requested row.
-    const row = rowElements.current.get(reveal.id);
-    if (!row) return;
-    row.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "instant" });
+    if (!open || !virtual.element || !reveal || revealed.current === reveal) return;
+    const index = rowIndex.get(reveal.id);
+    if (index === undefined) return;
+    virtual.reveal(index);
     revealed.current = reveal;
-  }, [reveal, collapsed, open]);
-
-  const rows = rowsOf(nodes, collapsed);
-  const byId = new Map(nodes.map((n) => [n.id, n]));
+  }, [reveal, rowIndex, open, virtual.element, virtual.reveal]);
+  useLayoutEffect(() => {
+    if (focusRequest.current === null) return;
+    const row = rowElements.current.get(focusRequest.current);
+    if (row) {
+      focusRequest.current = null;
+      row.focus({ preventScroll: true });
+    }
+  });
 
   const toggleCollapsed = (id: string) =>
     setCollapsed((c) => {
@@ -197,13 +218,16 @@ export function Outliner({
   };
 
   const onRenameKey = (e: KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Enter") commitRename();
+    if (e.key === "Enter") {
+      e.preventDefault();
+      e.currentTarget.blur();
+    }
     if (e.key === "Escape") setRenaming(null);
   };
 
   /** Whether the dragged nodes may land relative to `target` (not onto or inside themselves). */
   const canDropAt = (target: SceneNode) =>
-    !!dragging && !dragging.some((id) => subtreeIds(nodes, id).has(target.id));
+    !!dragging && !ancestryFrom(byId, target.id).some((id) => draggedIds.has(id));
 
   const onRowDragOver = (e: DragEvent, row: Row) => {
     if (!canDropAt(row.node)) return;
@@ -219,6 +243,7 @@ export function Outliner({
     e.preventDefault();
     const ids = dragging;
     setDragging(null);
+    setDragSource(null);
     setDrop(null);
     if (!ids || !drop) return;
     if (drop.where === "end" || drop.id === null) return onPlace(ids, null, null);
@@ -227,7 +252,7 @@ export function Outliner({
     const parent = target.parent ?? null;
     if (drop.where === "before") return onPlace(ids, parent, target.id);
     // After: before the next sibling that isn't itself being moved, or last.
-    const siblings = childrenOf(nodes, target.parent);
+    const siblings = children.get(target.parent) ?? [];
     const next = siblings.slice(siblings.indexOf(target) + 1).find((n) => !ids.includes(n.id));
     onPlace(ids, parent, next?.id ?? null);
   };
@@ -252,7 +277,9 @@ export function Outliner({
       </div>
       {open && (
         <div
-          className={drop?.where === "end" ? "outliner-rows drop-end" : "outliner-rows"}
+          className={drop?.where === "end" ? "outliner-rows virtual drop-end" : "outliner-rows virtual"}
+          ref={virtual.ref}
+          onScroll={(e) => { virtual.onScroll(e); onHover(null); }}
           onDragOver={(e) => {
             if (!dragging) return;
             e.preventDefault();
@@ -262,18 +289,22 @@ export function Outliner({
           onMouseLeave={() => onHover(null)}
         >
           {rows.length === 0 && <div className="outliner-empty">No boxes yet</div>}
-          {rows.map((row) => {
+          <div className="virtual-rows" style={{ height: virtual.totalHeight }}>
+          {virtual.indices.map((index) => {
+            const row = rows[index];
             const { node, depth, hasChildren } = row;
             // Rooms are dashed (hollow), volumes solid: squares for boxes, circles for cylinders, squircles for free-forms.
             const Icon = iconOf(node);
-            const classes = ["outliner-row"];
-            if (selection.includes(node.id)) classes.push("selected");
+            const classes = ["outliner-row", "virtual-row"];
+            if (selected.has(node.id)) classes.push("selected");
             if (drop?.id === node.id) classes.push(`drop-${drop.where}`);
             if (visible && !visible.has(node.id)) classes.push("outside");
             return (
               <div
                 key={node.id}
                 tabIndex={0}
+                onFocus={() => setFocused(node.id)}
+                onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setFocused(null); }}
                 onPointerDown={e => {
                   if (e.button === 2 && !(e.target as HTMLElement).closest('input, textarea'))
                     contextPress.current = { x: e.clientX, y: e.clientY, moved: false };
@@ -300,23 +331,35 @@ export function Outliner({
                     e.preventDefault(); e.stopPropagation();
                     const r = e.currentTarget.getBoundingClientRect();
                     onContextAction(node.id, r.left + 20, r.bottom, e.currentTarget);
+                  } else if (e.target === e.currentTarget) {
+                    const next = e.key === "Home" ? 0 : e.key === "End" ? rows.length - 1
+                      : e.key === "ArrowUp" ? index - 1 : e.key === "ArrowDown" ? index + 1 : -1;
+                    const target = rows[next]?.node.id;
+                    if (target !== undefined) {
+                      e.preventDefault();
+                      focusRequest.current = target;
+                      setFocused(target);
+                      virtual.reveal(next);
+                    }
                   }
                 }}
                 data-node-id={node.id}
                 ref={(el) => { if (el) rowElements.current.set(node.id, el); else rowElements.current.delete(node.id); }}
                 className={classes.join(" ")}
-                style={{ paddingLeft: 6 + depth * 14 }}
+                style={{ top: rowTop(index), paddingLeft: 6 + depth * 14 }}
                 draggable={renaming?.id !== node.id}
                 onClick={(e) => onRowClick(e, node)}
                 onDoubleClick={() => setRenaming({ id: node.id, value: node.name ?? "" })}
                 onMouseEnter={() => onHover(node.id)}
                 onDragStart={(e) => {
                   setDragging(selection.includes(node.id) ? selection : [node.id]);
+                  setDragSource(node.id);
                   e.dataTransfer.effectAllowed = "move";
                   e.dataTransfer.setData("text/plain", node.id);
                 }}
                 onDragEnd={() => {
                   setDragging(null);
+                  setDragSource(null);
                   setDrop(null);
                 }}
                 onDragOver={(e) => onRowDragOver(e, row)}
@@ -358,7 +401,7 @@ export function Outliner({
                     <span className={node.type === "note" && node.status === "done" ? "label done" : "label"} title={node.type === "group" ? node.description : node.type === "note" ? node.text : undefined}>
                       {labelOf(node, entityNames)}
                     </span>
-                    {isHole(node) && !node.cutTags?.length && !terrainHoleOwner(nodes, node) && (
+                    {isHole(node) && !node.cutTags?.length && !terrainInputs.has(node.id) && (
                       <span className="warn" title="No cut tags: this hole cuts nothing">
                         <TriangleAlert size={12} />
                       </span>
@@ -414,6 +457,7 @@ export function Outliner({
               </div>
             );
           })}
+          </div>
         </div>
       )}
     </div>

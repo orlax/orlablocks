@@ -1,13 +1,15 @@
-import { useMemo, useState } from "react";
+import { memo, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, ChevronRight, GripVertical, MousePointerClick, Package, PencilRuler, Search } from "lucide-react";
 import { definitionOf } from "../shared/entities";
 import { boundsOf } from "../shared/geometry";
 import type { Library, LibraryEdit, Uses } from "../shared/library";
+import type { SceneNode } from "../shared/scene.types";
 import { isShape } from "../shared/tree";
 import { useFloating } from "./floating";
 import { EntityEditor } from "./Library";
 import { searchEntities } from "./search";
 import { ENTITY_DRAG } from "./Viewport";
+import { rowTop, useMeasuredRow, useVirtualRows } from "./virtualRows";
 
 /**
  * The Entities panel (from 08.4): the project's prefabs, a floating panel like the inspector (dragged by its header,
@@ -17,15 +19,24 @@ import { ENTITY_DRAG } from "./Viewport";
  */
 
 /** An entity's size, from its definition's bounds: `1.2 × 1.2 × 9 m`. */
+const sizes = new WeakMap<SceneNode[], string>();
 function sizeText(id: string) {
-  const shapes = (definitionOf(id) ?? []).filter(isShape);
+  const definition = definitionOf(id);
+  if (!definition) return "no shapes";
+  const cached = sizes.get(definition);
+  if (cached !== undefined) return cached;
+  const shapes = definition.filter(isShape);
   if (shapes.length === 0) return "no shapes";
   const b = boundsOf(shapes);
   const r = (n: number) => Math.round(n * 100) / 100;
-  return `${r(b.maxX - b.minX)} × ${r(b.maxZ - b.minZ)} × ${r(b.maxY - b.minY)} m`;
+  const size = `${r(b.maxX - b.minX)} × ${r(b.maxZ - b.minZ)} × ${r(b.maxY - b.minY)} m`;
+  sizes.set(definition, size);
+  return size;
 }
 
-export function EntitiesPanel({
+export const EntitiesPanel = memo(EntitiesList);
+
+function EntitiesList({
   library,
   uses,
   edit,
@@ -35,7 +46,8 @@ export function EntitiesPanel({
   editing,
 }: {
   library: Library;
-  uses: Uses;
+  uses: Uses["entities"];
+  definitionsVersion: number;
   edit: (e: LibraryEdit) => void;
   /** The entity being placed (its ID), and starting or stopping placing one. */
   placing: string | null;
@@ -48,8 +60,28 @@ export function EntitiesPanel({
   const { ref, header, style, collapsed, toggle } = useFloating("dd.entities", ".entities-header");
   const [openId, setOpenId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  const [focused, setFocused] = useState<string | null>(null);
+  const [dragging, setDragging] = useState<string | null>(null);
   const shown = useMemo(() => searchEntities(library, query), [library, query]);
   const searching = query.trim() !== "";
+  const indexById = useMemo(() => new Map(shown.map((entity, index) => [entity.id, index])), [shown]);
+  const indexOf = (id: string | null) => id ? indexById.get(id) ?? -1 : -1;
+  const openIndex = indexOf(openId);
+  const details = useMeasuredRow();
+  const expandedRow = useMemo(() => openIndex < 0 ? undefined : { index: openIndex, extra: details.height }, [openIndex, details.height]);
+  const virtual = useVirtualRows(shown.length, [openIndex, indexOf(focused), indexOf(dragging)], expandedRow);
+  const focusRequest = useRef<string | null>(null);
+  const rowElements = useRef(new Map<string, HTMLDivElement>());
+  useLayoutEffect(() => virtual.reveal(0), [query, virtual.element]);
+  useLayoutEffect(() => {
+    const request = focusRequest.current;
+    if (request === null) return;
+    const row = rowElements.current.get(request);
+    if (row) {
+      focusRequest.current = null;
+      row.focus({ preventScroll: true });
+    }
+  });
 
   return (
     <div className={collapsed ? "entities-panel collapsed" : "entities-panel"} ref={ref} style={style}>
@@ -79,27 +111,58 @@ export function EntitiesPanel({
         </label>
       )}
       {!collapsed && (
-        <div className="outliner-rows">
+        <div className="outliner-rows virtual" ref={virtual.ref} onScroll={virtual.onScroll}>
           {library.entities.length === 0 && (
             <div className="outliner-empty">
               None yet: select shapes and press <b>Make entity</b> in the inspector.
             </div>
           )}
           {searching && shown.length === 0 && <div className="outliner-empty">No entity matches.</div>}
-          {shown.map((e) => {
-            const u = uses.entities[e.id];
+          <div className="virtual-rows" style={{ height: virtual.totalHeight }}>
+          {virtual.indices.map((index) => {
+            const e = shown[index];
+            const u = uses[e.id];
             const expanded = openId === e.id;
+            const size = sizeText(e.id);
             return (
-              <div key={e.id} className={expanded ? "entity-item open" : "entity-item"}>
+              <div
+                key={e.id}
+                className={expanded ? "entity-item virtual-row open" : "entity-item virtual-row"}
+                style={{ top: rowTop(index, expandedRow) }}
+                onFocus={() => setFocused(e.id)}
+                onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setFocused(null); }}
+              >
                 <div
                   className={placing === e.id || editing === e.id ? "outliner-row selected" : "outliner-row"}
                   draggable
-                  title={`${e.description ? `${e.description}\n\n` : ""}${sizeText(e.id)} · drag into the view to place one`}
+                  tabIndex={0}
+                  ref={(row) => { if (row) rowElements.current.set(e.id, row); else rowElements.current.delete(e.id); }}
+                  aria-expanded={expanded}
+                  title={`${e.description ? `${e.description}\n\n` : ""}${size} · drag into the view to place one`}
                   onDragStart={(ev) => {
+                    setDragging(e.id);
                     ev.dataTransfer.setData(ENTITY_DRAG, e.id);
                     ev.dataTransfer.effectAllowed = "copy";
                   }}
+                  onDragEnd={() => setDragging(null)}
                   onClick={() => setOpenId(expanded ? null : e.id)}
+                  onKeyDown={(event) => {
+                    if (event.target !== event.currentTarget) return;
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      setOpenId(expanded ? null : e.id);
+                      return;
+                    }
+                    const next = event.key === "Home" ? 0 : event.key === "End" ? shown.length - 1
+                      : event.key === "ArrowUp" ? index - 1 : event.key === "ArrowDown" ? index + 1 : -1;
+                    const target = shown[next]?.id;
+                    if (target !== undefined) {
+                      event.preventDefault();
+                      focusRequest.current = target;
+                      setFocused(target);
+                      virtual.reveal(next);
+                    }
+                  }}
                 >
                   <span className="chevron">{expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}</span>
                   <Package size={13} className="icon" />
@@ -131,14 +194,15 @@ export function EntitiesPanel({
                   </button>
                 </div>
                 {expanded && (
-                  <div className="entity-editor">
+                  <div className="entity-editor" ref={details.ref}>
                     <EntityEditor meta={e} library={library} edit={edit} />
-                    <div className="entity-size">{sizeText(e.id)}</div>
+                    <div className="entity-size">{size}</div>
                   </div>
                 )}
               </div>
             );
           })}
+          </div>
         </div>
       )}
     </div>

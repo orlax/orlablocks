@@ -1,10 +1,12 @@
+import { useStableList } from "./useStableList";
+import { sameValue } from "./reconcileScene";
 import { wallPose, wallSupportProblem } from "../shared/wallAttachment";
-import { cutters, holeScope, isHole } from "../shared/holes";
+import { cutOverlaps, holeScope, isHole } from "../shared/holes";
 import { ContextMenu, type ContextAction } from "./ContextMenu";
 import { SnapControl } from "./SnapControl";
 import { useSnapSettings } from "./snap";
 import { valueStore, type ValueStore } from "./valueStore";
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentProps } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentProps } from "react";
 import { ArrowLeft, BookOpen, ChevronDown, Map as MapIcon, Package, Upload } from "lucide-react";
 import {
   DEFAULT_COLOR,
@@ -49,7 +51,7 @@ import { clipboardText, readClipboard } from "./clipboard";
 import { ErrorPanel } from "./ErrorPanel";
 import { LibraryPanel } from "./Library";
 import { EntitiesPanel } from "./EntitiesPanel";
-import { currentTags, entityMeta, type Library } from "../shared/library";
+import { currentTags, entityMeta, type Library, type LibraryEdit } from "../shared/library";
 import { reportError } from "./errors";
 import { Inspector, type InspectorProps } from "./Inspector";
 import { highlightedText, typingInField } from "./keys";
@@ -214,17 +216,13 @@ const PLAYER_SAVE_MS = 400;
  * What a node is linked to (13.4), for the inspector's Linked rows: what an instance or array stands on, the stops a
  * line goes through. Unlink keeps what it has now (its height, its points).
  */
-function linksOf(node: SceneNode | null | undefined, nodes: SceneNode[], send: (msg: ClientMessage) => void): InspectorProps["links"] {
-  const name = (id: string) => {
-    const n = nodes.find((m) => m.id === id);
-    return n?.name ? `${n.name} (${id})` : id;
-  };
+function linksOf(node: SceneNode | null, standingTarget: string | undefined, send: (msg: ClientMessage) => void): InspectorProps["links"] {
   if ((node?.type === "instance" || node?.type === "array") && node.on) {
     const onId = node.on.id;
     return [
       {
         label: "on",
-        value: name(onId),
+        value: standingTarget ? `${standingTarget} (${onId})` : onId,
         title: `It stands on ${onId}'s walking surface${node.type === "array" ? " (item by item on an array)" : ""}, and moves up and down with it`,
         unlinkTitle: "Unlink: keep the height it has now (it stops standing on it)",
         onUnlink: () => send({ type: "update_nodes", changes: [{ id: node.id, on: null }] }),
@@ -244,6 +242,12 @@ function linksOf(node: SceneNode | null | undefined, nodes: SceneNode[], send: (
     ];
   }
   return undefined;
+}
+
+function selectedHoles(node: SceneNode | null): ClosedShape[] {
+  if (!node) return [];
+  if (isHole(node)) return [node];
+  return node.type === "instance" || node.type === "array" ? expandShapes([node]).filter(isHole) : [];
 }
 
 export function App() {
@@ -271,20 +275,12 @@ export function App() {
   const [pickerOpen, setPickerOpen] = useState(false);
   // The Export to Unity dialog (15.2).
   const [exportOpen, setExportOpen] = useState(false);
-  const [view, setView] = useState<View>(DEFAULT_VIEW);
-  const [camera, setCamera] = useState<CameraState | null>(null);
+  const viewStore = useMemo(() => valueStore<{ view: View; camera: CameraState | null }>({ view: DEFAULT_VIEW, camera: null }), []);
   const cursorStore = useMemo(() => valueStore<CursorPoint | null>(null), []);
-  // Only a resting pointer is reported through the app/server; live coordinates have their own subscriber.
-  const [pointer, setPointer] = useState<CursorPoint | null>(null);
-  useEffect(() => {
-    let timer: ReturnType<typeof setTimeout>;
-    const unsubscribe = cursorStore.subscribe(() => {
-      clearTimeout(timer);
-      const cursor = cursorStore.get();
-      if (cursor) timer = setTimeout(() => setPointer(cursor), POINTER_REST_MS);
-    });
-    return () => { clearTimeout(timer); unsubscribe(); };
-  }, [cursorStore]);
+  const restingPointer = useRef<CursorPoint | null>(null);
+  const updateView = useCallback((view: View, camera: CameraState) => {
+    viewStore.set({ view, camera: { ...camera, focus: { ...camera.focus } } });
+  }, [viewStore]);
   const [tool, setTool] = useState<Tool>("select");
   // Notes belong in scenes: the Note tool is off while an entity is open.
   const chooseTool = (t: Tool) => {
@@ -301,7 +297,7 @@ export function App() {
   // The free-form in point editing (entered by double-clicking it, or its Edit points button).
   const [editing, setEditing] = useState<string | null>(null);
   // The node under the cursor in the outliner, highlighted in the view.
-  const [outlinerHover, setOutlinerHover] = useState<string | null>(null);
+  const outlinerHover = useMemo(() => valueStore<string | null>(null), []);
   // The next shape's style in the Box, Cylinder and Pen tools, remembered while the tab is open.
   const [nextKind, setNextKind] = useState<ShapeKind>("room");
   const [nextColor, setNextColor] = useState<ShapeColor>(DEFAULT_COLOR);
@@ -354,7 +350,8 @@ export function App() {
   const [isolation, setIsolation] = useState<{ id: string; before: Set<string> } | null>(null);
   // The inspector's sliders while held: their values on the shapes, before they're sent. Cleared when the next scene
   // (the sent value) arrives, when the selection changes, and on an error.
-  const [preview, setPreview] = useState<Record<string, ShapePatch> | null>(null);
+  const preview = useMemo(() => valueStore<Record<string, ShapePatch> | null>(null), []);
+  const setPreview = preview.set;
   // A one-off message in the info-label, in place of the tool hint.
   const [notice, setNotice] = useState<string | null>(null);
   // Shots (09.1): what the view can capture, the Shots panel (remembered per viewer), and the shutter's flash.
@@ -458,8 +455,8 @@ export function App() {
   useEffect(() => {
     if (followPick && !(selection.length === 1 && selection[0] === followPick)) setFollowPick(null);
   }, [followPick, selection]);
-  const state = useRef({ nodes, selection, context, open, pickerOpen: pickerOpen || exportOpen, view, visible, isolated, placing, followPick });
-  state.current = { nodes, selection, context, open, pickerOpen: pickerOpen || exportOpen, view, visible, isolated, placing, followPick };
+  const state = useRef({ nodes, selection, context, open, pickerOpen: pickerOpen || exportOpen, visible, isolated, placing, followPick });
+  state.current = { nodes, selection, context, open, pickerOpen: pickerOpen || exportOpen, visible, isolated, placing, followPick };
 
   /** Isolates a node (null ends it). Isolating a group enters it, so what's drawn next goes in it. */
   const isolate = useCallback(
@@ -484,9 +481,13 @@ export function App() {
   }, [nodes, isolation]);
 
   const activeTool: Tool = spaceHand ? "hand" : tool;
-  const boxes = nodes.filter(isShape);
-  const selectedNodes = nodes.filter((n) => selection.includes(n.id));
-  const selectedShapes = shapesUnder(nodes, selection);
+  const boxes = useMemo(() => nodes.filter(isShape), [nodes]);
+  const byId = useMemo(() => new Map(nodes.map((n) => [n.id, n])), [nodes]);
+  const terrainSources = useMemo(() => terrainInputIds(nodes), [nodes]);
+  const selectionIds = useMemo(() => new Set(selection), [selection]);
+  const selectedNodes = useStableList(useMemo(() => nodes.filter((n) => selectionIds.has(n.id)), [nodes, selectionIds]));
+  const selectedShapes = useStableList(useMemo(() => shapesUnder(nodes, selection), [nodes, selection]));
+  const sceneCounts = useMemo(() => countsText(nodes), [nodes]);
 
   // A scene opened (here, in another tab, or when this tab connected): close the picker, drop the local state that
   // belonged to the old scene, and restore the scene's selection (the Viewport restores its camera). A rename
@@ -503,7 +504,7 @@ export function App() {
     setIsolation(null);
     setPlacing(null);
     setEditing(null);
-    setOutlinerHover(null);
+    outlinerHover.set(null);
     pendingSelect.current = null;
     lastCopy.current = null;
   }, [restore]);
@@ -531,7 +532,8 @@ export function App() {
   const [snapSettings, setSnapSettings] = useSnapSettings();
   const [renameRequest, setRenameRequest] = useState<{ id: string } | null>(null);
   const [contextMenu, setContextMenu] = useState<{ id: string | null; ids: string[]; x: number; y: number; source: HTMLElement } | null>(null);
-  const openContextMenu = (id: string | null, x: number, y: number, source: HTMLElement) => {
+  const openContextMenu = useCallback((id: string | null, x: number, y: number, source: HTMLElement) => {
+    const { nodes, selection } = state.current;
     const node = nodes.find(n => n.id === id);
     const ids = node ? (selection.includes(node.id) ? selection : [node.id]) : [];
     if (node && !selection.includes(node.id)) {
@@ -541,7 +543,28 @@ export function App() {
         setSelectionReveal(r => ({ id: node.id, serial: (r?.serial ?? 0) + 1 }));
     }
     setContextMenu({ id: node?.id ?? null, ids, x, y, source });
-  };
+  }, []);
+  const selectOutliner = useCallback((ids: string[], context: string | null) => {
+    setSelectionReveal(null);
+    setSelection(ids);
+    setContext(context);
+  }, []);
+  const renameNode = useCallback((id: string, name: string) => send({ type: "update_nodes", changes: [{ id, name }] }), [send]);
+  const placeNodes = useCallback((ids: string[], parent: string | null, before: string | null) => send({ type: "place_nodes", ids, parent, before }), [send]);
+  const lockNode = useCallback((id: string, locked: boolean) => send({ type: "update_nodes", changes: [{ id, locked }] }), [send]);
+  const hideNode = useCallback((id: string, hidden: boolean) => send({ type: "update_nodes", changes: [{ id, hidden }] }), [send]);
+  const frameNode = useCallback((id: string) => {
+    const shapes = expandShapes(shapesUnder(state.current.nodes, [id]));
+    if (shapes.length === 0) setNotice("Nothing to frame: it's empty");
+    else setCameraFrame({ bounds: boundsOf(shapes) });
+  }, []);
+  const entityNames = useMemo(() => Object.fromEntries((library?.entities ?? []).map((e) => [e.id, e.name])), [library?.entities]);
+  const editLibrary = useCallback((e: LibraryEdit) => send({ type: "update_library", ...e }), [send]);
+  const openEntity = useCallback((entity: string) => send({ type: "open_entity", entity }), [send]);
+  const placeEntity = useCallback((id: string) => {
+    if (state.current.open?.entity) setNotice("Entities can't hold instances: go back to a scene to place one");
+    else setPlacing((current) => current === id ? null : id);
+  }, []);
   useEffect(() => { setContextMenu(null); setRenameRequest(null); }, [sceneKey, scene]);
   useEffect(() => {
     setContextMenu(menu => menu && menu.ids.length && menu.ids.join(',') !== selection.join(',') ? null : menu);
@@ -581,8 +604,25 @@ export function App() {
   // Tell the server what's visible so the agent's get_scene knows where to draw, and where the camera is, so the
   // scene reopens there.
   useEffect(() => {
-    if (connected && camera) send({ type: "set_view", view: { ...view, ...(isolated ? { isolated } : {}), ...(pointer ? { pointer } : {}) }, camera });
-  }, [connected, view, camera, send, isolated, pointer]);
+    if (!connected) return;
+    const report = () => {
+      const { view, camera } = viewStore.get();
+      const pointer = restingPointer.current;
+      if (camera) send({ type: "set_view", view: { ...view, ...(isolated ? { isolated } : {}), ...(pointer ? { pointer } : {}) }, camera });
+    };
+    let timer: ReturnType<typeof setTimeout>;
+    const unsubscribeView = viewStore.subscribe(report);
+    const unsubscribeCursor = cursorStore.subscribe(() => {
+      clearTimeout(timer);
+      const cursor = cursorStore.get();
+      if (cursor) timer = setTimeout(() => {
+        restingPointer.current = cursor;
+        report();
+      }, POINTER_REST_MS);
+    });
+    report();
+    return () => { clearTimeout(timer); unsubscribeCursor(); unsubscribeView(); };
+  }, [connected, viewStore, cursorStore, send, isolated]);
 
   // Tell the server what's selected so the agent knows what "this" means. The last tab to change it wins.
   const selectionKey = selection.join(",");
@@ -730,7 +770,8 @@ export function App() {
       const pasted = readClipboard(e.clipboardData?.getData("text/plain"));
       if (!pasted) return;
       e.preventDefault();
-      const { nodes, context, view } = state.current;
+      const { nodes, context } = state.current;
+      const { view } = viewStore.get();
       pendingSelect.current = { before: new Set(nodes.map((n) => n.id)), pick: copiedRoots };
       send({ type: "paste_nodes", nodes: pasted, focus: view.focus, parent: context });
     };
@@ -744,408 +785,427 @@ export function App() {
     };
   }, [send]);
 
-  /** A path array's follow controls (10.3): what it follows (or null), picking a target in the view, At, Offset and Unlink. */
-  const followControls = (along: Follow | undefined, id: string, update: (change: Record<string, unknown>) => void) => {
-    const target = along ? nodes.find((n) => n.id === along.id) : undefined;
-    const shape = target && isShape(target) ? target : undefined;
-    return {
-      along: along ? { id: along.id, name: target?.name, closed: !!shape && isClosed(shape), at: along.at ?? ("top" as const), offset: along.offset ?? (shape ? defaultFollowOffset(shape) : 0) } : null,
-      picking: followPick === id,
-      onPick: () => setFollowPick(followPick === id ? null : id),
-      onChange: (patch: { at?: "top" | "bottom"; offset?: number }) => update({ layout: { along: patch } }),
-      onUnlink: () => update({ layout: { along: null } }),
-    };
-  };
-
   // Kind and sides are for a single shape; color applies to every shape in the selection (groups included).
   const single = selectedNodes.length === 1 ? selectedNodes[0] : null;
-  const cutTargets = useMemo(() => {
-    if (!single) return [];
-    const expanded = expandNodes(nodes);
-    const holes = expanded.filter((n) => isHole(n) && (n.id === single.id || n.id.startsWith(`${single.id}/`)));
+  const cutTargets = useStableList(useMemo(() => {
+    const holes = selectedHoles(single);
     if (!holes.length) return [];
-    const actual = cutters(expanded);
+    const expanded = expandNodes(nodes);
     const targets = new Map<string, { id: string; name: string; overlapping: boolean }>();
     for (const hole of holes) {
-      if (!isHole(hole)) continue;
       for (const target of holeScope(expanded, hole)) {
-        const overlapping = !!actual.get(target.id)?.some((h) => h.id === hole.id);
+        const overlapping = cutOverlaps(hole, target);
         targets.set(target.id, { id: target.id, name: target.name ?? target.id, overlapping: overlapping || !!targets.get(target.id)?.overlapping });
       }
     }
     return [...targets.values()].sort((a, b) => Number(b.overlapping) - Number(a.overlapping));
-  }, [nodes, single, library]);
-  const singleShape = single && isShape(single) ? single : null;
-  // Instances have no color of their own (their shapes are the entity's).
-  const colored = selectedShapes.filter((b): b is Exclude<Shape, Instance | ArrayNode> => b.type !== "instance" && b.type !== "array");
-  const sharedColor = colored.length > 0 && colored.every((b) => b.color === colored[0].color) ? colored[0].color : null;
-  const contextNode = context !== null ? nodes.find((n) => n.id === context) : undefined;
+  }, [nodes, single, definitionsVersion]), sameValue);
+  const contextNode = context === null ? undefined : byId.get(context);
+  const contextLabel = contextNode && (contextNode.name ?? contextNode.id);
   const selectionTitle = single ? title(single) : `${selectedNodes.length} selected`;
-  // A single group shows what's in it, like the agent's outline.
-  // What follows the selected shape (10.3): `followed by array_2`.
-  const followers = singleShape ? nodes.filter((n) => isFollowing(n) && n.layout.along.id === singleShape.id).map((n) => n.id) : [];
-  const followedBy = followers.length > 0 ? ` · followed by ${followers.join(", ")}` : "";
-  const selectionInfo = singleShape
-    ? details(singleShape, library) + followedBy
-    : single
-      ? countsText(nodes.filter((n) => n.id !== single.id && subtreeIds(nodes, single.id).has(n.id)))
-      : `${selectedShapes.length} shape${selectedShapes.length === 1 ? "" : "s"}`;
-  // What Convert to free-form converts: every box and cylinder in the selection (groups included).
-  // A tilted shape can't convert (a free-form's outline is on the ground).
-  const convertible = selectedShapes.filter((s) => (s.type === "box" || (s.type === "cylinder" && !s.arc)) && !isTilted(s));
-  const convert = () => {
-    const ids = convertible.map((s) => s.id);
-    const before = nodes;
-    // Select the free-forms in their originals' places (each takes its original's place in the list).
-    pendingSelect.current = {
-      before: new Set(before.map((n) => n.id)),
-      pick: (added, next) => {
-        const made = new Set(added.map((n) => n.id));
-        return selection.map((id) => {
-          const n = next[before.findIndex((b) => b.id === id)];
-          return ids.includes(id) && n && made.has(n.id) ? n.id : id;
-        });
-      },
-    };
-    send({ type: "convert_nodes", ids });
-  };
-  const editable =
-    // Every array has an edit mode (10.4): its item dots and handles, and a path's or an area's points.
-    singleShape?.type === "freeform" || singleShape?.type === "line" || singleShape?.type === "array" ? singleShape : null;
-  // Kind is for closed shapes: hidden when only lines are selected, disabled unless a single closed shape is.
-  const singleClosed = singleShape && isClosed(singleShape) ? singleShape : null;
-  const selectedLines = selectedShapes.filter((s): s is Line => s.type === "line");
-  const onlyLines = selectedShapes.length > 0 && selectedLines.length === selectedShapes.length;
-  // The selected lines' style: each value when they all share it.
-  const shared = <K extends keyof LineStyle>(k: K) =>
-    selectedLines.every((l) => l[k] === selectedLines[0][k]) ? selectedLines[0]?.[k] : undefined;
-  // The wall control acts on every room in the selection; it shows their thickness when they share one.
-  const selectedRooms = selectedShapes.filter((s): s is ClosedShape => isClosed(s) && s.kind === "room");
-  const wallControl =
-    selectedRooms.length > 0
-      ? {
-          value: selectedRooms.every((r) => wallOf(r) === wallOf(selectedRooms[0])) ? wallOf(selectedRooms[0]) : undefined,
-          onChange: (wall: number) => send({ type: "update_nodes", changes: selectedRooms.map((r) => ({ id: r.id, wall })) }),
-        }
-      : undefined;
-  // The taper and bevel sliders act on every volume and hole in the selection, showing each value when they all share it.
-  const selectedVolumes = selectedShapes.filter((s): s is ClosedShape => isClosed(s) && s.kind !== "room");
-  const sharedOf = (f: "taper" | "bevel") =>
-    selectedVolumes.every((v) => (v[f] ?? 0) === (selectedVolumes[0][f] ?? 0)) ? (selectedVolumes[0]?.[f] ?? 0) : undefined;
-  const profileControl =
-    selectedVolumes.length > 0
-      ? {
-          taper: sharedOf("taper"),
-          bevel: sharedOf("bevel"),
-          onChange: (patch: { taper?: number; bevel?: number }) =>
-            send({ type: "update_nodes", changes: selectedVolumes.map((v) => ({ id: v.id, ...patch })) }),
-          onPreview: (patch: { taper?: number; bevel?: number } | null) =>
-            setPreview(patch && Object.fromEntries(selectedVolumes.map((v) => [v.id, patch]))),
-        }
-      : undefined;
-  // The tilt fields act on every box and cylinder volume or hole in the selection, each around its own center.
-  // Tilt (14.4): every closed shape, instance and array selected, each by its own pitch and roll (a free-form's and
-  // an array's around the world's axes).
-  const tiltable = selection.flatMap((id) => {
-    const n = nodes.find((m) => m.id === id);
-    return n && ((isShape(n) && isClosed(n)) || n.type === "instance" || n.type === "array") ? [n as ClosedShape | Instance | ArrayNode] : [];
-  });
-  const sharedTilt = (f: "pitch" | "roll") => (tiltable.every((v) => (v[f] ?? 0) === (tiltable[0][f] ?? 0)) ? (tiltable[0]?.[f] ?? 0) : undefined);
-  const tiltControl =
-    tiltable.length > 0
-      ? {
-          pitch: sharedTilt("pitch"),
-          roll: sharedTilt("roll"),
-          onChange: (patch: { pitch?: number; roll?: number }) => send({ type: "update_nodes", changes: tiltable.map((v) => ({ id: v.id, ...patch })) }),
-        }
-      : undefined;
-  // Yaw (14.4): a box's, cylinder's or instance's turn, typed (only the gizmo set it before).
-  const yawable = tiltable.filter((n): n is Box | Cylinder | Instance => n.type === "box" || n.type === "cylinder" || n.type === "instance");
-  const yawControl =
-    yawable.length > 0 && yawable.length === tiltable.length
-      ? {
-          value: yawable.every((n) => n.rotation === yawable[0].rotation) ? yawable[0].rotation : undefined,
-          onChange: (rotation: number) => send({ type: "update_nodes", changes: yawable.map((n) => ({ id: n.id, rotation })) }),
-        }
-      : undefined;
-  // Instances and arrays selected directly (14.3): their uniform scale.
-  const scaled = selection.flatMap((id) => {
-    const n = nodes.find((m) => m.id === id);
-    return n && (n.type === "instance" || n.type === "array") ? [n] : [];
-  });
-  const scaleControl =
-    scaled.length > 0
-      ? {
-          value: scaled.every((n) => (n.scale ?? 1) === (scaled[0].scale ?? 1)) ? (scaled[0].scale ?? 1) : undefined,
-          onChange: (scale: number) => send({ type: "update_nodes", changes: scaled.map((n) => ({ id: n.id, scale })) }),
-        }
-      : undefined;
-  // The drawing tools' next shape: its wall control for a room, its taper and bevel for a volume.
-  const setNext = (patch: KindFields) => setNextFields({ ...nextFields, ...patch });
-  const nextWallControl =
-    nextKind === "room"
-      ? { value: nextFields.wall ?? DEFAULT_WALL, onChange: (wall: number) => setNext({ wall: wall === DEFAULT_WALL ? undefined : wall }) }
-      : undefined;
-  const nextProfileControl =
-    nextKind !== "room"
-      ? {
-          taper: nextFields.taper ?? 0,
-          bevel: nextFields.bevel ?? 0,
-          onChange: (patch: { taper?: number; bevel?: number }) =>
-            setNext(Object.fromEntries(Object.entries(patch).map(([k, v]) => [k, v === 0 ? undefined : v]))),
-        }
-      : undefined;
-  // The ramp controls act on every selected ramp, showing each value when they all share it.
-  const selectedRamps = selectedShapes.filter((s): s is Ramp => s.type === "ramp");
-  const sharedRamp = <K extends keyof RampStyle>(k: K) =>
-    selectedRamps.every((r) => r[k] === selectedRamps[0][k]) ? selectedRamps[0]?.[k] : undefined;
-  const rampControls =
-    selectedRamps.length > 0
-      ? {
-          style: { width: sharedRamp("width"), step: sharedRamp("step"), base: sharedRamp("base") },
-          onChange: (patch: Partial<RampStyle>) =>
-            send({
-              type: "update_nodes",
-              changes: selectedRamps.map((r) => ({ id: r.id, ...patch, ...("step" in patch && patch.step === undefined ? { step: null } : {}) })),
-            }),
-          onReverse: () =>
-            send({ type: "update_nodes", changes: selectedRamps.map((r) => ({ id: r.id, points: reversePoints(r.points as LinePoint[]) })) }),
-        }
-      : undefined;
-  const lineControls =
-    selectedLines.length > 0
-      ? {
-          style: { thickness: shared("thickness"), dashed: shared("dashed"), arrow: shared("arrow") },
-          onChange: (patch: Partial<LineStyle>) => send({ type: "update_nodes", changes: selectedLines.map((l) => ({ id: l.id, ...patch })) }),
-          onPreview: (patch: { thickness: number } | null) => setPreview(patch && Object.fromEntries(selectedLines.map((l) => [l.id, patch]))),
-          onReverse: () => send({ type: "update_nodes", changes: selectedLines.map((l) => ({ id: l.id, points: reversePoints(l.points) })) }),
-        }
-      : undefined;
+  const selectionInfo = useMemo(() => {
+    if (!single) return `${selectedShapes.length} shape${selectedShapes.length === 1 ? "" : "s"}`;
+    if (!isShape(single)) {
+      const descendants = subtreeIds(nodes, single.id);
+      descendants.delete(single.id);
+      return countsText(nodes.filter((node) => descendants.has(node.id)));
+    }
+    const followers = nodes.filter((n) => isFollowing(n) && n.layout.along.id === single.id).map((n) => n.id);
+    return details(single, library) + (followers.length ? ` · followed by ${followers.join(", ")}` : "");
+  }, [nodes, single, selectedShapes.length, library, definitionsVersion]);
+  const followId = single?.type === "array" && single.layout.type === "path" ? single.layout.along?.id : undefined;
+  const followTarget = followId ? byId.get(followId) : undefined;
+  const standingId = single?.type === "array" || single?.type === "instance" ? single.on?.id : undefined;
+  const standingTarget = standingId ? byId.get(standingId)?.name : undefined;
+  const inspectingAttachment = single?.type === "instance" && !editingEntity;
+  const attachmentTargets = useStableList(useMemo(() => {
+    if (!inspectingAttachment) return [];
+    return nodes.flatMap((node) => {
+      if (node.type !== "cylinder") return [];
+      const angle = node.arc?.from ?? 0;
+      const pose = wallPose(nodes, { id: node.id, side: "inner", angle, elevation: 0, offset: 0, facingOffset: 0 });
+      return "problem" in pose ? [] : [{ id: node.id, name: node.name ? `${node.name} (${node.id})` : node.id, angle }];
+    });
+  }, [nodes, inspectingAttachment]), sameValue);
+  const attachmentProblem = useMemo(() => single?.type === "instance" && !editingEntity ? wallSupportProblem(nodes, single) : null, [nodes, single, editingEntity]);
+  const levelOnlySelection = selectedNodes.some((n) => terrainSources.has(n.id) && ((isShape(n) && isClosed(n)) || n.type === "instance" || n.type === "array"));
+  const singleIsTerrainInput = !!single && terrainSources.has(single.id);
+  const hasTerrainInput = selectedShapes.some((n) => terrainSources.has(n.id));
 
-  // The contextual bar (kind and colors) and the inspector (every other field): for the drawing tool's next shape,
-  // or for the selection in the Select tool.
-  const nextTitle: Partial<Record<Tool, string>> = { box: "next box", cylinder: "next cylinder", pen: "next free-form", line: "next line", ramp: "next ramp", note: "next note" };
-  const closedTool = tool === "box" || tool === "cylinder" || tool === "pen";
-  const selecting = tool === "select" && selectedNodes.length > 0;
-  const bar: ComponentProps<typeof ContextualBar> | null = closedTool
-    ? { kind: nextKind, onKind: setNextKind, color: nextColor, onColor: setNextColor }
-    : tool === "line"
-      ? { kind: null, color: nextLine.color, onColor: (color) => setNextLine({ ...nextLine, color }) }
-      : tool === "ramp"
-        ? { kind: null, color: nextRamp.color, onColor: (color) => setNextRamp({ ...nextRamp, color }) }
-        : tool === "note"
-          ? { kind: null, color: nextNoteColor, onColor: setNextNoteColor }
-          : selecting
-          ? {
-              kind: singleClosed?.kind ?? null,
-              kindDisabled: !singleClosed,
-              onKind: !selectedShapes.some(isClosed)
-                ? undefined
-                : (kind) => singleClosed && send({ type: "update_nodes", changes: [{ id: singleClosed.id, kind }] }),
-              color: sharedColor,
-              onColor: (color) => colored.length > 0 && send({ type: "update_nodes", changes: colored.map((b) => ({ id: b.id, color })) }),
-            }
-          : null;
-  const inspector: InspectorProps | null = closedTool
-    ? {
-        title: nextTitle[tool]!,
-        sides: tool === "cylinder" ? { value: nextSides, onChange: setNextSides } : undefined,
-        floor: nextWallControl ? { value: nextFields.floor ?? true, onChange: (floor) => setNext({ floor }) } : undefined,
-        wall: nextWallControl,
-        profile: nextProfileControl,
-      }
-    : tool === "line"
-      ? { title: "next line", line: { style: nextLine, onChange: (patch) => setNextLine({ ...nextLine, ...patch }) } }
-      : tool === "ramp"
-        ? { title: "next ramp", ramp: { style: nextRamp, onChange: (patch) => setNextRamp({ ...nextRamp, ...patch }) } }
-        : tool === "note"
-          ? { title: "next note", info: "click to pin it on the surface under the cursor, then write it here" }
-          : selecting
-          ? {
-              title: contextNode ? `${contextNode.name ?? contextNode.id} › ${selectionTitle}` : selectionTitle,
-              info: editing && editable ? `editing ${editable.type === "array" ? "items" : "points"} · ${selectionInfo}` : selectionInfo,
-              library,
-              links: linksOf(single, nodes, send),
-              wallAttachment: single?.type === "instance" && !editingEntity ? {
-                value: single.wallAttachment,
-                targets: nodes.filter((n) => n.type === "cylinder" && !("problem" in wallPose(nodes, { id: n.id, side: "inner", angle: n.arc?.from ?? 0, elevation: 0, offset: 0, facingOffset: 0 }))).map((n) => ({ id: n.id, name: n.name ? `${n.name} (${n.id})` : n.id, angle: n.type === "cylinder" ? n.arc?.from ?? 0 : 0 })),
-                problem: wallSupportProblem(nodes, single),
-                onChange: (wallAttachment) => send({ type: "update_nodes", changes: [{ id: single.id, wallAttachment, ...(wallAttachment && single.on ? { on: null } : {}) }] }),
-              } : undefined,
-              instance:
-                single?.type === "instance" && library
-                  ? {
-                      entity: single.entity,
-                      entities: library.entities,
-                      onEdit: () => send({ type: "open_entity", entity: single.entity }),
-                      onSwap: (entity) => send({ type: "update_nodes", changes: [{ id: single.id, entity }] }),
-                      onDetach: () => {
-                        pendingSelect.current = { before: new Set(nodes.map((n) => n.id)), pick: (added) => added.filter((n) => n.type === "group" && n.parent === single.parent).map((n) => n.id).slice(0, 1) };
-                        send({ type: "detach_instances", ids: [single.id] });
-                      },
-                      onArray: editingEntity
-                        ? undefined
-                        : () => {
-                            pendingSelect.current = { before: new Set(nodes.map((n) => n.id)), pick: (added) => added.filter((n) => n.type === "array").map((n) => n.id) };
-                            send({ type: "make_array", id: single.id });
-                          },
-                    }
-                  : undefined,
-              array:
-                single?.type === "array" && library
-                  ? (() => {
-                      const { items } = arrayLayout(single);
-                      const update = (change: Record<string, unknown>) => send({ type: "update_nodes", changes: [{ id: single.id, ...change }] });
-                      return {
-                        entities: single.entities,
-                        library: library.entities,
-                        layout: single.layout,
-                        standing: !!single.on,
-                        facing: facingOf(single),
-                        rotation: single.rotation ?? 0,
-                        jitter: single.jitter ?? 0,
-                        turnJitter: single.turnJitter ?? 0,
-                        seed: single.seed ?? 1,
-                        items: items.length,
-                        skipped: single.skip?.length ?? 0,
-                        shortfall: arrayShortfall(single),
-                        onEntities: (entities: { entity: string; weight?: number }[]) => update({ entities }),
-                        follow: single.layout.type === "path" ? followControls(single.layout.along, single.id, update) : undefined,
-                        onLayoutType: (type: ArrayLayoutType) => update(layoutAround(single, type)),
-                        onLayout: (patch: Record<string, unknown>) => update({ layout: patch }),
-                        onChange: (patch: Record<string, unknown>) => update(patch),
-                        onEdit: (entity: string) => send({ type: "open_entity", entity }),
-                        onRestoreAll: () => update({ skip: [] }),
+  const { bar, inspector } = useMemo(() => {
+    /** A path array's follow controls (10.3): what it follows (or null), picking a target in the view, At, Offset and Unlink. */
+    const followControls = (along: Follow | undefined, id: string, update: (change: Record<string, unknown>) => void) => {
+      const target = followTarget;
+      const shape = target && isShape(target) ? target : undefined;
+      return {
+        along: along ? { id: along.id, name: target?.name, closed: !!shape && isClosed(shape), at: along.at ?? ("top" as const), offset: along.offset ?? (shape ? defaultFollowOffset(shape) : 0) } : null,
+        picking: followPick === id,
+        onPick: () => setFollowPick(followPick === id ? null : id),
+        onChange: (patch: { at?: "top" | "bottom"; offset?: number }) => update({ layout: { along: patch } }),
+        onUnlink: () => update({ layout: { along: null } }),
+      };
+    };
+
+    const singleShape = single && isShape(single) ? single : null;
+    // Instances have no color of their own (their shapes are the entity's).
+    const colored = selectedShapes.filter((b): b is Exclude<Shape, Instance | ArrayNode> => b.type !== "instance" && b.type !== "array");
+    const sharedColor = colored.length > 0 && colored.every((b) => b.color === colored[0].color) ? colored[0].color : null;
+    // What Convert to free-form converts: every box and cylinder in the selection (groups included).
+    // A tilted shape can't convert (a free-form's outline is on the ground).
+    const convertible = selectedShapes.filter((s) => (s.type === "box" || (s.type === "cylinder" && !s.arc)) && !isTilted(s));
+    const convert = () => {
+      const ids = convertible.map((s) => s.id);
+      const before = state.current.nodes;
+      // Select the free-forms in their originals' places (each takes its original's place in the list).
+      pendingSelect.current = {
+        before: new Set(before.map((n) => n.id)),
+        pick: (added, next) => {
+          const made = new Set(added.map((n) => n.id));
+          return selection.map((id) => {
+            const n = next[before.findIndex((b) => b.id === id)];
+            return ids.includes(id) && n && made.has(n.id) ? n.id : id;
+          });
+        },
+      };
+      send({ type: "convert_nodes", ids });
+    };
+    const editable =
+      // Every array has an edit mode (10.4): its item dots and handles, and a path's or an area's points.
+      singleShape?.type === "freeform" || singleShape?.type === "line" || singleShape?.type === "array" ? singleShape : null;
+    // Kind is for closed shapes: hidden when only lines are selected, disabled unless a single closed shape is.
+    const singleClosed = singleShape && isClosed(singleShape) ? singleShape : null;
+    const selectedLines = selectedShapes.filter((s): s is Line => s.type === "line");
+    const onlyLines = selectedShapes.length > 0 && selectedLines.length === selectedShapes.length;
+    // The selected lines' style: each value when they all share it.
+    const shared = <K extends keyof LineStyle>(k: K) =>
+      selectedLines.every((l) => l[k] === selectedLines[0][k]) ? selectedLines[0]?.[k] : undefined;
+    // The wall control acts on every room in the selection; it shows their thickness when they share one.
+    const selectedRooms = selectedShapes.filter((s): s is ClosedShape => isClosed(s) && s.kind === "room");
+    const wallControl =
+      selectedRooms.length > 0
+        ? {
+            value: selectedRooms.every((r) => wallOf(r) === wallOf(selectedRooms[0])) ? wallOf(selectedRooms[0]) : undefined,
+            onChange: (wall: number) => send({ type: "update_nodes", changes: selectedRooms.map((r) => ({ id: r.id, wall })) }),
+          }
+        : undefined;
+    // The taper and bevel sliders act on every volume and hole in the selection, showing each value when they all share it.
+    const selectedVolumes = selectedShapes.filter((s): s is ClosedShape => isClosed(s) && s.kind !== "room");
+    const sharedOf = (f: "taper" | "bevel") =>
+      selectedVolumes.every((v) => (v[f] ?? 0) === (selectedVolumes[0][f] ?? 0)) ? (selectedVolumes[0]?.[f] ?? 0) : undefined;
+    const profileControl =
+      selectedVolumes.length > 0
+        ? {
+            taper: sharedOf("taper"),
+            bevel: sharedOf("bevel"),
+            onChange: (patch: { taper?: number; bevel?: number }) =>
+              send({ type: "update_nodes", changes: selectedVolumes.map((v) => ({ id: v.id, ...patch })) }),
+            onPreview: (patch: { taper?: number; bevel?: number } | null) =>
+              setPreview(patch && Object.fromEntries(selectedVolumes.map((v) => [v.id, patch]))),
+          }
+        : undefined;
+    // The tilt fields act on every box and cylinder volume or hole in the selection, each around its own center.
+    // Tilt (14.4): every closed shape, instance and array selected, each by its own pitch and roll (a free-form's and
+    // an array's around the world's axes).
+    const tiltable = selectedNodes.filter((n): n is ClosedShape | Instance | ArrayNode => (isShape(n) && isClosed(n)) || n.type === "instance" || n.type === "array");
+    const sharedTilt = (f: "pitch" | "roll") => (tiltable.every((v) => (v[f] ?? 0) === (tiltable[0][f] ?? 0)) ? (tiltable[0]?.[f] ?? 0) : undefined);
+    const tiltControl =
+      tiltable.length > 0
+        ? {
+            pitch: sharedTilt("pitch"),
+            roll: sharedTilt("roll"),
+            onChange: (patch: { pitch?: number; roll?: number }) => send({ type: "update_nodes", changes: tiltable.map((v) => ({ id: v.id, ...patch })) }),
+          }
+        : undefined;
+    // Yaw (14.4): a box's, cylinder's or instance's turn, typed (only the gizmo set it before).
+    const yawable = tiltable.filter((n): n is Box | Cylinder | Instance => n.type === "box" || n.type === "cylinder" || n.type === "instance");
+    const yawControl =
+      yawable.length > 0 && yawable.length === tiltable.length
+        ? {
+            value: yawable.every((n) => n.rotation === yawable[0].rotation) ? yawable[0].rotation : undefined,
+            onChange: (rotation: number) => send({ type: "update_nodes", changes: yawable.map((n) => ({ id: n.id, rotation })) }),
+          }
+        : undefined;
+    // Instances and arrays selected directly (14.3): their uniform scale.
+    const scaled = selectedNodes.filter((n): n is Instance | ArrayNode => n.type === "instance" || n.type === "array");
+    const scaleControl =
+      scaled.length > 0
+        ? {
+            value: scaled.every((n) => (n.scale ?? 1) === (scaled[0].scale ?? 1)) ? (scaled[0].scale ?? 1) : undefined,
+            onChange: (scale: number) => send({ type: "update_nodes", changes: scaled.map((n) => ({ id: n.id, scale })) }),
+          }
+        : undefined;
+    // The drawing tools' next shape: its wall control for a room, its taper and bevel for a volume.
+    const setNext = (patch: KindFields) => setNextFields({ ...nextFields, ...patch });
+    const nextWallControl =
+      nextKind === "room"
+        ? { value: nextFields.wall ?? DEFAULT_WALL, onChange: (wall: number) => setNext({ wall: wall === DEFAULT_WALL ? undefined : wall }) }
+        : undefined;
+    const nextProfileControl =
+      nextKind !== "room"
+        ? {
+            taper: nextFields.taper ?? 0,
+            bevel: nextFields.bevel ?? 0,
+            onChange: (patch: { taper?: number; bevel?: number }) =>
+              setNext(Object.fromEntries(Object.entries(patch).map(([k, v]) => [k, v === 0 ? undefined : v]))),
+          }
+        : undefined;
+    // The ramp controls act on every selected ramp, showing each value when they all share it.
+    const selectedRamps = selectedShapes.filter((s): s is Ramp => s.type === "ramp");
+    const sharedRamp = <K extends keyof RampStyle>(k: K) =>
+      selectedRamps.every((r) => r[k] === selectedRamps[0][k]) ? selectedRamps[0]?.[k] : undefined;
+    const rampControls =
+      selectedRamps.length > 0
+        ? {
+            style: { width: sharedRamp("width"), step: sharedRamp("step"), base: sharedRamp("base") },
+            onChange: (patch: Partial<RampStyle>) =>
+              send({
+                type: "update_nodes",
+                changes: selectedRamps.map((r) => ({ id: r.id, ...patch, ...("step" in patch && patch.step === undefined ? { step: null } : {}) })),
+              }),
+            onReverse: () =>
+              send({ type: "update_nodes", changes: selectedRamps.map((r) => ({ id: r.id, points: reversePoints(r.points as LinePoint[]) })) }),
+          }
+        : undefined;
+    const lineControls =
+      selectedLines.length > 0
+        ? {
+            style: { thickness: shared("thickness"), dashed: shared("dashed"), arrow: shared("arrow") },
+            onChange: (patch: Partial<LineStyle>) => send({ type: "update_nodes", changes: selectedLines.map((l) => ({ id: l.id, ...patch })) }),
+            onPreview: (patch: { thickness: number } | null) => setPreview(patch && Object.fromEntries(selectedLines.map((l) => [l.id, patch]))),
+            onReverse: () => send({ type: "update_nodes", changes: selectedLines.map((l) => ({ id: l.id, points: reversePoints(l.points) })) }),
+          }
+        : undefined;
+
+    // The contextual bar (kind and colors) and the inspector (every other field): for the drawing tool's next shape,
+    // or for the selection in the Select tool.
+    const nextTitle: Partial<Record<Tool, string>> = { box: "next box", cylinder: "next cylinder", pen: "next free-form", line: "next line", ramp: "next ramp", note: "next note" };
+    const closedTool = tool === "box" || tool === "cylinder" || tool === "pen";
+    const selecting = tool === "select" && selectedNodes.length > 0;
+    const bar: ComponentProps<typeof ContextualBar> | null = closedTool
+      ? { kind: nextKind, onKind: setNextKind, color: nextColor, onColor: setNextColor }
+      : tool === "line"
+        ? { kind: null, color: nextLine.color, onColor: (color) => setNextLine({ ...nextLine, color }) }
+        : tool === "ramp"
+          ? { kind: null, color: nextRamp.color, onColor: (color) => setNextRamp({ ...nextRamp, color }) }
+          : tool === "note"
+            ? { kind: null, color: nextNoteColor, onColor: setNextNoteColor }
+            : selecting
+            ? {
+                kind: singleClosed?.kind ?? null,
+                kindDisabled: !singleClosed,
+                onKind: !selectedShapes.some(isClosed)
+                  ? undefined
+                  : (kind) => singleClosed && send({ type: "update_nodes", changes: [{ id: singleClosed.id, kind }] }),
+                color: sharedColor,
+                onColor: (color) => colored.length > 0 && send({ type: "update_nodes", changes: colored.map((b) => ({ id: b.id, color })) }),
+              }
+            : null;
+    const inspector: InspectorProps | null = closedTool
+      ? {
+          title: nextTitle[tool]!,
+          sides: tool === "cylinder" ? { value: nextSides, onChange: setNextSides } : undefined,
+          floor: nextWallControl ? { value: nextFields.floor ?? true, onChange: (floor) => setNext({ floor }) } : undefined,
+          wall: nextWallControl,
+          profile: nextProfileControl,
+        }
+      : tool === "line"
+        ? { title: "next line", line: { style: nextLine, onChange: (patch) => setNextLine({ ...nextLine, ...patch }) } }
+        : tool === "ramp"
+          ? { title: "next ramp", ramp: { style: nextRamp, onChange: (patch) => setNextRamp({ ...nextRamp, ...patch }) } }
+          : tool === "note"
+            ? { title: "next note", info: "click to pin it on the surface under the cursor, then write it here" }
+            : selecting
+            ? {
+                title: contextLabel ? `${contextLabel} › ${selectionTitle}` : selectionTitle,
+                info: editing && editable ? `editing ${editable.type === "array" ? "items" : "points"} · ${selectionInfo}` : selectionInfo,
+                library,
+                links: linksOf(single, standingTarget, send),
+                wallAttachment: single?.type === "instance" && !editingEntity ? {
+                  value: single.wallAttachment,
+                  targets: attachmentTargets,
+                  problem: attachmentProblem,
+                  onChange: (wallAttachment) => send({ type: "update_nodes", changes: [{ id: single.id, wallAttachment, ...(wallAttachment && single.on ? { on: null } : {}) }] }),
+                } : undefined,
+                instance:
+                  single?.type === "instance" && library
+                    ? {
+                        entity: single.entity,
+                        entities: library.entities,
+                        onEdit: () => send({ type: "open_entity", entity: single.entity }),
+                        onSwap: (entity) => send({ type: "update_nodes", changes: [{ id: single.id, entity }] }),
                         onDetach: () => {
-                          pendingSelect.current = { before: new Set(nodes.map((n) => n.id)), pick: (added) => added.filter((n) => n.type === "group" && n.parent === single.parent).map((n) => n.id).slice(0, 1) };
+                          pendingSelect.current = { before: new Set(state.current.nodes.map((n) => n.id)), pick: (added) => added.filter((n) => n.type === "group" && n.parent === single.parent).map((n) => n.id).slice(0, 1) };
                           send({ type: "detach_instances", ids: [single.id] });
                         },
-                      };
-                    })()
-                  : undefined,
-              makeEntity:
-                !editingEntity && selectedShapes.length > 0 && !selectedShapes.some((b) => b.type === "instance" || b.type === "array" || b.type === "note" || b.type === "terrain" || terrainInputIds(nodes).has(b.id))
-                  ? {
-                      suggested: (single && isGroup(single) ? single.name : undefined) ?? "entity",
-                      onMake: (name) => {
-                        pendingSelect.current = { before: new Set(nodes.map((n) => n.id)), pick: (added) => added.filter((n) => n.type === "instance").map((n) => n.id) };
-                        send({ type: "make_entity", ids: selection, name });
-                      },
-                    }
-                  : undefined,
-              note:
-                single?.type === "note"
-                  ? {
-                      text: single.text,
-                      label: single.label ?? "",
-                      status: single.status,
-                      focus: freshNote === single.id,
-                      onFocused: () => setFreshNote(null),
-                      onChange: (patch) => send({ type: "update_nodes", changes: [{ id: single.id, ...patch }] }),
-                    }
-                  : undefined,
-              description:
-                single && isGroup(single)
-                  ? { value: single.description ?? "", onChange: (text) => send({ type: "update_nodes", changes: [{ id: single.id, description: text || null }] }) }
-                  : undefined,
-              cuts: single && (single.type === "instance" || single.type === "array" || ("kind" in single)) ? {
-                value: "cutTags" in single ? single.cutTags ?? [] : [],
-                parts: "cutTagParts" in single ? single.cutTagParts : undefined,
-                targets: cutTargets,
-                onChange: (cutTags) => send({ type: "update_nodes", changes: [{ id: single.id, cutTags }] }),
-                onParts: (cutTagParts) => send({ type: "update_nodes", changes: [{ id: single.id, cutTagParts }] }),
-                onSelect: (id) => setSelection([ownerOf(id)]),
-              } : undefined,
-              tags:
-                // An instance's tags are its entity's (edited in the Entities panel), so it has no field of its own.
-                single && single.type !== "line" && single.type !== "note" && single.type !== "instance" && single.type !== "array" && library
-                  ? {
-                      value: currentTags(library, tagsOf(single)),
-                      onChange: (tags) => send({ type: "update_nodes", changes: [{ id: single.id, tags }] }),
-                      onCreate: (name) => {
-                        send({ type: "update_library", upsert: [{ kind: "tag", name }] });
-                        send({ type: "update_nodes", changes: [{ id: single.id, tags: [...currentTags(library, tagsOf(single)), name] }] });
-                      },
-                    }
-                  : undefined,
-              sides:
-                singleShape?.type === "cylinder"
-                  ? { value: singleShape.sides, onChange: (sides) => send({ type: "update_nodes", changes: [{ id: singleShape.id, sides: sides ?? null }] }) }
-                  : undefined,
-              floor: selectedRooms.length ? {
-                value: selectedRooms.every((r) => (r.floor ?? true) === (selectedRooms[0].floor ?? true)) ? (selectedRooms[0].floor ?? true) : undefined,
-                onChange: (floor) => send({ type: "update_nodes", changes: selectedRooms.map((r) => ({ id: r.id, floor })) }),
-              } : undefined,
-              arc: singleShape?.type === "cylinder" && singleShape.kind === "room" && singleShape.sides === undefined && singleShape.width === singleShape.depth ? {
-                value: singleShape.arc,
-                onChange: (arc) => send({ type: "update_nodes", changes: [{ id: singleShape.id, arc }] }),
-              } : undefined,
-              wall: wallControl,
-              profile: profileControl,
-              tilt: tiltControl && { ...tiltControl, levelOnly: tiltable.some((n) => terrainInputIds(nodes).has(n.id)), ...(yawControl ? { yaw: yawControl } : {}) },
-              scale: scaleControl,
-              onScaleBy: selectedShapes.some((s) => s.type !== "note")
-                ? (factor) => {
-                    const b = boundsOf(selectedShapes);
-                    send({ type: "transform_nodes", ids: selection, scale: factor, pivot: { x: round2((b.minX + b.maxX) / 2), y: round2(b.minY), z: round2((b.minZ + b.maxZ) / 2) } });
-                  }
-                : undefined,
-              line: lineControls,
-              ramp: rampControls,
-              terrain:
-                singleShape?.type === "terrain"
-                  ? {
-                      width: singleShape.width,
-                      depth: singleShape.depth,
-                      y: singleShape.y,
-                      resolution: singleShape.resolution,
-                      hasSource: !!singleShape.source,
-                      onChange: (patch) => send({ type: "update_nodes", changes: [{ id: singleShape.id, ...patch }] }),
-                      onEnterSource: singleShape.source
-                        ? () => {
-                            setContext(singleShape.source!);
-                            setSelection([]);
-                            setNextKind("volume");
-                            setTool("box");
-                          }
-                        : undefined,
-                    }
-                  : undefined,
-              terrainModifier:
-                singleShape &&
-                isTerrainSource(singleShape) &&
-                (singleShape.terrain || terrainInputIds(nodes).has(singleShape.id))
-                  ? {
-                      operation: singleShape.terrain?.operation ?? "raise",
-                      fade: singleShape.terrain?.fade ?? 0,
-                      onChange: (patch) =>
-                        send({
-                          type: "update_nodes",
-                          changes: [
-                            {
-                              id: singleShape.id,
-                              terrain: {
-                                operation: singleShape.terrain?.operation ?? "raise",
-                                fade: singleShape.terrain?.fade ?? 0,
-                                ...patch,
-                              },
+                        onArray: editingEntity
+                          ? undefined
+                          : () => {
+                              pendingSelect.current = { before: new Set(state.current.nodes.map((n) => n.id)), pick: (added) => added.filter((n) => n.type === "array").map((n) => n.id) };
+                              send({ type: "make_array", id: single.id });
                             },
-                          ],
-                        }),
+                      }
+                    : undefined,
+                array:
+                  single?.type === "array" && library
+                    ? (() => {
+                        const { items } = arrayLayout(single);
+                        const update = (change: Record<string, unknown>) => send({ type: "update_nodes", changes: [{ id: single.id, ...change }] });
+                        return {
+                          entities: single.entities,
+                          library: library.entities,
+                          layout: single.layout,
+                          standing: !!single.on,
+                          facing: facingOf(single),
+                          rotation: single.rotation ?? 0,
+                          jitter: single.jitter ?? 0,
+                          turnJitter: single.turnJitter ?? 0,
+                          seed: single.seed ?? 1,
+                          items: items.length,
+                          skipped: single.skip?.length ?? 0,
+                          shortfall: arrayShortfall(single),
+                          onEntities: (entities: { entity: string; weight?: number }[]) => update({ entities }),
+                          follow: single.layout.type === "path" ? followControls(single.layout.along, single.id, update) : undefined,
+                          onLayoutType: (type: ArrayLayoutType) => update(layoutAround(single, type)),
+                          onLayout: (patch: Record<string, unknown>) => update({ layout: patch }),
+                          onChange: (patch: Record<string, unknown>) => update(patch),
+                          onEdit: (entity: string) => send({ type: "open_entity", entity }),
+                          onRestoreAll: () => update({ skip: [] }),
+                          onDetach: () => {
+                            pendingSelect.current = { before: new Set(state.current.nodes.map((n) => n.id)), pick: (added) => added.filter((n) => n.type === "group" && n.parent === single.parent).map((n) => n.id).slice(0, 1) };
+                            send({ type: "detach_instances", ids: [single.id] });
+                          },
+                        };
+                      })()
+                    : undefined,
+                makeEntity:
+                  !editingEntity && selectedShapes.length > 0 && !selectedShapes.some((b) => b.type === "instance" || b.type === "array" || b.type === "note" || b.type === "terrain" || terrainSources.has(b.id))
+                    ? {
+                        suggested: (single && isGroup(single) ? single.name : undefined) ?? "entity",
+                        onMake: (name) => {
+                          pendingSelect.current = { before: new Set(state.current.nodes.map((n) => n.id)), pick: (added) => added.filter((n) => n.type === "instance").map((n) => n.id) };
+                          send({ type: "make_entity", ids: selection, name });
+                        },
+                      }
+                    : undefined,
+                note:
+                  single?.type === "note"
+                    ? {
+                        text: single.text,
+                        label: single.label ?? "",
+                        status: single.status,
+                        focus: freshNote === single.id,
+                        onFocused: () => setFreshNote(null),
+                        onChange: (patch) => send({ type: "update_nodes", changes: [{ id: single.id, ...patch }] }),
+                      }
+                    : undefined,
+                description:
+                  single && isGroup(single)
+                    ? { value: single.description ?? "", onChange: (text) => send({ type: "update_nodes", changes: [{ id: single.id, description: text || null }] }) }
+                    : undefined,
+                cuts: single && (single.type === "instance" || single.type === "array" || ("kind" in single)) ? {
+                  value: "cutTags" in single ? single.cutTags ?? [] : [],
+                  parts: "cutTagParts" in single ? single.cutTagParts : undefined,
+                  targets: cutTargets,
+                  onChange: (cutTags) => send({ type: "update_nodes", changes: [{ id: single.id, cutTags }] }),
+                  onParts: (cutTagParts) => send({ type: "update_nodes", changes: [{ id: single.id, cutTagParts }] }),
+                  onSelect: (id) => setSelection([ownerOf(id)]),
+                } : undefined,
+                tags:
+                  // An instance's tags are its entity's (edited in the Entities panel), so it has no field of its own.
+                  single && single.type !== "line" && single.type !== "note" && single.type !== "instance" && single.type !== "array" && library
+                    ? {
+                        value: currentTags(library, tagsOf(single)),
+                        onChange: (tags) => send({ type: "update_nodes", changes: [{ id: single.id, tags }] }),
+                        onCreate: (name) => {
+                          send({ type: "update_library", upsert: [{ kind: "tag", name }] });
+                          send({ type: "update_nodes", changes: [{ id: single.id, tags: [...currentTags(library, tagsOf(single)), name] }] });
+                        },
+                      }
+                    : undefined,
+                sides:
+                  singleShape?.type === "cylinder"
+                    ? { value: singleShape.sides, onChange: (sides) => send({ type: "update_nodes", changes: [{ id: singleShape.id, sides: sides ?? null }] }) }
+                    : undefined,
+                floor: selectedRooms.length ? {
+                  value: selectedRooms.every((r) => (r.floor ?? true) === (selectedRooms[0].floor ?? true)) ? (selectedRooms[0].floor ?? true) : undefined,
+                  onChange: (floor) => send({ type: "update_nodes", changes: selectedRooms.map((r) => ({ id: r.id, floor })) }),
+                } : undefined,
+                arc: singleShape?.type === "cylinder" && singleShape.kind === "room" && singleShape.sides === undefined && singleShape.width === singleShape.depth ? {
+                  value: singleShape.arc,
+                  onChange: (arc) => send({ type: "update_nodes", changes: [{ id: singleShape.id, arc }] }),
+                } : undefined,
+                wall: wallControl,
+                profile: profileControl,
+                tilt: tiltControl && { ...tiltControl, levelOnly: levelOnlySelection, ...(yawControl ? { yaw: yawControl } : {}) },
+                scale: scaleControl,
+                onScaleBy: selectedShapes.some((s) => s.type !== "note")
+                  ? (factor) => {
+                      const b = boundsOf(selectedShapes);
+                      send({ type: "transform_nodes", ids: selection, scale: factor, pivot: { x: round2((b.minX + b.maxX) / 2), y: round2(b.minY), z: round2((b.minZ + b.maxZ) / 2) } });
                     }
                   : undefined,
-              onMakeTerrain: !editingEntity && selectedShapes.some(isTerrainSource) && selectedShapes.every((n) => isTerrainSource(n) || n.type === "line" || n.type === "note") && !selectedShapes.some((n) => terrainInputIds(nodes).has(n.id))
-                ? () => {
-                    pendingSelect.current = { before: new Set(nodes.map((n) => n.id)), pick: (added) => added.filter((n) => n.type === "terrain").map((n) => n.id) };
-                    send({ type: "make_terrain", ids: selection });
-                  } : undefined,
-              onMirror: (axis) => send({ type: "mirror_nodes", ids: selection, axis }),
-              onConvert: convertible.length > 0 ? convert : undefined,
-              editPoints: editable
-                ? { active: editing === editable.id, onToggle: () => setEditing(editing ? null : editable.id), ...(editable.type === "array" ? { label: "Edit items" } : {}) }
-                : undefined,
-            }
-          : null;
+                line: lineControls,
+                ramp: rampControls,
+                terrain:
+                  singleShape?.type === "terrain"
+                    ? {
+                        width: singleShape.width,
+                        depth: singleShape.depth,
+                        y: singleShape.y,
+                        resolution: singleShape.resolution,
+                        hasSource: !!singleShape.source,
+                        onChange: (patch) => send({ type: "update_nodes", changes: [{ id: singleShape.id, ...patch }] }),
+                        onEnterSource: singleShape.source
+                          ? () => {
+                              setContext(singleShape.source!);
+                              setSelection([]);
+                              setNextKind("volume");
+                              setTool("box");
+                            }
+                          : undefined,
+                      }
+                    : undefined,
+                terrainModifier:
+                  singleShape &&
+                  isTerrainSource(singleShape) &&
+                  (singleShape.terrain || singleIsTerrainInput)
+                    ? {
+                        operation: singleShape.terrain?.operation ?? "raise",
+                        fade: singleShape.terrain?.fade ?? 0,
+                        onChange: (patch) =>
+                          send({
+                            type: "update_nodes",
+                            changes: [
+                              {
+                                id: singleShape.id,
+                                terrain: {
+                                  operation: singleShape.terrain?.operation ?? "raise",
+                                  fade: singleShape.terrain?.fade ?? 0,
+                                  ...patch,
+                                },
+                              },
+                            ],
+                          }),
+                      }
+                    : undefined,
+                onMakeTerrain: !editingEntity && selectedShapes.some(isTerrainSource) && selectedShapes.every((n) => isTerrainSource(n) || n.type === "line" || n.type === "note") && !hasTerrainInput
+                  ? () => {
+                      pendingSelect.current = { before: new Set(state.current.nodes.map((n) => n.id)), pick: (added) => added.filter((n) => n.type === "terrain").map((n) => n.id) };
+                      send({ type: "make_terrain", ids: selection });
+                    } : undefined,
+                onMirror: (axis) => send({ type: "mirror_nodes", ids: selection, axis }),
+                onConvert: convertible.length > 0 ? convert : undefined,
+                editPoints: editable
+                  ? { active: editing === editable.id, onToggle: () => setEditing(editing ? null : editable.id), ...(editable.type === "array" ? { label: "Edit items" } : {}) }
+                  : undefined,
+              }
+            : null;
+    return { bar, inspector };
+  }, [
+    contextLabel, selectionInfo, selectionTitle, cutTargets, editing, editingEntity, followPick, freshNote, library, selectedNodes, selectedShapes, selection, single,
+    followTarget, standingTarget, attachmentTargets, attachmentProblem, levelOnlySelection, singleIsTerrainInput, hasTerrainInput,
+    nextColor, nextFields, nextKind, nextLine, nextNoteColor, nextRamp, nextSides, send, setPreview, tool,
+  ]);
 
   const menuActions: ContextAction[] = [];
   if (contextMenu) {
@@ -1285,10 +1345,7 @@ export function App() {
         }}
         onNotice={setNotice}
         onCursor={cursorStore.set}
-        onViewChange={(v, c) => {
-          setView(v);
-          setCamera({ focus: { ...c.focus }, yaw: c.yaw, distance: c.distance });
-        }}
+        onViewChange={updateView}
         cameraRestore={restore}
         cameraFrame={cameraFrame}
         api={viewportApi}
@@ -1313,25 +1370,17 @@ export function App() {
           nodes={nodes}
           selection={selection}
           reveal={selectionReveal}
-          onSelect={(ids, ctx) => {
-            setSelectionReveal(null);
-            setSelection(ids);
-            setContext(ctx);
-          }}
-          onHover={setOutlinerHover}
-          onRename={(id, name) => send({ type: "update_nodes", changes: [{ id, name }] })}
-          onPlace={(ids, parent, before) => send({ type: "place_nodes", ids, parent, before })}
+          onSelect={selectOutliner}
+          onHover={outlinerHover.set}
+          onRename={renameNode}
+          onPlace={placeNodes}
           isolated={isolated}
           visible={visible}
           onIsolate={isolate}
-          onLock={(id, locked) => send({ type: "update_nodes", changes: [{ id, locked }] })}
-          onHide={(id, hidden) => send({ type: "update_nodes", changes: [{ id, hidden }] })}
-          onFrame={(id) => {
-            const shapes = expandShapes(shapesUnder(nodes, [id]));
-            if (shapes.length === 0) setNotice("Nothing to frame: it's empty");
-            else setCameraFrame({ bounds: boundsOf(shapes) });
-          }}
-          entityNames={Object.fromEntries((library?.entities ?? []).map((e) => [e.id, e.name]))}
+          onLock={lockNode}
+          onHide={hideNode}
+          onFrame={frameNode}
+          entityNames={entityNames}
           entityMode={!!editingEntity}
         />
       </div>
@@ -1354,11 +1403,12 @@ export function App() {
       {open && library && (
         <EntitiesPanel
           library={library}
-          uses={libraryState.uses}
-          edit={(e) => send({ type: "update_library", ...e })}
+          uses={libraryState.uses.entities}
+          definitionsVersion={definitionsVersion}
+          edit={editLibrary}
           placing={placing}
-          onPlace={(id) => (editingEntity ? setNotice("Entities can't hold instances: go back to a scene to place one") : setPlacing(placing === id ? null : id))}
-          onEdit={(id) => send({ type: "open_entity", entity: id })}
+          onPlace={placeEntity}
+          onEdit={openEntity}
           editing={editingEntity?.id ?? null}
         />
       )}
@@ -1455,11 +1505,11 @@ export function App() {
           {connected ? "connected" : "offline"}
         </span>
         <CursorCoordinates store={cursorStore} />
-        <span className="coords">yaw {`${Math.round(view.yaw)}°`.padStart(4)}</span>
+        <YawReadout store={viewStore} />
         <span className="sep" />
         <span className="counts">
           {scene
-            ? countsText(nodes)
+            ? sceneCounts
             : "—"}
         </span>
         <span className="sep" />
@@ -1520,7 +1570,12 @@ export function App() {
   );
 }
 
-function CursorCoordinates({ store }: { store: ValueStore<CursorPoint | null> }) {
+const CursorCoordinates = memo(function CursorCoordinates({ store }: { store: ValueStore<CursorPoint | null> }) {
   const cursor = useSyncExternalStore(store.subscribe, store.get);
   return <span className="coords">x {coord(cursor?.x)} · y {coord(cursor?.y)} · z {coord(cursor?.z)} m</span>;
-}
+});
+
+const YawReadout = memo(function YawReadout({ store }: { store: ValueStore<{ view: View; camera: CameraState | null }> }) {
+  const yaw = useSyncExternalStore(store.subscribe, () => Math.round(store.get().view.yaw));
+  return <span className="coords">yaw {`${yaw}°`.padStart(4)}</span>;
+});

@@ -149,3 +149,7 @@ Implemented ordinary entity instancing and the incremental cut graph. Phase 17 P
 ### Static batch and geometry worker follow-up — 2026-11-17
 
 Implemented spatial merging and a browser worker for costly shape geometry and batch preparation. On the isolated `castle v2` copy, the fixed view dropped from 1,131 to 865 draws, and an 11-cutter edit dropped from 37.5 to 1.6 ms of main-thread geometry preparation with the worker enabled. Phase 17 Progress and the measurement file contain the conditions and remaining acceptance.
+
+### Large-edit follow-up — 2026-11-17
+
+Measured the first exact draw through the next paint opportunity on the scratch castle. A second worker for shape bursts and reuse of exact synchronous geometry reduced the warmed 11-cutter move from 101.2 to 71.6 ms and returning from Edit entity after a planter change from 93.8 to 72.2 ms in the final comparison. See Phase 17 Progress and the measurement file for the cache and scheduling decisions.

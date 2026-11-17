@@ -217,3 +217,17 @@ For each applicable fixture measure: steady pan, held-key rotation, sustained zo
 
 - Reproduced about 20 FPS in the live development editor and ran three-trial controls against the same castle snapshots through isolated read-only previews. Shadows off removed 180 draws with little change to the large frame stalls. Suppressing the camera-to-App React callback restored about 60 FPS with default shadows. Production averaged 60 FPS at both tested pixel ratios. See `17-performance-measurements.md` for the matched camera and trial data.
 - Prioritize containing camera reports so navigation updates the local readout and protocol without rerendering the editor shell. Retest the same held-A route in development and preserve the final view report. The diagnostic changed only temporary frontend copies and the measurement notes.
+
+### Camera reporting and panel rendering — 2026-11-17
+
+- Camera and resting pointer reports now use local subscriptions, with the yaw readout subscribing separately. Outliner hover and inspector previews update the viewport without scheduling App renders. Throttled and final server camera reports work through the existing protocol.
+- The Outliner, Inspector and Entities panel have stable inputs. Selection records reuse ordered references across snapshots. Tree traversal shares parent indexes, entity size is cached per definition, and the Inspector limits cutter lookups to selected holes. Library and usage snapshots preserve equal inputs.
+- The Outliner and Entities panel virtualize long lists. The lists preserve mounted rows while focused, being renamed or dragged, and measure the expanded Entities editor. Home and End can reveal and focus offscreen rows.
+- Scratch verification reached 16.7 ms mean and 16.8 ms p95 for held A in development. The separate selection and edit measurements, native input checks and mounted row counts are in `17-performance-measurements.md`. The editor's original project data was outside these tests.
+- **Live user feedback:** Orlando reported that the scene feels substantially faster after trying the React changes in his editor.
+
+### Large edits — 2026-11-17
+
+- `geometryQueue.ts` gathers jobs from each commit before dispatch. A burst of queued shape jobs can use a second worker on devices reporting at least four logical cores. The primary still handles static batches, and the extra worker exits after 30 seconds idle. Matching requests, canceled previews and transport fallback retain their existing behavior.
+- `usePreparedGeometry.ts` caches committed exact synchronous meshes in the existing 96 MiB, 512-entry cache. Returning from Edit entity can reuse these buffers by geometry signature. Drafts and synchronous CSG fallbacks do not populate that cache.
+- Scratch castle measurements reached 101.2 → 71.6 ms for an 11-cutter move and 93.8 → 72.2 ms for returning from a planter definition edit. Editing inside the definition and warm undo were effectively flat in the repeat. Verified rapid updates, pixel-identical restored captures, the worker cap and idle retirement, and 647 passing tests with typecheck and production build. See `17-performance-measurements.md` for the setup and timing limits.
