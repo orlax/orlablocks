@@ -1,9 +1,9 @@
 import * as THREE from "three";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { setDefinitions } from "../shared/entities";
+import { expandNodes, setDefinitions } from "../shared/entities";
 import { EMPTY_LIBRARY } from "../shared/library";
 import { hitMesh } from "../shared/mesh";
-import type { Box, Group, Instance, SceneNode } from "../shared/scene.types";
+import type { ArrayNode, Box, Group, Instance, SceneNode } from "../shared/scene.types";
 import { buildExport } from "./export";
 import { glbFromExport } from "./gltf";
 import { createSceneStore } from "./scene";
@@ -29,7 +29,7 @@ function parse(glb: Buffer) {
 }
 
 /** Every mesh's positions in the world, by node name (its transforms and its parents' applied). */
-function worldPoints(json: any, bin: Buffer) {
+function worldPoints(json: any, bin: Buffer, unique = false) {
   const out = new Map<string, number[][]>();
   const walk = (i: number, parent: THREE.Matrix4) => {
     const n = json.nodes[i];
@@ -45,7 +45,7 @@ function worldPoints(json: any, bin: Buffer) {
       const f = new Float32Array(bin.buffer.slice(bin.byteOffset + v.byteOffset, bin.byteOffset + v.byteOffset + v.byteLength));
       const pts: number[][] = [];
       for (let k = 0; k < f.length; k += 3) pts.push(new THREE.Vector3(f[k], f[k + 1], f[k + 2]).applyMatrix4(world).toArray());
-      out.set(n.name, pts);
+      out.set(unique ? `${i}:${n.name}` : n.name, pts);
     }
     (n.children ?? []).forEach((c: number) => walk(c, world));
   };
@@ -56,12 +56,47 @@ function worldPoints(json: any, bin: Buffer) {
 describe("the .glb", () => {
   beforeEach(() => setDefinitions({ pillar: [box("box_1", { width: 1, depth: 1, height: 4 })] }));
 
+  it("keeps sloped curved-array world meshes within retained centimeter precision in GLB and canonical editor geometry", () => {
+    const array: ArrayNode = { id: "array_1", type: "array", createdBy: "human", entities: [{entity:"pillar"}],
+      layout: {type:"path", slope:true, place:"count", count:5, points:[{x:0,y:0,z:0,out:{x:3,y:1,z:0}}, {x:5,y:4,z:-4,in:{x:0,y:-1,z:3}}]},
+      pitch: 15, roll:-10, rotation:20, skip:[2] };
+    const built = buildExport({project:{id:"p",name:"P",description:""},scene:{id:"s",name:"S"},seq:1,nodes:[array],library:EMPTY_LIBRARY});
+    const {json,bin} = parse(glbFromExport(built.manifest,built.binary));
+    const actual = [...worldPoints(json,bin,true).values()].flat();
+    const expected = expandNodes([array]).flatMap(n => {
+      if (n.type !== "box") return [];
+      const mesh = hitMesh(n)!;
+      return Array.from({length:mesh.positions.length / 3}, (_, i) => mesh.positions.slice(i*3,i*3+3));
+    });
+    expect(actual.length).toBeGreaterThan(0);
+    expect(expected.length).toBeGreaterThan(0);
+    for (const p of expected) expect(actual.some(q => Math.hypot(...p.map((v,i) => v-q[i])) < 0.01)).toBe(true);
+    for (const p of actual) expect(expected.some(q => Math.hypot(...p.map((v,i) => v-q[i])) < 0.01)).toBe(true);
+  });
+
+  it("keeps nine refreshed wall-mount meshes in the editor's resolved world poses", () => {
+    const store = createSceneStore();
+    store.drawShapes([
+      { type: "cylinder", ref: "tower", kind: "room", x: 0, z: 0, width: 14, depth: 14, height: 8, wall: 0.4 },
+      ...Array.from({ length: 9 }, (_, i) => ({ type: "instance" as const, entity: "pillar", wallAttachment: { id: "$tower", side: "inner" as const, angle: i * 40, elevation: 3, offset: 0.1, facingOffset: 90 } })),
+    ], "agent");
+    store.updateNodes([{ id: "cylinder_1", x: -4, y: 2, z: 3, width: 18, depth: 18, rotation: 25, wall: 0.7 }], "human");
+    const mounts = store.getScene().nodes.filter((n) => n.type === "instance");
+    const built = buildExport({ project: { id: "p", name: "P", description: "" }, scene: { id: "s", name: "S" }, seq: 2, nodes: mounts, library: EMPTY_LIBRARY });
+    const { json, bin } = parse(glbFromExport(built.manifest, built.binary));
+    const actual = [...worldPoints(json, bin, true).values()].flat();
+    const expected = expandNodes(mounts).flatMap((n) => n.type === "box" ? Array.from({ length: hitMesh(n)!.positions.length / 3 }, (_, i) => hitMesh(n)!.positions.slice(i * 3, i * 3 + 3)) : []);
+    expect(mounts).toHaveLength(9);
+    for (const p of expected) expect(actual.some((q) => Math.hypot(...p.map((v, i) => v - q[i])) < 0.01)).toBe(true);
+    for (const p of actual) expect(expected.some((q) => Math.hypot(...p.map((v, i) => v - q[i])) < 0.01)).toBe(true);
+  });
+
   it("puts every shape where it is in orlablocks (glTF's frame is the same), in its groups, with instances sharing meshes", () => {
-    const turned = box("box_2", { parent: "group_1", x: 4, y: 1, z: -6, rotation: 30, pitch: 15, roll: -10, taper: 0.3 });
+    const turned = box("box_2", { cutTags: ["wall"], parent: "group_1", x: 4, y: 1, z: -6, rotation: 30, pitch: 15, roll: -10, taper: 0.3 });
     const nodes: SceneNode[] = [
       group("group_1"),
       turned,
-      box("hole_1", { kind: "hole", parent: "group_1", x: 4, z: -6, width: 0.5, height: 1 }),
+      box("hole_1", { kind: "hole", cutTags: ["wall"], parent: "group_1", x: 4, z: -6, width: 0.5, height: 1 }),
       inst("instance_1", { x: 10, rotation: 90 }),
       inst("instance_2", { x: 20, scale: 2 }),
     ];

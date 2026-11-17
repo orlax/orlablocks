@@ -48,6 +48,7 @@ export type LibraryFile = z.infer<typeof LibraryFileSchema>;
  * tags are in the library.
  */
 export const EntityFileSchema = z.object({
+  cutVersion: z.literal(1).optional(),
   createdAt: z.string(),
   seq: z.number().int().min(0),
   nextId: NextIdSchema,
@@ -57,6 +58,7 @@ export type EntityFile = z.infer<typeof EntityFileSchema>;
 
 /** `scenes/<id>/scene.json`: written in full after every change to the nodes. */
 export const SceneFileSchema = z.object({
+  cutVersion: z.literal(1).optional(),
   name: z.string(),
   createdAt: z.string(),
   seq: z.number().int().min(0), // the last history step this state includes

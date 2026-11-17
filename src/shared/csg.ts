@@ -22,6 +22,25 @@ export function setManifold(m: ManifoldToplevel, report?: (e: unknown) => void):
 /** Whether the boolean library is loaded. */
 export const manifoldLoaded = () => wasm !== null;
 
+const cutterKeys = new WeakMap<ClosedShape, string>();
+
+/** Ordered, world-space geometry of the effective cutters, including elevation for the room-floor rule. */
+export function cutterGeometryKey(cuts: ClosedShape[]): string {
+  return cuts.map((hole) => {
+    const cached = cutterKeys.get(hole);
+    if (cached !== undefined) return cached;
+    const footprint = hole.type === "freeform"
+      ? hole.points
+      : [hole.x, hole.z, hole.width, hole.depth, hole.rotation, hole.type === "cylinder" ? [hole.sides, hole.arc] : null];
+    const key = JSON.stringify([
+      hole.type, footprint, hole.y, hole.height, hole.pitch, hole.roll, hole.taper, hole.bevel,
+      hole.kind === "room" ? [hole.wall, hole.floor] : null,
+    ]);
+    cutterKeys.set(hole, key);
+    return key;
+  }).join(",");
+}
+
 /** A hole's solid in `target`'s own frame (the frame `shapeMesh` builds the target in). */
 export function holeInFrameOf(target: Solid, hole: ClosedShape): Mesh | null {
   const m = hitMesh(hole);
@@ -38,7 +57,7 @@ export function holeInFrameOf(target: Solid, hole: ClosedShape): Mesh | null {
  * `mesh` minus every one of `holes` (all in the same frame). Null when nothing is left. If the library isn't loaded
  * or the cut fails (reported to the `setManifold` handler), the mesh comes back uncut.
  */
-export function subtract(mesh: Mesh, holes: Mesh[]): Mesh | null {
+export function subtract(mesh: Mesh, holes: Mesh[], strict = false): Mesh | null {
   if (!wasm || holes.length === 0) return mesh;
   const { Manifold, Mesh: MMesh } = wasm;
   const made: { delete(): void }[] = [];
@@ -62,6 +81,7 @@ export function subtract(mesh: Mesh, holes: Mesh[]): Mesh | null {
     for (let i = 0; i < out.numVert; i++) positions.push(out.vertProperties[i * out.numProp], out.vertProperties[i * out.numProp + 1], out.vertProperties[i * out.numProp + 2]);
     return { positions, indices: Array.from(out.triVerts) };
   } catch (e) {
+    if (strict) throw e;
     onError(e);
     return mesh;
   } finally {
@@ -73,13 +93,14 @@ export function subtract(mesh: Mesh, holes: Mesh[]): Mesh | null {
  * A shape's parts (`shapeMesh`, in its own frame) minus the holes that cut it: the body by all of them, a room's
  * floor only by the holes that reach below it (`cutsFloor`). Uncut while the library isn't loaded.
  */
-export function cutParts(shape: Solid, cuts: ClosedShape[] | undefined): ShapeParts {
+export function cutParts(shape: Solid, cuts: ClosedShape[] | undefined, strict = false): ShapeParts {
   const p = shapeMesh(shape);
+  if (strict && cuts?.length && !wasm) throw new Error("Exact cut geometry requires Manifold");
   if (!wasm || !cuts || cuts.length === 0) return p;
   const holes = cuts.map((h) => ({ hole: h, mesh: holeInFrameOf(shape, h) })).filter((h): h is { hole: ClosedShape; mesh: Mesh } => h.mesh !== null);
   const floorHoles = shape.type === "ramp" ? [] : holes.filter((h) => cutsFloor(h.hole, shape)).map((h) => h.mesh);
   return {
-    body: p.body && subtract(p.body, holes.map((h) => h.mesh)),
-    floor: p.floor && (floorHoles.length > 0 ? subtract(p.floor, floorHoles) : p.floor),
+    body: p.body && subtract(p.body, holes.map((h) => h.mesh), strict),
+    floor: p.floor && (floorHoles.length > 0 ? subtract(p.floor, floorHoles, strict) : p.floor),
   };
 }

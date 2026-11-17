@@ -27,7 +27,7 @@ import {
   type Point,
   type Point3,
 } from "./geometry";
-import { mul, orbit3, rotY, tiltXZ, toXZY, toYXZ, type Mat3 } from "./rotation3";
+import { mul, orbit3, rotY, rotZ, tiltXZ, toXZY, toYXZ, type Mat3 } from "./rotation3";
 import {
   MAX_ARRAY_ITEMS,
   type ArrayFacing,
@@ -58,7 +58,7 @@ export const isFollowing = (n: SceneNode): n is ArrayNode & { layout: { type: "p
 export type ArrayItem = { index: number; entity: string; x: number; y: number; z: number; rotation: number; pitch?: number; roll?: number };
 
 /** A pose on the layout, before the array's turn and noise: where, and the facing's turn there. */
-type Pose = { x: number; y: number; z: number; facing: number };
+type Pose = { x: number; y: number; z: number; facing: number; tangent?: Point3 };
 
 /** The facing an array uses: its own, or its layout's default (along a path, tangent on a circle, fixed on a grid). */
 export function facingOf(array: Pick<ArrayNode, "facing" | "layout">): ArrayFacing {
@@ -110,6 +110,24 @@ function directionAt(pts: Point3[], k: number): Point | null {
   return null;
 }
 
+/** Nearest nonzero 3D segment, outgoing first on ties. Used only by opt-in slope alignment. */
+function tangentAt(pts: Point3[], k: number): Point3 | undefined {
+  for (let d = 0; d < pts.length; d++) for (const j of [k + d, k - d]) {
+    if (j < 0 || j + 1 >= pts.length) continue;
+    const a = pts[j], b = pts[j + 1];
+    const length = Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z);
+    if (length > 1e-9) return { x: (b.x - a.x) / length, y: (b.y - a.y) / length, z: (b.z - a.z) / length };
+  }
+}
+
+/** Invalid combinations reject before mutation; upright arrays retain all their existing behavior. */
+export function arraySlopeProblem(array: Pick<ArrayNode, "layout" | "facing" | "on">): string | null {
+  if (array.layout.type !== "path" || !array.layout.slope) return null;
+  if (array.on) return "path slope following cannot be combined with on placement; clear on or disable slope";
+  if (!["along", "tangent"].includes(facingOf(array))) return "path slope following requires along or tangent facing";
+  return null;
+}
+
 /** How many items a path layout places, before the cap: from its length and how it places them. */
 function pathCount(layout: Extract<ArrayLayout, { type: "path" }>, length: number): number {
   const closed = !!layout.closed;
@@ -137,11 +155,12 @@ function pathPoses(layout: Extract<ArrayLayout, { type: "path" }>, limit: number
   const poseAtDistance = (d: number): Pose => {
     let k = 0;
     while (k + 2 < pts.length && at[k + 1] < d) k++;
+    if (layout.slope) while (k + 2 < pts.length && (at[k + 1] <= d || at[k + 1] - at[k] < 1e-9)) k++;
     const span = at[k + 1] - at[k];
     const t = span > 1e-9 ? Math.min(1, Math.max(0, (d - at[k]) / span)) : 0;
     const [a, b] = [pts[k], pts[k + 1] ?? pts[k]];
     const dir = directionAt(pts, k);
-    return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t, z: a.z + (b.z - a.z) * t, facing: dir ? turnToward(dir.x, dir.z) : 0 };
+    return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t, z: a.z + (b.z - a.z) * t, facing: dir ? turnToward(dir.x, dir.z) : 0, ...(layout.slope ? { tangent: tangentAt(pts, k) } : {}) };
   };
   // Where each edge starts and ends along the path.
   const edgeStart = (i: number) => at[edge.indexOf(i)];
@@ -157,7 +176,17 @@ function pathPoses(layout: Extract<ArrayLayout, { type: "path" }>, limit: number
       const inn = kin >= 0 ? directionAt(pts, kin) : null;
       const dir = out && inn ? { x: out.x + inn.x, z: out.z + inn.z } : (out ?? inn);
       const facing = dir && Math.hypot(dir.x, dir.z) > 1e-9 ? turnToward(dir.x, dir.z) : out ? turnToward(out.x, out.z) : 0;
-      poses.push({ x: p.x, y: p.y, z: p.z, facing });
+      let tangent: Point3 | undefined;
+      if (layout.slope) {
+        const a = k >= 0 ? tangentAt(pts, k) : undefined;
+        const b = kin >= 0 ? tangentAt(pts, kin) : undefined;
+        if (a && b) {
+          const v = { x: a.x + b.x, y: a.y + b.y, z: a.z + b.z };
+          const len = Math.hypot(v.x, v.y, v.z);
+          tangent = len > 1e-9 ? { x: v.x / len, y: v.y / len, z: v.z / len } : a;
+        } else tangent = a ?? b;
+      }
+      poses.push({ x: p.x, y: p.y, z: p.z, facing, ...(layout.slope ? { tangent } : {}) });
     }
   } else if (layout.place === "midpoints") {
     for (let i = 0; i < n; i++) poses.push(poseAtDistance((edgeStart(i) + edgeEnd(i)) / 2));
@@ -168,12 +197,24 @@ function pathPoses(layout: Extract<ArrayLayout, { type: "path" }>, limit: number
   return { poses, total };
 }
 
+/** Requested centerline distribution, computed before allocating item poses. Spacing is a maximum. */
+export function circleDistribution(layout: Extract<ArrayLayout, { type: "circle" }>) {
+  const sweep = layout.sweep ?? 360;
+  const length = Math.hypot(layout.radius * (sweep * Math.PI / 180), layout.rise ?? 0);
+  const closed = sweep >= 360;
+  const gaps = Math.min(Number.MAX_SAFE_INTEGER - 1, Math.max(1, Math.ceil(length / (layout.spacing ?? 1))));
+  const count = layout.place === "spacing" ? (closed ? gaps : gaps + 1) : (layout.count ?? 1);
+  const intervals = closed ? count : count - 1;
+  return { count, length, spacing: intervals > 0 ? length / intervals : 0 };
+}
+
 /** The angle of a circle's item i (degrees), and the angle the whole set spans. */
 export function circleAngles(layout: Extract<ArrayLayout, { type: "circle" }>) {
   const sweep = layout.sweep ?? 360;
   const start = layout.start ?? 0;
-  const step = layout.count <= 1 ? 0 : sweep >= 360 ? 360 / layout.count : sweep / (layout.count - 1);
-  return { start, step, span: step * (layout.count - 1) };
+  const { count } = circleDistribution(layout);
+  const step = count <= 1 ? 0 : sweep >= 360 ? 360 / count : sweep / (count - 1);
+  return { start, step, span: step * (count - 1) };
 }
 
 /** A seeded stream of numbers in [0, 1) (mulberry32). */
@@ -247,7 +288,8 @@ function layoutPoses(layout: ArrayLayout, limit: number, seed = 1): { poses: Pos
   if (layout.type === "scatter") return { poses: scatterPoses(layout, limit, seed), total: layout.count };
   if (layout.type === "circle") {
     const { start, step } = circleAngles(layout);
-    const n = Math.min(layout.count, limit);
+    const count = circleDistribution(layout).count;
+    const n = Math.min(count, limit);
     // A rising circle (plan 13 §5) climbs `rise` over its sweep: over an arc, the last item is `rise` above the first;
     // over a full circle, one turn is.
     const sweep = Math.min(layout.sweep ?? 360, 360);
@@ -258,7 +300,7 @@ function layoutPoses(layout: ArrayLayout, limit: number, seed = 1): { poses: Pos
       // The facing here is the angle itself (out); tangent and in are turned from it below.
       return { x: layout.x + Math.cos(r) * layout.radius, y: layout.y + climb(i), z: layout.z - Math.sin(r) * layout.radius, facing: a };
     });
-    return { poses, total: layout.count };
+    return { poses, total: count };
   }
   const { columns, rows } = layout;
   const layers = layout.layers ?? 1;
@@ -340,10 +382,23 @@ export function arrayLayout(array: ArrayNode): { items: ArrayItem[]; total: numb
     let y = stand ? stand.y : pose.y;
     // A tilted array (14.4): every item's place turns about the layout's anchor, and its orientation with it.
     let tilt: { pitch: number; roll: number } | null = null;
+    const slope = array.layout.type === "path" && array.layout.slope && pose.tangent ? pose.tangent : null;
+    let orientation = rotY(turn);
+    if (slope) {
+      const horizontal = Math.hypot(slope.x, slope.z);
+      // Vertical tangents retain nearest horizontal heading (east on wholly vertical paths).
+      const heading = horizontal > 1e-9 ? turnToward(slope.x, slope.z) : pose.facing;
+      const elevation = Math.atan2(slope.y, horizontal) * 180 / Math.PI;
+      const offset = (array.rotation ?? 0) + (array.turnJitter ? (u(3) * 2 - 1) * array.turnJitter : 0);
+      orientation = mul(mul(rotY(heading), rotZ(elevation)), rotY(offset));
+    }
     if (tilted) {
       const p = orbit3(tilted.m, tilted.anchor, { x, y, z });
       [x, y, z] = [p.x, p.y, p.z];
-      const o = toYXZ(mul(tilted.m, rotY(turn)));
+      orientation = mul(tilted.m, orientation);
+    }
+    if (tilted || slope) {
+      const o = toYXZ(orientation);
       turn = o.yaw;
       tilt = { pitch: round2(o.pitch), roll: round2(o.roll) };
     }
@@ -383,7 +438,10 @@ export function describeLayout(layout: ArrayLayout): string {
     if (layout.along) return `along ${layout.along.id}${layout.along.at === "bottom" ? " (bottom)" : ""}, ${how}`;
     return `${layout.closed ? "loop" : "path"}, ${how}`;
   }
-  if (layout.type === "circle") return `circle r ${layout.radius}${layout.sweep !== undefined ? `, arc ${layout.sweep}°` : ""}`;
+  if (layout.type === "circle") {
+    const d = circleDistribution(layout);
+    return `circle r ${layout.radius}${layout.sweep !== undefined ? `, arc ${layout.sweep}°` : ""}, ${d.count} items, ${round2(d.spacing)} m fitted${layout.place === "spacing" ? ` (max ${layout.spacing} m)` : ""}`;
+  }
   if (layout.type === "scatter") return `scattered in ${layout.area ? "an area" : `a circle r ${layout.radius}`}${layout.minDistance ? `, ${layout.minDistance} m apart` : ""}`;
   return `grid ${layout.columns} × ${layout.rows}${layout.layers ? ` × ${layout.layers}` : ""}${layout.stagger ? ", staggered" : ""}`;
 }
@@ -392,7 +450,8 @@ export function describeLayout(layout: ArrayLayout): string {
 export function layoutPoints(layout: ArrayLayout): Point3[] {
   if (layout.type === "path") return samplePath(layout.points, !!layout.closed).pts;
   if (layout.type === "scatter" && layout.area) return sampleOutline(layout.area).polygon.map((p) => ({ ...p, y: layout.y }));
-  if (layout.type === "circle" || layout.type === "scatter") {
+  if (layout.type === "circle") return layoutGuide(layout);
+  if (layout.type === "scatter") {
     const [x, z, r] = [layout.x ?? 0, layout.z ?? 0, layout.radius ?? 0];
     return Array.from({ length: 16 }, (_, i) => {
       const a = (i / 16) * 2 * Math.PI;
@@ -428,7 +487,7 @@ export function layoutGuide(layout: ArrayLayout): LinePoint[] {
     const n = Math.max(8, Math.ceil(sweep / 7.5));
     return Array.from({ length: n + 1 }, (_, i) => {
       const a = ((start + (sweep * i) / n) * Math.PI) / 180;
-      return { x: round2(layout.x + Math.cos(a) * layout.radius), y: layout.y, z: round2(layout.z - Math.sin(a) * layout.radius) };
+      return { x: round2(layout.x + Math.cos(a) * layout.radius), y: round2(layout.y + (layout.rise ?? 0) * i / n), z: round2(layout.z - Math.sin(a) * layout.radius) };
     });
   }
   const { ex, ez } = shapeAxes({ rotation: layout.rotation ?? 0 });
@@ -489,7 +548,7 @@ export function scaleArray(array: ArrayNode, f: number, pivot: Pivot3): ShapePat
   const l = array.layout;
   let layout: ArrayLayout;
   if (l.type === "path") layout = { ...l, points: scaledPoints3(l.points, f, pivot), ...(l.spacing !== undefined ? { spacing: len(l.spacing) } : {}) };
-  else if (l.type === "circle") layout = { ...l, x: px(l.x), y: py(l.y), z: pz(l.z), radius: len(l.radius), ...(l.rise !== undefined ? { rise: len(l.rise) } : {}) };
+  else if (l.type === "circle") layout = { ...l, x: px(l.x), y: py(l.y), z: pz(l.z), radius: len(l.radius), ...(l.spacing !== undefined ? { spacing: len(l.spacing) } : {}), ...(l.rise !== undefined ? { rise: len(l.rise) } : {}) };
   else if (l.type === "grid") {
     const spacing = { x: len(l.spacing.x), z: len(l.spacing.z), ...(l.spacing.y !== undefined ? { y: len(l.spacing.y) } : {}) };
     layout = { ...l, x: px(l.x), y: py(l.y), z: pz(l.z), spacing };
@@ -626,9 +685,9 @@ export function mirrorArray(array: ArrayNode, axis: MirrorAxis, sum: number): Sh
     const mirrored = axis === "x" ? 180 - start - span : -start - span;
     const rotation = facing === "tangent" || facing === "along" ? turnValue(180 - r) : facing === "out" || facing === "in" ? turnValue(-r) : fixedTurn;
     return {
-      layout: { ...l, ...center, start: turnValue(mirrored) },
+      layout: { ...l, ...center, start: turnValue(mirrored), ...(l.rise ? { y: round2(l.y + l.rise * span / (l.sweep ?? 360)), rise: -l.rise } : {}) },
       rotation,
-      ...(array.skip ? { skip: array.skip.map((i) => l.count - 1 - i).sort((a, b) => a - b) } : {}),
+      ...(array.skip ? { skip: array.skip.map((i) => i < circleDistribution(l).count ? circleDistribution(l).count - 1 - i : i).sort((a, b) => a - b) } : {}),
     };
   }
   return { layout: { ...l, ...center, rotation: turnValue(-(l.rotation ?? 0)) }, rotation: axis === "x" ? turnValue(180 - r) : turnValue(-r) };

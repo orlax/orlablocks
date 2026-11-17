@@ -1,15 +1,15 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { expandNodes, expandShapes, setDefinitions } from "../shared/entities";
 import { cutters } from "../shared/holes";
-import type { ArrayNode, Box, SceneNode } from "../shared/scene.types";
+import type { ArrayNode, Box, Instance, SceneNode } from "../shared/scene.types";
 import { isShape } from "../shared/tree";
-import { splitInstanced } from "./instancing";
+import { splitInstanced, splitPlacements } from "./instancing";
 
 /** A merlon (one volume), and a window (a wall-less hole) with a frame volume. */
 const MERLON: SceneNode[] = [{ id: "box_1", type: "box", kind: "volume", x: 0, z: 0, y: 0, width: 0.6, depth: 0.4, height: 0.8, rotation: 0, color: "gray", createdBy: "human" }];
 const FRAMED: SceneNode[] = [
-  { id: "box_1", type: "box", kind: "volume", x: 0, z: 0, y: 0, width: 1, depth: 0.2, height: 1, rotation: 0, color: "gray", createdBy: "human" },
-  { id: "box_2", type: "box", kind: "hole", x: 0, z: 0, y: 0.2, width: 0.5, depth: 1, height: 0.5, rotation: 0, color: "white", createdBy: "human" },
+  { id: "box_1", type: "box", kind: "volume", cutTags: ["frame"], x: 0, z: 0, y: 0, width: 1, depth: 0.2, height: 1, rotation: 0, color: "gray", createdBy: "human" },
+  { id: "box_2", type: "box", kind: "hole", cutTags: ["frame"], x: 0, z: 0, y: 0.2, width: 0.5, depth: 1, height: 0.5, rotation: 0, color: "white", createdBy: "human" },
 ];
 const row = (entity: string, fields: Partial<ArrayNode> = {}): ArrayNode => ({
   id: "array_1",
@@ -18,6 +18,42 @@ const row = (entity: string, fields: Partial<ArrayNode> = {}): ArrayNode => ({
   layout: { type: "path", points: [{ x: 0, y: 0, z: 0 }, { x: 4, y: 0, z: 0 }], place: "spacing", spacing: 2 },
   createdBy: "human",
   ...fields,
+});
+
+it("batches ordinary multipart placements with exact expanded transforms and independent scale/culling variants", () => {
+  const part = MERLON[0] as Box;
+  setDefinitions({ pair: [part, { ...part, id: "box_2", y: 1, kind: "room" }] });
+  const at = (i: number, fields: Partial<Instance> = {}): Instance => ({
+    id: `instance_${i}`, type: "instance", entity: "pair", x: i * 3.2, y: 0.2, z: 0,
+    rotation: i * 19, pitch: i * 4, createdBy: "human", ...fields,
+  });
+  const instances = [at(1), at(2), at(3, { scale: 2 }), at(4, { scale: 2 }), at(5, { x: 300 })];
+  const drawn = drawnOf(instances);
+  const { boxes, batches } = splitPlacements(drawn, instances, new Map(), new Set());
+  expect(batches.map((batch) => batch.placements.length)).toEqual([2, 2, 2, 2]);
+  expect(batches.flatMap((batch) => batch.placements)).toEqual(expect.arrayContaining(drawn.slice(0, 8)));
+  expect(boxes).toEqual(drawn.slice(8));
+
+  const shadowed = drawn.find((s) => s.id === "instance_1/box_2")!;
+  const incomplete = drawn.filter((s) => s.id !== "instance_2/box_2");
+  expect(splitPlacements(incomplete, instances, new Map(), new Set()).boxes).toContain(shadowed);
+  const hole = { ...part, id: "external", kind: "hole" } as const;
+  expect(splitPlacements(drawn, instances, new Map([[shadowed.id, [hole]]]), new Set()).boxes).toContain(shadowed);
+  expect(splitPlacements(drawn, instances, new Map(), new Set(["instance_1"])).boxes).toContain(shadowed);
+});
+
+it("shares translated internal cuts and keeps an externally cut variant individual", () => {
+  const instances: Instance[] = [0.4, 2.2, 7.1].map((x, i) => ({
+    id: `instance_${i}`, type: "instance", entity: "framed", x, y: 0.2, z: 0.3,
+    rotation: 0, cutTags: ["scene"], createdBy: "human",
+  }));
+  const external: Box = { ...(FRAMED[1] as Box), id: "outer", x: 7.1, cutTags: ["scene"] };
+  const nodes = [...instances, external];
+  const { boxes, batches } = splitPlacements(drawnOf(nodes), instances, cutters(expandNodes(nodes)), new Set());
+  expect(batches).toHaveLength(1);
+  expect(batches[0].placements.map((shape) => shape.id)).toEqual(["instance_0/box_1", "instance_1/box_1"]);
+  expect(batches[0].cuts).toEqual([expect.objectContaining({ x: 0, y: 0.2, z: 0 })]);
+  expect(boxes.map((shape) => shape.id)).toContain("instance_2/box_1");
 });
 const drawnOf = (nodes: SceneNode[]) => expandShapes(nodes.filter(isShape));
 
@@ -41,14 +77,14 @@ describe("drawing arrays instanced", () => {
 
   it("draws an item cut by a hole from outside one by one, and a missing entity's items too", () => {
     // A door in its own group beside the array (a hole reaches the groups beside its own), through the middle item.
-    const door: Box = { id: "box_9", type: "box", kind: "hole", parent: "group_2", x: 2, z: 0, y: 0, width: 1, depth: 1, height: 2, rotation: 0, color: "white", createdBy: "human" };
+    const door: Box = { id: "box_9", type: "box", kind: "hole", cutTags: ["row"], parent: "group_2", x: 2, z: 0, y: 0, width: 1, depth: 1, height: 2, rotation: 0, color: "white", createdBy: "human" };
     const nodes: SceneNode[] = [
       { id: "group_1", type: "group", createdBy: "human" },
       { id: "group_2", type: "group", parent: "group_1", createdBy: "human" },
-      row("merlon", { parent: "group_1" }),
+      row("merlon", { parent: "group_1", cutTags: ["row"] }),
       door,
     ];
-    const { boxes, groups } = splitInstanced(drawnOf(nodes), [row("merlon", { parent: "group_1" })], cutters(expandNodes(nodes)));
+    const { boxes, groups } = splitInstanced(drawnOf(nodes), [row("merlon", { parent: "group_1", cutTags: ["row"] })], cutters(expandNodes(nodes)));
     expect(groups[0].items.map((i) => i.index)).toEqual([0, 2]);
     expect(boxes.map((b) => b.id)).toEqual(["array_1/1/box_1", "box_9"]);
     const missing = [row("gone")];

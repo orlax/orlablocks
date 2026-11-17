@@ -1269,8 +1269,8 @@ describe("batch refs and groups in a batch (plan 13 §6)", () => {
     const made = s.drawShapes(
       [
         { type: "group", ref: "chamber", name: "chamber", description: "the temple's hall" },
-        { kind: "room", x: 0, z: 0, width: 10, depth: 10, parent: "$chamber", ref: "hall" },
-        { kind: "hole", x: 0, z: 5, width: 2, depth: 1, height: 3, parent: "$chamber" },
+        { kind: "room", cutTags: ["room"], x: 0, z: 0, width: 10, depth: 10, parent: "$chamber", ref: "hall" },
+        { kind: "hole", cutTags: ["room"], x: 0, z: 5, width: 2, depth: 1, height: 3, parent: "$chamber" },
       ],
       "agent",
     );
@@ -1430,8 +1430,8 @@ describe("tilting as one (14.4)", () => {
     const [group] = store.drawShapes(
       [
         { type: "group", ref: "g", name: "hut" },
-        { kind: "room", x: 0, z: 0, width: 6, depth: 6, height: 3, parent: "$g" },
-        { kind: "hole", x: 0, z: 3, width: 1, depth: 1, height: 2, parent: "$g" },
+        { kind: "room", cutTags: ["room"], x: 0, z: 0, width: 6, depth: 6, height: 3, parent: "$g" },
+        { kind: "hole", cutTags: ["room"], x: 0, z: 3, width: 1, depth: 1, height: 2, parent: "$g" },
         { type: "freeform", kind: "volume", points: [{ x: 5, z: 0 }, { x: 7, z: 0 }, { x: 6, z: 2 }], parent: "$g" },
       ],
       "agent",

@@ -1,3 +1,5 @@
+import { wallPose, wallSupportProblem } from "../shared/wallAttachment";
+import { cutters, holeScope, isHole } from "../shared/holes";
 import { ContextMenu, type ContextAction } from "./ContextMenu";
 import { SnapControl } from "./SnapControl";
 import { useSnapSettings } from "./snap";
@@ -40,7 +42,7 @@ import {
 import { terrainInputIds, isTerrainSource } from "../shared/terrain";
 import { boundsOf, footprintBounds, isClosed, isTilted, polyline, rampStations, reversePoints, round2, wallOf } from "../shared/geometry";
 import { shapesUnder, childrenOf, countsText, isShape, isGroup, hiddenIds, lockedIds, subtreeIds, tagsOf } from "../shared/tree";
-import { definitionOf, expandShapes } from "../shared/entities";
+import { definitionOf, expandShapes, expandNodes, ownerOf } from "../shared/entities";
 import { arrayItems, arrayLayout, arrayShortfall, defaultFollowOffset, describeLayout, facingOf, isFollowing, layoutAnchor } from "../shared/arrays";
 import type { Box3, CameraState } from "./camera";
 import { clipboardText, readClipboard } from "./clipboard";
@@ -757,6 +759,22 @@ export function App() {
 
   // Kind and sides are for a single shape; color applies to every shape in the selection (groups included).
   const single = selectedNodes.length === 1 ? selectedNodes[0] : null;
+  const cutTargets = useMemo(() => {
+    if (!single) return [];
+    const expanded = expandNodes(nodes);
+    const holes = expanded.filter((n) => isHole(n) && (n.id === single.id || n.id.startsWith(`${single.id}/`)));
+    if (!holes.length) return [];
+    const actual = cutters(expanded);
+    const targets = new Map<string, { id: string; name: string; overlapping: boolean }>();
+    for (const hole of holes) {
+      if (!isHole(hole)) continue;
+      for (const target of holeScope(expanded, hole)) {
+        const overlapping = !!actual.get(target.id)?.some((h) => h.id === hole.id);
+        targets.set(target.id, { id: target.id, name: target.name ?? target.id, overlapping: overlapping || !!targets.get(target.id)?.overlapping });
+      }
+    }
+    return [...targets.values()].sort((a, b) => Number(b.overlapping) - Number(a.overlapping));
+  }, [nodes, single, library]);
   const singleShape = single && isShape(single) ? single : null;
   // Instances have no color of their own (their shapes are the entity's).
   const colored = selectedShapes.filter((b): b is Exclude<Shape, Instance | ArrayNode> => b.type !== "instance" && b.type !== "array");
@@ -948,6 +966,12 @@ export function App() {
               info: editing && editable ? `editing ${editable.type === "array" ? "items" : "points"} · ${selectionInfo}` : selectionInfo,
               library,
               links: linksOf(single, nodes, send),
+              wallAttachment: single?.type === "instance" && !editingEntity ? {
+                value: single.wallAttachment,
+                targets: nodes.filter((n) => n.type === "cylinder" && !("problem" in wallPose(nodes, { id: n.id, side: "inner", angle: n.arc?.from ?? 0, elevation: 0, offset: 0, facingOffset: 0 }))).map((n) => ({ id: n.id, name: n.name ? `${n.name} (${n.id})` : n.id, angle: n.type === "cylinder" ? n.arc?.from ?? 0 : 0 })),
+                problem: wallSupportProblem(nodes, single),
+                onChange: (wallAttachment) => send({ type: "update_nodes", changes: [{ id: single.id, wallAttachment, ...(wallAttachment && single.on ? { on: null } : {}) }] }),
+              } : undefined,
               instance:
                 single?.type === "instance" && library
                   ? {
@@ -976,6 +1000,7 @@ export function App() {
                         entities: single.entities,
                         library: library.entities,
                         layout: single.layout,
+                        standing: !!single.on,
                         facing: facingOf(single),
                         rotation: single.rotation ?? 0,
                         jitter: single.jitter ?? 0,
@@ -1023,6 +1048,14 @@ export function App() {
                 single && isGroup(single)
                   ? { value: single.description ?? "", onChange: (text) => send({ type: "update_nodes", changes: [{ id: single.id, description: text || null }] }) }
                   : undefined,
+              cuts: single && (single.type === "instance" || single.type === "array" || ("kind" in single)) ? {
+                value: "cutTags" in single ? single.cutTags ?? [] : [],
+                parts: "cutTagParts" in single ? single.cutTagParts : undefined,
+                targets: cutTargets,
+                onChange: (cutTags) => send({ type: "update_nodes", changes: [{ id: single.id, cutTags }] }),
+                onParts: (cutTagParts) => send({ type: "update_nodes", changes: [{ id: single.id, cutTagParts }] }),
+                onSelect: (id) => setSelection([ownerOf(id)]),
+              } : undefined,
               tags:
                 // An instance's tags are its entity's (edited in the Entities panel), so it has no field of its own.
                 single && single.type !== "line" && single.type !== "note" && single.type !== "instance" && single.type !== "array" && library

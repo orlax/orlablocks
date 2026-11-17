@@ -67,7 +67,7 @@ export const INSTRUCTIONS =
   "WORKING: describe groups, so the outline reads as the plan. Repeat things with copies (move_nodes copy, count; " +
   "mirror_nodes for symmetry), or an entity many times with one array. Entities are the project's prefabs " +
   "(define_entity, make_entity, instances). A sketch the human asks for at scale: transform_nodes { copy, scale, to } " +
-  "in one call, never re-derived. A door or window is a hole in the room's group. " +
+  "in one call, never re-derived. A door or window is a hole sharing cutTags with its intended solids. " +
   "CHECKING: use tools, not arithmetic: check_sight (what's visible, what blocks it), check_enclosure (is it sealed, " +
   "where it leaks), measure_path (length, time, slopes, clearance), check_scene (likely mistakes), render_view (to " +
   "see it; the human's captioned shots are requirements, get_shots). " +
@@ -132,7 +132,20 @@ const GUIDE: Record<Exclude<GuideTopic, "design">, string> = {
     "and a DEFINITION, its shapes around a PIVOT at the origin (its bottom center). Its ID is a slug of its first " +
     "name (\"tree-tall\") and never changes. An INSTANCE (type: instance) places one: { entity, x, z, y?, rotation?, " +
     "name? } in draw_shapes, where x, y, z is where the pivot goes (y the surface it stands on) and rotation turns it " +
-    "around the pivot (degrees, counterclockwise seen from above). FACING: instead of degrees, rotation can say where " +
+    "around the pivot (degrees, counterclockwise seen from above). SCENE-RELATIVE PLACEMENT (boxes, cylinders and instances): " +
+    "instead of x/z/y/rotation, give polar: { around: cylinder ID or earlier $ref, radius, angle, elevation?, facing?: in/out/tangent, rotationOffset? }. " +
+    "This resolves once, with no live link; boxes/cylinders also accept polar instead of their center/y/yaw. Angles are local CCW from east, plus the cylinder rotation; elevation is from its base. " +
+    "The target must be an upright smooth circular cylinder. Local +x faces out by default, in adds 180 degrees, tangent adds 90, " +
+    "then rotationOffset adjusts for differently authored prefabs. Example: { type: instance, entity: frame, polar: { around: $tower, radius: 4, angle: 90, elevation: 3, facing: in } }. " +
+    "PERSISTENT WALL MOUNT: wallAttachment: { id, side: inner/outer, angle, elevation, offset, facingOffset } follows an upright smooth circular ROOM cylinder. " +
+    "All six fields are required. Inner radius is max(0, width/2 - wall), outer is width/2. Positive offset follows the surface normal: inward for inner, outward for outer. " +
+    "Local +x faces that normal plus facingOffset. Angle must lie on the target arc and elevation within its wall height. No inner surface remains when wall closes the cylinder. " +
+    "Both polar and wallAttachment conflict with x/y/z/rotation, floor on placement and each other. update_nodes wallAttachment: null detaches, preserving world pose. " +
+    "Direct move/yaw/mirror/scale edits change mount parameters where representable; tilt, cylinder-center or out-of-height edits reject and require detach. " +
+    "Missing/unsupported targets and cut-away mounting surfaces keep the link and last pose until repaired or detached; check_scene attachments diagnoses them. " +
+    "Only valid mounts within 0.5 m of their surface suppress floating. A copy/paste with its support remaps the link; without its support it detaches at the copied world pose. " +
+    "Make array requires detach first; detach_instances bakes ordinary world shapes. Boxes/free-forms/tilted or elliptical walls and array mounts remain follow-ups. " +
+    "FACING: instead of degrees, rotation can say where " +
     "its local +x faces, worked out once (it doesn't follow later): { toward: {x, z} or a node or item ID } (a stand " +
     "facing the ring), { away: ... } (its back to it), { along: a line's or ramp's ID } (along the route where it " +
     "passes nearest: rings along a flight path). Angles are CCW from east: x = cx + r*cos(theta), z = cz - r*sin(theta). Local +x faces outward at theta, inward at (theta + 180) % 360; differently authored prefabs need an offset. Prefer toward for inward facing. No atan2. An instance has nothing else of its own: its shapes, " +
@@ -150,12 +163,11 @@ const GUIDE: Record<Exclude<GuideTopic, "design">, string> = {
     "shapes or a group already in the scene into a new entity and puts an instance in their place (keep: false leaves " +
     "nothing; a single group's contents become the entity), with the pivot at the bottom center of their bounds. " +
     "detach_instances turns an instance back into a plain group of shapes, only when one copy must " +
-    "differ. get_library { entity } returns a definition's nodes. For HOLES an instance is a group: its shapes are " +
-    "directly in it. So an entity that is a hole (a window) cuts what's directly in the instance's parent group and in " +
-    "the groups beside it: place a window instance in the room's group and it cuts that room's walls. The human edits " +
+    "differ. get_library { entity } returns a definition's nodes. Definition cutTags are local to each placement. " +
+    "For external cuts, give a window instance and the intended walls matching cutTags, independent of their groups. The human edits " +
     "an entity's shapes in Edit entity mode: then get_scene has `editing`, the nodes are the definition (around the " +
     "pivot: keep its bottom at y = 0), the tools change it (as its own undo steps), and every instance follows. A hole in the " +
-    "scene cuts an instance's shapes as it cuts a sibling group's. An instance whose entity is missing shows as a red " +
+    "scene cuts an instance's shapes when their external cutTags match. An instance whose entity is missing shows as a red " +
     "block (results warn about it). To place many of one entity on a path, a circle, a grid or scattered in an area, use an array (get_guide arrays).",
   arrays:
     "An ARRAY (type: array, array_1, ...) repeats entities on a LAYOUT, live: one node whose ITEMS are instances the " +
@@ -173,6 +185,11 @@ const GUIDE: Record<Exclude<GuideTopic, "design">, string> = {
     "land evenly (every 1.2 m on a 45.5 m wall is 38 gaps of 1.197 m), with one at each end of an open path and none " +
     "repeated on a closed one; count puts `count` evenly; corners one on every point (a pillar on each corner); " +
     "midpoints one mid-edge (a window on every face). A vertical path stacks (floors of a tower, a pile). " +
+    "SLOPE: layout.slope: true opts a path into 3D tangent alignment of entity local +x, without banking. Default is upright. " +
+    "Requires along/tangent facing; rejects on placement (clear on or disable slope). At a vertical tangent, heading comes from the nearest " +
+    "horizontal segment (outgoing on ties), or east for a wholly vertical path. Zero segments use the nearest nonzero segment; an all-zero " +
+    "path stays upright. Corners use normalized incoming/outgoing tangent bisectors (outgoing on a reversal); count/spacing at exact joints uses outgoing, " +
+    "the last endpoint incoming. Curves use the existing sampled polyline. Local rotation/turnJitter is applied around the aligned local y, then whole-array pitch/roll; no banking. " +
     "FOLLOWING: instead of points, a path can follow another node, live: layout: { type: \"path\", along: { id, at?, " +
     "offset? }, spacing }. A box, cylinder or free-form gives its outline (a loop, counterclockwise seen from above) at " +
     "its top (the default; a tapered volume's top ring) or bottom (at: \"bottom\", its floor), moved `offset` m " +
@@ -185,12 +202,16 @@ const GUIDE: Record<Exclude<GuideTopic, "design">, string> = {
     "Removing the followed node unlinks the array (it keeps its last path; remove_nodes says which), converting it to " +
     "a free-form keeps the follow, a copy made with its target follows the copy and one made without it is unlinked. " +
     "update_nodes { layout: { along: { offset: 0.3 } } } changes the follow, { along: null } unlinks it. " +
-    "{ type: \"circle\", x, z, y?, radius, count, start?, sweep?, rise? }: angles in degrees from 0 = east (+x), 90 = " +
+    "{ type: \"circle\", x, z, y?, radius, place?: count|spacing, count? | spacing?, start?, sweep?, rise? }: angles in degrees from 0 = east (+x), 90 = " +
     "north (-z), counterclockwise; sweep under 360 is an arc with items at both ends; `rise` makes the items climb " +
     "evenly, the last one `rise` above the first on an arc (over a full circle, `rise` per turn): a spiral of " +
-    "platforms round a wall, 9 slabs over 120° climbing 8 m, is { type: \"circle\", x: 0, z: 0, y: 0.5, radius: 17, " +
+    "platforms round a wall. Count is the legacy default; spacing alone selects spacing mode. Circle spacing is a MAXIMUM 3D centerline distance: " +
+    "ceil(hypot(radius*sweepRadians,rise)/spacing) gaps, evenly fitted; open arcs include both ends (at least 2 items), full circles omit the duplicate " +
+    "endpoint even when rising. get_scene and edit results return requestedItems and fittedSpacing before skips/cap; at most 500 items are allocated, " +
+    "with a shortfall warning when over the cap. Spacing is >=0.1 m. Count/spacing edits may move indices; there is no durable item identity. " +
+    "For example, 9 slabs round a wall, 9 slabs over 120° climbing 8 m, is { type: \"circle\", x: 0, z: 0, y: 0.5, radius: 17, " +
     "count: 9, start: 270, sweep: 120, rise: 8 }. A path takes `spiral` too, as a line does (get_guide lines), for " +
-    "items spaced by distance along a spiral rather than by angle. { type: \"grid\", x, z, y?, rotation?, " +
+    "slope-following items along a sampled spiral (circle spacing also supports 3D distance). { type: \"grid\", x, z, y?, rotation?, " +
     "columns, rows, layers?, spacing: { x, z, y? }, stagger? }: centered on x, z, columns along its local x, rows along " +
     "its local z, layers up (spacing.y), stagger offsets every other row by half (brick). { type: \"scatter\", x, z, " +
     "radius (a circle) or area (an outline as a free-form's points), y?, count, minDistance?, rotation? }: items at " +
@@ -204,9 +225,8 @@ const GUIDE: Record<Exclude<GuideTopic, "design">, string> = {
     "degrees), both from `seed` (an integer: the same seed, the same look; another seed rerolls). SKIP lists item " +
     "indices (0 = the first, in layout order; the number after the slash in an item's ID) to leave out, like the " +
     "merlons over a gate (find_nodes { type: \"item\", near: the gate } says which): skip last, since changing " +
-    "the count or the path's length can move which item an index is. HOLES: an array adds no level of its own, so its " +
-    "items cut and are cut as instances placed where the array is: a window array in the tower's group cuts the " +
-    "tower's walls. Windows round a 10-sided tower 20 m across: a circle at the tower's center, count 10, facing " +
+    "the count or the path's length can move which item an index is. HOLES: give a window array and the tower matching cutTags; " +
+    "each item cuts intersecting matching solids, independent of groups. Windows round a 10-sided tower 20 m across: a circle at the tower's center, count 10, facing " +
     "tangent, radius = the distance to the middle of a face (10 × cos 18° = 9.51) minus half the wall (9.41), start 0 " +
     "(a sided cylinder's flat edge faces its local +x). STANDING ON: on: { id } (draw_shapes or update_nodes) stands " +
     "every item on that node's walking surface under it (items over nothing keep the layout's height), kept up to date; " +
@@ -290,11 +310,12 @@ const GUIDE: Record<Exclude<GuideTopic, "design">, string> = {
     "shape has no walking surface, and can't convert to a free-form.",
   holes:
     "A HOLE (kind: hole) is any closed shape that cuts itself out of other shapes when drawn: a door, a window, an " +
-    "arch, a hole in a floor, a tunnel. For a hole in group G, whose parent is P (the top level if G is top-level), it " +
-    "cuts the shapes directly in G, directly in P (beside G), and directly in G's and P's sibling groups; nothing " +
-    "deeper. A hole outside any group cuts nothing (results warn about it), and it only cuts what it overlaps. So give " +
-    "a room a group holding its walls and a `door` group of holes (a door can be several holes): the door cuts its " +
-    "room's walls and the walls of the rooms beside that room (P's sibling groups), for a doorway through two walls. " +
+    "arch, a hole in a floor, a tunnel. Give the hole and intended solids matching cutTags, e.g. [\"lobby\"]. " +
+    "Any shared cut tag permits a cut where geometry overlaps, regardless of parents. No cut tags means no cutting; " +
+    "there is no hierarchy fallback. Cut tags are separate from library tags and need no library registration. " +
+    "Instances and arrays accept cutTags for all their parts' external cuts; definition tags remain local to each placement. " +
+    "cutTagParts gives per-part external tags: definition node IDs on instances, item-index/definition-node-ID on arrays. " +
+    "Clear cutTags with [] and per-part bindings with {}. Migrated array bindings are index-based: new or changed items may need retagging. " +
     "Holes never cut holes. A hole cuts a room's floor only if its bottom is below the room's y (a door standing on " +
     `the floor doesn't notch it). Default hole height ${DEFAULT_HEIGHT.hole} m. A door: a box hole about 1 m wide, ` +
     "2.2 m tall, standing on the floor, turned like the wall and a bit deeper than the wall. A round window: a " +
@@ -358,7 +379,7 @@ const GUIDE: Record<Exclude<GuideTopic, "design">, string> = {
     "everything in it in one step. A group left empty disappears. Draw straight into a group with draw_shapes' " +
     "`parent`. To make a group and what's in it in ONE call, put a group entry first in draw_shapes: { type: " +
     "\"group\", ref: \"chamber\", name, description, tags? }, then parent: \"$chamber\" on the entries that go in it; a " +
-    "door hole drawn into it cuts the room's walls from the start (a hole needs a group to cut in). Refs work for " +
+    "door hole with matching cutTags cuts the room's walls from the start, independent of grouping. Refs work for " +
     "layout.along.id too (a line and the array following it). To repeat things (a row of pillars, a second wing, another floor), copy them with move_nodes and copy: " +
     "true (count for several, each offset further) instead of retyping shapes: copies get new IDs and keep their " +
     "names, structure and parent group. For symmetry, mirror_nodes flips nodes in place on a WORLD axis (x or z, not " +

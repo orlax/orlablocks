@@ -13,8 +13,8 @@ describe("checkEnclosure (14.7)", () => {
   });
 
   it("finds the door a room leaks through, where it is and how wide", () => {
-    const door: Box = { ...base, id: "box_2", type: "box", kind: "hole", x: 0, z: 10, y: 0, width: 3, depth: 4, height: 3 };
-    const nodes: SceneNode[] = [{ id: "group_1", type: "group", createdBy: "agent" }, { ...room, parent: "group_1" }, { ...door, parent: "group_1" }];
+    const door: Box = { ...base, id: "box_2", type: "box", kind: "hole", cutTags: ["room"], x: 0, z: 10, y: 0, width: 3, depth: 4, height: 3 };
+    const nodes: SceneNode[] = [{ id: "group_1", type: "group", createdBy: "agent" }, { ...room, cutTags: ["room"], parent: "group_1" }, { ...door, parent: "group_1" }];
     const r = checkEnclosure(nodes, { from: { x: 0, y: 1, z: 0 }, cell: 1 });
     expect(r.sealed).toBe(false);
     if (r.sealed) return;

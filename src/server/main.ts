@@ -35,6 +35,18 @@ try {
   console.error(err.message);
   process.exit(1);
 }
+// Legacy data must be migrated offline, with its undo history archived, before tag-only evaluation.
+const legacyCuts: string[] = [];
+for (const project of data.listProjects()) {
+  if (project.error) continue;
+  for (const scene of project.scenes) if (!scene.error && data.readScene(project.id, scene.id).cutVersion !== 1) legacyCuts.push(`${project.id}/${scene.id}`);
+  for (const [id, entity] of Object.entries(data.readEntities(project.id).entities)) if (entity.cutVersion !== 1) legacyCuts.push(`${project.id}/entities/${id}`);
+}
+if (legacyCuts.length) {
+  console.error(`Cut-tag migration required for ${legacyCuts.length} documents (${legacyCuts.slice(0, 3).join(", ")}). Stop the server and run scripts/migrate-cut-tags.ts --data <data-folder> for a dry-run, then --write --reset-history after reviewing its report. Originals and histories are backed up before conversion.`);
+  data.release();
+  process.exit(1);
+}
 const dataDir = data;
 const workspace = createWorkspace(dataDir);
 process.on("exit", () => {

@@ -85,6 +85,17 @@ describe("the bake", () => {
     expect(bakeShape(room, [door])).toBe(cut);
     expect(bakeShape(room)).not.toBe(cut);
   });
+
+  it("reuses the cut bake across metadata edits and rebuilds it when a cutter reaches the floor", () => {
+    const room = box("room");
+    const cut = bakeShape(room, [door]);
+    const renamed: Box = { ...door, name: "West entrance", color: "white", cutTags: ["entry"] };
+    expect(bakeShape(room, [renamed])).toBe(cut);
+    const lowered = { ...renamed, y: -0.1, x: 4.8 };
+    const next = bakeShape(room, [lowered]);
+    expect(volume(next.floor)).toBeLessThan(volume(cut.floor));
+    expect(plain(next.body)).toEqual(reference(room, [lowered]).body);
+  });
 });
 
 /** A 2 × 2 × 4 pillar volume and a 1 m cube beside it, around the pivot. */
@@ -123,8 +134,8 @@ describe("baking a scene", () => {
 
   it("gives an instance a variant only for the shape a scene hole cuts", () => {
     // A hole in a group cuts the top-level instances beside the group; it crosses the first instance's pillar only.
-    const hole = box("hole_1", { kind: "hole", parent: "g", x: 0, z: 0, width: 4, depth: 0.5, height: 1 });
-    const bake = bakeScene([group("g"), hole, inst("instance_1"), inst("instance_2", { x: 20 })]);
+    const hole = box("hole_1", { kind: "hole", cutTags: ["pillar"], parent: "g", x: 0, z: 0, width: 4, depth: 0.5, height: 1 });
+    const bake = bakeScene([group("g"), hole, inst("instance_1", { cutTags: ["pillar"] }), inst("instance_2", { x: 20 })]);
     expect([...bake.variants.keys()]).toEqual(["instance_1"]);
     const variant = bake.variants.get("instance_1")!;
     expect([...variant.keys()]).toEqual(["box_1"]);
@@ -133,6 +144,6 @@ describe("baking a scene", () => {
     expect(volume(whole) - volume(variant.get("box_1")!.body)).toBeCloseTo(2 * 0.5 * 1, 3);
     // The hole itself is baked uncut, for Unity's gizmo; a hidden hole cuts nothing.
     expect(volume(bake.shapes.get("hole_1")!.body)).toBeCloseTo(4 * 0.5 * 1, 3);
-    expect(bakeScene([group("g"), { ...hole, hidden: true }, inst("instance_1")]).variants.size).toBe(0);
+    expect(bakeScene([group("g"), { ...hole, hidden: true }, inst("instance_1", { cutTags: ["pillar"] })]).variants.size).toBe(0);
   });
 });

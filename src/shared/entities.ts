@@ -12,12 +12,11 @@ import type { ArrayNode, Group, Instance, SceneNode, Shape } from "./scene.types
  * so the pure geometry (bounds, frames, snapping) can see an instance's shapes without every caller passing them.
  *
  * Expanded, an instance is a virtual group with the instance's ID and place in the tree, holding its shapes with
- * namespaced IDs (`instance_4/box_2`): rendering, picking, the marquee and holes run on that, so for holes an
- * instance is a group. The namespaced IDs are never edited; `ownerOf` maps one back to its instance.
+ * namespaced IDs (`instance_4/box_2`): rendering, picking, the marquee and holes run on that. Definition cut tags
+ * are local to each placement; external tags come from its host. `ownerOf` maps a part back to its instance.
  *
  * An array (plan 10 §4) expands into its items, each an instance expanded the same way (`array_3/7`, its shapes
- * `array_3/7/box_2`), in the array's own place in the tree: the array adds no level, so for holes its items are
- * instances placed where the array is.
+ * `array_3/7/box_2`), in the array's own place in the tree. External cut tags come from the array and its per-part bindings.
  */
 
 let definitions = new Map<string, SceneNode[]>();
@@ -81,7 +80,10 @@ export function expandInstance(inst: Instance): SceneNode[] {
             ? ({ ...scaled, ...rotateShape(scaled, { x: 0, z: 0 }, inst.rotation) } as Shape)
             : scaled;
         const placed = { ...turned, ...moveShape(turned, inst.x, inst.y, inst.z) } as Shape;
-        return { ...placed, id: ns(n.id), parent };
+        // Definition tags are local to this placement; scene tags are independent of its parent.
+        const internal = "cutTags" in placed ? placed.cutTags?.map((t) => `${inst.id}:${t}`) ?? [] : [];
+        const external = [...(inst.cutTags ?? []), ...(inst.cutTagParts?.[n.id] ?? [])];
+        return { ...placed, id: ns(n.id), parent, ...((internal.length || external.length) ? { cutTags: [...new Set([...internal, ...external])] } : {}) };
       })
     : [
         {
@@ -120,6 +122,8 @@ export const itemInstance = (array: ArrayNode, item: ReturnType<typeof arrayItem
   id: `${array.id}/${item.index}`,
   type: "instance",
   entity: item.entity,
+  ...(array.cutTags ? { cutTags: array.cutTags } : {}),
+  ...(array.cutTagParts ? { cutTagParts: Object.fromEntries(Object.entries(array.cutTagParts).filter(([key]) => key.startsWith(`${item.index}/`)).map(([key, tags]) => [key.slice(key.indexOf("/") + 1), tags])) } : {}),
   ...(array.parent !== undefined ? { parent: array.parent } : {}),
   x: item.x,
   y: item.y,
@@ -140,7 +144,7 @@ export function expandArray(array: ArrayNode): SceneNode[] {
   return expanded;
 }
 
-/** An entity's definition as its instances hold it: the top level in a group, so its top-level holes cut there. */
+/** An entity's definition under a synthetic root, matching its expanded tree for bounds and migration. */
 const ENTITY_ROOT = "entity:root";
 export const inEntityRoot = (nodes: SceneNode[]): SceneNode[] => [
   { id: ENTITY_ROOT, type: "group", createdBy: "human" },

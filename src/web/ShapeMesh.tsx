@@ -1,8 +1,8 @@
 import { memo, useEffect, useMemo } from "react";
 import * as THREE from "three";
-import { drawMesh, toBufferGeometry, uvOffset } from "../shared/bake";
-import { cutParts } from "../shared/csg";
-import { localFootprint, shapeFrame, wallOf } from "../shared/geometry";
+import { meshFrame, shapeGeometryKey } from "./geometryWork";
+import { useGeometryBuffers, usePreparedGeometry } from "./usePreparedGeometry";
+import { boundsOf } from "../shared/geometry";
 import { PALETTE, type ClosedShape, type ShapeColor, type Solid } from "../shared/scene.types";
 import { useManifold } from "./csg";
 import { VIEW_ACCENT } from "../ui/viewColors";
@@ -80,6 +80,22 @@ function ghostMaterial(color: ShapeColor, highlight: "hover" | "selected" | unde
 }
 export const getShared = () => (shared ??= createShared());
 
+const unitBox = new THREE.BoxGeometry();
+const previewEdges = new THREE.EdgesGeometry(unitBox);
+unitBox.dispose();
+
+function PendingOutline({ shape }: { shape: Solid }) {
+  const b = useMemo(() => boundsOf([shape]), [shape]);
+  if (!Number.isFinite(b.minX + b.minY + b.minZ)) return null;
+  return <lineSegments
+    geometry={previewEdges}
+    material={getShared().draftEdge}
+    position={[(b.minX + b.maxX) / 2, (b.minY + b.maxY) / 2, (b.minZ + b.maxZ) / 2]}
+    scale={[b.maxX - b.minX, b.maxY - b.minY, b.maxZ - b.minZ]}
+    renderOrder={3}
+  />;
+}
+
 type ColorMaterials = Record<
   "body" | "floor" | "bodySelected" | "floorSelected" | "bodyHover" | "floorHover",
   THREE.MeshLambertMaterial
@@ -118,7 +134,7 @@ export function colorMaterials(color: ShapeColor): ColorMaterials {
  */
 export const ShapeMesh = memo(function ShapeMesh({ shape, draft = false, highlight, cuts, walkable = true, authoring = false, overlay = false }: Props) {
   const { kind, color } = shape;
-  const { solid, floor, edges, frame, y, height, tilt } = useShapeGeometry(shape, cuts);
+  const { solid, floor, edges, frame, y, height, tilt, pending } = useShapeGeometry(shape, cuts, !draft);
   const hole = (kind === "hole" || authoring) && !draft;
 
   const s = getShared();
@@ -127,7 +143,7 @@ export const ShapeMesh = memo(function ShapeMesh({ shape, draft = false, highlig
   const hover = highlight === "hover";
   const bodyMaterial = draft ? s.draft : hole ? ghostMaterial(color, highlight) : sel ? c.bodySelected : hover ? c.bodyHover : c.body;
   const floorMaterial = draft ? s.draft : sel ? c.floorSelected : hover ? c.floorHover : c.floor;
-  const edgeMaterial = draft
+  const edgeMaterial = draft || pending
     ? s.draftEdge
     : hole
       ? sel
@@ -154,6 +170,7 @@ export const ShapeMesh = memo(function ShapeMesh({ shape, draft = false, highlig
   // Turned around the vertical, then (inside) tilted around the shape's center: roll, then pitch (see `toWorld3`).
   const deg = Math.PI / 180;
   const turn = new THREE.Euler(tilt[0] * deg, frame.rotation * deg, tilt[1] * deg, "YXZ");
+  if (pending && !solid && !floor && highlight) return <PendingOutline shape={shape} />;
   return (
     <group position={[frame.x, y + height / 2, frame.z]} rotation={turn}>
       <group position={[0, -height / 2, 0]}>
@@ -164,10 +181,10 @@ export const ShapeMesh = memo(function ShapeMesh({ shape, draft = false, highlig
             castShadow={!overlay && !draft && !hole}
             receiveShadow={!draft && !hole}
             renderOrder={overlay ? 2 : hole ? 2 : 0}
-            userData={{ walkable: !overlay && walkable && !draft && !hole }}
+            userData={{ walkable: !pending && !overlay && walkable && !draft && !hole }}
           />
         )}
-        {floor && <mesh geometry={floor} material={overlayMaterials?.[1] ?? floorMaterial} renderOrder={overlay ? 2 : 0} receiveShadow={!draft} userData={{ walkable: !overlay && walkable && !draft }} />}
+        {floor && <mesh geometry={floor} material={overlayMaterials?.[1] ?? floorMaterial} renderOrder={overlay ? 2 : 0} receiveShadow={!draft} userData={{ walkable: !pending && !overlay && walkable && !draft }} />}
         {edges && (
           <lineSegments
             key={hole ? "dashed" : "solid"}
@@ -183,52 +200,20 @@ export const ShapeMesh = memo(function ShapeMesh({ shape, draft = false, highlig
   );
 });
 
-/**
- * Where a shape's geometry sits (`useShapeGeometry` builds it in the shape's own frame, from its bottom): turned
- * around the vertical, tilted around its center, as ShapeMesh places it. The instanced arrays (10.5) multiply it by
- * each item's place.
- */
-export function shapeMatrix(shape: Solid): THREE.Matrix4 {
-  const { y, height } = shape.type === "ramp" ? { y: 0, height: 0 } : shape;
-  const frame = shape.type === "ramp" ? { x: 0, z: 0, rotation: 0 } : shapeFrame(shape);
-  const tilt = shape.type === "ramp" ? [0, 0] : [shape.pitch ?? 0, shape.roll ?? 0];
-  const deg = Math.PI / 180;
-  const turn = new THREE.Quaternion().setFromEuler(new THREE.Euler(tilt[0] * deg, frame.rotation * deg, tilt[1] * deg, "YXZ"));
-  const outer = new THREE.Matrix4().compose(new THREE.Vector3(frame.x, y + height / 2, frame.z), turn, new THREE.Vector3(1, 1, 1));
-  return outer.multiply(new THREE.Matrix4().makeTranslation(0, -height / 2, 0));
-}
+export { shapeMatrix } from "./geometryWork";
 
-/**
- * A shape's three.js geometry (its body, a room's floor, the body's edges), in its own frame from its bottom, minus
- * the holes that cut it: rebuilt only when what it's made from changes, and cut again when a hole that cuts it
- * changes. Disposed when replaced. ShapeMesh draws it; the instanced arrays (10.5) draw one per entity part.
- */
-export function useShapeGeometry(shape: Solid, cuts?: ClosedShape[]) {
-  const { kind } = shape;
-  // A ramp's mesh is in world coordinates (its frame is the world's, at height 0).
-  const { y, height } = shape.type === "ramp" ? { y: 0, height: 0 } : shape;
-  const frame = shape.type === "ramp" ? { x: 0, z: 0, rotation: 0 } : shapeFrame(shape);
-  const [ox, oz] = uvOffset(shape);
-  const ready = useManifold();
-  // Geometry is rebuilt only when what it's made from changes (the shape is a new object every render), and cut
-  // again when a hole that cuts it changes (its position, the target's tilt and turn included).
-  const key =
-    shape.type === "ramp"
-      ? JSON.stringify([kind, shape.points, shape.width, shape.step, shape.base])
-      : JSON.stringify([kind, localFootprint(shape), height, ox, y, oz, kind === "room" ? wallOf(shape) : 0, shape.taper, shape.bevel]);
-  const tilt = shape.type === "ramp" ? [0, 0] : [shape.pitch ?? 0, shape.roll ?? 0];
-  const cutKey = cuts && cuts.length > 0 && ready ? JSON.stringify([cuts, frame, tilt]) : "";
-
-  // An outline with no area (a stored shape is never one, but a preview can be) has no meshes: nothing to draw.
-  // Rooms too narrow to have an inside come out as solid blocks (walls with no inner ring).
-  const parts = useMemo(() => cutParts(shape, cutKey ? cuts : undefined), [key, cutKey]);
-  const solid = useMemo(() => (parts.body ? toBufferGeometry(drawMesh(parts.body, ox, y, oz, true)) : null), [parts]);
-  const floor = useMemo(() => (parts.floor ? toBufferGeometry(drawMesh(parts.floor, ox, y, oz, false)) : null), [parts]);
-
-  const edges = useMemo(() => (solid ? new THREE.EdgesGeometry(solid, 15) : null), [solid]);
-
-  useEffect(() => () => solid?.dispose(), [solid]);
-  useEffect(() => () => floor?.dispose(), [floor]);
-  useEffect(() => () => edges?.dispose(), [edges]);
-  return { solid, floor, edges, frame, y, height, tilt };
+/** Exact local geometry, with the last committed mesh available while a newer worker preview is pending. */
+export function useShapeGeometry(shape: Solid, cuts?: ClosedShape[], allowWorker = true) {
+  const hasCuts = !!cuts?.length;
+  const manifold = useManifold(hasCuts);
+  const uncutKey = shapeGeometryKey(shape);
+  const key = hasCuts ? shapeGeometryKey(shape, cuts) : uncutKey;
+  const expensive = hasCuts || shape.type === "freeform" || shape.type === "ramp"
+    || (shape.type === "cylinder" && (!!shape.bevel || !!shape.taper));
+  const { data, previous, pending } = usePreparedGeometry(
+    `shape:${key}`, { kind: "shape", shape, cuts }, allowWorker && expensive,
+    `shape:${manifold ? key : uncutKey}`, { kind: "shape", shape, cuts: manifold ? cuts : undefined },
+  );
+  const buffers = useGeometryBuffers(data ?? previous);
+  return { ...buffers, ...meshFrame(shape), pending };
 }

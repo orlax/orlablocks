@@ -1,5 +1,7 @@
 # Editor performance measurements — 17.1
 
+See **Castle v2 — static batches and geometry worker** below for the November 17 results.
+
 ## Reproduction and scope
 
 Use only a spare server with its own scratch `DATA_DIR`. No main scene files are read or edited. `scripts/performance-fixture.mjs <port> [small|mixed]` creates a fresh project through the existing WebSocket/MCP APIs. The mixed baseline is a **synthetic grid**, not the castle or the complete later batching acceptance fixture: 400 shapes, 58 rooms, 342 volumes, 80 sixteen-sided cylinders, no entities/holes/terrain. Small has eight shapes from the same recipe. Terrain fixtures remain in `scripts/check-16.mjs` and `scripts/terrain-fixture.ts`.
@@ -209,3 +211,51 @@ Curved-ramp point editing exposed a pre-existing `sampleEdge3` bug: flat `{x,z}`
 Removed all temporary application imports, wrappers, adapter and outer Profiler before final checks. **577 tests / 47 files pass**, typecheck and production web build pass; only existing manifold externalization/chunk-size warnings remain. Application diff whitespace checks pass. Scratch servers/production-preview listener are stopped afterwards; the existing main development server remains available.
 
 Remaining limitations: Orlando's own smoothness/visual acceptance, native pointer-lock/full castle traversal, real background-tab behavior, detailed browser/GPU traces, a full first-edit latency distribution and repeated resource-count audits are not claimed. The broader renderer batching/culling/material/resource matrix remains required for 17.3–17.5. The measured 17.2 exit—lower interaction overhead with tested edit/capture invalidation—is achieved without changing quality or authored data.
+
+## Castle v2 — static batches and geometry worker (2026-11-17)
+
+The baseline was the dirty tree at `d385d71` after the ordinary instancing and cut-graph work. Copied the user-authorized Adventure in Henders Castle project as a directory into a fresh scratch `DATA_DIR`. Opened the display scene **castle v2**, stored as `castle-copy`, through WebSocket. The migration dry run found it already converted. All fixture setup, edits and undo ran on scratch port 5184 through the editor protocol. The scene contains 308 authored nodes, 1,252 drawn shapes and 37 cut targets.
+
+Use the production builds with the temporary phase 17 harness, `?profile&castle&reference=castle-17.1&quality=default`, Headless Chrome 157, 1280 × 822 canvas, DPR 1, stats and shadows on. The reference camera uses focus (5.45, −61.7), yaw 135.46° and distance 276.86 m. The harness runs three trials each for rotation, pan, zoom, hover and Walk and discards the first second of each trial. The comparison below uses the median of the trial results.
+
+| SwiftShader route | Draw calls before → after | CPU render median before → after | Frame interval p95 before → after |
+| --- | ---: | ---: | ---: |
+| Rotation | 1,132 → 866 | 3.1 → 2.4 ms | 180.4 → 183.7 ms |
+| Pan | 1,129 → 863 | 3.2 → 2.3 ms | 179.5 → 183.3 ms |
+| Zoom | 1,131 → 865 | 3.2 → 2.3 ms | 182.8 → 174.9 ms |
+| Hover | 1,134 → 870 | 3.3 → 2.4 ms | 185.0 → 181.5 ms |
+| Walk | 62 → 56 | 0.7 → 0.6 ms | 44.4 → 48.4 ms |
+
+At the reference camera, 1,131 → 865 draws and 827 → 649 renderer geometries. Both runs returned to zero idle frames. SwiftShader frame pacing varied by route. The 800 × 600 fixed-camera captures differed by a mean of 0.00133 RGB levels per channel, with 9 of 480,000 pixels differing by more than 12 levels in any channel.
+
+**Mixed control.** Create a centered 20 × 20 grid with 4 m spacing, 400 shapes. For zero-based row-major index `i`, columns 3 and 7 are ramps and concave freeforms. The other cells contain 2.7 m wide and deep boxes or smooth cylinders (cylinders when `i % 5 === 0`), with height `2 + i % 4` and a room when `i % 7 === 0`. Use brown when `i % 4 === 0` and gray otherwise. At the default editor camera with SwiftShader, the empty scene took 5 draws in both builds and the mixed scene took **1,005 → 82**, exceeding the 50% draw-call reduction gate. The stats readout reported roughly 52k → 60k submitted triangles because culling works per batch. Single-window CPU render estimates were 4.6 → 3.2 ms.
+
+**Worker isolation.** In the same production build, compare normal workers against a separate browser session with `window.Worker` disabled before launch. In the copied castle, raise the 11 visible authored cutters with live targets by 0.35 m in one editor update, then undo. Repeat five times with increments of 0.01 m to avoid reusing the moved signatures. A temporary probe sums synchronous geometry preparation time in the browser. Median move cost on the main thread was **37.5 → 1.6 ms**, with 16 jobs posted on each worker move. The worker's busy status cleared 87.5–105 ms after the test began sending the edit (median 95.2 ms). This includes scheduling and the edit round trip and does not measure the exact result's painted frame. Neither mode emitted a 50 ms long task in this edit probe. Draw calls, geometry count and texture count returned to the same levels through five move/undo cycles. Three individual moves plus undo of the castle hole `box_97` and volume `box_80` also completed in the route builds.
+
+### Metal verification
+
+Repeated the same three-trial routes on the Apple M1 Max GPU with Chrome's ANGLE Metal backend. The median frame interval was 16.7 ms on every route in both builds. The table shows the median of each route's trial p95 frame interval and median CPU renderer time.
+
+| Metal route | Frame interval p95 before → after | CPU render median before → after | Draw calls before → after |
+| --- | ---: | ---: | ---: |
+| Rotation | 21.5 → 21.3 ms | 2.9 → 2.3 ms | 1,102 → 845 |
+| Pan | 20.7 → 20.5 ms | 2.9 → 2.3 ms | 1,130 → 864 |
+| Zoom | 20.7 → 20.5 ms | 2.9 → 2.3 ms | 1,129 → 863 |
+| Hover | 17.4 → 17.5 ms | 3.1 → 2.5 ms | 1,134 → 870 |
+| Walk | 24.8 → 18.4 ms | 0.8 → 0.6 ms | 62 → 56 |
+
+Both runs returned to zero idle frames. Metal fixed-camera captures had a mean absolute difference of 0.0021 RGB levels per channel, with 17 of 480,000 pixels differing by more than 12 levels in any channel. Capture parity was verified independently from the live worker preview. Real pointer-lock play and extended cross-document GPU memory measurement remain manual acceptance.
+
+### Live held-A diagnosis — 2026-11-17
+
+The in-app browser reproduced the hitch while holding A on the live development editor at port 5170. Its readout reached 20 FPS with a 49.7 ms mean interval, 30 of 70 slow frames and 2.6 ms of CPU renderer time. Repeated the route in temporary diagnostic builds fed the same scene by a WebSocket proxy that drops all browser-to-server messages. It starts each trial at saved focus (0.32, 21.07), yaw 37.24° and distance 539.64 m. Chrome 157 in-app browser, 1280 × 692 canvas, DPR 1, stats off. The harness calls the same A key handlers for 3.7 s per trial and discards the first second.
+
+| Development condition | Mean interval | p95 interval | Draw calls |
+| --- | ---: | ---: | ---: |
+| Default | 43.3 ms | 178.2 ms | 856 |
+| Shadows off | 41.5 ms | 177.7 ms | 676 |
+| Camera reports to React skipped | 16.7 ms | 17.6 ms | 856 |
+
+Values are medians of three trials. The forced DPR 1 control did not change the render resolution. Default React Profiler trial p95 render durations were 157.6–173.3 ms. Skipping the application callback gave zero frames at or above 33.3 ms across all three trials, versus 21–22 per default trial. The renderer still drew the same 856 calls in the callback-skip test. The warmed development route showed no cutter/expansion/instancing recomputation in the instrumented sections. `CameraRig` reports at most every 100 ms, and `App` puts both view and camera into top-level React state. This test isolates synchronous report-side work in the browser. Upstream server persistence is excluded by the proxy. A subtree profile would be needed to assign the React cost to individual panels.
+
+The production frontend in the same browser, with the same camera, canvas, live snapshots and shadows enabled, averaged 16.7 ms with a 25.3 ms p95 and 856 draws. Setting render pixel ratio to 0.75 gave the same 16.7 ms mean and 25.3 ms p95. Both production conditions recorded zero frames at or above 33.3 ms across three trials.

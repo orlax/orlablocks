@@ -15,8 +15,8 @@ function hall(door: boolean) {
   s.drawShapes(
     [
       { type: "group", ref: "hall" },
-      { kind: "room", x: 0, z: 0, width: 10, depth: 10, height: 4, parent: "$hall" },
-      ...(door ? [{ kind: "hole" as const, x: 0, z: 5, width: 3, depth: 1, height: 3.5, parent: "$hall" }] : []),
+      { kind: "room", cutTags: ["hall"], x: 0, z: 0, width: 10, depth: 10, height: 4, parent: "$hall" },
+      ...(door ? [{ kind: "hole" as const, cutTags: ["hall"], x: 0, z: 5, width: 3, depth: 1, height: 3.5, parent: "$hall" }] : []),
       { kind: "volume", x: 0, z: -2, width: 1, depth: 1, height: 1.5, name: "relic", ref: "relic" },
     ],
     "agent",

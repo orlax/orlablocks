@@ -1,5 +1,6 @@
+import { wallSupportProblem } from "../shared/wallAttachment";
 import { arrayLayout } from "../shared/arrays";
-import { allDefinitions, arrayItemInstance, entityMiddle, expandShapes, instanceShapes } from "../shared/entities";
+import { allDefinitions, arrayItemInstance, entityMiddle, expandShapes, expandNodes, ownerOf, instanceShapes } from "../shared/entities";
 import { boundsOf, isSolid, round2 } from "../shared/geometry";
 import { holeWarnings, isHole } from "../shared/holes";
 import { surfaceUnder } from "../shared/ray";
@@ -12,7 +13,7 @@ import { isGroup, isShape, subtreeIds } from "../shared/tree";
  * nothing, and the same node twice in the same place.
  */
 
-export const LINT_CHECKS = ["floating", "stale_notes", "off_center", "holes", "duplicates"] as const;
+export const LINT_CHECKS = ["attachments", "floating", "stale_notes", "off_center", "holes", "duplicates"] as const;
 export type LintCheck = (typeof LINT_CHECKS)[number];
 export type Finding = { check: LintCheck; id: string; message: string; at?: { x: number; y: number; z: number } };
 
@@ -36,6 +37,12 @@ export function lintScene(nodes: SceneNode[], opts: { root?: string; checks?: Li
   };
   const allowed = new Set(opts.floats ?? []);
 
+  if (checks.has("attachments")) {
+    for (const n of scoped) if (n.type === "instance" && n.wallAttachment) {
+      const problem = wallSupportProblem(nodes, n);
+      if (problem) add({ check: "attachments", id: n.id, message: `${n.id}: ${problem}`, at: { x: n.x, y: n.y, z: n.z } });
+    }
+  }
   if (checks.has("floating")) {
     const solids = expandShapes(nodes.filter(isShape)).filter((s) => isSolid(s) && !isHole(s));
     /** How far a thing's bottom is above the highest surface under a point (the ground at worst), leaving its own shapes out. */
@@ -47,7 +54,7 @@ export function lintScene(nodes: SceneNode[], opts: { root?: string; checks?: Li
     };
     for (const n of scoped) {
       if (allowed.has(n.id)) continue;
-      if (n.type === "instance" && !n.on) {
+      if (n.type === "instance" && !n.on && !(n.wallAttachment && !wallSupportProblem(nodes, n))) {
         const shapes = instanceShapes(n);
         if (shapes.length === 0) continue;
         const g = gapUnder(shapes, n.x, n.z);
@@ -99,9 +106,9 @@ export function lintScene(nodes: SceneNode[], opts: { root?: string; checks?: Li
   }
 
   if (checks.has("holes")) {
-    for (const w of holeWarnings(nodes)) {
+    for (const w of holeWarnings(expandNodes(nodes))) {
       const id = /^(\S+)/.exec(w)?.[1] ?? "";
-      if (!inRoot || inRoot.has(id)) add({ check: "holes", id, message: w });
+      if (!inRoot || inRoot.has(ownerOf(id))) add({ check: "holes", id, message: w });
     }
   }
 

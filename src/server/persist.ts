@@ -295,7 +295,7 @@ export function openDataDir(root: string) {
       const id = freeSlug(scenesDir(project), slugify(name, "scene"));
       fs.mkdirSync(path.join(scenesDir(project), id), { recursive: true });
       const file: SceneFile = { name, createdAt: new Date().toISOString(), seq: 0, nextId: firstIds(), nodes: [] };
-      writeJson(sceneFile(project, id), file);
+      writeJson(sceneFile(project, id), { ...file, cutVersion: 1 });
       return id;
     },
 
@@ -321,7 +321,7 @@ export function openDataDir(root: string) {
     },
 
     writeScene(project: string, scene: string, file: SceneFile): void {
-      writeJson(sceneFile(project, scene), file);
+      writeJson(sceneFile(project, scene), { ...file, cutVersion: 1 });
     },
 
     /** The scene's `editor.json`, or null if it has none. Throws if it doesn't load. */
@@ -392,12 +392,12 @@ export function openDataDir(root: string) {
       fs.mkdirSync(entitiesDir(project), { recursive: true });
       const id = freeSlug(entitiesDir(project), slugify(name, "entity"));
       fs.mkdirSync(path.join(entitiesDir(project), id));
-      writeJson(entityFile(project, id), file);
+      writeJson(entityFile(project, id), { ...file, cutVersion: 1 });
       return id;
     },
 
     writeEntity(project: string, entity: string, file: EntityFile): void {
-      writeJson(entityFile(project, entity), file);
+      writeJson(entityFile(project, entity), { ...file, cutVersion: 1 });
     },
 
     readEntity(project: string, entity: string): EntityFile {

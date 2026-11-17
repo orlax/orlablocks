@@ -40,7 +40,7 @@ import { checkSight } from "../shared/sight";
 import { checkEnclosure } from "../shared/enclosure";
 import { measurePath } from "../shared/measure";
 import { LINT_CHECKS, lintScene } from "./lint";
-import { expandShapes } from "../shared/entities";
+import { expandShapes, expandNodes } from "../shared/entities";
 import { surfaceAt, topOf } from "../shared/surfaces";
 import { SceneError } from "./scene";
 import type { Workspace } from "./workspace";
@@ -146,15 +146,15 @@ function buildServer(workspace: Workspace, renders: RenderBroker, exports: Expor
             ]
           : [],
     );
-    // In an entity's definition a top-level hole is fine: every instance puts it in a group.
-    const holes = store().getDocument() === "entity" ? [] : holeWarnings(nodes).map(withTopic);
+    // Definition-local tags allow top-level holes; no hierarchy requirement.
+    const holes = holeWarnings(expandNodes(nodes)).slice(0, 25).map(withTopic);
     const warnings = [...own, ...holes, ...missing];
     return warnings.length > 0 ? { ...result, warnings } : result;
   };
   /** Runs an edit tool's body for real, or as a dry run (14.2): the same result, marked, with nothing changed. */
   const edit = <T extends object>(dryRun: boolean | undefined, run: () => T) =>
     dryRun ? { dryRun: "nothing was changed: this is what the call would do", ...store().dryRun(run) } : run();
-  const server = new McpServer({ name: "orlablocks", version: "0.0.47" }, { instructions: INSTRUCTIONS });
+  const server = new McpServer({ name: "orlablocks", version: "0.0.50" }, { instructions: INSTRUCTIONS });
   // Every tool reads or edits the open scene, and fails with a clear message while nothing is open.
   // The agent's scene (14.5): its own while the human is in another one, else the human's open document.
   const store = () => workspace.requireAgentScene();
@@ -232,7 +232,7 @@ function buildServer(workspace: Workspace, renders: RenderBroker, exports: Expor
             about:
               "The human is editing this ENTITY's definition, not a scene: the nodes are its shapes around its pivot (the " +
               "origin, its bottom center: keep its bottom at y = 0), and every change reaches every instance of it. Notes " +
-              "and instances can't go in it, and a hole at its top level is fine (each instance is a group). Its name, " +
+              "and instances can't go in it, and a hole at its top level is fine (use definition-local cutTags for internal cuts). Its name, " +
               "description and tags change with update_library { entities }. The human goes back to the scene in the editor.",
           },
           ...outline,
@@ -431,13 +431,15 @@ function buildServer(workspace: Workspace, renders: RenderBroker, exports: Expor
         `Set \`parent\` to a group's ID to draw straight into that group. ` +
         `ONE BATCH, ONE CALL: give an entry a \`ref\` ("chamber") and later entries use "$chamber" where an ID goes (parent, ` +
         `layout.along.id), so a line and the array that follows it, or a group (type: group, with name, description, tags) ` +
-        `and everything in it, arrive in one call: a door hole drawn into the room's group cuts it from the start. A ref ` +
+        `and everything in it, arrive in one call: a door hole and room with matching cutTags cut from the start, independent of grouping. A ref ` +
         `only names entries before it; the result maps each ref to its ID. ` +
         `STANDING ON: an instance or array with on: { id } stands on that node's walking surface (instead of y), kept up to ` +
         `date; an array on an array stands item on item. THROUGH: a line with through: { stops, style?, apex? } instead ` +
         `of points goes through its stops (node IDs, items array_3/5, array_3/* for all of them, array_3/2..6), each the ` +
         `center of its walking surface, as jump arcs (the default) or straight, kept up to date: the critical path. ` +
         `Circle/spiral angles run CCW from east (90 = north): x = cx + r*cos(theta), z = cz - r*sin(theta). ` +
+        `POLAR: boxes/cylinders/instances can replace x/y/z/rotation with polar: { around, radius, angle, elevation?, facing?: in/out/tangent, rotationOffset? }; resolves once around an upright smooth circular cylinder, including earlier $refs. ` +
+        `WALL ATTACHMENT: ordinary instances can instead give wallAttachment: { id, side: inner/outer, angle, elevation, offset, facingOffset } on an upright smooth circular room cylinder, kept live; get_guide entities details support and copying rules. ` +
         `Instance local +x faces outward at theta, inward at (theta + 180) % 360; prefer rotation: { toward: { x, z } }. ` +
         `The batch is all-or-nothing: if any shape is invalid, nothing is drawn and the error says which one. ` +
         `The result is compact: each new node's id, type, kind, name, parent and bounds (a count instead of points; an array's layout, item count and range of tops, with items: true its item lines). dry_run: true checks the batch and returns this result, and every error, drawing nothing.`,
@@ -475,6 +477,7 @@ function buildServer(workspace: Workspace, renders: RenderBroker, exports: Expor
       title: "Update nodes",
       description:
         `Change existing nodes by ID in a single batch; changes appear live in the editor. ` +
+        `Boxes/cylinders/instances accept one-shot polar: { around, radius, angle, elevation?, facing?, rotationOffset? } instead of absolute x/y/z/rotation. Ordinary instances accept persistent wallAttachment: { id, side, angle, elevation, offset, facingOffset }; null detaches at the current pose. Cannot combine wallAttachment with on or absolute pose fields. Pose edits to mounts change parameters where representable; detach before tilting. See get_guide entities. ` +
         `A box takes any of: name, parent, kind, x, z, y, width, depth, height, rotation, color, wall (a room's; null = the default), ` +
         `floor (rooms, default true; false leaves walls only), taper (-1 bottom point to +1 top point) and bevel (a volume's; 0 clears them), pitch and roll (a box or cylinder volume's; 0 levels it); ` +
         `a cylinder those and sides and arc (smooth circular rooms only; null clears it); a free-form name, parent, kind, y, height, color, wall, taper, bevel and points (the whole outline); a line name, parent, color, ` +
@@ -825,7 +828,7 @@ function buildServer(workspace: Workspace, renders: RenderBroker, exports: Expor
       title: "Check scene",
       description:
         "A LINT pass over the scene (or `root`'s part of it), in text, changing nothing: likely mistakes, each with the ID " +
-        "to fix. floating: an instance (or some of an array's items) more than 0.5 m above whatever is under it, not " +
+        "to fix. attachments: missing, unsupported or distant wall mounts (last pose retained); floating: an instance (or some of an array's items) more than 0.5 m above whatever is under it, not " +
         "standing on it (a y typo; pass `floats` for things that float on purpose); stale_notes: an open note naming a " +
         "node or item that's gone; off_center: an entity in use built off its pivot or its bottom off y 0; holes: holes " +
         "that cut nothing; duplicates: the same node twice in the same place. Run it after big batches and at the end of " +

@@ -8,7 +8,8 @@ s=p.read_text()
 profiled = ['cutters', 'expandNodes', 'expandShapes', 'splitInstanced']
 for name in profiled:
  s=s.replace(name+' as unprofiled_'+name, name)
-s=s.replace('const floor = measureSection("walk-floor-ray", () => floorAt(scene, pose.feet));', 'const floor = floorAt(scene, pose.feet);')
+s=s.replace('const floor = measureSection("walk-floor-ray", () => floorAt(scene, raycaster, pose.feet));', 'const floor = floorAt(scene, raycaster, pose.feet);')
+s=s.replace('return measureSection("incremental-cuts", () => cutGraph.update(cutList));', 'return cutGraph.update(cutList);')
 s=s.replace('      recordStatsFrame(pacing.snapshot(), capture.epoch, eligible);\n', '')
 start='// BEGIN TEMPORARY PERFORMANCE HARNESS\n'
 end='// END TEMPORARY PERFORMANCE HARNESS\n'
@@ -20,7 +21,8 @@ if 'remove' not in sys.argv:
   s=s.replace('{ '+name+',', '{ '+name+' as unprofiled_'+name+',').replace(', '+name+',', ', '+name+' as unprofiled_'+name+',').replace('{ '+name+' }', '{ '+name+' as unprofiled_'+name+' }')
  wrappers=''.join('const '+name+': typeof unprofiled_'+name+' = (...args) => measureSection("'+name+'", () => unprofiled_'+name+'(...args));\n' for name in profiled)
  s=start+'import { PerformanceHarness, measureSection, recordStatsFrame } from "../../scripts/performance-harness";\n'+wrappers+end+s
- s=s.replace('const floor = floorAt(scene, pose.feet);', 'const floor = measureSection("walk-floor-ray", () => floorAt(scene, pose.feet));')
+ s=s.replace('const floor = floorAt(scene, raycaster, pose.feet);', 'const floor = measureSection("walk-floor-ray", () => floorAt(scene, raycaster, pose.feet));')
+ s=s.replace('return cutGraph.update(cutList);', 'return measureSection("incremental-cuts", () => cutGraph.update(cutList));')
  s=s.replace('      pacing.frame(t0, eligible && isActive.current(), inputEpoch.current);', '      pacing.frame(t0, eligible && isActive.current(), inputEpoch.current);\n      recordStatsFrame(pacing.snapshot(), capture.epoch, eligible);')
  block='''  const profileBaseline = useRef<CameraState | null>(null);
   const profileOriginal = useRef<CameraState | null>(null);

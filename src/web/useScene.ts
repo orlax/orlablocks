@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { NO_USES, type Library, type Uses } from "../shared/library";
 import { setDefinitions } from "../shared/entities";
+import { reconcileScene } from "./reconcileScene";
 import {
   DEFAULT_PLAYER,
   type AgentInfo,
@@ -58,6 +59,7 @@ export function useScene(renderer?: { current: RenderHandler | null }) {
     let retry: ReturnType<typeof setTimeout>;
 
     const connect = () => {
+      let previous: Scene | null = null;
       const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
       wsRef.current = ws;
       ws.onopen = () => {
@@ -71,13 +73,15 @@ export function useScene(renderer?: { current: RenderHandler | null }) {
       ws.onmessage = (event) => {
         const msg = JSON.parse(event.data) as ServerMessage;
         if (msg.type === "scene") {
-          setScene(msg.scene);
+          previous = reconcileScene(previous, msg.scene);
+          setScene(previous);
           setHistory(msg.history);
           setSeq(msg.seq ?? 0);
           setError(null);
         } else if (msg.type === "projects") {
           setProjects(msg.projects);
         } else if (msg.type === "opened") {
+          previous = null;
           setOpen(msg.open);
           if (msg.restore) setRestore({ ...msg.restore });
           setError(null);

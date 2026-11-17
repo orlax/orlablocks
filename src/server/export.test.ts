@@ -114,8 +114,8 @@ describe("the Unity export", () => {
     const array: ArrayNode = { id: "array_1", type: "array", entities: [{ entity: "pillar" }], layout: { type: "path", points: [{ x: 20, y: 0, z: 0 }, { x: 26, y: 0, z: 0 }], place: "count", count: 3 }, createdBy: "human" };
     const nodes: SceneNode[] = [
       group("g"),
-      box("hole_1", { kind: "hole", parent: "g", x: 0, z: 0, width: 3, depth: 0.4, height: 1 }),
-      inst("instance_1", { rotation: 90, scale: 2 }),
+      box("hole_1", { kind: "hole", cutTags: ["pillar"], parent: "g", x: 0, z: 0, width: 3, depth: 0.4, height: 1 }),
+      inst("instance_1", { rotation: 90, scale: 2, cutTags: ["pillar"] }),
       inst("instance_2", { x: 8 }),
       array,
     ];

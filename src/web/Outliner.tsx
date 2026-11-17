@@ -22,7 +22,7 @@ import {
   Waypoints,
 } from "lucide-react";
 import { arrayItems } from "../shared/arrays";
-import { isHole } from "../shared/holes";
+import { isHole, terrainHoleOwner } from "../shared/holes";
 import { Stairs } from "./icons";
 import type { SceneNode } from "../shared/scene.types";
 import { ancestry, childrenOf, hiddenIds, isGroup, lockedIds, subtreeIds } from "../shared/tree";
@@ -358,8 +358,8 @@ export function Outliner({
                     <span className={node.type === "note" && node.status === "done" ? "label done" : "label"} title={node.type === "group" ? node.description : node.type === "note" ? node.text : undefined}>
                       {labelOf(node, entityNames)}
                     </span>
-                    {isHole(node) && node.parent === undefined && !entityMode && (
-                      <span className="warn" title="Not in a group: this hole cuts nothing">
+                    {isHole(node) && !node.cutTags?.length && !terrainHoleOwner(nodes, node) && (
+                      <span className="warn" title="No cut tags: this hole cuts nothing">
                         <TriangleAlert size={12} />
                       </span>
                     )}

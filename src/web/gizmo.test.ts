@@ -406,10 +406,10 @@ describe("profile knobs", () => {
     expect(hitGizmo(cam, size, p.sx, p.sy, anchorOf(hall), ["height", ...SCALE_PARTS, "wall"], [hall])).toBe("wall");
   });
 
-  it("the taper knob slides toward the center on the top, in 0.05 steps, 0 to 1", () => {
+  it("the taper knob slides toward the center on the top, in 0.05 steps, -1 to 1", () => {
     expect(pull(hill, "taper", { x: 1.02, y: 2, z: 0.3 })).toEqual({ taper: 0.5 });
     expect(pull(hill, "taper", { x: -3, y: 2, z: 0 })).toEqual({ taper: 1 });
-    expect(pull({ ...hill, taper: 0.5 }, "taper", { x: 5, y: 2, z: 0 })).toEqual({ taper: 0 });
+    expect(pull({ ...hill, taper: 0.5 }, "taper", { x: 5, y: 2, z: 0 })).toEqual({ taper: -1 });
   });
 
   it("the bevel knob slides down the side: the radius as a fraction of the largest it can be", () => {

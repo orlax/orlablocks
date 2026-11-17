@@ -1,3 +1,5 @@
+import { polarPose, wallPose, wallFromPose, wallSurfaceProblem } from "../shared/wallAttachment";
+import { holeScope, isHole } from "../shared/holes";
 import { terrainProblems, isTerrainSource, terrainSources, terrainInputIds } from "../shared/terrain";
 import type { z } from "zod";
 import {
@@ -8,6 +10,7 @@ import {
   mirrorAcross,
   moveShape,
   isClosed,
+  isSolid,
   isTilted,
   normalizeDeg,
   lineProblem,
@@ -88,9 +91,9 @@ import {
 } from "../shared/scene.types";
 import { firstIds, type NextId } from "../shared/project.types";
 import { facingRotation, type FacingSpec } from "../shared/facing";
-import { arrayItems, followPath, isFollowing, tidyArrayPatch, withFollowed } from "../shared/arrays";
+import { arraySlopeProblem, arrayItems, followPath, isFollowing, tidyArrayPatch, withFollowed } from "../shared/arrays";
 import { standHeight, standPoses, standProblem, throughPoints } from "../shared/surfaces";
-import { definitionOf, expandInstance } from "../shared/entities";
+import { definitionOf, expandInstance, itemInstance } from "../shared/entities";
 import { shapesUnder, commonParent, copyNodes, copySelection, outlineOrder, isShape, isGroup, subtreeIds, topmost } from "../shared/tree";
 import { applyOp, createHistory, invertOp, runOps, type History, type HistoryEntry, type Op } from "./commands";
 
@@ -108,6 +111,10 @@ function resolveBatchRefs(input: ShapeInput, lookup: (ref: string, where: string
   if ("parent" in out) out.parent = resolve(out.parent, "parent");
   const layout = out.layout as { along?: { id?: unknown } } | undefined;
   if (layout?.along?.id !== undefined) out.layout = { ...layout, along: { ...layout.along, id: resolve(layout.along.id, "layout.along.id") } };
+  const polar = out.polar as { around?: unknown } | undefined;
+  if (polar?.around !== undefined) out.polar = { ...polar, around: resolve(polar.around, "polar.around") };
+  const wall = out.wallAttachment as { id?: unknown } | undefined;
+  if (wall?.id !== undefined) out.wallAttachment = { ...wall, id: resolve(wall.id, "wallAttachment.id") };
   const on = out.on as { id?: unknown } | undefined;
   if (on?.id !== undefined) out.on = { ...on, id: resolve(on.id, "on.id") };
   const through = out.through as { stops?: unknown[] } | undefined;
@@ -177,6 +184,8 @@ const FIELD_VERBS: Record<keyof NodePatch, string> = {
   name: "rename",
   description: "describe",
   tags: "tag",
+  cutTags: "change cut tags of",
+  cutTagParts: "change part cut tags of",
   parent: "regroup",
   kind: "change kind of",
   x: "move",
@@ -214,6 +223,7 @@ const FIELD_VERBS: Record<keyof NodePatch, string> = {
   turnJitter: "jitter",
   seed: "reroll",
   skip: "skip items of",
+  wallAttachment: "attach",
   on: "stand",
   stand: "stand",
   through: "route",
@@ -326,6 +336,29 @@ export function createSceneStore({
     const gone = nodes.flatMap((n) => n.type === "terrain" && n.source && !nodes.some((g) => g.id === n.source) && scene.nodes.some((g) => g.id === n.source)
       ? [{ id: n.id, patch: { source: undefined } }] : []);
     if (gone.length) { const op: Op = { op: "update", changes: gone }; inverse = [invertOp(nodes, op), ...inverse]; nodes = applyOp(nodes, op); all.push(op); }
+    // Explicit pose edits keep mounts and change their parameters; invalid edits require detach.
+    const mountEdits: { id: string; patch: NodePatch }[] = [];
+    const previous = new Map(scene.nodes.map((n) => [n.id, n]));
+    for (const n of nodes) {
+      if (n.type !== "instance" || !n.wallAttachment) continue;
+      if (n.on || n.pitch || n.roll) throw new SceneError(`${n.id}: wallAttachment requires an upright instance with no on placement; detach before tilting or changing support. Nothing changed.`);
+      const old = previous.get(n.id);
+      const attachmentChanged = old?.type !== "instance" || JSON.stringify(old.wallAttachment) !== JSON.stringify(n.wallAttachment);
+      if (attachmentChanged) {
+        const pose = wallPose(nodes, n.wallAttachment);
+        // Added copies may have been transformed with their support after ID remapping.
+        if (!old && ("problem" in pose || Object.entries(pose).some(([k, v]) => n[k as keyof typeof pose] !== v))) {
+          const attachment = wallFromPose(nodes, n.wallAttachment, n);
+          if ("problem" in attachment) throw new SceneError(`${n.id}: ${attachment.problem}. Nothing changed.`);
+          mountEdits.push({ id: n.id, patch: { wallAttachment: attachment } });
+        } else if ("problem" in pose) throw new SceneError(`${n.id}: ${pose.problem}. Nothing changed.`);
+      } else if (old.type === "instance" && ["x", "y", "z", "rotation", "pitch", "roll"].some((k) => (n as unknown as Record<string, unknown>)[k] !== (old as unknown as Record<string, unknown>)[k])) {
+        const attachment = wallFromPose(nodes, n.wallAttachment, n);
+        if ("problem" in attachment) throw new SceneError(`${n.id}: ${attachment.problem}. Nothing changed.`);
+        mountEdits.push({ id: n.id, patch: { wallAttachment: attachment } });
+      }
+    }
+    if (mountEdits.length) { const op: Op = { op: "update", changes: mountEdits }; inverse = [invertOp(nodes, op), ...inverse]; nodes = applyOp(nodes, op); all.push(op); }
     failIf(terrainProblems(nodes), "Nothing was changed.");
     // Arrays that follow a node (10.3) take its path as it is now, in the same step: a follower whose target is
     // gone is unlinked, keeping the path it had.
@@ -378,6 +411,13 @@ export function createSceneStore({
       }
       const next = withFollowed(n, (id) => byIdNow.get(id));
       if (next !== n) patch(n.id, { layout: next.layout });
+    }
+
+    // Wall mounts resolve before floor dependents. Broken supports keep the relation and last pose.
+    for (const n of current) {
+      if (n.type !== "instance" || !n.wallAttachment) continue;
+      const pose = wallPose(current, n.wallAttachment);
+      if (!("problem" in pose) && !wallSurfaceProblem(current, n.wallAttachment) && Object.entries(pose).some(([k, v]) => n[k as keyof typeof pose] !== v)) patch(n.id, pose);
     }
 
     // Standing on.
@@ -434,6 +474,13 @@ export function createSceneStore({
   const relinkCopies = (source: SceneNode[], copies: SceneNode[]): SceneNode[] => {
     const ids = new Map(source.map((n, i) => [n.id, copies[i].id]));
     return copies.map((c) => {
+      if (c.type === "instance" && c.wallAttachment) {
+        const to = ids.get(c.wallAttachment.id);
+        if (to) return { ...c, wallAttachment: { ...c.wallAttachment, id: to } };
+        // A standalone copy/paste preserves the copied world pose, with no external-scene link.
+        const { wallAttachment: _mount, ...detached } = c;
+        return detached;
+      }
       // What stands on a copied node stands on its copy (13.4); on anything else, it stays where it stands.
       if ((c.type === "instance" || c.type === "array") && c.on && ids.has(c.on.id)) return { ...c, on: { id: ids.get(c.on.id)! } };
       // A through line copied with all its stops goes through the copies; else it's unlinked (it keeps its points).
@@ -624,6 +671,7 @@ export function createSceneStore({
         type: "freeform",
         ...(n.name !== undefined ? { name: n.name } : {}),
         ...withTags(n.tags),
+        ...(n.cutTags ? { cutTags: n.cutTags } : {}),
         ...(n.parent !== undefined ? { parent: n.parent } : {}),
         kind: n.kind,
         y: n.y,
@@ -750,6 +798,7 @@ export function createSceneStore({
       if (place === "spacing" && spacing < MIN_ARRAY_SPACING) errors.push(`${prefix}.spacing: ${d.spacing} rounds below ${MIN_ARRAY_SPACING} at 2 decimals`);
       return {
         type: "path",
+        ...(d.slope ? { slope: true as const } : {}),
         points,
         ...(closed ? { closed: true as const } : {}),
         ...(along ? { along } : {}),
@@ -761,6 +810,9 @@ export function createSceneStore({
     if (d.type === "circle") {
       const radius = round2(d.radius);
       if (radius <= 0) errors.push(`${prefix}.radius: ${d.radius} rounds to 0 at 2 decimals`);
+      const place = d.place ?? (d.spacing !== undefined && d.count === undefined ? "spacing" : "count");
+      if (place === "count" && d.count === undefined) errors.push(`${prefix}.count: count mode needs count`);
+      if (place === "spacing" && d.spacing === undefined) errors.push(`${prefix}.spacing: spacing mode needs spacing`);
       const start = turn(d.start);
       const sweep = d.sweep === undefined || round2(d.sweep) >= 360 ? undefined : round2(d.sweep);
       if (sweep !== undefined && sweep <= 0) errors.push(`${prefix}.sweep: ${d.sweep} rounds to 0 at 2 decimals`);
@@ -770,7 +822,7 @@ export function createSceneStore({
         y: round2(d.y ?? 0),
         z: round2(d.z),
         radius,
-        count: d.count,
+        ...(place === "spacing" ? { place: "spacing" as const, spacing: round2(d.spacing ?? 1) } : { count: d.count ?? 1 }),
         ...("value" in start ? { start: start.value } : {}),
         ...(sweep !== undefined ? { sweep } : {}),
         ...(d.rise !== undefined && round2(d.rise) !== 0 ? { rise: round2(d.rise) } : {}),
@@ -835,7 +887,7 @@ export function createSceneStore({
     const { type, ...rest } = change;
     const same = type === undefined || type === node.layout.type;
     const input: Record<string, unknown> = same ? { ...node.layout, ...rest } : { type, ...rest };
-    if (same && node.layout.type === "path" && rest.place === undefined) {
+    if (same && (node.layout.type === "path" || node.layout.type === "circle") && rest.place === undefined) {
       if (rest.count !== undefined) input.place = "count";
       else if (typeof rest.spacing === "number") input.place = "spacing";
     }
@@ -973,6 +1025,16 @@ export function createSceneStore({
         }
         const d = result.data;
         const prefix = `shapes[${i}]`;
+        let instancePose: { x: number; y: number; z: number; rotation: number } | undefined;
+        if (d.type === "instance") {
+          if (d.polar || d.wallAttachment) {
+            if ([d.x, d.y, d.z, d.rotation, d.on].some((v) => v !== undefined) || (d.polar && d.wallAttachment)) errors.push(`${prefix}: polar/wallAttachment conflicts with absolute x/y/z/rotation, on, or each other`);
+            const pose = d.polar ? polarPose(present(), d.polar) : wallPose(present(), d.wallAttachment!);
+            if ("problem" in pose) errors.push(`${prefix}: ${pose.problem}`);
+            else instancePose = pose;
+          } else if (d.x === undefined || d.z === undefined) errors.push(`${prefix}: give x and z, polar, or wallAttachment`);
+          if (d.wallAttachment && (d.pitch || d.roll)) errors.push(`${prefix}: detach before tilting a wall attachment`);
+        }
         if (d.parent !== undefined) {
           const e = parentError(d.parent);
           if (e) errors.push(`${prefix}.parent: ${e}`);
@@ -1008,13 +1070,16 @@ export function createSceneStore({
           if (!entityName(d.entity)) errors.push(`${prefix}.entity: no entity "${d.entity}" in the project library (get_library lists them)`);
           return {
             type: "instance" as const,
+            ...(d.cutTags !== undefined ? { cutTags: d.cutTags } : {}),
+            ...(d.cutTagParts !== undefined ? { cutTagParts: d.cutTagParts } : {}),
             entity: d.entity,
             ...(name ? { name } : {}),
             ...(d.parent !== undefined ? { parent: d.parent } : {}),
-            x: round2(d.x),
-            y: round2(d.y ?? 0),
-            z: round2(d.z),
-            rotation: normalizeRotation(facingOf(prefix, d, errors)),
+            x: instancePose?.x ?? round2(d.x ?? 0),
+            y: instancePose?.y ?? round2(d.y ?? 0),
+            z: instancePose?.z ?? round2(d.z ?? 0),
+            rotation: instancePose?.rotation ?? normalizeRotation(facingOf(prefix, { ...d, x: d.x ?? 0, z: d.z ?? 0 }, errors)),
+            ...(d.wallAttachment ? { wallAttachment: d.wallAttachment } : {}),
             ...scaleField(d.scale),
             ...(angle(d.pitch) !== undefined ? { pitch: angle(d.pitch) } : {}),
             ...(angle(d.roll) !== undefined ? { roll: angle(d.roll) } : {}),
@@ -1038,8 +1103,12 @@ export function createSceneStore({
             errors.push(`${prefix}.layout: give an array a layout (only one standing on another array can go without: it takes that array's)`);
             layout = { type: "circle", x: 0, y: 0, z: 0, radius: 1, count: 1 };
           }
+          const slopeProblem = arraySlopeProblem({ layout, facing: d.facing, on: d.on });
+          if (slopeProblem) errors.push(`${prefix}: ${slopeProblem}`);
           return defined({
             type: "array" as const,
+            ...(d.cutTags !== undefined ? { cutTags: d.cutTags } : {}),
+            ...(d.cutTagParts !== undefined ? { cutTagParts: d.cutTagParts } : {}),
             ...(name ? { name } : {}),
             ...(d.parent !== undefined ? { parent: d.parent } : {}),
             entities,
@@ -1078,6 +1147,7 @@ export function createSceneStore({
           const points = d.spiral ? spiralPoints(d.spiral) : (d.points ?? []);
           return {
             type: "ramp" as const,
+            ...(d.cutTags !== undefined ? { cutTags: d.cutTags } : {}),
             ...(d.terrain ? { terrain: d.terrain } : {}),
             ...(name ? { name } : {}),
             ...withTags(tagList(prefix, d.tags, errors)),
@@ -1098,6 +1168,7 @@ export function createSceneStore({
         const taper = fraction(d.taper);
         const bevel = fraction(d.bevel);
         const common = {
+          ...(d.cutTags !== undefined ? { cutTags: d.cutTags } : {}),
           ...(name ? { name } : {}),
           ...withTags(tagList(prefix, d.tags, errors)),
           ...(d.parent !== undefined ? { parent: d.parent } : {}),
@@ -1121,6 +1192,12 @@ export function createSceneStore({
           };
         }
         const type = d.type ?? "box";
+        let polarPosition: { x: number; y: number; z: number; rotation: number } | undefined;
+        if (d.polar) {
+          const pose = polarPose(present(), d.polar);
+          if ("problem" in pose) errors.push(`${prefix}.polar: ${pose.problem}`);
+          else polarPosition = pose;
+        }
         if (d.sides !== undefined && type !== "cylinder") errors.push(`${prefix}.sides: only a cylinder has sides (this is a ${type})`);
         if (d.arc !== undefined && (type !== "cylinder" || d.kind !== "room" || d.sides !== undefined || round2(d.width) !== round2(d.depth)))
           errors.push(`${prefix}.arc: arc requires a smooth circular room cylinder (equal width/depth, no sides)`);
@@ -1129,11 +1206,12 @@ export function createSceneStore({
           ...(type === "cylinder" && d.arc ? { arc: { from: normalizeRotation(d.arc.from), sweep: d.arc.sweep } } : {}),
           ...(type === "cylinder" && d.sides !== undefined ? { sides: d.sides } : {}),
           ...common,
-          x: round2(d.x),
-          z: round2(d.z),
+          y: polarPosition?.y ?? common.y,
+          x: polarPosition?.x ?? round2(d.x ?? 0),
+          z: polarPosition?.z ?? round2(d.z ?? 0),
           width: round2(d.width),
           depth: round2(d.depth),
-          rotation: normalizeRotation(d.rotation ?? 0),
+          rotation: polarPosition?.rotation ?? normalizeRotation(d.rotation ?? 0),
           ...(angle(d.pitch) !== undefined ? { pitch: angle(d.pitch) } : {}),
           ...(angle(d.roll) !== undefined ? { roll: angle(d.roll) } : {}),
         };
@@ -1158,7 +1236,7 @@ export function createSceneStore({
       const created = valid.map((b) => ({ id: newId(b!.type), ...b!, createdBy: actor }) as SceneNode);
       const ids = created.map((b) => b.id);
       commit(label("draw", listIds(ids, "shapes"), actor), actor, [{ op: "add", nodes: created }]);
-      return created;
+      return scene.nodes.filter((n) => ids.includes(n.id));
     },
 
     /**
@@ -1213,6 +1291,11 @@ export function createSceneStore({
           }
         }
         const fields = { ...others, ...(facing !== undefined ? { rotation: rotation ?? 0 } : {}) };
+        if (fields.polar !== undefined) {
+          if (node?.type !== "instance" && node?.type !== "box" && node?.type !== "cylinder") errors.push(`changes[${i}].polar: only boxes, cylinders and ordinary instances support polar placement`);
+          else if ([fields.x, fields.y, fields.z, facing, fields.on ?? undefined].some((v) => v !== undefined) || fields.wallAttachment != null || (node.type === "instance" && ((node.wallAttachment && fields.wallAttachment !== null) || (node.on && fields.on !== null)))) errors.push(`changes[${i}]: polar conflicts with x/y/z/rotation, on or wallAttachment; detach first`);
+          // Resolve after every ordinary patch has been validated, against the final batch state.
+        }
         // Input shorthand only: use the normal point-edit validation, unlinking and refollow path.
         if (fields.spiral !== undefined) {
           if (node?.type !== "ramp" && node?.type !== "line") errors.push(`changes[${i}].spiral: only ramps and lines accept spiral`);
@@ -1338,6 +1421,13 @@ export function createSceneStore({
         if (!node) return null;
 
         const patch: NodePatch = {};
+        if (fields.wallAttachment !== undefined) {
+          if (node.type !== "instance") errors.push(`changes[${i}].wallAttachment: only ordinary instances support wall attachment`);
+          else {
+            if (fields.wallAttachment && [fields.x, fields.y, fields.z, facing, fields.on ?? undefined].some((v) => v !== undefined)) errors.push(`changes[${i}]: wallAttachment conflicts with absolute x/y/z/rotation or on`);
+            patch.wallAttachment = fields.wallAttachment ?? undefined;
+          }
+        }
         if (fields.source !== undefined) patch.source = fields.source || undefined;
         if (fields.resolution !== undefined) patch.resolution = fields.resolution;
         if (fields.terrain !== undefined) patch.terrain = fields.terrain ?? undefined;
@@ -1348,7 +1438,7 @@ export function createSceneStore({
         if (fields.kind !== undefined) patch.kind = fields.kind;
         if (fields.color !== undefined) patch.color = fields.color;
         if (fields.floor !== undefined) {
-          if (!isClosed(node)) errors.push(`changes[${i}].floor: only closed rooms have a floor`);
+          if (isGroup(node) || !isClosed(node)) errors.push(`changes[${i}].floor: only closed rooms have a floor`);
           patch.floor = fields.floor;
         }
         if (fields.arc !== undefined) {
@@ -1408,6 +1498,14 @@ export function createSceneStore({
         if (fields.arrow !== undefined) patch.arrow = fields.arrow;
         if (fields.name !== undefined) patch.name = fields.name.trim() || undefined;
         if (fields.description !== undefined) patch.description = fields.description?.trim() || undefined;
+        if (fields.cutTags !== undefined) {
+          if (node.type !== "instance" && node.type !== "array" && (isGroup(node) || !isSolid(node))) errors.push(`changes[${i}].cutTags: only solids, holes, instances and arrays support cut tags`);
+          else patch.cutTags = fields.cutTags;
+        }
+        if (fields.cutTagParts !== undefined) {
+          if (node.type !== "instance" && node.type !== "array") errors.push(`changes[${i}].cutTagParts: only placements support per-part cut tags`);
+          else patch.cutTagParts = fields.cutTagParts;
+        }
         if (fields.tags !== undefined) patch.tags = tagList(`changes[${i}]`, fields.tags, errors);
         if (fields.text !== undefined) patch.text = fields.text.trim();
         if (fields.label !== undefined) patch.label = fields.label?.trim() || undefined;
@@ -1458,6 +1556,10 @@ export function createSceneStore({
           const problem = arcProblem({ ...node, ...patch } as Shape);
           if (problem) errors.push(`changes[${i}]: ${problem}; clear arc with null in the same edit if needed`);
         }
+        if (node.type === "array") {
+          const problem = arraySlopeProblem({ ...node, ...patch } as ArrayNode);
+          if (problem) errors.push(`changes[${i}]: ${problem}`);
+        }
         // Keep only what differs from the node as it is.
         const effective: NodePatch = {};
         for (const key of Object.keys(patch) as (keyof NodePatch)[]) {
@@ -1469,6 +1571,17 @@ export function createSceneStore({
 
       // No node may end up inside itself.
       const next = runOps(scene.nodes, [{ op: "update", changes: valid.map((c) => ({ id: c!.id, patch: c!.patch })) }]).nodes;
+      // One-shot polar updates read the batch's final support pose, regardless of entry order.
+      for (const [i, c] of valid.entries()) {
+        if (!c || !changes[i].polar) continue;
+        const pose = polarPose(next, changes[i].polar!);
+        if ("problem" in pose) errors.push(`changes[${i}].polar: ${pose.problem}`);
+        else for (const [key, value] of Object.entries(pose)) {
+          const k = key as keyof typeof pose;
+          if (value !== (nodes.get(c.id) as Instance)[k]) c.patch[k] = value;
+          else delete c.patch[k];
+        }
+      }
       for (const c of valid) {
         if (c!.patch.parent !== undefined && isCycle(next, c!.id)) {
           errors.push(`changes[${c!.index}].parent: "${c!.patch.parent}" is inside "${c!.id}"`);
@@ -1910,6 +2023,10 @@ export function createSceneStore({
         type: "instance",
         entity,
         ...(prepared.parent !== undefined ? { parent: prepared.parent } : {}),
+        ...(() => {
+          const parts = Object.fromEntries(prepared.nodes.flatMap((n) => "cutTags" in n && n.cutTags?.length ? [[n.id, n.cutTags]] : []));
+          return Object.keys(parts).length ? { cutTagParts: parts } : {};
+        })(),
         x: prepared.pivot.x,
         y: prepared.pivot.y,
         z: prepared.pivot.z,
@@ -1933,6 +2050,7 @@ export function createSceneStore({
       const node = byId().get(id);
       if (!node) throw new SceneError(`id: no node "${id}". No array was made.`);
       if (node.type !== "instance") throw new SceneError(`id: "${id}" is a ${node.type}; an array is made from an instance. No array was made.`);
+      if (node.wallAttachment) throw new SceneError("Detach wallAttachment before making an array. Nothing changed.");
       if (document === "entity") throw new SceneError("An entity can't hold arrays (no nested entities). No array was made.");
       const spacing = defaultSpacing(node.entity);
       const a = (node.rotation * Math.PI) / 180;
@@ -1944,6 +2062,8 @@ export function createSceneStore({
         ...(node.parent !== undefined ? { parent: node.parent } : {}),
         ...(node.locked ? { locked: true as const } : {}),
         ...(node.hidden ? { hidden: true as const } : {}),
+        ...(node.cutTags ? { cutTags: node.cutTags } : {}),
+        ...(node.cutTagParts ? { cutTagParts: Object.fromEntries(Array.from({ length: 4 }, (_, i) => Object.entries(node.cutTagParts!).map(([key, tags]) => [`${i}/${key}`, tags])).flat()) } : {}),
         entities: [{ entity: node.entity }],
         layout: {
           type: "path",
@@ -1980,6 +2100,18 @@ export function createSceneStore({
         else if (n?.type === "instance" && !definitionOf(n.entity)) errors.push(`ids[${i}]: "${id}"'s entity "${n.entity}" is missing, so there's nothing to detach`);
         else if (n?.type === "array" && arrayItems(n).length === 0) errors.push(`ids[${i}]: "${id}" has no items (every one is skipped), so there's nothing to detach`);
       });
+      // Once parts are plain scene solids, common external tags also become internal tags.
+      // Refuse that lossy conversion atomically; precise per-part bindings can represent the desired cut set.
+      for (const id of ids) {
+        const inst = scene.nodes.find((n) => n.id === id);
+        if (inst?.type !== "instance" || !definitionOf(inst.entity)) continue;
+        const inner = expandInstance(inst);
+        for (const h of inner.filter(isHole)) {
+          const expected = new Set(holeScope(inner, h).map((n) => n.id));
+          const extra = inner.some((n) => n.type !== "group" && isSolid(n) && !isHole(n) && !expected.has(n.id) && n.cutTags?.some((t) => h.cutTags?.includes(t)));
+          if (extra) { errors.push(`${id}: detaching would introduce internal cuts from shared external tags; use per-part external cut tags before detaching`); break; }
+        }
+      }
       failIf(errors, "Nothing was detached.");
       const ops: Op[] = [];
       const groups: Group[] = [];
@@ -1994,19 +2126,9 @@ export function createSceneStore({
             ...(found.parent !== undefined ? { parent: found.parent } : {}),
             createdBy: actor,
           };
-          const instances = arrayItems(found).map(
-            (item): Instance => ({
-              id: newId("instance"),
-              type: "instance",
-              entity: item.entity,
-              parent: group.id,
-              x: item.x,
-              y: item.y,
-              z: item.z,
-              rotation: item.rotation,
-              createdBy: actor,
-            }),
-          );
+          const instances = arrayItems(found).map((item): Instance => ({
+            ...itemInstance(found, item), id: newId("instance"), parent: group.id, createdBy: actor,
+          }));
           const index = current.findIndex((n) => n.id === id);
           const step: Op[] = [
             { op: "remove", ids: [id] },
@@ -2028,6 +2150,19 @@ export function createSceneStore({
         };
         const idMap = new Map<string, string>([[inst.id, group.id]]);
         for (const n of inner) idMap.set(n.id, newId(n.type));
+        // Expanded local tags contain a namespace separator. Materialize them as unique legal scene tags.
+        const existingTags = new Set(current.flatMap((n) => "cutTags" in n ? n.cutTags ?? [] : []));
+        const localTags = new Map<string, string>();
+        for (const n of inner) for (const tag of ("cutTags" in n ? n.cutTags ?? [] : [])) {
+          if (!tag.includes(":") || localTags.has(tag)) continue;
+          let candidate = `detached-${inst.id}-${localTags.size + 1}`;
+          while (existingTags.has(candidate)) candidate += "-copy";
+          localTags.set(tag, candidate); existingTags.add(candidate);
+        }
+        for (let i = 0; i < inner.length; i++) {
+          const n = inner[i];
+          if ("cutTags" in n && n.cutTags) inner[i] = { ...n, cutTags: n.cutTags.map((t) => localTags.get(t) ?? t) } as SceneNode;
+        }
         const copies = inner.map((n) => ({ ...n, id: idMap.get(n.id)!, parent: idMap.get(n.parent!)!, createdBy: actor }) as SceneNode);
         const index = current.findIndex((n) => n.id === id);
         const step: Op[] = [

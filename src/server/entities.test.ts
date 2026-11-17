@@ -58,23 +58,23 @@ describe("expanding an instance", () => {
 });
 
 describe("holes and instances", () => {
-  it("a window entity placed in a room's group cuts the room's walls", () => {
-    const room: Box = { id: "box_9", type: "box", kind: "room", x: 0, z: 0, y: 0, width: 10, depth: 10, height: 3, rotation: 0, parent: "group_1", color: "white", createdBy: "human" };
+  it("a window placement cuts walls with matching external tags", () => {
+    const room: Box = { id: "box_9", type: "box", kind: "room", cutTags: ["wall"], x: 0, z: 0, y: 0, width: 10, depth: 10, height: 3, rotation: 0, parent: "group_1", color: "white", createdBy: "human" };
     const nodes: SceneNode[] = [
       { id: "group_1", type: "group", createdBy: "human" },
       room,
-      inst({ id: "instance_2", entity: "window", x: 0, y: 1, z: -5, parent: "group_1" }),
+      inst({ id: "instance_2", entity: "window", cutTags: ["wall"], x: 0, y: 1, z: -5, parent: "group_1" }),
     ];
     const cuts = cutters(expandNodes(nodes));
     expect(cuts.get("box_9")?.map((h) => h.id)).toEqual(["instance_2/cylinder_1"]);
   });
 
-  it("a hole in the scene cuts an instance's shapes, like a sibling group's", () => {
+  it("a scene hole cuts instance parts with matching external tags", () => {
     const nodes: SceneNode[] = [
       { id: "group_1", type: "group", createdBy: "human" },
-      { id: "box_9", type: "box", kind: "hole", x: 10, z: 5, y: 3, width: 3, depth: 3, height: 1, rotation: 0, parent: "group_1", color: "white", createdBy: "human" },
+      { id: "box_9", type: "box", kind: "hole", cutTags: ["tree"], x: 10, z: 5, y: 3, width: 3, depth: 3, height: 1, rotation: 0, parent: "group_1", color: "white", createdBy: "human" },
       // At the top level, the instance is a sibling group of the hole's group.
-      inst(),
+      inst({ cutTags: ["tree"] }),
     ];
     expect(cutters(expandNodes(nodes)).get("instance_1/box_1")?.map((h) => h.id)).toEqual(["box_9"]);
   });

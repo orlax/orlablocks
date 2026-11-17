@@ -1,6 +1,6 @@
 import { terrainReadFields, terrainSummary } from "../shared/terrain";
 import { boundsOf, round2 } from "../shared/geometry";
-import { arrayLayout, type ArrayItem } from "../shared/arrays";
+import { circleDistribution, arrayLayout, type ArrayItem } from "../shared/arrays";
 import { arrayItemInstance, instanceShapes } from "../shared/entities";
 import { surfaceAt } from "../shared/surfaces";
 import type { ArrayLayout, ArrayNode, SceneNode } from "../shared/scene.types";
@@ -65,6 +65,8 @@ export type CompactNode = {
 export function compactNode(nodes: SceneNode[], n: SceneNode, opts: CompactOptions = {}): CompactNode {
   const base: CompactNode = {
     ...terrainReadFields(n, nodes),
+    ...("cutTags" in n ? { cutTags: n.cutTags } : {}),
+    ...("cutTagParts" in n ? { cutTagParts: n.cutTagParts } : {}),
     id: n.id,
     type: n.type,
     ...(isShape(n) && "kind" in n ? { kind: n.kind } : {}),
@@ -93,7 +95,7 @@ export function compactNode(nodes: SceneNode[], n: SceneNode, opts: CompactOptio
     case "note":
       return { ...base, text: n.text.length > 120 ? `${n.text.slice(0, 120)}…` : n.text, status: n.status, ...(n.label ? { label: n.label } : {}), bounds };
     case "instance":
-      return { ...base, entity: n.entity, x: n.x, y: n.y, z: n.z, rotation: n.rotation ?? 0, ...(n.scale ? { scale: n.scale } : {}), ...(n.on ? { on: n.on.id } : {}), bounds };
+      return { ...base, entity: n.entity, x: n.x, y: n.y, z: n.z, rotation: n.rotation ?? 0, ...(n.scale ? { scale: n.scale } : {}), ...(n.on ? { on: n.on.id } : {}), ...(n.wallAttachment ? { wallAttachment: n.wallAttachment } : {}), bounds };
     case "array": {
       const placed = arrayLayout(n).items;
       const tops = placed.map((item) => itemTop(n, item));
@@ -105,6 +107,7 @@ export function compactNode(nodes: SceneNode[], n: SceneNode, opts: CompactOptio
         ...(n.scale ? { scale: n.scale } : {}),
         ...(n.on ? { on: n.on.id } : {}),
         items: placed.length,
+        ...(n.layout.type === "circle" ? { fittedSpacing: circleDistribution(n.layout).spacing, requestedItems: circleDistribution(n.layout).count } : {}),
         bounds,
         ...(opts.items
           ? { at: itemLines(n, MAX_ITEM_LINES) }

@@ -221,11 +221,11 @@ describe("an array as a node", () => {
   });
 
   it("cuts its tower's walls: a window array in the tower's group", () => {
-    const tower: Cylinder = { id: "cylinder_1", type: "cylinder", sides: 10, kind: "room", parent: "group_1", x: 0, z: 0, y: 0, width: 20, depth: 20, height: 8, rotation: 0, color: "gray", createdBy: "human" };
+    const tower: Cylinder = { id: "cylinder_1", type: "cylinder", sides: 10, kind: "room", cutTags: ["tower"], parent: "group_1", x: 0, z: 0, y: 0, width: 20, depth: 20, height: 8, rotation: 0, color: "gray", createdBy: "human" };
     const nodes: SceneNode[] = [
       { id: "group_1", type: "group", createdBy: "human" },
       tower,
-      array({ type: "circle", x: 0, y: 3, z: 0, radius: 9.41, count: 10 }, { entities: [{ entity: "window" }], parent: "group_1" }),
+      array({ type: "circle", x: 0, y: 3, z: 0, radius: 9.41, count: 10 }, { entities: [{ entity: "window" }], cutTags: ["tower"], parent: "group_1" }),
     ];
     const cuts = cutters(expandNodes(nodes));
     expect(cuts.get("cylinder_1")).toHaveLength(10);

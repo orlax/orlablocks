@@ -5,7 +5,7 @@ export type Actor = "human" | "agent";
 
 /**
  * A room is hollow (floor and walls, no ceiling); a volume is solid (something you stand on or bump into); a hole
- * cuts itself out of the shapes in its own group and its sibling groups (a door, a window, a hole in a floor).
+ * cuts overlapping solids with a matching cut tag (a door, a window, a hole in a floor).
  */
 export type ShapeKind = "room" | "volume" | "hole";
 
@@ -43,7 +43,11 @@ export type Terrain = {
   resolution: 129 | 257 | 513 | 1025; source?: string; createdBy: Actor;
 };
 
-type Footprinted = {
+export type CutTags = { cutTags?: string[] };
+/** Per-part external cut tags on placements; keys are definition IDs, or item-index/definition-ID on arrays. */
+export type CutTagParts = { cutTagParts?: Record<string, string[]> };
+
+type Footprinted = CutTags & {
   terrain?: TerrainModifier;
   id: string; // server-assigned, "box_1", "cylinder_1", ... never reused
   name?: string; // for people and the agent ("lobby"); not unique
@@ -92,7 +96,7 @@ export type FootPoint = { x: number; z: number; in?: Offset; out?: Offset };
  * elevation `y`, rising to `y + height`. No center, size or rotation of its own: moving, turning and mirroring it
  * change its points. The outline must not cross itself.
  */
-export type Freeform = {
+export type Freeform = CutTags & {
   terrain?: TerrainModifier;
   id: string; // "freeform_1", ...
   type: "freeform";
@@ -158,7 +162,7 @@ export type RampBase = "solid" | "floating";
  * the distance along the ground, and curves come from the points' flat handles. `step` is the riser height (none =
  * smooth). Always a volume: never a room, and never a hole (a hole that cuts stairs and floors at once cuts too much).
  */
-export type Ramp = {
+export type Ramp = CutTags & {
   terrain?: TerrainModifier;
   id: string; // "ramp_1", ...
   type: "ramp";
@@ -205,10 +209,21 @@ export type Note = {
  * An instance of an entity (from 08): a placed copy of a definition, a small scene of its own shapes around a pivot
  * (its bottom center, at the origin). It shows those shapes turned by `rotation` (degrees, counterclockwise seen
  * from above) around the pivot, then moved to `x, y, z`. Its description and tags are the entity's; it has only a
- * place, a turn and a name of its own. For holes it's a group: its shapes are "directly in" it.
+ * place, a turn, a name and external cut tags. Definition cut tags are local to the placement.
  */
 /** What an instance or array stands on (plan 13 §7): another node's walking surface, kept up to date. */
 export type StandOn = { id: string };
+/** A persistent mount on an upright circular room wall; angle is local CCW from east. */
+export type WallAttachment = { id: string; side: "inner" | "outer"; angle: number; elevation: number; offset: number; facingOffset: number };
+export type PolarPlacement = { around: string; radius: number; angle: number; elevation?: number; facing?: "in" | "out" | "tangent"; rotationOffset?: number };
+export const WallAttachmentSchema = z.strictObject({
+  id: z.string().min(1), side: z.enum(["inner", "outer"]), angle: z.number().finite(),
+  elevation: z.number().finite(), offset: z.number().finite(), facingOffset: z.number().finite(),
+}).describe("Persistent instance mount on an upright smooth circular room cylinder. Local CCW angle from east; elevation from target base; signed offset along surface normal (inner points inward); local +x faces the normal plus facingOffset. Missing support retains last pose. null detaches on update.");
+export const PolarPlacementSchema = z.strictObject({
+  around: z.string().min(1), radius: z.number().finite().nonnegative(), angle: z.number().finite(),
+  elevation: z.number().finite().optional(), facing: z.enum(["in", "out", "tangent"]).optional(), rotationOffset: z.number().finite().optional(),
+}).describe("One-shot box/cylinder/instance placement around an upright smooth circular cylinder; local angle CCW from east, composed with target rotation; elevation from its base (default 0). +x faces out by default, in or CCW tangent, plus rotationOffset. No live link. Conflicts with x/y/z/rotation, on and wallAttachment. Earlier batch $refs supported.");
 /** Where an array's item stands (13.4): its pivot on what it's on, and on another array that item's turn too. */
 export type StandPose = { x: number; y: number; z: number; rotation?: number };
 /** How a through line joins its stops: an arc per hop, or straight. */
@@ -222,7 +237,7 @@ export type Through = { stops: string[]; style: ThroughStyle; apex?: number };
 /** How far above the higher stop a jump arc peaks, by default. */
 export const DEFAULT_APEX = 1.2;
 
-export type Instance = {
+export type Instance = CutTags & CutTagParts & {
   id: string; // "instance_1", ...
   type: "instance";
   entity: string; // the entity's ID ("tree-tall")
@@ -237,6 +252,7 @@ export type Instance = {
   scale?: number; // uniform, around its pivot (14.3); none = 1
   pitch?: number; // tilt around its own x axis through its pivot (14.4), as a box's; none = 0
   roll?: number; // around its own z axis; none = 0
+  wallAttachment?: WallAttachment;
   on?: StandOn; // standing on another node: y is its top under the pivot (13.4)
   createdBy: Actor;
 };
@@ -268,11 +284,24 @@ export type PathLayout = {
   points: LinePoint[]; // a following path's are its target's path as it is now (the store keeps them up to date)
   closed?: true;
   along?: Follow;
+  slope?: true; // opt-in: local +x follows the 3D tangent, without banking
   place: ArrayPlace;
   spacing?: number; // place: spacing, meters (the real spacing is fitted to the path)
   count?: number; // place: count
 };
-export type CircleLayout = { type: "circle"; x: number; y: number; z: number; radius: number; count: number; start?: number; sweep?: number; rise?: number };
+export type CircleLayout = {
+  type: "circle";
+  x: number;
+  y: number;
+  z: number;
+  radius: number;
+  place?: "count" | "spacing"; // omitted means legacy count placement
+  count?: number;
+  spacing?: number; // maximum desired 3D centerline distance, evenly fitted
+  start?: number;
+  sweep?: number;
+  rise?: number;
+};
 export type GridLayout = {
   type: "grid";
   x: number;
@@ -317,7 +346,7 @@ export type ArrayFacing = "fixed" | "along" | "tangent" | "out" | "in" | "random
  * for holes). `rotation` is added to every item's facing, then the seeded noise (`jitter` meters on the ground,
  * `turnJitter` ± degrees). `skip` lists the item indices left out.
  */
-export type ArrayNode = {
+export type ArrayNode = CutTags & CutTagParts & {
   id: string; // "array_1", ...
   type: "array";
   name?: string;
@@ -374,7 +403,7 @@ export type SceneNode = Shape | Group;
  * (undefined = smooth), `points` for free-forms, lines and ramps, `thickness`, `dashed` and `arrow` for lines,
  * `step` and `base` for ramps (whose `width` is their own).
  */
-export type ShapePatch = Partial<Pick<Footprinted, "name" | "kind" | "x" | "z" | "y" | "width" | "depth" | "height" | "rotation" | "color" | "floor" | "wall" | "taper" | "bevel" | "pitch" | "roll">> & {
+export type ShapePatch = CutTags & CutTagParts & Partial<Pick<Footprinted, "name" | "kind" | "x" | "z" | "y" | "width" | "depth" | "height" | "rotation" | "color" | "floor" | "wall" | "taper" | "bevel" | "pitch" | "roll">> & {
   terrain?: TerrainModifier;
   resolution?: 129 | 257 | 513 | 1025;
   source?: string;
@@ -401,6 +430,7 @@ export type ShapePatch = Partial<Pick<Footprinted, "name" | "kind" | "x" | "z" |
   // An instance's or array's uniform scale (from 14.3).
   scale?: number;
   // Standing on and lines through (from 13.4).
+  wallAttachment?: WallAttachment;
   on?: StandOn;
   stand?: (StandPose | null)[];
   through?: Through;
@@ -524,7 +554,7 @@ export const TerrainModifierSchema = z.strictObject({ operation: z.enum(["raise"
 export const TerrainResolutionSchema = z.union([z.literal(129), z.literal(257), z.literal(513), z.literal(1025)]);
 
 const field = {
-  kind: ShapeKindSchema.describe("room = hollow (floor + walls, no ceiling); volume = solid; hole = cuts the shapes in its group and its sibling groups"),
+  kind: ShapeKindSchema.describe("room = hollow (floor + walls, no ceiling); volume = solid; hole = cuts overlapping solids with matching cutTags"),
   x: z.number().describe("Footprint center x, meters"),
   z: z.number().describe("Footprint center z, meters"),
   y: z.number().describe("Elevation of the box's bottom, meters. 0 = on the ground, negative = below ground"),
@@ -563,7 +593,13 @@ const ActorSchema = z.enum(["human", "agent"]);
 
 const TagsSchema = z.array(z.string());
 
+export const CutTagsSchema = z.array(z.string().trim().min(1).max(120).regex(/^[^:]+$/, "Cut tags cannot contain colons")).max(10000)
+  .transform((tags) => [...new Set(tags)])
+  .describe("Dedicated cut tags, separate from library tags. Holes cut overlapping solids sharing any tag; no tags means no cuts. No hierarchy inheritance.");
+export const CutTagPartsSchema = z.record(z.string().min(1), CutTagsSchema).describe("Per-part cut-tag override for instances/arrays. Instance keys: definition node ID; array keys: item-index/definition-node-ID. Empty object clears overrides. These are external tags added to definition-local tags; placement cutTags are also added.");
+
 const footprinted = {
+  cutTags: CutTagsSchema.optional(),
   terrain: TerrainModifierSchema.optional(),
   id: z.string(),
   name: z.string().optional(),
@@ -600,6 +636,7 @@ const CylinderSchema = z.object({ arc: ArcSchema.optional(), ...footprinted, typ
 );
 
 const FreeformSchema = z.object({
+  cutTags: CutTagsSchema.optional(),
   terrain: TerrainModifierSchema.optional(),
   id: z.string(),
   type: z.literal("freeform"),
@@ -640,6 +677,7 @@ const LineSchema = z.object({
 
 const RampPointSchema = z.object({ x: z.number(), y: z.number(), z: z.number(), in: OffsetSchema.optional(), out: OffsetSchema.optional() });
 const RampSchema = z.object({
+  cutTags: CutTagsSchema.optional(),
   terrain: TerrainModifierSchema.optional(),
   id: z.string(),
   type: z.literal("ramp"),
@@ -676,6 +714,9 @@ const NoteSchema = z.object({
 });
 
 const InstanceSchema = z.object({
+  wallAttachment: WallAttachmentSchema.optional(),
+  cutTags: CutTagsSchema.optional(),
+  cutTagParts: CutTagPartsSchema.optional(),
   id: z.string(),
   type: z.literal("instance"),
   entity: z.string(),
@@ -701,6 +742,7 @@ const ArrayEntitySchema = z.object({ entity: z.string(), weight: z.number().posi
 export const ArrayLayoutSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("path"),
+    slope: z.literal(true).optional(),
     points: z.array(LinePointSchema).min(MIN_LINE_POINTS).max(MAX_POINTS * 20),
     closed: z.literal(true).optional(),
     along: FollowSchema.optional(),
@@ -714,11 +756,13 @@ export const ArrayLayoutSchema = z.discriminatedUnion("type", [
     y: z.number(),
     z: z.number(),
     radius: z.number().positive(),
-    count,
+    place: z.enum(["count", "spacing"]).optional(),
+    count: count.optional(),
+    spacing: z.number().min(MIN_ARRAY_SPACING).optional(),
     start: z.number().optional(),
     sweep: z.number().positive().max(360).optional(),
     rise: z.number().optional(),
-  }),
+  }).refine((l) => l.place === "spacing" ? l.spacing !== undefined : l.count !== undefined, "Circle needs count, or place: spacing with spacing"),
   z.object({
     type: z.literal("grid"),
     x: z.number(),
@@ -745,6 +789,8 @@ export const ArrayLayoutSchema = z.discriminatedUnion("type", [
 ]);
 
 const ArraySchema = z.object({
+  cutTags: CutTagsSchema.optional(),
+  cutTagParts: CutTagPartsSchema.optional(),
   id: z.string(),
   type: z.literal("array"),
   name: z.string().optional(),
@@ -765,7 +811,7 @@ const ArraySchema = z.object({
   on: z.object({ id: z.string() }).optional(),
   stand: z.array(z.object({ x: z.number(), y: z.number(), z: z.number(), rotation: z.number().optional() }).nullable()).optional(),
   createdBy: ActorSchema,
-});
+}).refine((n) => n.layout.type !== "path" || !n.layout.slope || (!n.on && (!n.facing || n.facing === "along" || n.facing === "tangent")), "Path slope following requires along/tangent facing and no on placement");
 
 const GroupSchema = z.object({
   id: z.string(),
@@ -794,10 +840,12 @@ const TerrainSchema = TerrainInputSchema.extend({
 export const NodeSchema: z.ZodType<SceneNode> = z.discriminatedUnion("type", [TerrainSchema, BoxSchema, CylinderSchema, FreeformSchema, LineSchema, RampSchema, NoteSchema, InstanceSchema, ArraySchema, GroupSchema]);
 
 export const BoxInputSchema = z.strictObject({
+  polar: PolarPlacementSchema.optional(),
+  cutTags: CutTagsSchema.optional(),
   terrain: TerrainModifierSchema.optional(),
   kind: field.kind.default("volume").describe("room, volume or hole; omitted on box/cylinder creation means volume"),
-  x: field.x,
-  z: field.z,
+  x: field.x.optional(),
+  z: field.z.optional(),
   width: field.width,
   depth: field.depth,
   height: field.height
@@ -815,6 +863,10 @@ export const BoxInputSchema = z.strictObject({
   name: field.name.optional(),
   tags: field.tags.optional(),
   parent: field.parent.optional().describe("ID of the group to put it in, e.g. group_1. Omit for the top level"),
+}).superRefine((d, ctx) => {
+  if (d.polar) {
+    if ([d.x, d.y, d.z, d.rotation].some((v) => v !== undefined)) ctx.addIssue({ code: "custom", message: "polar conflicts with absolute x/y/z/rotation" });
+  } else if (d.x === undefined || d.z === undefined) ctx.addIssue({ code: "custom", message: "give x and z, or polar" });
 });
 export type BoxInput = z.input<typeof BoxInputSchema>;
 const OffsetInputSchema = z.strictObject({ x: z.number(), z: z.number() });
@@ -832,6 +884,7 @@ const PointsSchema = z
 
 /** A free-form for `draw_shapes`: its points, kind, and the optional fields a box has, minus the footprint ones. */
 export const FreeformInputSchema = z.strictObject({
+  cutTags: CutTagsSchema.optional(),
   terrain: TerrainModifierSchema.optional(),
   type: z.literal("freeform").describe("A closed outline of points, optionally curved with bezier handles"),
   kind: field.kind,
@@ -927,6 +980,7 @@ const rampField = {
  * A ramp for `draw_shapes`: its path as points, or as a `spiral` the server turns into points; the rest optional.
  */
 export const RampInputSchema = z.strictObject({
+  cutTags: CutTagsSchema.optional(),
   terrain: TerrainModifierSchema.optional(),
   type: z.literal("ramp").describe("A path with a width: a ramp, stairs (with step), a landing, a walkway, a spiral stair"),
   kind: z.enum(["volume", "hole"]).optional().describe("always volume (the default): a ramp is never a hole"),
@@ -989,10 +1043,14 @@ export const FacingInputSchema = z.union([
 ]);
 
 export const InstanceInputSchema = z.strictObject({
+  polar: PolarPlacementSchema.optional(),
+  wallAttachment: WallAttachmentSchema.optional(),
+  cutTags: CutTagsSchema.optional(),
+  cutTagParts: CutTagPartsSchema.optional(),
   type: z.literal("instance").describe("A placed copy of a library entity (a prefab): it shows the entity's shapes"),
   entity: z.string().describe('The entity\'s ID, e.g. "tree-tall" (get_library lists them)'),
-  x: z.number().describe("Where its pivot (the entity's bottom center) goes: world x, meters"),
-  z: z.number().describe("World z, meters"),
+  x: z.number().optional().describe("World pivot x; required with z unless polar or wallAttachment supplies the pose"),
+  z: z.number().optional().describe("World z; required unless polar or wallAttachment supplies the pose"),
   y: z.number().optional().describe("The height its bottom stands at (a floor's y, a platform's top). Defaults to 0"),
   rotation: FacingInputSchema.optional().describe(
     "Degrees, counterclockwise seen from above, around its pivot (default 0); or where it faces (its local +x), worked out once: { toward: {x, z} or an ID }, { away: ... } or { along: a line or ramp }",
@@ -1003,6 +1061,11 @@ export const InstanceInputSchema = z.strictObject({
   on: StandOnInputSchema.optional(),
   name: field.name.optional().describe('A name for this one, e.g. "entry_window". Not unique'),
   parent: field.parent.optional().describe("ID of the group to put it in. Omit for the top level"),
+}).superRefine((d, ctx) => {
+  if (d.polar || d.wallAttachment) {
+    if ([d.x, d.y, d.z, d.rotation, d.on].some((v) => v !== undefined) || (d.polar && d.wallAttachment)) ctx.addIssue({ code: "custom", message: "polar/wallAttachment conflicts with x/y/z/rotation, on, or each other" });
+    if (d.wallAttachment && (d.pitch || d.roll)) ctx.addIssue({ code: "custom", message: "detach wallAttachment before tilting" });
+  } else if (d.x === undefined || d.z === undefined) ctx.addIssue({ code: "custom", message: "give x and z, polar, or wallAttachment" });
 });
 
 const arrayCount = z.number().int().min(1).max(MAX_ARRAY_ITEMS);
@@ -1018,6 +1081,7 @@ const FollowInputSchema = z.strictObject({
 export const ArrayLayoutInputSchema = z.discriminatedUnion("type", [
   z.strictObject({
     type: z.literal("path").describe("Items along a path: a line's points"),
+    slope: z.boolean().optional().describe("Opt in to following the 3D tangent with local +x, stable up and no banking. Requires along/tangent facing and no on placement. Default false (upright)"),
     points: z
       .array(LinePointInputSchema)
       .min(MIN_LINE_POINTS)
@@ -1040,7 +1104,9 @@ export const ArrayLayoutInputSchema = z.discriminatedUnion("type", [
     z: z.number().describe("The center's world z"),
     y: z.number().optional().describe("The height the items stand at. Default 0"),
     radius: z.number().positive().describe("Meters from the center to each item's pivot"),
-    count: arrayCount.describe("How many items"),
+    place: z.enum(["count", "spacing"]).optional().describe("Count (legacy default), or spacing: maximum desired 3D centerline distance, evenly fitted"),
+    count: arrayCount.optional().describe("How many items; required in count mode"),
+    spacing: z.number().min(MIN_ARRAY_SPACING).optional().describe("Maximum centerline spacing in meters; implies spacing mode when count is absent. Open arcs include both ends; full circles omit duplicate endpoint"),
     start: z.number().optional().describe("The first item's angle in degrees: 0 = east (+x), 90 = north (-z). Default 0"),
     sweep: z.number().positive().max(360).optional().describe("Degrees covered, counterclockwise from start. Default 360 (evenly around); less than 360 puts items at both ends of the arc"),
     rise: z
@@ -1092,6 +1158,8 @@ const arrayField = {
 
 /** An array for `draw_shapes`: its entity (or entities), its layout, and how its items turn and vary. */
 export const ArrayInputSchema = z.strictObject({
+  cutTags: CutTagsSchema.optional(),
+  cutTagParts: CutTagPartsSchema.optional(),
   type: z.literal("array").describe("Repeats entities on a layout (a path, a circle, a grid or a scatter), live: one node for many items"),
   entity: z.string().optional().describe('The entity to repeat, e.g. "merlon" (or give entities)'),
   entities: arrayField.entities.optional(),
@@ -1107,7 +1175,7 @@ export const ArrayInputSchema = z.strictObject({
   roll: z.number().optional().describe("Degrees around the world z axis through the anchor (roll first, then pitch). Default 0"),
   on: StandOnInputSchema.optional(),
   name: field.name.optional(),
-  parent: field.parent.optional().describe("ID of the group to put it in (its items cut and are cut as instances there). Omit for the top level"),
+  parent: field.parent.optional().describe("ID of the organizational group to put it in; cutting uses cutTags independently. Omit for the top level"),
 });
 
 /** A batch ref's name (plan 13 §6): a letter, then letters, digits, `_` or `-`. */
@@ -1134,7 +1202,7 @@ export const GroupInputSchema = z.strictObject({
 });
 
 export const ShapeInputSchema = z.discriminatedUnion("type", [
-  BoxInputSchema.extend({
+  BoxInputSchema.safeExtend({
     type: z.enum(["box", "cylinder"]).optional().describe("box (the default) or cylinder (the ellipse inscribed in width × depth)"),
     sides: field.sides.optional(),
     arc: ArcSchema.optional().describe("Smooth circular room cylinders only: CCW from east in local degrees, sweep > 0 up to 360; annular walls with radial ends, optional sector floor"),
@@ -1144,7 +1212,7 @@ export const ShapeInputSchema = z.discriminatedUnion("type", [
   LineInputSchema.extend(refField),
   RampInputSchema.extend(refField),
   NoteInputSchema.extend(refField),
-  InstanceInputSchema.extend(refField),
+  InstanceInputSchema.safeExtend(refField),
   ArrayInputSchema.extend(refField),
   GroupInputSchema.extend(refField),
   TerrainInputSchema.extend(refField),
@@ -1153,6 +1221,10 @@ export type ShapeInput = z.input<typeof ShapeInputSchema>;
 
 /** A change to an existing node, by ID: any of a shape's editable fields; for a group only `name` and `parent`. */
 export const NodeUpdateSchema = z.strictObject({
+  polar: PolarPlacementSchema.optional(),
+  wallAttachment: WallAttachmentSchema.nullable().optional(),
+  cutTags: CutTagsSchema.optional(),
+  cutTagParts: CutTagPartsSchema.optional(),
   terrain: TerrainModifierSchema.nullable().optional(),
   resolution: TerrainResolutionSchema.optional(),
   source: z.string().nullable().optional(),
@@ -1225,6 +1297,7 @@ export const NodeUpdateSchema = z.strictObject({
   layout: z
     .strictObject({
       type: z.enum(ARRAY_LAYOUTS).optional(),
+      slope: z.boolean().optional(),
       points: z.array(LinePointInputSchema).min(MIN_LINE_POINTS).max(MAX_POINTS).optional(),
       spiral: SpiralInputSchema.optional(),
       closed: z.boolean().optional(),

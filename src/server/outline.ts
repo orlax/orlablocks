@@ -1,7 +1,7 @@
 import { boundsWithTerrain, terrainReadFields, terrainSummary } from "../shared/terrain";
 import { boundsOf, isTilted, round2 } from "../shared/geometry";
 import { currentTags, EMPTY_LIBRARY, entityMeta, findRefs, resolveRef, type EntityMeta, type Library, type Skill, type Tag } from "../shared/library";
-import { arrayLayout, arrayShortfall } from "../shared/arrays";
+import { circleDistribution, arrayLayout, arrayShortfall } from "../shared/arrays";
 import { arrayItemInstance, definitionOf } from "../shared/entities";
 import { COMPASS, type ArrayNode, type OpenScene, type Scene, type SceneNode, type Shape } from "../shared/scene.types";
 import { ancestry, childrenOf, countsText, isGroup, isShape, shapesUnder, subtreeIds, tagsOf } from "../shared/tree";
@@ -39,7 +39,7 @@ export type Glossary = {
 };
 export type AgentBounds = { x: number; z: number; y: number; width: number; depth: number; height: number };
 /** A node as the agent reads it: stored fields plus what the outline derives. */
-export type AgentNode = SceneNode & { bounds?: AgentBounds; contains?: string; collapsed?: true; path?: string; items?: number; placed?: string; at?: string[] };
+export type AgentNode = SceneNode & { bounds?: AgentBounds; contains?: string; collapsed?: true; path?: string; items?: number; fittedSpacing?: number; requestedItems?: number; placed?: string; at?: string[] };
 export type SceneOutline = OpenScene & {
   compass: typeof COMPASS;
   view: Scene["view"];
@@ -181,7 +181,7 @@ function describeNodeIn(nodes: SceneNode[], n: SceneNode, library: Library): Age
   // An array in full, with how many items it has (and how many its layout would place past the cap).
   if (n.type === "array") {
     const short = arrayShortfall(n);
-    return { ...n, items: arrayLayout(n).items.length, ...(short ? { placed: short } : {}), bounds: boundsFor([n]) };
+    return { ...n, items: arrayLayout(n).items.length, ...(n.layout.type === "circle" ? { fittedSpacing: circleDistribution(n.layout).spacing, requestedItems: circleDistribution(n.layout).count } : {}), ...(short ? { placed: short } : {}), bounds: boundsFor([n]) };
   }
   if (!isGroup(n)) return isTilted(n) ? { ...n, bounds: boundsFor([n]) } : n;
   const inside = subtreeIds(nodes, n.id);

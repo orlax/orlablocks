@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { toCreasedNormals } from "three/examples/jsm/utils/BufferGeometryUtils.js";
-import { cutParts, manifoldLoaded } from "./csg";
+import { cutParts, cutterGeometryKey, manifoldLoaded } from "./csg";
 import { isFootprinted } from "./geometry";
 import type { Mesh } from "./mesh";
 import type { ClosedShape, Solid } from "./scene.types";
@@ -38,6 +38,11 @@ export function uvOffset(shape: Solid): [number, number] {
  * Shape-aligned UVs (1 unit = 1 m), picked per face from its dominant normal axis in the shape's own frame, so
  * tiles follow its edges. `ox, oy, oz` offsets them (see `uvOffset`).
  */
+export const boxUVPlane = (nx: number, ny: number, nz: number) => {
+  const x = Math.abs(nx), y = Math.abs(ny), z = Math.abs(nz);
+  return y >= x && y >= z ? 0 : x >= z ? 1 : 2;
+};
+
 function applyBoxUVs(geometry: THREE.BufferGeometry, ox: number, oy: number, oz: number) {
   const pos = geometry.getAttribute("position");
   const nrm = geometry.getAttribute("normal");
@@ -46,10 +51,8 @@ function applyBoxUVs(geometry: THREE.BufferGeometry, ox: number, oy: number, oz:
     const x = pos.getX(i) + ox;
     const y = pos.getY(i) + oy;
     const z = pos.getZ(i) + oz;
-    const nx = Math.abs(nrm.getX(i));
-    const ny = Math.abs(nrm.getY(i));
-    const nz = Math.abs(nrm.getZ(i));
-    const [u, v] = ny >= nx && ny >= nz ? [x, z] : nx >= nz ? [z, y] : [x, y];
+    const plane = boxUVPlane(nrm.getX(i), nrm.getY(i), nrm.getZ(i));
+    const [u, v] = plane === 0 ? [x, z] : plane === 1 ? [z, y] : [x, y];
     uv[i * 2] = u;
     uv[i * 2 + 1] = v;
   }
@@ -93,11 +96,12 @@ const bakes = new WeakMap<Solid, { cutKey: string; baked: Baked }>();
  * A closed shape or ramp, baked: its parts minus `cuts`, as drawn. Cached per shape object and its cuts, so a scene
  * baked again after a step bakes only what the step changed.
  */
-export function bakeShape(shape: Solid, cuts?: ClosedShape[]): Baked {
-  const cutKey = cuts && cuts.length > 0 && manifoldLoaded() ? JSON.stringify(cuts) : "";
+export function bakeShape(shape: Solid, cuts?: ClosedShape[], strict = false): Baked {
+  if (strict && cuts?.length && !manifoldLoaded()) throw new Error("Exact cut geometry requires Manifold");
+  const cutKey = cuts?.length && manifoldLoaded() ? (strict ? "exact:" : "") + cutterGeometryKey(cuts) : "";
   const hit = bakes.get(shape);
   if (hit && hit.cutKey === cutKey) return hit.baked;
-  const parts = cutParts(shape, cuts);
+  const parts = cutParts(shape, cuts, strict);
   const [ox, oz] = uvOffset(shape);
   const oy = uvElevation(shape);
   const baked = {

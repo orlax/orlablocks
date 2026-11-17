@@ -200,3 +200,16 @@ Each cell is removed when its final surface center lies inside a cutter. Narrow 
 Unity-painted holes are protected by the existing **Terrain edited in Unity → Revert / Claim** flow, including on unchanged exports. Old fingerprints migrate only after checking their old managed fields; pre-existing painted holes require a decision. Undo/Redo includes imported holes and layer-reference changes. In URP, enable **Terrain Holes** in the pipeline asset for player builds; custom terrain shaders must also support the hole mask. Geometry around cave entrances can conceal grid edges.
 
 Reproduce automated phase 20 checks using `node --import tsx scripts/terrain-holes-fixtures.ts /private/tmp/orla20-holes-fixtures`. Copy the importer and `scripts/unity/TerrainHolesAcceptance.cs` (under Editor) into a disposable Unity project in `/private/tmp`. Run Unity with `ORLA_TERRAIN_HOLES_FIXTURES=/private/tmp/orla20-holes-fixtures -batchmode -nographics -projectPath <scratch> -executeMethod TerrainHolesAcceptance.Run` (without `-quit`). Results are written to `terrain20-result.json` inside the fixture folder. The older terrain regression harness remains applicable. Never point these fixtures at your real project.
+
+
+## Spacing and slope arrays (19.5)
+
+Array items continue to import as ordinary item placements with shared entity geometry and colliders. Path slope following is resolved by orlablocks into each item's yaw/pitch/roll; no Unity-side path evaluation or importer migration is needed. Existing upright/count arrays retain their defaults. Item IDs represent layout indices, so changing count/spacing can move an index to another physical position.
+
+For a disposable importer/collider regression, run `node --import tsx scripts/array-slope-fixtures.ts /private/tmp/orla19-array-fixtures`. Copy this importer into a scratch Unity project's Assets and `scripts/unity/ArraySlopeAcceptance.cs` into Assets/Editor. Launch Unity with `ORLA_ARRAY_FIXTURES=/private/tmp/orla19-array-fixtures -batchmode -nographics -projectPath <scratch> -executeMethod ArraySlopeAcceptance.Run` (without `-quit`). It checks uphill/downhill/vertical versus legacy upright orientations, circle spacing/skips, oriented collider rays/normals (including a curved tilted path), and scene save/reopen. Results are written to `unity-result.json` in the fixture folder. Use only a disposable project under `/private/tmp`; Orlando's production visual acceptance remains separate.
+
+## Wall attachment acceptance (19.7)
+
+Mounts export their resolved ordinary-instance transforms. Unity keeps no wall dependency; export again and Sync after changing the support in Orlablocks. Existing placement ownership rules apply.
+
+Generate disposable exports with `node --import tsx scripts/wall-attachment-fixtures.ts /private/tmp/orlablocks-19-7-export`. Copy the importer and `scripts/unity/WallAttachmentAcceptance.cs` into a disposable Unity project's `Assets/` and `Assets/Editor/`, then run Unity batchmode with `ORLA_WALL_FIXTURES` pointing at that export and `-executeMethod WallAttachmentAcceptance.Run`. The harness verifies nine refreshed mounts, local +x facing, collider hits/normals and save/reopen/resync, writing `unity-result.json` beside the export. Never run this harness in a human project.

@@ -22,6 +22,7 @@ import {
   type Ramp,
   type RampPoint,
   type Shape,
+  type Solid,
   type ShapeKind,
   type ShapePatch,
   type NodeUpdate,
@@ -36,6 +37,7 @@ import {
   type View,
   type WalkPreset,
   type ArrayNode,
+  type Instance,
 } from "../shared/scene.types";
 import { reportError } from "./errors";
 import { renderJob } from "./renderView";
@@ -61,9 +63,15 @@ import {
 } from "../shared/geometry";
 import { shapesUnder, isGroup, isShape, hiddenIds, lockedIds, selectableAt, subtreeIds } from "../shared/tree";
 import { cutters, isHole } from "../shared/holes";
+import { IncrementalCuts } from "../shared/incrementalCuts";
+import { floorAt } from "./walkSurface";
 import { ShapeMesh } from "./ShapeMesh";
-import { InstancedEntity } from "./InstancedArrays";
-import { splitInstanced } from "./instancing";
+import { InstancedEntity, InstancedPlacementPart } from "./InstancedArrays";
+import { splitInstanced, splitPlacements } from "./instancing";
+import { StaticMeshes } from "./StaticMeshes";
+import { splitStaticBatches } from "./staticBatches";
+import { GeometryWorkers } from "./usePreparedGeometry";
+import { hasGeometryWork, subscribeGeometryWork } from "./geometryQueue";
 import {
   cameraPosition,
   clipPlanes,
@@ -119,7 +127,7 @@ import { isFollowing, layoutAnchor, layoutGuide, withFollowed } from "../shared/
 import { arrayHandles, dragArrayHandle, hitArrayHandle, hitItemDot, itemDots, toggleSkips, type ArrayHandle, type ArrayPart, type ItemDot } from "./arrayEdit";
 import { pickHit, pickLine, pickNote, surfaceUnder, type Surface } from "./pick";
 import { NoteMesh } from "./NoteMesh";
-import { expandNodes, expandShapes, inEntityRoot, ownerOf } from "../shared/entities";
+import { definitionOf, expandNodes, expandShapes, inEntityRoot, ownerOf } from "../shared/entities";
 import {
   handleEnd,
   hitPoints,
@@ -137,7 +145,6 @@ import { captureScene, editorView, type CaptureView } from "./capture";
 import { fitSize } from "./shots";
 import {
   eyeOf,
-  floorUnder,
   frameRect,
   look,
   lookDir,
@@ -146,7 +153,6 @@ import {
   presetOf,
   settle,
   shotSize,
-  STEP_HEIGHT,
   verticalFov,
   viewVerticalFov,
   walkCamera,
@@ -456,6 +462,11 @@ function withHidden(nodes: SceneNode[], more: string[] | undefined): Set<string>
   return hidden;
 }
 
+function cutInputs(nodes: SceneNode[], hidden: Set<string>): SceneNode[] {
+  const expanded = expandNodes(nodes);
+  return hidden.size ? expanded.filter((n) => !isHole(n) || (!hidden.has(n.id) && !hidden.has(ownerOf(n.id)))) : expanded;
+}
+
 export type CaptureOptions = {
   notes: boolean;
   lines: boolean;
@@ -584,8 +595,18 @@ export function Viewport({
   ) => {
     beginCaptureTiming();
     try {
-      await manifoldReady();
       const from = source ?? nodesRef.current;
+      const entityNow = source ? sourceKind === "entity" : entityModeRef.current;
+      const definitions = new Map(from.flatMap((node) => node.type === "instance"
+        ? [[node.entity, definitionOf(node.entity)] as const]
+        : node.type === "array" ? node.entities.map(({ entity }) => [entity, definitionOf(entity)] as const) : []));
+      const verifyDefinitions = () => {
+        for (const [id, definition] of definitions) {
+          if (definitionOf(id) !== definition) throw new Error("Entity definitions changed during capture. Capture the updated view again.");
+        }
+      };
+      await manifoldReady();
+      verifyDefinitions();
       const hiddenNow = withHidden(from, options.hide);
       const shapes = [
         ...cleanShapes(from,
@@ -593,11 +614,10 @@ export function Viewport({
         ).filter((b) => !isHole(b)),
         ...extra,
       ];
-      const entityNow = source ? sourceKind === "entity" : entityModeRef.current;
-      // The live view's cuts, unless this capture hides more (a hidden hole cuts nothing).
-      const visibleNodes = () => expandNodes(from.filter((n) => !hiddenNow.has(n.id)));
-      const cutsNow = source || options.hide ? cutters(entityNow ? inEntityRoot(visibleNodes()) : visibleNodes()) : cutsRef.current;
-      return await captureScene({
+      // Captures use the document's cuts even while the live view has a drag preview.
+      const visibleNodes = cutInputs(from, hiddenNow);
+      const cutsNow = cutters(entityNow ? inEntityRoot(visibleNodes) : visibleNodes);
+      const png = await captureScene({
         view,
         width,
         height,
@@ -607,20 +627,23 @@ export function Viewport({
         content: (light) => (
           <>
             <Lighting cam={light} />
-            <Boxes
+            <GeometryWorkers.Provider value={false}><Boxes
               nodes={from}
               boxes={shapes}
               arrays={from.filter((b): b is ArrayNode => b.type === "array" && !hiddenNow.has(b.id))}
+              instances={from.filter((b): b is Instance => b.type === "instance" && !hiddenNow.has(b.id))}
               entityMode={entityNow}
               cuts={cutsNow}
               showHoles={false}
               draft={null}
               selected={NO_IDS}
               hovered={NO_IDS}
-            />
+            /></GeometryWorkers.Provider>
           </>
         ),
       });
+      verifyDefinitions();
+      return png;
     } finally {
       endCaptureTiming();
     }
@@ -910,20 +933,6 @@ export function Viewport({
     return { x: g.x, y, z: g.z };
   };
 
-  /** The floor under the feet, from the rendered (cut) meshes: see `floorUnder`. */
-  const floorAt = (scene: THREE.Scene, feet: WalkVec3): number | null => {
-    const walkables: THREE.Object3D[] = [];
-    scene.traverse((o) => {
-      if (o.userData.walkable && (o as THREE.Mesh).isMesh) walkables.push(o);
-    });
-    raycaster.set(new THREE.Vector3(feet.x, feet.y + STEP_HEIGHT, feet.z), DOWN);
-    const hits = raycaster.intersectObjects(walkables, false).map((h) => ({
-      y: h.point.y,
-      up: h.face ? h.face.normal.clone().transformDirection(h.object.matrixWorld).y : 0,
-    }));
-    return floorUnder(hits, feet.y);
-  };
-
   /** One frame of the walk (the rig calls it instead of drawing the editor camera). */
   const walker = useRef<WalkDriver | null>(null);
   walker.current = {
@@ -935,8 +944,8 @@ export function Viewport({
       const dt = Math.min(delta, 0.05);
       if (sess.phase === "walking") {
         let pose = move(l.pose, l.keys, p.speed, dt);
-        if (!sess.floating) {
-          const floor = floorAt(scene, pose.feet);
+        if (!sess.floating && !hasGeometryWork()) {
+          const floor = floorAt(scene, raycaster, pose.feet);
           if (floor !== null && floor !== pose.feet.y) pose = { ...pose, feet: { ...pose.feet, y: settle(pose.feet.y, floor, dt) } };
         }
         l.pose = pose;
@@ -1064,6 +1073,12 @@ export function Viewport({
   // progress shows too, while its outline is valid.
   const override = drag?.active ? drag : pending;
   const pointPreview = pointDrag && (pointDrag.active || pointDrag.inserted) ? pointDrag : null;
+  const dynamicGeometry = useMemo(() => new Set([
+    ...Object.keys(override?.patches ?? {}),
+    ...Object.keys(preview ?? {}),
+    ...(editing && (pointPreview || arrayDrag) ? [editing] : []),
+    ...(override?.copy ? override.origin.map((b) => `${b.id}:copy`) : []),
+  ]), [override, preview, editing, pointPreview, arrayDrag]);
   const { shown, ghosts, unfollowed } = useMemo(() => {
     const moved = (b: Shape): Shape => override?.patches[b.id] ? ({ ...b, ...override.patches[b.id] } as Shape) : b;
     const previewed = preview ? boxes.map((b) => preview[b.id] ? ({ ...b, ...preview[b.id] } as Shape) : b) : boxes;
@@ -1096,6 +1111,7 @@ export function Viewport({
   const drawn = useMemo(() => expandShapes(onView).filter((s) => showModifiers || !sourceIds.has(s.id)), [onView, showModifiers, sourceIds, definitionsVersion]);
   const renderShapes = useMemo(() => [...drawn, ...expandShapes(ghosts)], [drawn, ghosts, definitionsVersion]);
   const drawnArrays = useMemo(() => onView.filter((b): b is ArrayNode => b.type === "array"), [onView]);
+  const drawnInstances = useMemo(() => onView.filter((b): b is Instance => b.type === "instance"), [onView]);
   const pickable = useMemo(() => showHoles ? drawn : drawn.filter((b) => !isHole(b) || selectedIds.has(b.id) || selectedIds.has(ownerOf(b.id))), [showHoles, drawn, selectedIds]);
   // Locked nodes (and what's in them) can't be clicked, hovered or marquee-selected, unless selected from the
   // outliner; they still count as surfaces to draw on and snap to.
@@ -1105,16 +1121,14 @@ export function Viewport({
   // A hidden hole cuts nothing; holes outside the isolation still cut what shows (the cut follows the data).
   const hidden = useMemo(() => hiddenIds(nodes), [nodes]);
   // Instances cut and are cut as groups of their shapes.
-  // In an entity's definition the top level is a group (in every instance), so its holes cut there.
+  const [cutGraph] = useState(() => new IncrementalCuts());
   const cuts = useMemo(() => {
-    const cutList = expandNodes([...nodes.filter(isGroup), ...shown.filter((b) => !(isHole(b) && hidden.has(b.id))), ...ghosts]);
-    return cutters(entityMode ? inEntityRoot(cutList) : cutList);
-  }, [nodes, shown, ghosts, hidden, entityMode, definitionsVersion]);
+    const cutList = cutInputs([...nodes.filter(isGroup), ...shown, ...ghosts], hidden);
+    return cutGraph.update(cutList);
+  }, [nodes, shown, ghosts, hidden, definitionsVersion, cutGraph]);
   // For captures, which run after awaits: the scene as it is then.
   const nodesRef = useRef(nodes);
   nodesRef.current = nodes;
-  const cutsRef = useRef(cuts);
-  cutsRef.current = cuts;
   const entityModeRef = useRef(entityMode);
   entityModeRef.current = entityMode;
   const renderedSelection = useMemo(() => walk ? NO_IDS : ghosts.length > 0 ? new Set(ghosts.map((b) => b.id)) : selectedIds, [walk, ghosts, selectedIds]);
@@ -2224,6 +2238,8 @@ export function Viewport({
           terrainPreview={terrainPreviewActive}
           boxes={renderShapes}
           arrays={drawnArrays}
+          instances={drawnInstances}
+          dynamic={dynamicGeometry}
           entityMode={entityMode}
           cuts={cuts}
           showHoles={showHoles && !walk}
@@ -2335,6 +2351,7 @@ export function Viewport({
         </div>
       )}
       {showStats && <StatsReadout store={statsStore} shapes={drawn.length} />}
+      <GeometryStatus />
       {arrayDrag?.label && (
         <div className="draft-label" style={{ left: arrayDrag.sx + 14, top: arrayDrag.sy + 14 }}>
           {arrayDrag.label}
@@ -2387,6 +2404,8 @@ const Boxes = memo(function Boxes({
   nodes,
   boxes: all,
   arrays = NO_ARRAYS,
+  instances = NO_INSTANCES,
+  dynamic = NO_IDS,
   terrainPreview = false,
   entityMode,
   cuts,
@@ -2399,6 +2418,8 @@ const Boxes = memo(function Boxes({
   boxes: Shape[];
   /** The arrays among what's drawn, as shown: their items (in `boxes`) are drawn instanced where they can be (10.5). */
   arrays?: ArrayNode[];
+  instances?: Instance[];
+  dynamic?: Set<string>;
   terrainPreview?: boolean;
   /** Editing an entity: a top-level hole is fine there (no warning). */
   entityMode: boolean;
@@ -2414,11 +2435,31 @@ const Boxes = memo(function Boxes({
   const modifierIds = useMemo(() => terrainInputIds(nodes), [nodes]);
   const selectedKey = [...selected].join(",");
   const hoveredKey = [...hovered].join(",");
-  const { boxes, groups } = useMemo(() => splitInstanced(all, arrays, cuts), [all, arrays, cuts]);
+  const { boxes: afterArrays, groups } = useMemo(() => splitInstanced(all, arrays, cuts), [all, arrays, cuts]);
+  const { boxes, batches } = useMemo(() => splitPlacements(afterArrays, instances, cuts, modifierIds), [afterArrays, instances, cuts, modifierIds]);
+  const { individual, batches: staticBatches } = useMemo(() => splitStaticBatches(boxes, cuts, modifierIds, dynamic), [boxes, cuts, modifierIds, dynamic]);
   const instancedHoverParts = useMemo(() => {
-    const ordinary = new Set(boxes.map((s) => s.id));
+    const ordinary = new Set(afterArrays.map((s) => s.id));
     return new Map(all.filter((s) => !ordinary.has(s.id)).map((s) => [s.id, s]));
-  }, [all, boxes]);
+  }, [all, afterArrays]);
+  const placementHighlights = useMemo(() => {
+    const byId = new Map<string, Solid[]>();
+    const batched = [...batches.map((batch) => batch.placements), ...staticBatches.map((batch) => batch.shapes)];
+    for (const placements of batched) {
+      for (const shape of placements) {
+        byId.set(shape.id, [shape]);
+        const owner = ownerOf(shape.id);
+        if (owner === shape.id) continue;
+        const parts = byId.get(owner);
+        if (parts) parts.push(shape);
+        else byId.set(owner, [shape]);
+      }
+    }
+    return byId;
+  }, [batches, staticBatches]);
+  const highlighted = new Map<Solid, "hover" | "selected">();
+  for (const id of hovered) for (const shape of placementHighlights.get(id) ?? []) highlighted.set(shape, "hover");
+  for (const id of selected) for (const shape of placementHighlights.get(id) ?? []) highlighted.set(shape, "selected");
   useEffect(() => invalidate(), [all, draft, selectedKey, hoveredKey]);
   return (
     <>
@@ -2430,7 +2471,10 @@ const Boxes = memo(function Boxes({
       {groups.map((g) => (
         <InstancedEntity key={g.key} group={g} highlight={selected.has(g.array) ? "selected" : hovered.has(g.array) ? "hover" : undefined} />
       ))}
-      {boxes.map((b) => {
+      {batches.map((batch) => <InstancedPlacementPart key={batch.key} batch={batch} />)}
+      {staticBatches.map((batch) => <StaticMeshes key={batch.id} batch={batch} />)}
+      {[...highlighted].map(([shape, highlight]) => <ShapeMesh key={`placement:${shape.id}`} shape={shape} cuts={cuts.get(shape.id)} overlay highlight={highlight} />)}
+      {individual.map((b) => {
         // A part of an instance lights up with it.
         const owner = ownerOf(b.id);
         const highlight = selected.has(b.id) || selected.has(owner) ? "selected" : hovered.has(b.id) || hovered.has(owner) ? "hover" : undefined;
@@ -2444,7 +2488,7 @@ const Boxes = memo(function Boxes({
           <group key={b.id}>
             <ShapeMesh shape={b} authoring={modifierIds.has(b.id)} highlight={highlight} cuts={modifierIds.has(b.id) ? undefined : cuts.get(b.id)} />
             {highlight && modifierIds.has(b.id) && isTerrainSource(b) && <TerrainInfluence source={b} nodes={nodes} preview={terrainPreview} />}
-            {isHole(b) && b.parent === undefined && !entityMode && <HoleWarning hole={b} />}
+            {isHole(b) && !b.cutTags?.length && !modifierIds.has(b.id) && <HoleWarning hole={b} />}
           </group>
         );
       })}
@@ -2479,7 +2523,7 @@ const Boxes = memo(function Boxes({
   );
 });
 
-/** The warning over a hole that cuts nothing (it's outside any group): a small yellow diamond above its top. */
+/** The warning over a hole with no cut tags: a small yellow diamond above its top. */
 const warningGeometry = new THREE.OctahedronGeometry(0.22);
 const warningMaterial = new THREE.MeshBasicMaterial({ color: "#f5c518", depthTest: false });
 function HoleWarning({ hole }: { hole: ClosedShape }) {
@@ -2796,8 +2840,14 @@ function ArrayEditOverlay({ dots, handles, selected }: { dots: ItemDot[]; handle
   );
 }
 const NO_ARRAYS: ArrayNode[] = [];
+const NO_INSTANCES: Instance[] = [];
 
 type Stats = { ms: number; calls: number; triangles: number; navigation: ReturnType<NavigationStats["snapshot"]> };
+
+function GeometryStatus() {
+  const busy = useSyncExternalStore(subscribeGeometryWork, hasGeometryWork);
+  return busy ? <div className="geometry-status" role="status">Updating geometry…</div> : null;
+}
 
 function StatsReadout({ store, shapes }: { store: ValueStore<Stats | null>; shapes: number }) {
   const stats = useSyncExternalStore(store.subscribe, store.get);
@@ -2909,7 +2959,6 @@ const easeInOut = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t 
 const WALK_FLIGHT_MS = 600;
 /** How often a walk's pose goes to the server (for the agent's `view.walking`). */
 const WALK_REPORT_MS = 250;
-const DOWN = new THREE.Vector3(0, -1, 0);
 /** The camera's near clipping plane in the editor, and while walking (walls come close). */
 const EDITOR_NEAR = 0.5;
 const WALK_NEAR = 0.05;

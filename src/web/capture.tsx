@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, type ReactNode, type RefObject } from "react";
+import { Component, useLayoutEffect, useRef, type ReactNode, type RefObject } from "react";
 import { advance, createRoot } from "@react-three/fiber";
 import * as THREE from "three";
 import { cameraPosition, clipPlanes, FOV_DEG, MAX_DISTANCE, type CameraState, type Vec3 } from "./camera";
@@ -81,6 +81,13 @@ function Ready({ onReady }: { onReady: () => void }) {
   return null;
 }
 
+class CaptureFailure extends Component<{ children: ReactNode; onError: (error: Error) => void }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError() { return { failed: true }; }
+  componentDidCatch(error: Error) { this.props.onError(error); }
+  render() { return this.state.failed ? null : this.props.children; }
+}
+
 /** The content, with the camera the lighting follows. */
 function Content({ light, content }: { light: CameraState; content: CaptureRequest["content"] }) {
   const cam = useRef<CameraState>(light);
@@ -117,13 +124,14 @@ async function capture({ view, width, height, pixelRatio, background, clip, cont
       },
     });
     let ready!: () => void;
-    const committed = new Promise<void>((resolve) => (ready = resolve));
+    let failed!: (error: Error) => void;
+    const committed = new Promise<void>((resolve, reject) => { ready = resolve; failed = reject; });
     const store = root.render(
-      <>
+      <CaptureFailure onError={failed}>
         <color attach="background" args={[background]} />
         <Content light={view.light} content={content} />
         <Ready onReady={ready} />
-      </>,
+      </CaptureFailure>,
     );
     await committed;
     // One frame by hand: the lighting follows its camera (useFrame), then it's drawn with the capture's camera.

@@ -20,22 +20,22 @@ function load(): Promise<void> {
       waiting.forEach((f) => f());
       waiting.clear();
     })
-    .catch((e) => reportError("view", e));
+    .catch((e) => { reportError("view", e); throw e; });
   return loading;
 }
 
-/** Resolves once the boolean library is ready (or failed to load, when shapes draw uncut). */
+/** Captures require the boolean library before using their synchronous geometry path. */
 export const manifoldReady = (): Promise<void> => (manifoldLoaded() ? Promise.resolve() : load());
 
 /** Whether the boolean library is ready; loads it on first use and re-renders the caller when it is. */
-export function useManifold(): boolean {
+export function useManifold(needed: boolean): boolean {
   const [ready, setReady] = useState(manifoldLoaded());
   useEffect(() => {
-    if (manifoldLoaded()) return;
+    if (!needed || manifoldLoaded()) return;
     const done = () => setReady(true);
     waiting.add(done);
-    void load();
+    void load().catch(() => {});
     return () => void waiting.delete(done);
-  }, []);
-  return ready;
+  }, [needed]);
+  return ready || manifoldLoaded();
 }

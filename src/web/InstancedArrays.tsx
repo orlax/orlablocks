@@ -1,12 +1,13 @@
-import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { invalidate } from "@react-three/fiber";
 import * as THREE from "three";
 import type { ArrayItem } from "../shared/arrays";
+import { boxUVPlane, uvOffset } from "../shared/bake";
 import { definitionOf, expandInstance } from "../shared/entities";
 import { isSolid } from "../shared/geometry";
 import { cutters, isHole } from "../shared/holes";
 import type { ClosedShape, Solid } from "../shared/scene.types";
-import type { InstancedGroup } from "./instancing";
+import type { InstancedGroup, PlacementBatch } from "./instancing";
 import { colorMaterials, getShared, shapeMatrix, useShapeGeometry } from "./ShapeMesh";
 
 /**
@@ -42,7 +43,7 @@ export function InstancedEntity({ group, highlight }: { group: InstancedGroup; h
  * What each instanced mesh was last placed with (so a mesh is placed again only when it's new, or its matrices or
  * its geometry changed: its bounds depend on both).
  */
-const placed = new WeakMap<THREE.InstancedMesh, { matrices: THREE.Matrix4[]; geometry: THREE.BufferGeometry }>();
+const placed = new WeakMap<THREE.InstancedMesh, { matrices: THREE.Matrix4[]; geometry: THREE.BufferGeometry; offsets?: number[][] }>();
 
 /**
  * An item's place: scaled about its pivot (the array's scale, 14.3), turned around it and moved there (as an
@@ -70,12 +71,80 @@ function InstancedPart({
   scale: number;
   highlight?: "hover" | "selected";
 }) {
-  const { solid, floor, edges } = useShapeGeometry(part, cuts);
   const itemsKey = JSON.stringify([scale, items.map((i) => [i.x, i.y, i.z, i.rotation, i.pitch, i.roll])]);
   const matrices = useMemo(() => {
     const local = shapeMatrix(part);
     return items.map((i) => itemMatrix(i, scale).multiply(local));
   }, [itemsKey, part]);
+  return <InstancedMeshes part={part} cuts={cuts} matrices={matrices} highlight={highlight} />;
+}
+
+export const InstancedPlacementPart = memo(function InstancedPlacementPart({ batch }: { batch: PlacementBatch }) {
+  const { part } = batch;
+  const transforms = JSON.stringify(batch.placements.map((s) => [s.x, s.y, s.z, s.rotation, s.pitch, s.roll]));
+  const matrices = useMemo(() => batch.placements.map(shapeMatrix), [transforms, part.height]);
+  const [ox, oz] = uvOffset(part);
+  const offsets = useMemo(() => batch.placements.map((s) => {
+    const [x, z] = uvOffset(s);
+    return [(x - ox) % 1, s.y % 1, (z - oz) % 1];
+  }), [transforms, part.width, part.depth, ox, oz]);
+  return <InstancedMeshes part={part} cuts={batch.cuts} matrices={matrices} offsets={offsets} />;
+});
+
+const tiledMaterials = new WeakMap<THREE.MeshLambertMaterial, THREE.MeshLambertMaterial>();
+function instancedTiles(base: THREE.MeshLambertMaterial) {
+  let material = tiledMaterials.get(base);
+  if (!material) {
+    material = base.clone();
+    material.onBeforeCompile = (shader) => {
+      shader.vertexShader = /* glsl */ `
+        attribute float tilePlane;
+        attribute vec3 tileOffset;
+      ` + shader.vertexShader.replace("#include <uv_vertex>", /* glsl */ `
+        #include <uv_vertex>
+        #ifdef USE_MAP
+          vec2 offsetUV = tilePlane < 0.5 ? tileOffset.xz : (tilePlane < 1.5 ? tileOffset.zy : tileOffset.xy);
+          vMapUv += (mapTransform * vec3(offsetUV, 0.0)).xy;
+        #endif
+      `);
+    };
+    tiledMaterials.set(base, material);
+  }
+  return material;
+}
+
+/** Match drawMesh's flat-face UV projection, even when the lighting normals have been smoothed. */
+function useTileGeometry(source: THREE.BufferGeometry | null, count: number, enabled: boolean) {
+  const geometry = useMemo(() => {
+    if (!source || !enabled) return source;
+    const copy = source.clone();
+    const pos = copy.getAttribute("position");
+    const plane = new Float32Array(pos.count);
+    const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+    for (let i = 0; i < pos.count; i += 3) {
+      a.fromBufferAttribute(pos, i);
+      b.fromBufferAttribute(pos, i + 1);
+      c.fromBufferAttribute(pos, i + 2).sub(b).cross(a.sub(b)).normalize();
+      plane[i] = plane[i + 1] = plane[i + 2] = boxUVPlane(Math.fround(c.x), Math.fround(c.y), Math.fround(c.z));
+    }
+    copy.setAttribute("tilePlane", new THREE.BufferAttribute(plane, 1));
+    copy.setAttribute("tileOffset", new THREE.InstancedBufferAttribute(new Float32Array(count * 3), 3));
+    return copy;
+  }, [source, count, enabled]);
+  useEffect(() => () => { if (geometry !== source) geometry?.dispose(); }, [geometry, source]);
+  return geometry;
+}
+
+function InstancedMeshes({ part, cuts, matrices, offsets, highlight }: {
+  part: Solid;
+  cuts?: ClosedShape[];
+  matrices: THREE.Matrix4[];
+  offsets?: number[][];
+  highlight?: "hover" | "selected";
+}) {
+  const { solid, floor, edges, pending } = useShapeGeometry(part, cuts);
+  const bodyGeometry = useTileGeometry(solid, matrices.length, !!offsets);
+  const floorGeometry = useTileGeometry(floor, matrices.length, !!offsets);
   // Every item's edges in world space, as one set of segments.
   const lines = useMemo(() => {
     if (!edges) return null;
@@ -101,13 +170,18 @@ function InstancedPart({
     let changed = false;
     for (const mesh of [body.current, floorMesh.current]) {
       const was = mesh && placed.get(mesh);
-      if (!mesh || (was && was.matrices === matrices && was.geometry === mesh.geometry)) continue;
+      if (!mesh || (was && was.matrices === matrices && was.geometry === mesh.geometry && was.offsets === offsets)) continue;
       matrices.forEach((m, i) => mesh.setMatrixAt(i, m));
+      if (offsets) {
+        const attr = mesh.geometry.getAttribute("tileOffset");
+        offsets.forEach(([x, y, z], i) => attr.setXYZ(i, x, y, z));
+        attr.needsUpdate = true;
+      }
       mesh.instanceMatrix.needsUpdate = true;
       // Culling and picking use the instances' own bounds.
       mesh.computeBoundingSphere();
       mesh.computeBoundingBox();
-      placed.set(mesh, { matrices, geometry: mesh.geometry });
+      placed.set(mesh, { matrices, geometry: mesh.geometry, offsets });
       changed = true;
     }
     if (changed) invalidate();
@@ -123,13 +197,13 @@ function InstancedPart({
   const n = matrices.length;
   return (
     <>
-      {solid && (
+      {bodyGeometry && (
         // Only the count is an argument (it's fixed when the mesh is made, so a new count is a new mesh): geometry and
         // material are props, so a highlight or a rebuilt geometry doesn't make a new mesh.
-        <instancedMesh key={`body:${n}`} ref={body} args={[undefined, undefined, n]} geometry={solid} material={bodyMaterial} castShadow receiveShadow userData={{ walkable: true }} />
+        <instancedMesh key={`body:${n}`} ref={body} args={[undefined, undefined, n]} geometry={bodyGeometry} material={offsets ? instancedTiles(bodyMaterial) : bodyMaterial} castShadow receiveShadow userData={{ walkable: !pending }} />
       )}
-      {floor && (
-        <instancedMesh key={`floor:${n}`} ref={floorMesh} args={[undefined, undefined, n]} geometry={floor} material={floorMaterial} receiveShadow userData={{ walkable: true }} />
+      {floorGeometry && (
+        <instancedMesh key={`floor:${n}`} ref={floorMesh} args={[undefined, undefined, n]} geometry={floorGeometry} material={offsets ? instancedTiles(floorMaterial) : floorMaterial} receiveShadow userData={{ walkable: !pending }} />
       )}
       {lines && <lineSegments geometry={lines} material={edgeMaterial} renderOrder={1} />}
     </>

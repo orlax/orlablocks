@@ -1,80 +1,85 @@
-import { describe, expect, it } from "vitest";
-import type { Box, Group, SceneNode } from "./scene.types";
+import { afterEach, describe, expect, it } from "vitest";
+import { expandNodes, setDefinitions } from "./entities";
+import { boundsOf } from "./geometry";
 import { cutsFloor, cutters, holeScope, holeWarnings } from "./holes";
-
-const base = { type: "box", y: 0, rotation: 0, color: "almost-white", createdBy: "human" } as const;
-const box = (id: string, patch: Partial<Box>): Box => ({ ...base, id, kind: "room", x: 0, z: 0, width: 10, depth: 8, height: 3, ...patch });
-const group = (id: string, parent?: string): Group => ({ id, type: "group", createdBy: "human", ...(parent ? { parent } : {}) });
-
-// castle › lobby (room + door), castle › hall (room, sharing the lobby's east wall), castle › yard › well (deeper),
-// a loose box in castle, a room outside the castle, and a house › hall › door group (walls beside the door group, a
-// sibling room, a room in a sibling of the house).
-const nodes: SceneNode[] = [
-  group("castle"),
-  group("lobby", "castle"),
-  group("hall", "castle"),
-  group("yard", "castle"),
-  group("well", "yard"),
-  box("lobby_room", { parent: "lobby" }),
-  box("door", { parent: "lobby", kind: "hole", x: 5, width: 0.6, depth: 1, height: 2.2 }),
-  box("hall_room", { parent: "hall", x: 10 }),
-  box("well_room", { parent: "well", x: 5 }),
-  box("loose", { parent: "castle", kind: "volume", x: 5 }),
-  box("outside", { x: 5 }),
-  group("house"),
-  group("room_a", "house"),
-  group("room_b", "house"),
-  group("entry", "room_a"),
-  group("trim", "room_a"),
-  box("walls_a", { parent: "room_a", z: 50 }),
-  box("frame", { parent: "trim", kind: "volume", z: 50 }),
-  box("walls_b", { parent: "room_b", x: 10, z: 50 }),
-  box("leaf", { parent: "entry", kind: "hole", x: 5, z: 50, width: 0.6, depth: 1, height: 2.2 }),
-  box("leaf_2", { parent: "entry", kind: "hole", x: 5, z: 51, width: 0.6, depth: 1, height: 2.2 }),
-];
-const find = (id: string) => nodes.find((n) => n.id === id) as Box;
-const scope = (id: string) => holeScope(nodes, find(id)).map((n) => n.id);
-
-describe("holes", () => {
-  it("cut their group's shapes, the shapes beside their group, its sibling groups' and its parent's sibling groups'", () => {
-    // entry › room_a › house: its own group has only holes; walls_a is beside it, trim is a sibling group, room_b
-    // is room_a's sibling. The house's other top-level neighbors (castle) are out of reach.
-    expect(scope("leaf")).toEqual(["walls_a", "frame", "walls_b"]);
-    // A hole directly in a room's group: its room, the loose shapes and sibling rooms in the castle, and the other
-    // top-level groups' shapes (the castle's siblings), but never deeper (well_room) or the loose top-level box.
-    expect(scope("door")).toEqual(["lobby_room", "hall_room", "loose"]);
+import { migrateProjectCuts } from "./migrations/cutTags";
+import type { Box, SceneNode } from "./scene.types";
+const box = (id: string, patch: Partial<Box> = {}): Box => ({ id, type: "box", kind: "volume", x: 0, z: 0, y: 0, width: 10, depth: 8, height: 3, rotation: 0, color: "white", createdBy: "human", ...patch });
+const group = (id: string, parent?: string): SceneNode => ({ id, type: "group", parent, createdBy: "human" });
+afterEach(() => setDefinitions({}));
+describe("cut tags", () => {
+  it("cuts matching solids across arbitrary groups, including top-level holes; never inherits parent tags", () => {
+    const hole = box("h", { kind: "hole", cutTags: ["lobby", "roof"] });
+    const nodes = [group("g"), group("nested", "g"), hole, box("wall", { parent: "nested", cutTags: ["lobby"] }), box("roof", { cutTags: ["roof"] }), box("unmatched", { parent: "g" })];
+    expect(holeScope(nodes, hole).map((n) => n.id)).toEqual(["wall", "roof"]);
+    expect(cutters(nodes).get("wall")?.map((h) => h.id)).toEqual(["h"]);
+    expect(holeScope(nodes, { ...hole, parent: "nested" })).toEqual(holeScope(nodes, hole));
+    expect(holeScope(nodes, { ...hole, cutTags: [] })).toEqual([]);
+    expect(holeScope(nodes, { ...hole, cutTags: undefined })).toEqual([]);
   });
-
-  it("in a top-level group, cut the loose top-level shapes beside it", () => {
-    const top: SceneNode[] = [group("gate"), box("wall", {}), box("arch", { parent: "gate", kind: "hole", width: 1, depth: 1, height: 2 })];
-    expect(holeScope(top, top[2] as Box).map((n) => n.id)).toEqual(["wall"]);
+  it("requires geometric overlap and never cuts holes; floor rules stay unchanged", () => {
+    const h = box("h", { kind: "hole", cutTags: ["x"] });
+    const nodes = [h, box("solid", { cutTags: ["x"] }), box("far", { x: 100, cutTags: ["x"] }), box("h2", { kind: "hole", cutTags: ["x"] })];
+    expect(holeScope(nodes, h).map((n) => n.id)).toEqual(["solid", "far"]);
+    expect([...cutters(nodes).keys()]).toEqual(["solid"]);
+    expect(cutsFloor(h, box("room", { kind: "room" }))).toBe(false);
+    expect(cutsFloor({ ...h, y: -0.1 }, box("room", { kind: "room" }))).toBe(true);
+    expect(holeWarnings([box("h", { kind: "hole" })])[0]).toContain("no cut tags");
+    expect(holeWarnings([h])[0]).toContain("no solids");
   });
-
-  it("cut only what they overlap, and never holes", () => {
-    const withWindow = [...nodes, box("window", { parent: "hall", kind: "hole", x: 20, z: 20, width: 1, depth: 1, height: 1 })];
-    const cuts = cutters(withWindow);
-    expect(cuts.get("lobby_room")?.map((h) => h.id)).toEqual(["door"]);
-    expect(cuts.get("hall_room")?.map((h) => h.id)).toEqual(["door"]);
-    expect(cuts.has("window")).toBe(false);
-    expect(cuts.has("well_room")).toBe(false);
+  it("matches the full scope and bounds scan across edits, keeping order and excluding terrain-source holes", () => {
+    const hole = box("h1", { kind: "hole", pitch: 15, cutTags: ["b", "a", "b"] });
+    const other = box("h2", { kind: "hole", cutTags: ["a"] });
+    const terrainHole = { ...other, id: "terrainHole", parent: "nested" };
+    const nodes: SceneNode[] = [
+      box("both", { cutTags: ["a", "b"] }), box("a", { width: 4, cutTags: ["a"] }),
+      box("b", { x: 24, cutTags: ["b"] }),
+      hole, other, terrainHole, group("nested", "source"), group("source"),
+      { id: "terrain", type: "terrain", x: 0, y: 0, z: 0, width: 20, depth: 20, color: "white", resolution: 129, source: "source", createdBy: "human" },
+    ];
+    function check(scene: SceneNode[], holes: Box[]) {
+      const expected = new Map<string, Box[]>();
+      for (const h of holes) {
+        const a = boundsOf([h]);
+        for (const target of holeScope(scene, h)) {
+          const b = boundsOf([target]);
+          if (a.minX >= b.maxX || b.minX >= a.maxX || a.minY >= b.maxY || b.minY >= a.maxY || a.minZ >= b.maxZ || b.minZ >= a.maxZ) continue;
+          expected.set(target.id, [...(expected.get(target.id) ?? []), h]);
+        }
+      }
+      expect([...cutters(scene)]).toEqual([...expected]);
+    }
+    check(nodes, [hole, other, terrainHole]);
+    const moved = { ...hole, x: 24, cutTags: ["b"] };
+    check(nodes.map((n) => n === hole ? moved : n), [moved, other, terrainHole]);
+    check(nodes, [hole, other, terrainHole]);
   });
-
-  it("cut nothing outside any group, with a warning", () => {
-    const loose = [...nodes, box("stray", { kind: "hole", x: 5 })];
-    expect(holeScope(loose, find("door")).length).toBe(3);
-    expect(cutters(loose).get("outside")?.map((h) => h.id)).toBeUndefined();
-    expect(holeWarnings(loose)).toEqual([expect.stringContaining("stray is a hole outside any group")]);
-    expect(holeWarnings(nodes)).toEqual([]);
+  it("namespaces internal definition tags per placement while external placement tags cross groups", () => {
+    setDefinitions({ door: [box("solid", { cutTags: ["internal"] }), box("untouched"), box("hole", { kind: "hole", cutTags: ["internal"] })] });
+    const i = (id: string): SceneNode => ({ id, type: "instance", entity: "door", x: 0, y: 0, z: 0, rotation: 0, createdBy: "human" });
+    const expanded = expandNodes([i("a"), i("b")]);
+    expect(cutters(expanded).get("a/solid")?.map((h) => h.id)).toEqual(["a/hole"]);
+    const external = expandNodes([{ ...i("a"), cutTags: ["lobby"] } as SceneNode, box("wall", { cutTags: ["lobby"] })]);
+    expect(cutters(external).get("wall")?.map((h) => h.id)).toEqual(["a/hole"]);
+    expect(cutters(external).has("a/untouched")).toBe(false);
   });
-
-  it("warn when their group and its siblings have nothing to cut", () => {
-    const lonely: SceneNode[] = [group("g"), box("h", { parent: "g", kind: "hole" })];
-    expect(holeWarnings(lonely)).toEqual([expect.stringContaining("nothing to cut")]);
+  it("keeps migrated sets independent when geometry from two scenes is pasted together", () => {
+    const scene = [group("g"), box("wall", { parent: "g" }), box("hole", { kind: "hole", parent: "g" })];
+    const converted = migrateProjectCuts({}, { a: scene, b: scene }, "example");
+    const pasted = converted.scenes.b.map((n) => ({ ...n, id: `copy-${n.id}`, ...(n.parent ? { parent: `copy-${n.parent}` } : {}) }));
+    const cuts = cutters([...converted.scenes.a, ...pasted]);
+    expect(cuts.get("wall")?.map((h) => h.id)).toEqual(["hole"]);
+    expect(cuts.get("copy-wall")?.map((h) => h.id)).toEqual(["copy-hole"]);
   });
-
-  it("cut a room's floor only when they reach below it", () => {
-    const room = find("lobby_room");
-    expect(cutsFloor(find("door"), room)).toBe(false);
-    expect(cutsFloor({ ...find("door"), y: -0.5 }, room)).toBe(true);
+  it("migrates nested definitions, scenes and arrays with exact eligible scope including distant solids", () => {
+    const defs = { door: [box("frame"), box("hole", { kind: "hole" })] };
+    const nodes: SceneNode[] = [group("building"), group("room", "building"), box("wall", { parent: "room" }), box("far", { x: 100, parent: "room" }), { id: "a", type: "array", parent: "room", entities: [{ entity: "door" }], layout: { type: "circle", x: 0, y: 0, z: 0, radius: 5, count: 3 }, createdBy: "human" }];
+    const result = migrateProjectCuts(defs, { scene: nodes });
+    const migrated = result.scenes.scene;
+    const expanded = expandNodes(migrated);
+    const h = expanded.find((n) => n.id === "a/0/hole") as Box;
+    expect(holeScope(expanded, h).map((n) => n.id)).toContain("far");
+    expect(migrated.find((n) => n.id === "a")).toHaveProperty("cutTagParts");
+    expect(migrated.map((n) => n.id)).toEqual(nodes.map((n) => n.id));
   });
 });

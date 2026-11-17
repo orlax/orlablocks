@@ -1,3 +1,4 @@
+import { circleDistribution } from "../shared/arrays";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   ArrowDownToLine,
@@ -56,6 +57,7 @@ import {
   type ArrayPlace,
   type LineArrow,
   type NoteStatus,
+  type WallAttachment,
   type Terrain,
   type TerrainModifier,
 } from "../shared/scene.types";
@@ -76,6 +78,7 @@ import type { LineStyle, RampStyle } from "./Viewport";
 export type Preview<T> = (patch: T | null) => void;
 
 export type InspectorProps = {
+  wallAttachment?: { value?: WallAttachment; targets: { id: string; name: string; angle: number }[]; problem: string | null; onChange: (value: WallAttachment | null) => void };
   /** What the node is linked to (13.4): what it stands on, what a line goes through; Unlink keeps what it has now. */
   links?: { label: string; value: string; title: string; unlinkTitle: string; onUnlink: () => void }[];
   /** What it shows: `lobby (box_3)`, `3 selected`, `next box`. */
@@ -117,6 +120,7 @@ export type InspectorProps = {
   /** A single group's description: what that part of the level is, for people and the agent. */
   description?: { value: string; onChange: (text: string) => void };
   /** A single group's or shape's tags (not a line's), and adding a new tag to the library and to it. */
+  cuts?: { value: string[]; parts?: Record<string, string[]>; targets: { id: string; name: string; overlapping: boolean }[]; onChange: (tags: string[]) => void; onParts: (parts: Record<string, string[]>) => void; onSelect: (id: string) => void };
   tags?: { value: string[]; onChange: (tags: string[]) => void; onCreate: (name: string) => void };
   /** A cylinder's sides: the side count, undefined = smooth. */
   sides?: { value: number | undefined; onChange: (sides: number | undefined) => void };
@@ -182,6 +186,7 @@ export type ArrayControls = {
   entities: { entity: string; weight?: number }[];
   library: EntityMeta[];
   layout: ArrayLayout;
+  standing: boolean;
   /** The facing in effect (the layout's default when the array has none). */
   facing: ArrayFacing;
   rotation: number;
@@ -220,6 +225,7 @@ export function Inspector({
   info,
   library = null,
   links,
+  wallAttachment,
   note,
   instance,
   array,
@@ -228,6 +234,7 @@ export function Inspector({
   makeEntity,
   description,
   tags,
+  cuts,
   sides,
   wall,
   floor,
@@ -271,6 +278,7 @@ export function Inspector({
               ))}
             </Section>
           )}
+          {wallAttachment && <WallAttachmentSection {...wallAttachment} />}
           {note && <NoteSection {...note} library={library} />}
           {instance && <InstanceSection {...instance} library={library} />}
           {array && library && <ArraySection {...array} lib={library} />}
@@ -279,6 +287,7 @@ export function Inspector({
               <DescriptionField {...description} library={library} />
             </Section>
           )}
+          {cuts && <CutTagsSection key={title} {...cuts} />}
           {tags && (
             <Section label="Tags">
               <TagsField library={library} tags={tags.value} onChange={tags.onChange} onCreate={tags.onCreate} />
@@ -812,6 +821,12 @@ function ArraySection(props: ArrayControls & { lib: Library }) {
       )}
       {layout.type === "path" && (
         <>
+          <Row label="slope">
+            <label className="note-done" title="Align local +x to the 3D path tangent without banking. Requires along facing and no standing-on placement.">
+              <input type="checkbox" checked={!!layout.slope} disabled={props.standing || (facing !== "along" && facing !== "tangent")} onChange={(e) => onLayout({ slope: e.target.checked })} />
+              follow path
+            </label>
+          </Row>
           <Row label="items">
             <select className="entity-picker" value={layout.place} title="How the items are placed along the path" onChange={(e) => onLayout({ place: e.target.value })}>
               {PLACES.map((p) => (
@@ -911,9 +926,17 @@ function ArraySection(props: ArrayControls & { lib: Library }) {
           <Row label="radius">
             <NumberField title="From the center to each item's pivot" value={layout.radius} unit="m" step={0.25} min={0.05} fallback={5} onChange={(radius) => onLayout({ radius })} />
           </Row>
-          <Row label="count">
-            <CountField title="How many items" value={layout.count} onChange={(count) => onLayout({ count })} />
+          <Row label="items">
+            <select className="entity-picker" title="Place by count or maximum centerline spacing" value={layout.place ?? "count"} onChange={(e) => onLayout(e.target.value === "spacing" ? { place: "spacing", spacing: layout.spacing ?? 1 } : { place: "count", count: layout.count ?? Math.min(MAX_ARRAY_ITEMS, circleDistribution(layout).count) })}>
+              <option value="count">count</option><option value="spacing">spacing</option>
+            </select>
           </Row>
+          {layout.place === "spacing" ? <Row label="spacing">
+            <NumberField title="Maximum distance along the 3D centerline; fitted evenly" value={layout.spacing ?? 1} unit="m" step={0.25} min={MIN_ARRAY_SPACING} fallback={1} onChange={(spacing) => onLayout({ spacing })} />
+          </Row> : <Row label="count">
+            <CountField title="How many items" value={layout.count ?? 1} onChange={(count) => onLayout({ count })} />
+          </Row>}
+          <Row label="fitted"><span>{circleDistribution(layout).count} items · {Number(circleDistribution(layout).spacing.toFixed(3))} m</span></Row>
           <Row label="start">
             <NumberField title="The first item's angle: 0 = east, 90 = north" value={layout.start ?? 0} unit="°" step={15} fallback={0} onChange={(start) => onLayout({ start })} />
           </Row>
@@ -976,7 +999,7 @@ function ArraySection(props: ArrayControls & { lib: Library }) {
       <Row label="facing">
         <select className="entity-picker" value={facing} title="How each item turns" onChange={(e) => onChange({ facing: e.target.value as ArrayFacing })}>
           {facings.map((f) => (
-            <option key={f.facing} value={f.facing}>
+            <option key={f.facing} value={f.facing} disabled={layout.type === "path" && layout.slope && f.facing !== "along" && f.facing !== "tangent"}>
               {f.label}
             </option>
           ))}
@@ -1405,4 +1428,51 @@ function TerrainModifierSection({ operation, fade, onChange }: TerrainModifierCo
       </Row>
     </Section>
   );
+}
+
+/** Dedicated geometry tags, independent of the semantic library. */
+function CutTagsSection({ value, parts, targets, onChange, onParts, onSelect }: NonNullable<InspectorProps["cuts"]>) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const parse = (text: string) => [...new Set(text.split(",").map((t) => t.trim()).filter(Boolean))];
+  const text = draft ?? value.join(", ");
+  const valid = parse(text).every((t) => t.length <= 120 && !t.includes(":"));
+  return <Section label="Cut tags">
+    <input aria-label="Cut tags" placeholder="lobby, roof" value={text} onChange={(e) => setDraft(e.target.value)}
+      onBlur={() => { if (valid && draft !== null) { onChange(parse(draft)); setDraft(null); } }}
+      onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); if (e.key === "Escape") setDraft(null); }} />
+    <div className="inspector-info">Holes cut overlapping solids sharing a tag. Separate tags with commas.</div>
+    {parts && Object.keys(parts).length > 0 && <div className="inspector-info">Per-part tags below also contribute to this placement’s cuts.</div>}
+    {!valid && <div role="alert">Use tags up to 120 characters without colons.</div>}
+    {parts && Object.keys(parts).length > 0 && <details><summary>Per-part tags ({Object.keys(parts).length})</summary>
+      <div className="inspector-info">Placement bindings preserved by migration; internal entity cuts remain independent.</div>
+      {Object.entries(parts).map(([id, tags]) => <label key={id}>{id}<input aria-label={`Cut tags for ${id}`} defaultValue={tags.join(", ")} key={id + tags.join(",")}
+        onBlur={(e) => { const next = parse(e.target.value); if (next.every((t) => t.length <= 120 && !t.includes(":"))) onParts({ ...parts, [id]: next }); }} /></label>)}
+      <button type="button" onClick={() => onParts({})}>Clear per-part tags</button>
+    </details>}
+    {targets.length > 0 && <details open={targets.length <= 8}><summary>Matching targets ({targets.length}; {targets.filter((t) => t.overlapping).length} overlap)</summary>
+      {targets.slice(0, 30).map((t) => <div key={t.id}><button type="button" onClick={() => onSelect(t.id)}>{t.name}</button> · {t.overlapping ? "bounds overlap" : "out of reach"}</div>)}
+      {targets.length > 30 && <div>{targets.length - 30} more targets</div>}
+    </details>}
+  </Section>;
+}
+
+function WallAttachmentSection({ value, targets, problem, onChange }: NonNullable<InspectorProps["wallAttachment"]>) {
+  const [target, setTarget] = useState("");
+  const chosen = targets.some((t) => t.id === target) ? target : targets[0]?.id ?? "";
+  const change = (patch: Partial<WallAttachment>) => value && onChange({ ...value, ...patch });
+  return <Section label="Wall attachment">
+    <Row label="Target"><select aria-label="Wall target" value={value?.id ?? chosen} onChange={(e) => value ? change({ id: e.target.value }) : setTarget(e.target.value)}>
+      {value && !targets.some((t) => t.id === value.id) && <option value={value.id}>{value.id} (unsupported)</option>}
+      {targets.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+    </select></Row>
+    {!value ? <button className="labeled" disabled={!chosen} title="Attach the instance pivot to the inner wall at its arc start (east for a full cylinder), at target base elevation" onClick={() => onChange({ id: chosen, side: "inner", angle: targets.find((t) => t.id === chosen)?.angle ?? 0, elevation: 0, offset: 0, facingOffset: 0 })}><Link size={14} /> Attach</button> : <>
+      <Row label="Side"><select aria-label="Wall side" value={value.side} onChange={(e) => change({ side: e.target.value as WallAttachment["side"] })}><option value="inner">Inner</option><option value="outer">Outer</option></select></Row>
+      <Row label="Angle"><NumberField title="Local CCW angle from east" value={value.angle} unit="°" step={15} fallback={0} onChange={(angle) => change({ angle })} /></Row>
+      <Row label="Elevation"><NumberField title="Elevation relative to the target base" value={value.elevation} unit="m" step={0.1} fallback={0} onChange={(elevation) => change({ elevation })} /></Row>
+      <Row label="Offset"><NumberField title="Signed distance along the wall normal; positive points away from the wall" value={value.offset} unit="m" step={0.01} fallback={0} onChange={(offset) => change({ offset })} /></Row>
+      <Row label="Facing offset"><NumberField title="Local +x faces the surface normal plus this angle" value={value.facingOffset} unit="°" step={15} fallback={0} onChange={(facingOffset) => change({ facingOffset })} /></Row>
+      <button className="labeled" onClick={() => onChange(null)} title="Keep the current world pose"><Unlink size={14} /> Detach wall</button>
+    </>}
+    {problem && <div role="status" className="inspector-info">{problem}</div>}
+  </Section>;
 }

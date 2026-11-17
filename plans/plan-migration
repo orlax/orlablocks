@@ -1,0 +1,88 @@
+# plan-migration — 100% Pure Native Rust + Bevy (3D-First) Master Plan
+
+> **For the agent reading this:** This is the master architecture and execution plan for building the next-generation, commercial-grade **OrlaBlocks** in `/Users/orlandoalmario/Documents/repos/orlablocks-native` using a **100% pure native Rust + Bevy stack (`bevy` + `bevy_egui` + battle-tested geometry/physics crates)**, while keeping this `dungeon_designer` repository completely untouched as the living reference specification.
+>
+> **Core Rule:** Build iteratively **package by package**, keeping the app **visual and interactive in 3D from Package 2 onward**, and **never reinvent complex engines or computational-geometry algorithms from scratch** when mature, permissively licensed Rust crates exist. Zero npm, zero Node.js, zero WebView/IPC split-brain — one single native binary (`cargo run`) that runs identically on macOS (Metal), Windows (DX12/Vulkan), and Linux (Vulkan).
+
+---
+
+## 1. Architectural Principles & Battle-Tested Crate Stack
+
+1. **Single Process, Single Language, Zero Split-Brain:**
+   - Every UI panel (`egui` via `bevy_egui`: Outliner, Toolbar, Inspector, Note flags) and the GPU-accelerated 3D Viewport (`bevy` over `wgpu`) share the exact same Rust memory (`SceneFile`, `OrbitCamera`, `NodeMesh3D`).
+2. **Use Battle-Tested Crates Instead of Reinventing Wheels:**
+   Every non-trivial engine/algorithm maps to an industry-proven, permissively licensed (`MIT` / `Apache-2.0` / `ISC` / `BSD`) Rust crate:
+   - **3D Engine, Hardware Z-Buffer, PBR Lighting, Shadows & Gizmos:** `bevy` (`0.15.x`, lean 3D feature set) + `bevy_egui` (`0.33.x`). Real `wgpu` 32-bit hardware depth buffer, 4× MSAA, `StandardMaterial` with repeatable 1m prototype grid tiles, cascaded directional shadows, hardware depth-tested `Gizmos`, and viewport-clipped `Camera3d`.
+   - **2D Polygon Triangulation, Offsetting & Booleans:** `earcutr` (`0.5`, Mapbox Earcut — same core algorithm `three.js` uses for shapes/holes) and `i_overlay` (`9.x` — integer-robust 2D polygon offsetting & boolean ops for complex/concave freeforms).
+   - **3D Spatial Queries, BVH Acceleration & Character Collision:** `parry3d` (`0.31`, Rust 3D collision engine behind Rapier) for $O(\log N)$ raycasting, AABB queries, `on`/`wallAttachment` placement queries, and Walk-mode collision.
+   - **3D Boolean CSG (Holes):** Isolated behind `orla-render3d::csg` / `orla-mesh-bake`; upgrade from basic BSP to manifold-grade CSG (`csgrs` or welded manifold clipping) as Package 5 matures.
+   - **Parallel Heightfields, Export & Embedded MCP Server:** `rayon` (multi-threaded terrain evaluation), `gltf` (standard `.glb` export), `axum` + `tokio` (embedded HTTP MCP server).
+3. **OrlaBlocks Look-and-Feel Preserved Natively:**
+   - Exact light/dark theme palette (`--paper #f2faf8`, `--surface #ffffff`, `--ink #2c2b45`, `--mint`, `--peach`, `--coral`, `--lilac`, `--sky`, `--leaf`), 2px ink borders, hard block look, and custom **Orla BLOCKS** wordmark rendered natively in `egui`, paired with repeatable 1m tile prototype shading in Bevy.
+4. **Commercial-Ready Multiplatform Packaging:**
+   - Compiles to a single standalone executable with strictly permissive third-party licenses.
+
+---
+
+## 2. Target Workspace Structure (`orlablocks-native`)
+
+```text
+orlablocks-native/
+├── Cargo.toml                 # Pure Rust workspace root (default-members = ["crates/orla-app"])
+└── crates/
+    ├── orla-schema/           # Package 1: Scene, Library & Project data model + normalization/validation
+    ├── orla-render3d/         # Package 2: OrbitCamera, procedural shape meshes (earcutr, box UVs, creased normals), CSG holes & picking
+    ├── orla-app/              # Package 2+: Native Bevy + bevy_egui 3D desktop editor
+    ├── orla-math-geo/         # Package 3: Full 3D gizmos, snapping, i_overlay footprints, parry3d BVH index & curve/point editing
+    ├── orla-tree-ops/         # Package 4: Groups, isolate/lock/hide, entities & GPU-instanced live arrays in Bevy
+    ├── orla-mesh-bake/        # Package 5: Manifold CSG hole subtraction (csgrs / cutTagParts), bake cache, glTF/Unity export
+    ├── orla-terrain/          # Package 6: Multi-threaded rayon heightfield terrain & modifiers in Bevy
+    ├── orla-engine/           # Package 7: Command processor, undo/redo history, library panel, parry3d Walk mode & shots
+    └── orla-server/           # Package 8: Background Axum/Tokio MCP server, offscreen Bevy headless render & atomic persistence
+```
+
+---
+
+## 3. Iterative 3D-First Package Roadmap
+
+### Package 1: `orla-schema` *(Done)*
+- Canonical Rust structs/enums (`SceneNode` across all 10 types, `SceneFile`, `Library`, `ProjectFile`, `NextId`, `ShotRecord`, `PlayerCamera`), legacy `Ramp` `"hole" -> "volume"` normalization, strict validation (`arc`, `cutTags`, array `slope`), `LibraryOp` apply/invert, alias resolution, and Unicode-aware `find_refs` / `unknown_refs`.
+
+### Package 2: `orla-render3d` + `orla-app` — Bevy 3D Viewport & Interactive Shape Editing *(Active)*
+- **Reference in `dungeon_designer`:** [Viewport.tsx](file:///Users/orlandoalmario/Documents/repos/dungeon_designer/src/web/Viewport.tsx), [ShapeMesh.tsx](file:///Users/orlandoalmario/Documents/repos/dungeon_designer/src/web/ShapeMesh.tsx), [Lighting.tsx](file:///Users/orlandoalmario/Documents/repos/dungeon_designer/src/web/Lighting.tsx), [bake.ts](file:///Users/orlandoalmario/Documents/repos/dungeon_designer/src/shared/bake.ts), [mesh.ts](file:///Users/orlandoalmario/Documents/repos/dungeon_designer/src/shared/mesh.ts), [camera.ts](file:///Users/orlandoalmario/Documents/repos/dungeon_designer/src/web/camera.ts), [theme.css](file:///Users/orlandoalmario/Documents/repos/dungeon_designer/src/ui/theme.css).
+- **Deliverables:**
+  - `orla-render3d`: `OrbitCamera` (meters, y-up, north `-z`, east `+x`), procedural 3D meshes triangulated via `earcutr` (hollow rooms with separated `floor_tris` & non-z-fighting `2mm` floor inset, volumes, translucent hole ghosts, arc cylinders, bezier freeforms, ramps, 3D lines with arrows, terrain patches, instance/array proxies), 1m world-scale box UVs (`box_uv_for_vertex`), 30° creased vertex normals (`creased_vertex_normals`), Boolean hole subtraction, and 3D raycast picking.
+  - `orla-app`: Single native binary powered by **Bevy 0.15 (`wgpu`, hardware 32-bit Depth Buffer, 4× MSAA, cascaded directional shadows, hardware depth-tested `Gizmos`, repeatable 1m prototype grid texture)** + **`bevy_egui`**. Includes exact OrlaBlocks theme & wordmark, `Viewport`-clipped central 3D canvas, interactive gizmo handles (`MoveXZ`, `East`, `West`, `North`, `South`, `HeightTop`), ground draw tools (`Room`, `Volume`, `Cylinder`, `Hole`), Outliner with hide/lock, Live Property Inspector, native `Open`/`Save JSON`, and collapsible Schema/`@skill`/`#tag` diagnostics.
+
+### Package 3: `orla-math-geo` — Full 3D Gizmos, `i_overlay` Offsets, `parry3d` BVH & Curve/Point Editing
+- `parry3d` BVH spatial index for $O(\log N)$ raycast picking and surface placement across 10,000+ shapes.
+- `i_overlay` 2D polygon offsetting for arbitrary concave freeform rooms and nested footprints.
+- Full 3D rotation/tilt/taper/bevel/wall-thickness gizmos, grid/vertex/edge snapping, and interactive 3D bezier/point editing on Freeforms, Ramps, and Lines.
+
+### Package 4: `orla-tree-ops` — Groups, Entities & Live Arrays in 3D
+- Hierarchical group transforms, Isolate mode, Entity definition editing, `wallAttachment` / `on` standing links (via `parry3d`), and live Path/Circle/Grid/Scatter array layouts rendered with Bevy instancing.
+
+### Package 5: `orla-mesh-bake` — Manifold CSG Holes & glTF/Unity Export
+- Manifold-grade parallel 3D boolean hole subtraction (`csgrs` / welded manifold CSG + `cutTags` + `cutTagParts`) with incremental dirty-graph caching and `.glb` (`gltf` crate) / Unity export.
+
+### Package 6: `orla-terrain` — Multi-threaded 3D Heightfield & Modifiers
+- Parallel `rayon` terrain evaluation, modifier blending (`raise`, `lower`, `set`, `fade`), and `parry3d` heightfield ray queries rendered natively in Bevy.
+
+### Package 7: `orla-engine` — Undo/Redo History, Library Panel, Walk Mode & Shots
+- Reversible command stack (`commit` + undo/redo), Library (`#tags`/`@skills`) editor, 3D Note pin placement/editing, First/Third-person `parry3d` Walk mode with slope/step climbing, and saved Shot captures.
+
+### Package 8: `orla-server` — Built-in MCP Server & Workspace Persistence
+- Background `axum`/`tokio` HTTP MCP server + workspace `.lock` & atomic disk persistence + offscreen Bevy render-to-image `render_view` inside the single native desktop binary.
+
+---
+
+## 4. Progress & Verification Log
+
+- **2026-11-15 — Package 1 (`orla-schema`) Implemented & Verified:**
+  - Created `/Users/orlandoalmario/Documents/repos/orlablocks-native/crates/orla-schema` (`palette.rs`, `scene.rs`, `library.rs`, `project.rs`, `lib.rs`, `tests/schema_tests.rs`).
+  - `cargo test -p orla-schema`: 4/4 tests passed.
+- **2026-11-16 — Package 2 Architectural Pivot to Bevy 0.15 + `bevy_egui` + `earcutr`:**
+  - Replaced earlier `eframe`/`egui::Painter` software triangle projection (which suffered from Painter's-algorithm Z-sorting artifacts due to lacking a hardware depth buffer) with **Bevy 0.15 (`wgpu`) + `bevy_egui` (`0.33`) + `earcutr` (`0.5`)**.
+  - Updated `orla-render3d/src/mesh.rs`: switched polygon triangulation to `earcutr::earcut`, split `body_tris`/`floor_tris` (with `0.94×` floor shade and `0.002m` perimeter inset to eliminate coplanar floor/wall overlap), and added `box_uv_for_vertex` + `creased_vertex_normals` (`30°`).
+  - Rewrote `orla-app` around Bevy ECS + `bevy_egui`: hardware 32-bit Z-buffer, 4× MSAA, repeatable 1m prototype grid tile texture, cascaded shadows, hardware depth-tested `Gizmos` (1m/5m ground grid, crease edges, dashed hole outlines, live draft box), and `Viewport`-clipped `Camera3d`.
+  - Audited remaining packages to mandate `earcutr`, `i_overlay`, `parry3d`, `csgrs`, `rayon`, `gltf`, and `axum`/`tokio`.

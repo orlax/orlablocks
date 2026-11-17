@@ -690,7 +690,7 @@ summary:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
 .compass .n { fill: var(--danger); }
 .compass .dir { fill: var(--ink-soft); font-weight: 600; }
 
-/* A hole's icon is its shape's, dotted; a hole that cuts nothing (outside any group) gets a warning. */
+/* A hole's icon is its shape's, dotted; a hole without cut tags gets a warning. */
 .outliner-row .icon.hole { stroke-dasharray: 2 2.5; }
 .outliner-row .warn { display: inline-flex; margin-left: auto; color: var(--warn); }
 /* A row's lock and isolate buttons: shown on hover, or while on (a lock from a group it's in shows dim). */
@@ -1425,6 +1425,19 @@ summary:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
   width: max-content;
   text-align: center;
   white-space: normal;
+  pointer-events: none;
+  z-index: 3;
+}
+
+.geometry-status {
+  position: absolute;
+  left: 10px;
+  bottom: 10px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink);
+  font: 500 11px/1.4 var(--mono);
   pointer-events: none;
   z-index: 3;
 }
